@@ -166,6 +166,27 @@ async def test_send_message_posts_group_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_message_raises_on_http_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"message": "bad request"}, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = make_adapter(http_client=client)
+    adapter._access_token = "token-3"
+    adapter._access_token_expires_at = 9999999999
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-7",
+                message_type="turn_result",
+                text="broken",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_send_message_raises_on_qq_http_error() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"message": "boom"})
