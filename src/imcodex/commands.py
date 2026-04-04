@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import shlex
-from typing import Any
-
-from .models import ProjectRecord, ThreadRecord
 from .store import ConversationStore
 
 
@@ -28,7 +26,7 @@ class CommandResponse:
 def parse_command(text: str) -> ParsedCommand:
     if not text.startswith("/"):
         raise ValueError("not a slash command")
-    parts = shlex.split(text[1:])
+    parts = [part.strip("\"'") for part in shlex.split(text[1:], posix=False)]
     if not parts:
         raise ValueError("empty slash command")
     return ParsedCommand(name=parts[0], args=parts[1:])
@@ -62,6 +60,20 @@ class CommandRouter:
             action="project.use",
             text=f"Switched to project {project_id}.",
             project_id=project_id,
+        )
+
+    def _handle_cwd(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) != 1:
+            return CommandResponse(action="project.cwd.invalid", text="Usage: /cwd <path>")
+        resolved = os.path.abspath(os.path.expanduser(args[0]))
+        if not os.path.isdir(resolved):
+            return CommandResponse(action="project.cwd.missing", text=f"Directory not found: {resolved}")
+        project = self.store.ensure_project(resolved)
+        self.store.set_active_project(channel_id, conversation_id, project.project_id)
+        return CommandResponse(
+            action="project.cwd",
+            text=f"Switched to project {project.project_id} at {project.cwd}.",
+            project_id=project.project_id,
         )
 
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -103,11 +115,15 @@ class CommandRouter:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
         project_text = binding.active_project_id or "(none)"
+        cwd_text = "(none)"
+        if binding.active_project_id is not None:
+            cwd_text = self.store.get_project(binding.active_project_id).cwd
         thread_text = binding.active_thread_id or "(none)"
         turn_text = binding.active_turn_id or "(none)"
         turn_status = binding.active_turn_status or "(idle)"
         text = (
             f"project={project_text}\n"
+            f"cwd={cwd_text}\n"
             f"thread={thread_text}\n"
             f"turn={turn_text}\n"
             f"turn_status={turn_status}\n"

@@ -89,6 +89,11 @@ class ConversationStore:
         self._save()
         return thread
 
+    def ensure_project(self, cwd: str) -> ProjectRecord:
+        project = self._ensure_project(cwd)
+        self._save()
+        return project
+
     def get_thread(self, thread_id: str) -> ThreadRecord:
         return self._threads[thread_id]
 

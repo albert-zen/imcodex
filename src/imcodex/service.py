@@ -59,7 +59,7 @@ class BridgeService:
                 self._message(
                     message,
                     "error",
-                    "Choose a project first with /projects and /project use <project-id>.",
+                    "Choose a project first with /cwd <path> or /projects and /project use <project-id>.",
                 )
             ]
         thread_id = await self.backend.ensure_thread(message.channel_id, message.conversation_id)

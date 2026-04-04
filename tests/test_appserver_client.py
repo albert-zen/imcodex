@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 import json
+import queue
 
 import pytest
 
@@ -42,6 +43,28 @@ class FlakyWebSocket(ScriptedWebSocket):
         return await super().recv()
 
 
+class SyncScriptedWebSocket:
+    def __init__(self, *, sent, incoming, scripts) -> None:
+        self.sent = sent
+        self.incoming = incoming
+        self.scripts = scripts
+        self.closed = False
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+        payload = json.loads(message)
+        request_id = payload.get("id")
+        if isinstance(request_id, int):
+            for item in self.scripts.get(request_id, []):
+                self.incoming.put(item)
+
+    def recv(self) -> str:
+        return self.incoming.get(timeout=1)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
 async def test_initialize_sends_initialize_and_initialized_notification():
     incoming = asyncio.Queue()
@@ -62,6 +85,27 @@ async def test_initialize_sends_initialize_and_initialized_notification():
     assert '"method": "initialize"' in websocket.sent[0]
     assert '"method": "initialized"' in websocket.sent[1]
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_supports_sync_websocket_factory():
+    incoming = queue.Queue()
+    incoming.put('{"id":1,"result":{"ok":true}}')
+    websocket = SyncScriptedWebSocket(sent=[], incoming=incoming, scripts={})
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    await client.connect()
+    response = await client.initialize()
+
+    assert response["ok"] is True
+    assert len(websocket.sent) == 2
+    assert websocket.closed is False
+    await client.close()
+    assert websocket.closed is True
 
 
 @pytest.mark.asyncio
@@ -101,6 +145,41 @@ async def test_turn_request_correlation_and_notifications():
     assert any(e["method"] == "item/agentMessage/delta" for e in events)
     assert any(e["method"] == "turn/completed" for e in events)
     assert client.last_agent_message == "Hello world"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_notification_handlers_are_awaited():
+    incoming = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            2: [
+                '{"id":2,"result":{"thread":{"id":"thr_1"}}}',
+                '{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_1","status":"completed"}}}',
+            ]
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    seen = []
+
+    async def capture(notification):
+        seen.append(notification["method"])
+
+    await client.connect()
+    await client.initialize()
+    client.add_notification_handler(capture)
+    await client.start_thread(cwd="D:/desktop/project")
+    await asyncio.sleep(0)
+
+    assert seen == ["turn/completed"]
     await client.close()
 
 

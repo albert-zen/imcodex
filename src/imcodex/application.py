@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import time
 
-import websockets
+import websocket
 
 from .api import create_app
 from .appserver_client import AppServerClient
@@ -19,11 +19,17 @@ from .service import BridgeService
 from .store import ConversationStore
 
 
+def open_blocking_websocket(url: str):
+    ws = websocket.create_connection(url, timeout=10)
+    ws.settimeout(None)
+    return ws
+
+
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
     store = ConversationStore(clock=time.time, state_path=settings.data_dir / "state.json")
     client = AppServerClient(
-        websocket_factory=websockets.connect,
+        websocket_factory=open_blocking_websocket,
         transport_url=settings.app_server_ws_url,
         client_info={
             "name": settings.service_name,

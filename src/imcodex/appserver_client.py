@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 
 JsonDict = dict[str, Any]
 WebSocketFactory = Callable[[str], Any]
-NotificationHandler = Callable[[JsonDict], None]
+NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
 
 
@@ -57,7 +58,7 @@ class AppServerClient:
         if self._ws is not None:
             close = getattr(self._ws, "close", None)
             if callable(close):
-                await close()
+                await self._call_transport(close)
             self._ws = None
 
     def add_notification_handler(self, handler: NotificationHandler) -> None:
@@ -157,12 +158,12 @@ class AppServerClient:
     async def _send_json(self, payload: JsonDict) -> None:
         if self._ws is None:
             raise AppServerError("transport is not connected")
-        await self._ws.send(json.dumps(payload))
+        await self._call_transport(self._ws.send, json.dumps(payload))
 
     async def _receive_loop(self) -> None:
         try:
             while self._ws is not None:
-                raw = await self._ws.recv()
+                raw = await self._call_transport(self._ws.recv)
                 message = json.loads(raw)
                 await self._dispatch(message)
         except asyncio.CancelledError:
@@ -190,7 +191,14 @@ class AppServerClient:
                 self._record_completed_item(message)
             notification = {"method": message["method"], "params": message.get("params", {})}
             for handler in list(self._notification_handlers):
-                handler(notification)
+                result = handler(notification)
+                if isinstance(result, Awaitable):
+                    await result
+
+    async def _call_transport(self, func, *args):
+        if inspect.iscoroutinefunction(func):
+            return await func(*args)
+        return await asyncio.to_thread(func, *args)
 
     async def _capture_server_request(self, message: JsonDict) -> None:
         ticket_id = str(message["id"])

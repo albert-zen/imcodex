@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from imcodex.commands import CommandRouter, parse_command
 from imcodex.store import ConversationStore
 
@@ -7,6 +9,7 @@ from imcodex.store import ConversationStore
 def test_parse_projects_and_switch_commands() -> None:
     assert parse_command("/projects").name == "projects"
     assert parse_command("/project use proj-1").args == ["use", "proj-1"]
+    assert parse_command(r"/cwd D:\work\alpha").args == [r"D:\work\alpha"]
     assert parse_command("/threads --all").args == ["--all"]
     assert parse_command("/thread use thr-1").args == ["use", "thr-1"]
     assert parse_command("/new").name == "new"
@@ -36,6 +39,22 @@ def test_router_projects_and_project_switch() -> None:
     assert response.action == "project.use"
     assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
     assert store.get_binding("qq", "conv-1").active_thread_id is None
+
+
+def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+    project_path = tmp_path / "alpha"
+    project_path.mkdir()
+
+    response = router.handle("qq", "conv-1", f"/cwd {project_path}")
+
+    binding = store.get_binding("qq", "conv-1")
+    project = store.get_project(binding.active_project_id)
+    assert response.action == "project.cwd"
+    assert str(project_path) in response.text
+    assert project.cwd == str(project_path)
+    assert binding.active_thread_id is None
 
 
 def test_router_thread_switch_and_status() -> None:

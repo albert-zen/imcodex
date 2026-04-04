@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from imcodex.application import build_runtime, create_application
+from imcodex.application import build_runtime, create_application, open_blocking_websocket
 from imcodex.config import Settings
 from imcodex.outbound import MultiplexOutboundSink
 
@@ -66,3 +66,24 @@ def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
     assert len(runtime.managed_channels) == 1
     assert runtime.service.outbound_sink is not None
     assert isinstance(runtime.service.outbound_sink, MultiplexOutboundSink)
+
+
+def test_open_blocking_websocket_clears_read_timeout(monkeypatch) -> None:
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.timeout = "unset"
+
+        def settimeout(self, value) -> None:
+            self.timeout = value
+
+    fake_socket = FakeSocket()
+
+    monkeypatch.setattr(
+        "imcodex.application.websocket.create_connection",
+        lambda url, timeout: fake_socket,
+    )
+
+    ws = open_blocking_websocket("ws://127.0.0.1:8765")
+
+    assert ws is fake_socket
+    assert fake_socket.timeout is None

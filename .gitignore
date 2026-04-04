@@ -1,5 +1,7 @@
 __pycache__/
 .pytest_cache/
 .imcodex/
+.imcodex-data/
+.imcodex-run/
 _codex_schema/
 codex-upstream/

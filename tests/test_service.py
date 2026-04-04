@@ -123,3 +123,28 @@ async def test_approval_command_replies_before_pending_is_removed() -> None:
 
     assert backend.replies == [("7", {"decision": "accept"})]
     assert store.get_pending_request("7") is not None
+
+
+@pytest.mark.asyncio
+async def test_plain_text_without_project_mentions_cwd_command() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="please inspect the repo",
+        )
+    )
+
+    assert messages[0].message_type == "error"
+    assert "/cwd <path>" in messages[0].text

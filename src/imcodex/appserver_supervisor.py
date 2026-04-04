@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from typing import Awaitable, Callable, Any
+
+import httpx
 
 
 SpawnProcess = Callable[..., Awaitable[Any]]
@@ -67,11 +72,37 @@ class AppServerSupervisor:
         raise TimeoutError(f"codex app-server did not become ready at {self.ready_url}")
 
     async def _default_spawn(self, *command: str):
-        return await asyncio.create_subprocess_exec(*command)
+        resolved = self._resolve_command_for_spawn(command)
+        return await asyncio.create_subprocess_exec(*resolved)
 
     async def _default_probe(self, url: str) -> object:
-        import httpx
-
         async with httpx.AsyncClient() as client:
-            response = await client.get(url)
-        return response.status_code
+            try:
+                response = await client.get(url)
+                return response.status_code
+            except (httpx.ConnectError, httpx.RemoteProtocolError):
+                parsed = urlparse(url)
+                if not parsed.hostname or not parsed.port:
+                    raise
+                _, writer = await asyncio.open_connection(parsed.hostname, parsed.port)
+                writer.close()
+                await writer.wait_closed()
+                return True
+
+    def _resolve_command_for_spawn(self, command: tuple[str, ...]) -> tuple[str, ...]:
+        if os.name != "nt" or not command:
+            return command
+        executable = command[0]
+        if any(sep in executable for sep in ("\\", "/")):
+            if executable.lower().endswith(".cmd"):
+                return ("cmd.exe", "/c", executable, *command[1:])
+            return command
+        if "." in executable:
+            return command
+        shim = shutil.which(f"{executable}.cmd")
+        if shim:
+            return ("cmd.exe", "/c", shim, *command[1:])
+        resolved = shutil.which(f"{executable}.exe")
+        if resolved:
+            return (resolved, *command[1:])
+        return command
