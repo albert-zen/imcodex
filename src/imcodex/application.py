@@ -11,8 +11,9 @@ from .appserver_supervisor import AppServerSupervisor
 from .backend import CodexBackend
 from .commands import CommandRouter
 from .config import Settings
-from .outbound import WebhookOutboundSink
+from .outbound import MultiplexOutboundSink, WebhookOutboundSink
 from .projector import MessageProjector
+from .qq_adapter import QQChannelAdapter
 from .runtime import AppRuntime
 from .service import BridgeService
 from .store import ConversationStore
@@ -35,7 +36,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         codex_bin=settings.codex_bin,
         host=settings.app_server_host,
     )
-    outbound_sink = (
+    default_outbound_sink = (
         WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
     )
     service = BridgeService(
@@ -43,9 +44,31 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         backend=CodexBackend(client=client, store=store, service_name=settings.service_name),
         command_router=CommandRouter(store),
         projector=MessageProjector(),
-        outbound_sink=outbound_sink,
+        outbound_sink=None,
     )
-    return AppRuntime(supervisor=supervisor, client=client, service=service)
+    managed_channels = []
+    channel_sinks = {}
+    if settings.qq_enabled:
+        qq_adapter = QQChannelAdapter(
+            enabled=True,
+            app_id=settings.qq_app_id,
+            client_secret=settings.qq_client_secret,
+            service=service,
+            api_base=settings.qq_api_base,
+        )
+        managed_channels.append(qq_adapter)
+        channel_sinks["qq"] = qq_adapter
+    if channel_sinks or default_outbound_sink is not None:
+        service.outbound_sink = MultiplexOutboundSink(
+            channel_sinks=channel_sinks,
+            default_sink=default_outbound_sink,
+        )
+    return AppRuntime(
+        supervisor=supervisor,
+        client=client,
+        service=service,
+        managed_channels=managed_channels,
+    )
 
 
 def create_application(

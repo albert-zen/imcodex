@@ -50,12 +50,26 @@ class FakeService:
         return [payload]
 
 
+class FakeChannel:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
 @pytest.mark.asyncio
 async def test_runtime_start_and_stop_wire_handlers() -> None:
+    channel = FakeChannel()
     runtime = AppRuntime(
         supervisor=FakeSupervisor(),
         client=FakeClient(),
         service=FakeService(),
+        managed_channels=[channel],
     )
 
     await runtime.start()
@@ -66,5 +80,7 @@ async def test_runtime_start_and_stop_wire_handlers() -> None:
     assert runtime.client.initialized == 1
     assert len(runtime.client.notification_handlers) == 1
     assert len(runtime.client.server_request_handlers) == 1
+    assert channel.started == 1
+    assert channel.stopped == 1
     assert runtime.supervisor.stopped == 1
     assert runtime.client.closed == 1

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from imcodex.application import create_application
+from imcodex.application import build_runtime, create_application
+from imcodex.config import Settings
+from imcodex.outbound import MultiplexOutboundSink
 
 
 class FakeService:
@@ -41,3 +45,24 @@ def test_application_lifespan_starts_and_stops_runtime() -> None:
         assert runtime.started == 1
 
     assert runtime.stopped == 1
+
+
+def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        codex_bin="codex",
+        app_server_host="127.0.0.1",
+        app_server_port=8765,
+        outbound_url=None,
+        service_name="imcodex",
+        qq_enabled=True,
+        qq_app_id="app-id",
+        qq_client_secret="secret",
+        qq_api_base="https://api.sgroup.qq.com",
+    )
+
+    runtime = build_runtime(settings)
+
+    assert len(runtime.managed_channels) == 1
+    assert runtime.service.outbound_sink is not None
+    assert isinstance(runtime.service.outbound_sink, MultiplexOutboundSink)
