@@ -79,3 +79,11 @@ def test_pending_requests_round_trip() -> None:
     assert resolved is not None
     assert store.get_pending_request("T-1") is None
 
+
+def test_note_inbound_message_updates_binding_reply_context() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+
+    binding = store.note_inbound_message("qq", "conv-1", "msg-9")
+
+    assert binding.last_inbound_message_id == "msg-9"
+    assert store.get_binding("qq", "conv-1").last_inbound_message_id == "msg-9"

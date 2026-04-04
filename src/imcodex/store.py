@@ -170,6 +170,17 @@ class ConversationStore:
         self._save()
         return binding
 
+    def note_inbound_message(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.last_inbound_message_id = message_id
+        self._save()
+        return binding
+
     def clear_active_thread(self, channel_id: str, conversation_id: str) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.active_thread_id = None

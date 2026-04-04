@@ -129,6 +129,7 @@ class QQChannelAdapter:
         inbound = self.parse_inbound_event(event_type, payload)
         if inbound is None:
             return
+        self._note_inbound_message(inbound.conversation_id, inbound.message_id)
         outbound = await self.service.handle_inbound(inbound)
         for message in outbound:
             if message.channel_id != "qq":
@@ -141,12 +142,17 @@ class QQChannelAdapter:
             return
         token = await self._get_access_token()
         path = self._conversation_path(message.conversation_id)
+        reply_to = (
+            message.metadata.get("reply_to_message_id")
+            or message.metadata.get("message_id")
+            or self._reply_to_message_id(message.conversation_id)
+        )
+        sequence_key = reply_to or message.conversation_id
         body = {
             "content": message.text,
             "msg_type": 0,
-            "msg_seq": self._next_msg_seq(message.conversation_id),
+            "msg_seq": self._next_msg_seq(sequence_key),
         }
-        reply_to = message.metadata.get("reply_to_message_id") or message.metadata.get("message_id")
         if reply_to:
             body["msg_id"] = reply_to
         response = await self.http_client.post(
@@ -325,3 +331,21 @@ class QQChannelAdapter:
     def _next_msg_seq(self, conversation_id: str) -> int:
         self._msg_seq[conversation_id] += 1
         return self._msg_seq[conversation_id]
+
+    def _note_inbound_message(self, conversation_id: str, message_id: str) -> None:
+        store = getattr(self.service, "store", None)
+        if store is None:
+            return
+        note = getattr(store, "note_inbound_message", None)
+        if callable(note):
+            note("qq", conversation_id, message_id)
+
+    def _reply_to_message_id(self, conversation_id: str) -> str | None:
+        store = getattr(self.service, "store", None)
+        if store is None:
+            return None
+        get_binding = getattr(store, "get_binding", None)
+        if not callable(get_binding):
+            return None
+        binding = get_binding("qq", conversation_id)
+        return getattr(binding, "last_inbound_message_id", None)

@@ -32,6 +32,7 @@ class ConversationBinding:
     active_thread_id: str | None = None
     active_turn_id: str | None = None
     active_turn_status: str | None = None
+    last_inbound_message_id: str | None = None
     pending_request_ids: list[str] = field(default_factory=list)
     next_ticket: int = 1
     known_thread_ids: list[str] = field(default_factory=list)

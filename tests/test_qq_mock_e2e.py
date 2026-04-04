@@ -156,6 +156,7 @@ async def test_mock_e2e_qq_dispatch_reaches_final_reply() -> None:
     assert "Accepted for thread thr_qq_1." in contents
     assert "Processing your request." in contents
     assert any("Hello from Codex over QQ" in content for content in contents)
+    assert [payload.get("msg_id") for _, payload in outbound_requests] == ["msg-1", "msg-1", "msg-1"]
 
     await qq_adapter.stop()
     await client.close()
