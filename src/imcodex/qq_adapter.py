@@ -17,6 +17,7 @@ from .models import InboundMessage, OutboundMessage
 logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://api.sgroup.qq.com"
+SANDBOX_API_BASE = "https://sandbox.api.sgroup.qq.com"
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 
 OP_DISPATCH = 0
@@ -222,19 +223,49 @@ class QQChannelAdapter:
         return token
 
     async def _get_gateway_url(self, token: str) -> str:
-        response = await self.http_client.get(
-            f"{self.api_base}/gateway",
-            headers={
-                "Authorization": f"QQBot {token}",
-                "Content-Type": "application/json",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        url = payload.get("url")
-        if not url:
-            raise RuntimeError(f"QQ gateway response missing url: {payload}")
-        return str(url)
+        payload = None
+        last_error: Exception | None = None
+        for api_base in self._gateway_candidates():
+            response = await self.http_client.get(
+                f"{api_base}/gateway",
+                headers={
+                    "Authorization": f"QQBot {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if response.is_success:
+                payload = response.json()
+                url = payload.get("url")
+                if not url:
+                    raise RuntimeError(f"QQ gateway response missing url: {payload}")
+                self.api_base = api_base
+                return str(url)
+            last_error = httpx.HTTPStatusError(
+                f"QQ gateway request failed with status {response.status_code}",
+                request=response.request,
+                response=response,
+            )
+            if not self._should_fallback_to_sandbox(response):
+                response.raise_for_status()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("QQ gateway request did not return a response")
+
+    def _gateway_candidates(self) -> list[str]:
+        if self.api_base == DEFAULT_API_BASE:
+            return [DEFAULT_API_BASE, SANDBOX_API_BASE]
+        return [self.api_base]
+
+    def _should_fallback_to_sandbox(self, response: httpx.Response) -> bool:
+        if response.status_code != 401 or self.api_base != DEFAULT_API_BASE:
+            return False
+        try:
+            payload = response.json()
+        except Exception:
+            return False
+        message = str(payload.get("message") or "")
+        err_code = str(payload.get("err_code") or payload.get("code") or "")
+        return "白名单" in message or err_code == "40023002"
 
     def _conversation_path(self, conversation_id: str) -> str:
         if conversation_id.startswith("c2c:"):

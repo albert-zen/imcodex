@@ -208,6 +208,39 @@ async def test_send_message_raises_on_qq_http_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_falls_back_to_sandbox_base_on_prod_whitelist_failure() -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if str(request.url) == "https://api.sgroup.qq.com/gateway":
+            return httpx.Response(
+                401,
+                json={"message": "接口访问源IP不在白名单", "err_code": 40023002},
+                request=request,
+            )
+        if str(request.url) == "https://sandbox.api.sgroup.qq.com/gateway":
+            return httpx.Response(
+                200,
+                json={"url": "wss://sandbox.api.sgroup.qq.com/websocket"},
+                request=request,
+            )
+        raise AssertionError(f"unexpected url {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = make_adapter(http_client=client)
+
+    gateway = await adapter._get_gateway_url("token-5")
+
+    assert gateway == "wss://sandbox.api.sgroup.qq.com/websocket"
+    assert requests == [
+        "https://api.sgroup.qq.com/gateway",
+        "https://sandbox.api.sgroup.qq.com/gateway",
+    ]
+    assert adapter.api_base == "https://sandbox.api.sgroup.qq.com"
+
+
+@pytest.mark.asyncio
 async def test_run_session_cancels_heartbeat_on_socket_error() -> None:
     cancelled = asyncio.Event()
 
