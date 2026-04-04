@@ -57,7 +57,7 @@ def test_tool_request_input_is_projected_with_answer_help() -> None:
     assert "/answer 12 timezone=" in message.text
 
 
-def test_turn_completed_message_includes_summary_and_changed_files() -> None:
+def test_turn_completed_success_returns_model_text_only() -> None:
     projector = MessageProjector()
 
     message = projector.render_turn_completed(
@@ -69,9 +69,25 @@ def test_turn_completed_message_includes_summary_and_changed_files() -> None:
     )
 
     assert message.message_type == "turn_result"
-    assert "Implemented the webhook bridge." in message.text
-    assert "src/imcodex/api.py" in message.text
+    assert message.text == "Implemented the webhook bridge."
+
+
+def test_turn_completed_failure_keeps_system_status_and_details() -> None:
+    projector = MessageProjector()
+
+    message = projector.render_turn_completed(
+        final_text="Sandbox blocked command execution.",
+        command_summaries=["Executed `pytest -q`"],
+        changed_files=["src/imcodex/api.py"],
+        failed=True,
+        interrupted=False,
+    )
+
+    assert message.message_type == "turn_result"
+    assert "Turn failed." in message.text
+    assert "Sandbox blocked command execution." in message.text
     assert "Executed `pytest -q`" in message.text
+    assert "src/imcodex/api.py" in message.text
 
 
 def test_project_notification_attaches_turn_completion_to_conversation() -> None:

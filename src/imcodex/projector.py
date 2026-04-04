@@ -56,11 +56,17 @@ class MessageProjector:
         failed: bool,
         interrupted: bool,
     ) -> OutboundMessage:
-        status = "Turn interrupted." if interrupted else "Turn failed." if failed else "Turn completed."
-        lines = [status, final_text]
-        if command_summaries:
+        if not failed and not interrupted:
+            if final_text:
+                lines = [final_text]
+            else:
+                lines = []
+        else:
+            status = "Turn interrupted." if interrupted else "Turn failed."
+            lines = [status, final_text]
+        if (failed or interrupted or not final_text) and command_summaries:
             lines.extend(command_summaries)
-        if changed_files:
+        if (failed or interrupted or not final_text) and changed_files:
             lines.append("Changed files:")
             lines.extend(f"- {path}" for path in changed_files)
         return OutboundMessage(
