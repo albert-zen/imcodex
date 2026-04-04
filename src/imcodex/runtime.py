@@ -12,6 +12,9 @@ class AppRuntime:
 
     async def start(self) -> None:
         await self.supervisor.start()
+        store = getattr(self.service, "store", None)
+        if store is not None:
+            store.clear_stale_active_turns()
         self.client.add_notification_handler(self.service.handle_notification)
         self.client.add_server_request_handler(self.service.handle_server_request)
         for channel in self.managed_channels:

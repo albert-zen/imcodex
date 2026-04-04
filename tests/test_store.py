@@ -87,3 +87,23 @@ def test_note_inbound_message_updates_binding_reply_context() -> None:
 
     assert binding.last_inbound_message_id == "msg-9"
     assert store.get_binding("qq", "conv-1").last_inbound_message_id == "msg-9"
+
+
+def test_clear_stale_active_turns_resets_old_in_progress_bindings() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+    store.set_active_turn(
+        "qq",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_old",
+        status="inProgress",
+    )
+
+    cleared = store.clear_stale_active_turns()
+
+    binding = store.get_binding("qq", "conv-1")
+    assert cleared == 1
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None

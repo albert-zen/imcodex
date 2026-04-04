@@ -43,11 +43,23 @@ class FakeClient:
 
 
 class FakeService:
+    def __init__(self) -> None:
+        self.store = FakeStore()
+
     async def handle_notification(self, payload):
         return [payload]
 
     async def handle_server_request(self, payload):
         return [payload]
+
+
+class FakeStore:
+    def __init__(self) -> None:
+        self.cleared = 0
+
+    def clear_stale_active_turns(self) -> int:
+        self.cleared += 1
+        return 1
 
 
 class FakeChannel:
@@ -80,6 +92,7 @@ async def test_runtime_start_and_stop_wire_handlers() -> None:
     assert runtime.client.initialized == 0
     assert len(runtime.client.notification_handlers) == 1
     assert len(runtime.client.server_request_handlers) == 1
+    assert runtime.service.store.cleared == 1
     assert channel.started == 1
     assert channel.stopped == 1
     assert runtime.supervisor.stopped == 1

@@ -196,6 +196,18 @@ class ConversationStore:
         self._save()
         return binding
 
+    def clear_stale_active_turns(self) -> int:
+        cleared = 0
+        for binding in self._bindings.values():
+            if binding.active_turn_id is None and binding.active_turn_status is None:
+                continue
+            binding.active_turn_id = None
+            binding.active_turn_status = None
+            cleared += 1
+        if cleared:
+            self._save()
+        return cleared
+
     def note_turn_started(
         self,
         thread_id: str,
