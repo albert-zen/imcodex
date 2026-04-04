@@ -20,7 +20,7 @@ from .store import ConversationStore
 
 
 def open_blocking_websocket(url: str):
-    ws = websocket.create_connection(url, timeout=10)
+    ws = websocket.create_connection(url, timeout=10, suppress_origin=True)
     ws.settimeout(None)
     return ws
 

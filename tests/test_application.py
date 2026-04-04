@@ -69,6 +69,8 @@ def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
 
 
 def test_open_blocking_websocket_clears_read_timeout(monkeypatch) -> None:
+    seen = {}
+
     class FakeSocket:
         def __init__(self) -> None:
             self.timeout = "unset"
@@ -78,12 +80,20 @@ def test_open_blocking_websocket_clears_read_timeout(monkeypatch) -> None:
 
     fake_socket = FakeSocket()
 
-    monkeypatch.setattr(
-        "imcodex.application.websocket.create_connection",
-        lambda url, timeout: fake_socket,
-    )
+    def fake_create_connection(url, timeout, suppress_origin):
+        seen["url"] = url
+        seen["timeout"] = timeout
+        seen["suppress_origin"] = suppress_origin
+        return fake_socket
+
+    monkeypatch.setattr("imcodex.application.websocket.create_connection", fake_create_connection)
 
     ws = open_blocking_websocket("ws://127.0.0.1:8765")
 
     assert ws is fake_socket
     assert fake_socket.timeout is None
+    assert seen == {
+        "url": "ws://127.0.0.1:8765",
+        "timeout": 10,
+        "suppress_origin": True,
+    }
