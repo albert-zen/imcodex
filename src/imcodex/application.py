@@ -1,9 +1,8 @@
 from __future__ import annotations
-
 from contextlib import asynccontextmanager
 import time
 
-import websocket
+import websockets
 
 from .api import create_app
 from .appserver_client import AppServerClient
@@ -19,10 +18,8 @@ from .service import BridgeService
 from .store import ConversationStore
 
 
-def open_blocking_websocket(url: str):
-    ws = websocket.create_connection(url, timeout=10, suppress_origin=True)
-    ws.settimeout(None)
-    return ws
+async def open_blocking_websocket(url: str):
+    return await websockets.connect(url, open_timeout=10)
 
 
 def build_runtime(settings: Settings | None = None) -> AppRuntime:

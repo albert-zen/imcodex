@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -68,32 +69,20 @@ def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
     assert isinstance(runtime.service.outbound_sink, MultiplexOutboundSink)
 
 
-def test_open_blocking_websocket_clears_read_timeout(monkeypatch) -> None:
+def test_open_blocking_websocket_uses_async_websockets_client(monkeypatch) -> None:
     seen = {}
 
-    class FakeSocket:
-        def __init__(self) -> None:
-            self.timeout = "unset"
-
-        def settimeout(self, value) -> None:
-            self.timeout = value
-
-    fake_socket = FakeSocket()
-
-    def fake_create_connection(url, timeout, suppress_origin):
+    async def fake_connect(url, open_timeout):
         seen["url"] = url
-        seen["timeout"] = timeout
-        seen["suppress_origin"] = suppress_origin
-        return fake_socket
+        seen["open_timeout"] = open_timeout
+        return "fake-ws"
 
-    monkeypatch.setattr("imcodex.application.websocket.create_connection", fake_create_connection)
+    monkeypatch.setattr("imcodex.application.websockets.connect", fake_connect)
 
-    ws = open_blocking_websocket("ws://127.0.0.1:8765")
+    ws = asyncio.run(open_blocking_websocket("ws://127.0.0.1:8765"))
 
-    assert ws is fake_socket
-    assert fake_socket.timeout is None
+    assert ws == "fake-ws"
     assert seen == {
         "url": "ws://127.0.0.1:8765",
-        "timeout": 10,
-        "suppress_origin": True,
+        "open_timeout": 10,
     }
