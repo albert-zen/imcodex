@@ -1,0 +1,32 @@
+[project]
+name = "imcodex"
+version = "0.1.0"
+description = "IM to Codex app-server bridge"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.11.0",
+    "uvicorn>=0.34.0",
+    "websockets>=15.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.26.0",
+]
+
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
