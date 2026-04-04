@@ -80,13 +80,18 @@ def test_project_notification_attaches_turn_completion_to_conversation() -> None
     store.set_active_thread("demo", "conv-1", thread.thread_id)
     projector = MessageProjector()
 
-    projector.project_notification(
+    early_message = projector.project_notification(
         {
             "method": "item/completed",
             "params": {
                 "threadId": "thr_1",
                 "turnId": "turn_1",
-                "item": {"id": "item_1", "type": "agentMessage", "text": "Hello from Codex"},
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Hello from Codex",
+                },
             },
         },
         store,
@@ -102,10 +107,37 @@ def test_project_notification_attaches_turn_completion_to_conversation() -> None
         store,
     )
 
-    assert message is not None
-    assert message.channel_id == "demo"
-    assert message.conversation_id == "conv-1"
-    assert "Hello from Codex" in message.text
+    assert early_message is not None
+    assert early_message.channel_id == "demo"
+    assert early_message.conversation_id == "conv-1"
+    assert "Hello from Codex" in early_message.text
+    assert message is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status == "completed"
+
+
+def test_turn_started_updates_status_for_status_command() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id == "turn_1"
+    assert binding.active_turn_status == "inProgress"
 
 
 def test_turn_completion_still_routes_after_switching_active_thread() -> None:
@@ -115,20 +147,25 @@ def test_turn_completion_still_routes_after_switching_active_thread() -> None:
     store.set_active_thread("demo", "conv-1", first.thread_id)
     projector = MessageProjector()
 
-    projector.project_notification(
+    message = projector.project_notification(
         {
             "method": "item/completed",
             "params": {
                 "threadId": "thr_1",
                 "turnId": "turn_1",
-                "item": {"id": "item_1", "type": "agentMessage", "text": "First thread reply"},
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "First thread reply",
+                },
             },
         },
         store,
     )
     store.set_active_thread("demo", "conv-1", second.thread_id)
 
-    message = projector.project_notification(
+    final_message = projector.project_notification(
         {
             "method": "turn/completed",
             "params": {
@@ -142,3 +179,5 @@ def test_turn_completion_still_routes_after_switching_active_thread() -> None:
     assert message is not None
     assert message.channel_id == "demo"
     assert message.conversation_id == "conv-1"
+    assert "First thread reply" in message.text
+    assert final_message is None

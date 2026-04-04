@@ -38,9 +38,12 @@ class FlakyWebSocket(ScriptedWebSocket):
 
     async def recv(self) -> str:
         self.recv_count += 1
-        if self.recv_count > self.fail_after_recvs and len(self.sent) >= 2:
-            raise RuntimeError("socket dropped")
-        return await super().recv()
+        try:
+            return await asyncio.wait_for(super().recv(), timeout=0.01)
+        except asyncio.TimeoutError:
+            if self.recv_count > self.fail_after_recvs and len(self.sent) >= 2:
+                raise RuntimeError("socket dropped")
+            raise
 
 
 class SyncScriptedWebSocket:
@@ -59,7 +62,10 @@ class SyncScriptedWebSocket:
                 self.incoming.put(item)
 
     def recv(self) -> str:
-        return self.incoming.get(timeout=1)
+        item = self.incoming.get(timeout=1)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def close(self) -> None:
         self.closed = True
@@ -145,6 +151,32 @@ async def test_turn_request_correlation_and_notifications():
     assert any(e["method"] == "item/agentMessage/delta" for e in events)
     assert any(e["method"] == "turn/completed" for e in events)
     assert client.last_agent_message == "Hello world"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_first_thread_request_connects_and_initializes_lazily():
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"thread":{"id":"thr_lazy"}}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.start_thread(cwd="D:/desktop/project")
+
+    assert result["thread"]["id"] == "thr_lazy"
+    assert '"method": "initialize"' in websocket.sent[0]
+    assert '"method": "initialized"' in websocket.sent[1]
+    assert '"method": "thread/start"' in websocket.sent[2]
     await client.close()
 
 
@@ -251,20 +283,24 @@ async def test_unknown_ticket_raises():
 
 
 @pytest.mark.asyncio
-async def test_client_reconnects_on_next_request_after_receive_loop_failure():
+async def test_client_recovers_on_followup_request_after_receive_loop_failure():
     connections = []
 
     def websocket_factory(_: str):
         index = len(connections)
-        incoming = asyncio.Queue()
         if index == 0:
-            incoming.put_nowait('{"id":1,"result":{"ok":true}}')
-            ws = FlakyWebSocket(sent=[], incoming=incoming, scripts={}, fail_after_recvs=1)
+            incoming = queue.Queue()
+            incoming.put('{"id":1,"result":{"ok":true}}')
+            ws = SyncScriptedWebSocket(sent=[], incoming=incoming, scripts={})
         else:
+            incoming = asyncio.Queue()
             ws = ScriptedWebSocket(
                 sent=[],
                 incoming=incoming,
-                scripts={2: ['{"id":2,"result":{"thread":{"id":"thr_2"}}}']},
+                scripts={
+                    3: ['{"id":3,"result":{"ok":true}}'],
+                    4: ['{"id":4,"result":{"thread":{"id":"thr_2"}}}'],
+                },
             )
         connections.append(ws)
         return ws
@@ -277,10 +313,43 @@ async def test_client_reconnects_on_next_request_after_receive_loop_failure():
 
     await client.connect()
     await client.initialize()
+    connections[0].incoming.put(RuntimeError("socket dropped"))
     await asyncio.sleep(0)
+
+    with pytest.raises(AppServerError, match="socket dropped"):
+        await client.start_thread(cwd="D:/desktop/project")
 
     result = await client.start_thread(cwd="D:/desktop/project")
 
     assert result["thread"]["id"] == "thr_2"
     assert len(connections) == 2
+    assert '"method": "initialize"' in connections[1].sent[0]
+    assert '"method": "initialized"' in connections[1].sent[1]
+    assert '"method": "thread/start"' in connections[1].sent[2]
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_resets_connection_and_raises_app_server_error():
+    incoming = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={},
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+        request_timeout_s=0.01,
+    )
+
+    await client.connect()
+    await client.initialize()
+
+    with pytest.raises(AppServerError, match="thread/start timed out"):
+        await client.start_thread(cwd="D:/desktop/project")
+
+    assert websocket.closed is True
+    assert client.initialized is False

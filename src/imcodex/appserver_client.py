@@ -25,6 +25,7 @@ class AppServerClient:
         websocket_factory: WebSocketFactory,
         transport_url: str,
         client_info: dict[str, str],
+        request_timeout_s: float = 15.0,
     ) -> None:
         self._websocket_factory = websocket_factory
         self._transport_url = transport_url
@@ -37,6 +38,7 @@ class AppServerClient:
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
         self._agent_message_buffers: dict[tuple[str, str, str], list[str]] = {}
+        self._request_timeout_s = request_timeout_s
         self.initialized = False
         self.last_agent_message = ""
 
@@ -55,11 +57,7 @@ class AppServerClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
             self._listener_task = None
-        if self._ws is not None:
-            close = getattr(self._ws, "close", None)
-            if callable(close):
-                await self._call_transport(close)
-            self._ws = None
+        await self._reset_connection()
 
     def add_notification_handler(self, handler: NotificationHandler) -> None:
         self._notification_handlers.append(handler)
@@ -84,7 +82,7 @@ class AppServerClient:
         return result
 
     async def start_thread(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
-        await self._ensure_connected()
+        await self._ensure_ready()
         payload = dict(params or {})
         payload.update(kwargs)
         result = await self._request("thread/start", self._normalize_thread_start(payload))
@@ -97,7 +95,7 @@ class AppServerClient:
         text: str | None = None,
         **kwargs: Any,
     ) -> JsonDict:
-        await self._ensure_connected()
+        await self._ensure_ready()
         if thread_id is not None:
             kwargs["thread_id"] = thread_id
         if text is not None:
@@ -110,7 +108,7 @@ class AppServerClient:
         return result
 
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
-        await self._ensure_connected()
+        await self._ensure_ready()
         return await self._request(
             "turn/interrupt",
             {"threadId": thread_id, "turnId": turn_id},
@@ -133,8 +131,23 @@ class AppServerClient:
         return payload
 
     async def _ensure_connected(self) -> None:
+        if self._listener_task is not None and not self._pending_futures and self.initialized:
+            await asyncio.sleep(0)
+        transport_closed = self._ws is not None and getattr(self._ws, "connected", True) is False
+        if transport_closed:
+            await self._reset_connection()
+        if self._listener_task is not None and self._listener_task.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._listener_task
+            self._listener_task = None
+            await self._reset_connection()
         if self._ws is None:
             await self.connect()
+
+    async def _ensure_ready(self) -> None:
+        await self._ensure_connected()
+        if not self.initialized:
+            await self.initialize()
 
     async def _request(self, method: str, params: JsonDict) -> JsonDict:
         request_id = self._next_request_id
@@ -143,7 +156,15 @@ class AppServerClient:
         self._pending_futures[request_id] = future
         await self._send_json({"id": request_id, "method": method, "params": params})
         try:
-            response = await future
+            response = await asyncio.wait_for(future, timeout=self._request_timeout_s)
+        except asyncio.TimeoutError as exc:
+            await self._reset_connection()
+            raise AppServerError(
+                f"{method} timed out after {self._request_timeout_s:.1f}s"
+            ) from exc
+        except Exception as exc:
+            await self._reset_connection()
+            raise AppServerError(str(exc) or f"{method} failed") from exc
         finally:
             self._pending_futures.pop(request_id, None)
         if "error" in response:
@@ -170,9 +191,26 @@ class AppServerClient:
             raise
         except Exception as exc:  # pragma: no cover - defensive
             self._ws = None
+            self.initialized = False
             for future in self._pending_futures.values():
                 if not future.done():
                     future.set_exception(exc)
+
+    async def _reset_connection(self) -> None:
+        listener_task = self._listener_task
+        self._listener_task = None
+        if listener_task is not None and listener_task is not asyncio.current_task():
+            if not listener_task.done():
+                listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await listener_task
+        if self._ws is not None:
+            close = getattr(self._ws, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await self._call_transport(close)
+        self._ws = None
+        self.initialized = False
 
     async def _dispatch(self, message: JsonDict) -> None:
         if "id" in message and "result" in message:

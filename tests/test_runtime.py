@@ -76,8 +76,8 @@ async def test_runtime_start_and_stop_wire_handlers() -> None:
     await runtime.stop()
 
     assert runtime.supervisor.started == 1
-    assert runtime.client.connected == 1
-    assert runtime.client.initialized == 1
+    assert runtime.client.connected == 0
+    assert runtime.client.initialized == 0
     assert len(runtime.client.notification_handlers) == 1
     assert len(runtime.client.server_request_handlers) == 1
     assert channel.started == 1

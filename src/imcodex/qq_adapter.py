@@ -130,12 +130,24 @@ class QQChannelAdapter:
         if inbound is None:
             return
         self._note_inbound_message(inbound.conversation_id, inbound.message_id)
-        outbound = await self.service.handle_inbound(inbound)
-        for message in outbound:
-            if message.channel_id != "qq":
-                continue
-            message.metadata.setdefault("reply_to_message_id", inbound.message_id)
-            await self.send_message(message)
+        try:
+            outbound = await self.service.handle_inbound(inbound)
+            for message in outbound:
+                if message.channel_id != "qq":
+                    continue
+                message.metadata.setdefault("reply_to_message_id", inbound.message_id)
+                await self.send_message(message)
+        except Exception as exc:
+            logger.exception("QQ inbound handling failed")
+            await self.send_message(
+                OutboundMessage(
+                    channel_id="qq",
+                    conversation_id=inbound.conversation_id,
+                    message_type="error",
+                    text=f"Request failed: {exc}",
+                    metadata={"reply_to_message_id": inbound.message_id},
+                )
+            )
 
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != "qq" or not message.text.strip():

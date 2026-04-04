@@ -26,6 +26,16 @@ class FakeService:
         ]
 
 
+class FailingService:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.calls = 0
+
+    async def handle_inbound(self, message):
+        self.calls += 1
+        raise self.exc
+
+
 def make_adapter(**overrides) -> QQChannelAdapter:
     defaults = {
         "enabled": True,
@@ -101,6 +111,34 @@ async def test_dispatch_event_calls_service_and_replies_with_reply_context() -> 
     assert service.inbound_messages[0].conversation_id == "c2c:user-9"
     assert len(sent) == 1
     assert sent[0].metadata["reply_to_message_id"] == "msg-9"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_event_returns_error_reply_when_service_fails() -> None:
+    service = FailingService(RuntimeError("boom"))
+    adapter = make_adapter(service=service)
+    sent = []
+
+    async def capture_send(message: OutboundMessage) -> None:
+        sent.append(message)
+
+    adapter.send_message = capture_send  # type: ignore[method-assign]
+
+    await adapter.handle_dispatch_event(
+        "C2C_MESSAGE_CREATE",
+        {
+            "id": "msg-err",
+            "content": "hello codex",
+            "author": {"user_openid": "user-err"},
+        },
+    )
+
+    assert service.calls == 1
+    assert len(sent) == 1
+    assert sent[0].conversation_id == "c2c:user-err"
+    assert sent[0].message_type == "error"
+    assert "boom" in sent[0].text
+    assert sent[0].metadata["reply_to_message_id"] == "msg-err"
 
 
 @pytest.mark.asyncio

@@ -196,6 +196,40 @@ class ConversationStore:
         self._save()
         return binding
 
+    def note_turn_started(
+        self,
+        thread_id: str,
+        *,
+        turn_id: str,
+        status: str,
+    ) -> ConversationBinding | None:
+        binding = self.find_binding_for_thread(thread_id)
+        if binding is None:
+            return None
+        binding.active_thread_id = thread_id
+        if thread_id not in binding.known_thread_ids:
+            binding.known_thread_ids.append(thread_id)
+        binding.active_turn_id = turn_id
+        binding.active_turn_status = status
+        self._save()
+        return binding
+
+    def note_turn_completed(
+        self,
+        thread_id: str,
+        *,
+        turn_id: str,
+        status: str,
+    ) -> ConversationBinding | None:
+        binding = self.find_binding_for_thread(thread_id)
+        if binding is None:
+            return None
+        if binding.active_turn_id == turn_id:
+            binding.active_turn_id = None
+        binding.active_turn_status = status
+        self._save()
+        return binding
+
     def next_ticket_id(self, channel_id: str, conversation_id: str) -> str:
         binding = self.get_binding(channel_id, conversation_id)
         ticket_id = str(binding.next_ticket)
