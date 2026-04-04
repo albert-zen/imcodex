@@ -282,3 +282,58 @@ async def test_run_session_cancels_heartbeat_on_socket_error() -> None:
         await adapter._run_session("wss://gateway", "token-4")
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_start_waits_for_gateway_hello_before_returning() -> None:
+    class FakeWebSocket:
+        def __init__(self, stop_event: asyncio.Event) -> None:
+            self._step = 0
+            self._stop_event = stop_event
+            self.sent = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._step == 0:
+                self._step += 1
+                return json.dumps({"op": 10, "d": {"heartbeat_interval": 1000}})
+            await self._stop_event.wait()
+            raise StopAsyncIteration
+
+        async def send(self, data: str) -> None:
+            self.sent.append(json.loads(data))
+
+    adapter = make_adapter()
+    websocket = FakeWebSocket(adapter._stop_event)
+    adapter.websocket_factory = lambda url: websocket
+
+    async def fake_get_access_token() -> str:
+        return "token-6"
+
+    async def fake_get_gateway_url(token: str) -> str:
+        assert token == "token-6"
+        return "wss://sandbox.api.sgroup.qq.com/websocket"
+
+    async def fake_heartbeat(_websocket, _interval: float) -> None:
+        await adapter._stop_event.wait()
+
+    adapter._get_access_token = fake_get_access_token  # type: ignore[method-assign]
+    adapter._get_gateway_url = fake_get_gateway_url  # type: ignore[method-assign]
+    adapter._heartbeat_loop = fake_heartbeat  # type: ignore[method-assign]
+
+    await adapter.start()
+
+    assert adapter._runner_task is not None
+    assert adapter._runner_task.done() is False
+    assert websocket.sent[-1]["op"] == 2
+    assert websocket.sent[-1]["d"]["token"] == "QQBot token-6"
+
+    await adapter.stop()

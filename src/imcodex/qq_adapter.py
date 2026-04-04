@@ -46,6 +46,7 @@ class QQChannelAdapter:
         websocket_factory=websockets.connect,
         sleep=asyncio.sleep,
         clock=time.time,
+        startup_timeout_s: float = 15.0,
     ) -> None:
         self.enabled = enabled
         self.app_id = app_id
@@ -58,8 +59,10 @@ class QQChannelAdapter:
         self.websocket_factory = websocket_factory
         self.sleep = sleep
         self.clock = clock
+        self.startup_timeout_s = startup_timeout_s
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        self._ready_event = asyncio.Event()
         self._msg_seq: dict[str, int] = defaultdict(int)
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
@@ -70,11 +73,14 @@ class QQChannelAdapter:
         if not self.app_id or not self.client_secret:
             raise RuntimeError("QQ adapter requires app_id and client_secret when enabled.")
         self._stop_event.clear()
+        self._ready_event.clear()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
+        await asyncio.wait_for(self._ready_event.wait(), timeout=self.startup_timeout_s)
 
     async def stop(self) -> None:
         self._stop_event.set()
+        self._ready_event.set()
         if self._runner_task is not None:
             self._runner_task.cancel()
             try:
@@ -149,6 +155,7 @@ class QQChannelAdapter:
     async def _run_forever(self) -> None:
         while not self._stop_event.is_set():
             try:
+                logger.info("QQ adapter connecting via %s", self.api_base)
                 token = await self._get_access_token()
                 gateway = await self._get_gateway_url(token)
                 await self._run_session(gateway, token)
@@ -185,6 +192,8 @@ class QQChannelAdapter:
                                 }
                             )
                         )
+                        logger.info("QQ gateway handshake completed")
+                        self._ready_event.set()
                         continue
                     if op == OP_DISPATCH and payload.get("t") in SUPPORTED_EVENTS:
                         await self.handle_dispatch_event(payload["t"], payload.get("d") or {})

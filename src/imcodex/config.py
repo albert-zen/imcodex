@@ -5,8 +5,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
+def _read_dotenv(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+def _env(name: str, default: str, dotenv: dict[str, str]) -> str:
+    return os.getenv(name, dotenv.get(name, default))
+
+
+def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
+    raw = os.getenv(name, dotenv.get(name))
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -31,16 +48,17 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        root = Path(os.getenv("IMCODEX_DATA_DIR", ".imcodex"))
+        dotenv = _read_dotenv(Path(".env"))
+        root = Path(_env("IMCODEX_DATA_DIR", ".imcodex", dotenv))
         return cls(
             data_dir=root,
-            codex_bin=os.getenv("IMCODEX_CODEX_BIN", "codex"),
-            app_server_host=os.getenv("IMCODEX_APP_SERVER_HOST", "127.0.0.1"),
-            app_server_port=int(os.getenv("IMCODEX_APP_SERVER_PORT", "8765")),
-            outbound_url=os.getenv("IMCODEX_OUTBOUND_URL") or None,
-            service_name=os.getenv("IMCODEX_SERVICE_NAME", "imcodex"),
-            qq_enabled=_env_bool("IMCODEX_QQ_ENABLED", False),
-            qq_app_id=os.getenv("IMCODEX_QQ_APP_ID", ""),
-            qq_client_secret=os.getenv("IMCODEX_QQ_CLIENT_SECRET", ""),
-            qq_api_base=os.getenv("IMCODEX_QQ_API_BASE", "https://api.sgroup.qq.com"),
+            codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
+            app_server_host=_env("IMCODEX_APP_SERVER_HOST", "127.0.0.1", dotenv),
+            app_server_port=int(_env("IMCODEX_APP_SERVER_PORT", "8765", dotenv)),
+            outbound_url=_env("IMCODEX_OUTBOUND_URL", "", dotenv) or None,
+            service_name=_env("IMCODEX_SERVICE_NAME", "imcodex", dotenv),
+            qq_enabled=_env_bool("IMCODEX_QQ_ENABLED", False, dotenv),
+            qq_app_id=_env("IMCODEX_QQ_APP_ID", "", dotenv),
+            qq_client_secret=_env("IMCODEX_QQ_CLIENT_SECRET", "", dotenv),
+            qq_api_base=_env("IMCODEX_QQ_API_BASE", "https://api.sgroup.qq.com", dotenv),
         )
