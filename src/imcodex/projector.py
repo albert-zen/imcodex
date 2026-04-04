@@ -150,6 +150,10 @@ class MessageProjector:
         if item_type == "agentMessage":
             self._turn_messages[key] = [item.get("text", "")]
             if item.get("phase") == "final_answer" and key not in self._emitted_turn_results:
+                thread_id = params.get("threadId", "")
+                turn_id = params.get("turnId", "")
+                if thread_id and turn_id:
+                    store.note_turn_completed(thread_id, turn_id=turn_id, status="completed")
                 self._emitted_turn_results.add(key)
                 message = self.render_turn_completed(
                     final_text=item.get("text", ""),
@@ -158,7 +162,7 @@ class MessageProjector:
                     failed=False,
                     interrupted=False,
                 )
-                return self._attach_conversation(params.get("threadId", ""), message, store)
+                return self._attach_conversation(thread_id, message, store)
         elif item_type == "commandExecution":
             command = item.get("command")
             if command:

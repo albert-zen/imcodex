@@ -111,10 +111,10 @@ def test_project_notification_attaches_turn_completion_to_conversation() -> None
     assert early_message.channel_id == "demo"
     assert early_message.conversation_id == "conv-1"
     assert "Hello from Codex" in early_message.text
-    assert message is None
     binding = store.get_binding("demo", "conv-1")
     assert binding.active_turn_id is None
     assert binding.active_turn_status == "completed"
+    assert message is None
 
 
 def test_turn_started_updates_status_for_status_command() -> None:
