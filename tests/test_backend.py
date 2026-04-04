@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from imcodex.appserver_client import AppServerError
 from imcodex.backend import CodexBackend
 from imcodex.store import ConversationStore
 
@@ -11,6 +12,7 @@ class FakeClient:
         self.thread_starts: list[dict] = []
         self.turn_starts: list[dict] = []
         self.turn_interrupts: list[dict] = []
+        self.fail_thread_ids: set[str] = set()
 
     async def start_thread(self, **params):
         self.thread_starts.append(params)
@@ -18,6 +20,8 @@ class FakeClient:
 
     async def start_turn(self, **params):
         self.turn_starts.append(params)
+        if params["thread_id"] in self.fail_thread_ids:
+            raise AppServerError("turn/start timed out after 15.0s")
         return {"turn": {"id": "turn_1", "status": "inProgress", "items": [], "error": None}}
 
     async def interrupt_turn(self, **params):
@@ -80,3 +84,27 @@ async def test_interrupt_turn_uses_bound_thread_and_turn() -> None:
         {"thread_id": "thr_existing", "turn_id": "turn_existing"}
     ]
     assert binding.active_turn_id is None
+
+
+@pytest.mark.asyncio
+async def test_start_turn_retries_with_new_thread_when_bound_thread_is_stale() -> None:
+    store = make_store()
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_thread_id = "thr_stale"
+    binding.known_thread_ids.append("thr_stale")
+    client.fail_thread_ids.add("thr_stale")
+
+    turn_id = await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+
+    assert turn_id == "turn_1"
+    assert client.thread_starts == [
+        {"cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+    ]
+    assert client.turn_starts == [
+        {"thread_id": "thr_stale", "text": "Please inspect the repo", "cwd": None, "model": None, "approval_policy": None, "sandbox_policy": None, "effort": None, "summary": "concise"},
+        {"thread_id": "thr_new", "text": "Please inspect the repo", "cwd": None, "model": None, "approval_policy": None, "sandbox_policy": None, "effort": None, "summary": "concise"},
+    ]
+    assert binding.active_thread_id == "thr_new"
+    assert binding.active_turn_id == "turn_1"

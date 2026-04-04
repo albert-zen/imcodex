@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .appserver_client import AppServerError
 from .store import ConversationStore
 
 
@@ -32,17 +33,17 @@ class CodexBackend:
         return await self.ensure_thread(channel_id, conversation_id)
 
     async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        had_bound_thread = binding.active_thread_id is not None
         thread_id = await self.ensure_thread(channel_id, conversation_id)
-        result = await self.client.start_turn(
-            thread_id=thread_id,
-            text=text,
-            cwd=None,
-            model=None,
-            approval_policy=None,
-            sandbox_policy=None,
-            effort=None,
-            summary="concise",
-        )
+        try:
+            result = await self._start_turn(thread_id, text)
+        except AppServerError:
+            if not had_bound_thread:
+                raise
+            self.store.clear_active_thread(channel_id, conversation_id)
+            thread_id = await self.ensure_thread(channel_id, conversation_id)
+            result = await self._start_turn(thread_id, text)
         turn_id = result["turn"]["id"]
         self.store.set_active_turn(
             channel_id,
@@ -52,6 +53,18 @@ class CodexBackend:
             status=result["turn"].get("status", "inProgress"),
         )
         return turn_id
+
+    async def _start_turn(self, thread_id: str, text: str):
+        return await self.client.start_turn(
+            thread_id=thread_id,
+            text=text,
+            cwd=None,
+            model=None,
+            approval_policy=None,
+            sandbox_policy=None,
+            effort=None,
+            summary="concise",
+        )
 
     async def interrupt_active_turn(self, channel_id: str, conversation_id: str) -> None:
         binding = self.store.get_binding(channel_id, conversation_id)
