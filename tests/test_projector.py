@@ -133,6 +133,121 @@ def test_project_notification_attaches_turn_completion_to_conversation() -> None
     assert message is None
 
 
+def test_non_final_agent_message_item_is_projected_as_progress_update() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_progress",
+                    "type": "agentMessage",
+                    "phase": "draft",
+                    "text": "I checked the repo structure and found the main bridge entrypoint.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_progress"
+    assert message.channel_id == "demo"
+    assert message.conversation_id == "conv-1"
+    assert "main bridge entrypoint" in message.text
+
+
+def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    progress = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_progress",
+                    "type": "agentMessage",
+                    "phase": "draft",
+                    "text": "I checked the repo structure and found the main bridge entrypoint.",
+                },
+            },
+        },
+        store,
+    )
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "The bridge entrypoint is src/imcodex/application.py.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert progress is not None
+    assert progress.message_type == "turn_progress"
+    assert final is not None
+    assert final.message_type == "turn_progress"
+    assert "src/imcodex/application.py" in final.text
+
+
+def test_final_answer_followed_by_failed_completion_still_surfaces_failure() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    early = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "The bridge entrypoint is src/imcodex/application.py.",
+                },
+            },
+        },
+        store,
+    )
+    failed = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "failed"},
+            },
+        },
+        store,
+    )
+
+    assert early is not None
+    assert failed is not None
+    assert failed.message_type == "turn_result"
+    assert "Turn failed." in failed.text
+
+
 def test_turn_started_updates_status_for_status_command() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")

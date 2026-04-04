@@ -155,6 +155,38 @@ async def test_turn_request_correlation_and_notifications():
 
 
 @pytest.mark.asyncio
+async def test_steer_turn_uses_expected_turn_id_and_text_input():
+    incoming = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            2: ['{"id":2,"result":{"turnId":"turn_1"}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    await client.connect()
+    await client.initialize()
+    result = await client.steer_turn(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        text="Actually focus on failing tests first",
+    )
+
+    assert result["turnId"] == "turn_1"
+    assert '"method": "turn/steer"' in websocket.sent[2]
+    assert '"expectedTurnId": "turn_1"' in websocket.sent[2]
+    assert '"text": "Actually focus on failing tests first"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_first_thread_request_connects_and_initializes_lazily():
     incoming = asyncio.Queue()
     websocket = ScriptedWebSocket(

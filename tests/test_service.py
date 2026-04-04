@@ -58,7 +58,7 @@ async def test_plain_text_uses_single_discovered_project_and_starts_turn() -> No
         )
     )
 
-    assert backend.ensure_threads == [("qq", "conv-1")]
+    assert backend.ensure_threads == []
     assert backend.started_turns == [("qq", "conv-1", "please inspect the repo")]
     assert [message.message_type for message in messages] == ["accepted", "processing"]
 
@@ -148,3 +148,71 @@ async def test_plain_text_without_project_mentions_cwd_command() -> None:
 
     assert messages[0].message_type == "error"
     assert "/cwd <path>" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_server_approval_request_can_be_auto_approved_without_prompt() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("qq", "conv-1", "thr_seed")
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        auto_approve_mode="acceptForSession",
+    )
+
+    messages = await service.handle_server_request(
+        {
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_seed",
+                "turnId": "turn_1",
+                "command": "pytest -q",
+                "_request_id": "99",
+            },
+        }
+    )
+
+    assert messages == []
+    assert backend.replies == [("1", {"decision": "acceptForSession"})]
+
+
+@pytest.mark.asyncio
+async def test_plain_text_accepted_message_uses_recovered_thread_id() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+
+    class ReplacingBackend(FakeBackend):
+        async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
+            self.ensure_threads.append((channel_id, conversation_id))
+            store.get_binding(channel_id, conversation_id).active_thread_id = "thr_old"
+            return "thr_old"
+
+        async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
+            self.started_turns.append((channel_id, conversation_id, text))
+            store.get_binding(channel_id, conversation_id).active_thread_id = "thr_new"
+            return "turn_1"
+
+    backend = ReplacingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="please inspect the repo",
+        )
+    )
+
+    assert messages[0].text == "Accepted for thread thr_new."

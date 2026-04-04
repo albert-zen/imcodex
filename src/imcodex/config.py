@@ -37,6 +37,8 @@ class Settings:
     app_server_port: int
     outbound_url: str | None
     service_name: str
+    auto_approve: bool
+    auto_approve_mode: str
     qq_enabled: bool
     qq_app_id: str
     qq_client_secret: str
@@ -57,6 +59,8 @@ class Settings:
             app_server_port=int(_env("IMCODEX_APP_SERVER_PORT", "8765", dotenv)),
             outbound_url=_env("IMCODEX_OUTBOUND_URL", "", dotenv) or None,
             service_name=_env("IMCODEX_SERVICE_NAME", "imcodex", dotenv),
+            auto_approve=_env_bool("IMCODEX_AUTO_APPROVE", False, dotenv),
+            auto_approve_mode=_env("IMCODEX_AUTO_APPROVE_MODE", "session", dotenv),
             qq_enabled=_env_bool("IMCODEX_QQ_ENABLED", False, dotenv),
             qq_app_id=_env("IMCODEX_QQ_APP_ID", "", dotenv),
             qq_client_secret=_env("IMCODEX_QQ_CLIENT_SECRET", "", dotenv),

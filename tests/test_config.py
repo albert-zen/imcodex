@@ -13,6 +13,8 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
                 "IMCODEX_QQ_CLIENT_SECRET=test-secret",
                 "IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com",
                 "IMCODEX_DATA_DIR=.imcodex-data",
+                "IMCODEX_AUTO_APPROVE=1",
+                "IMCODEX_AUTO_APPROVE_MODE=session",
             ]
         ),
         encoding="utf-8",
@@ -23,6 +25,8 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.delenv("IMCODEX_QQ_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("IMCODEX_QQ_API_BASE", raising=False)
     monkeypatch.delenv("IMCODEX_DATA_DIR", raising=False)
+    monkeypatch.delenv("IMCODEX_AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("IMCODEX_AUTO_APPROVE_MODE", raising=False)
 
     settings = Settings.from_env()
 
@@ -31,3 +35,5 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
     assert settings.qq_client_secret == "test-secret"
     assert settings.qq_api_base == "https://sandbox.api.sgroup.qq.com"
     assert settings.data_dir == Path(".imcodex-data")
+    assert settings.auto_approve is True
+    assert settings.auto_approve_mode == "session"

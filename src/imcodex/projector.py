@@ -76,6 +76,14 @@ class MessageProjector:
             text="\n".join(part for part in lines if part),
         )
 
+    def render_turn_progress(self, *, text: str) -> OutboundMessage:
+        return OutboundMessage(
+            channel_id="",
+            conversation_id="",
+            message_type="turn_progress",
+            text=text,
+        )
+
     def project_notification(self, notification: dict, store) -> OutboundMessage | None:
         method = notification.get("method")
         params = notification.get("params", {})
@@ -154,21 +162,22 @@ class MessageProjector:
         key = (params.get("threadId", ""), params.get("turnId", ""))
         item_type = item.get("type")
         if item_type == "agentMessage":
-            self._turn_messages[key] = [item.get("text", "")]
-            if item.get("phase") == "final_answer" and key not in self._emitted_turn_results:
-                thread_id = params.get("threadId", "")
-                turn_id = params.get("turnId", "")
-                if thread_id and turn_id:
-                    store.note_turn_completed(thread_id, turn_id=turn_id, status="completed")
-                self._emitted_turn_results.add(key)
-                message = self.render_turn_completed(
-                    final_text=item.get("text", ""),
-                    command_summaries=list(self._turn_commands.get(key, [])),
-                    changed_files=list(self._turn_files.get(key, [])),
-                    failed=False,
-                    interrupted=False,
+            text = item.get("text", "")
+            self._turn_messages[key] = [text]
+            phase = item.get("phase")
+            if phase and phase != "final_answer" and text:
+                return self._attach_conversation(
+                    params.get("threadId", ""),
+                    self.render_turn_progress(text=text),
+                    store,
                 )
-                return self._attach_conversation(thread_id, message, store)
+            if phase == "final_answer" and key not in self._emitted_turn_results:
+                self._emitted_turn_results.add(key)
+                return self._attach_conversation(
+                    params.get("threadId", ""),
+                    self.render_turn_progress(text=text),
+                    store,
+                )
         elif item_type == "commandExecution":
             command = item.get("command")
             if command:
@@ -191,9 +200,11 @@ class MessageProjector:
         text = "\n".join(self._turn_messages.pop(key, []))
         commands = self._turn_commands.pop(key, [])
         files = self._turn_files.pop(key, [])
-        if key in self._emitted_turn_results:
+        if key in self._emitted_turn_results and status == "completed":
             self._emitted_turn_results.discard(key)
             return None
+        if key in self._emitted_turn_results:
+            self._emitted_turn_results.discard(key)
         message = self.render_turn_completed(
             final_text=text,
             command_summaries=commands,

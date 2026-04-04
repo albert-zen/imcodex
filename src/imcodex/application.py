@@ -48,6 +48,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         command_router=CommandRouter(store),
         projector=MessageProjector(),
         outbound_sink=None,
+        auto_approve_mode=_resolve_auto_approve_mode(settings),
     )
     managed_channels = []
     channel_sinks = {}
@@ -72,6 +73,14 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         service=service,
         managed_channels=managed_channels,
     )
+
+
+def _resolve_auto_approve_mode(settings: Settings) -> str | None:
+    if not settings.auto_approve:
+        return None
+    if settings.auto_approve_mode.lower() in {"session", "acceptforsession"}:
+        return "acceptForSession"
+    return "accept"
 
 
 def create_application(

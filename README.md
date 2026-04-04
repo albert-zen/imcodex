@@ -15,7 +15,9 @@ Set these environment variables to enable the built-in QQ adapter:
 - `IMCODEX_QQ_ENABLED=1`
 - `IMCODEX_QQ_APP_ID=<your AppID>`
 - `IMCODEX_QQ_CLIENT_SECRET=<your AppSecret>`
-- `IMCODEX_QQ_API_BASE=https://api.sgroup.qq.com`
+- `IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com`
+- `IMCODEX_AUTO_APPROVE=1`
+- `IMCODEX_AUTO_APPROVE_MODE=session`
 
 The adapter currently supports:
 
@@ -48,6 +50,8 @@ Example body:
 - `IMCODEX_APP_SERVER_PORT`: default `8765`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target
 - `IMCODEX_SERVICE_NAME`: client name sent to app-server, default `imcodex`
+- `IMCODEX_AUTO_APPROVE`: auto-answer approval requests, default `false`
+- `IMCODEX_AUTO_APPROVE_MODE`: `session` for `acceptForSession`, otherwise falls back to one-shot `accept`
 - `IMCODEX_QQ_ENABLED`: enable QQ bot adapter, default `false`
 - `IMCODEX_QQ_APP_ID`: QQ bot AppID
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret

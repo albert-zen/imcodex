@@ -114,6 +114,17 @@ class AppServerClient:
             {"threadId": thread_id, "turnId": turn_id},
         )
 
+    async def steer_turn(self, thread_id: str, turn_id: str, text: str) -> JsonDict:
+        await self._ensure_ready()
+        return await self._request(
+            "turn/steer",
+            {
+                "threadId": thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": text}],
+            },
+        )
+
     async def reply_to_server_request(
         self,
         ticket_id: str,
