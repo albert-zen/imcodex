@@ -285,7 +285,7 @@ async def test_run_session_cancels_heartbeat_on_socket_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_waits_for_gateway_hello_before_returning() -> None:
+async def test_start_waits_for_gateway_ready_before_returning() -> None:
     class FakeWebSocket:
         def __init__(self, stop_event: asyncio.Event) -> None:
             self._step = 0
@@ -305,6 +305,9 @@ async def test_start_waits_for_gateway_hello_before_returning() -> None:
             if self._step == 0:
                 self._step += 1
                 return json.dumps({"op": 10, "d": {"heartbeat_interval": 1000}})
+            if self._step == 1:
+                self._step += 1
+                return json.dumps({"op": 0, "t": "READY", "d": {"session_id": "session-1"}})
             await self._stop_event.wait()
             raise StopAsyncIteration
 
@@ -335,5 +338,39 @@ async def test_start_waits_for_gateway_hello_before_returning() -> None:
     assert adapter._runner_task.done() is False
     assert websocket.sent[-1]["op"] == 2
     assert websocket.sent[-1]["d"]["token"] == "QQBot token-6"
+    assert adapter._session_id == "session-1"
 
     await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_uses_last_sequence_number() -> None:
+    sent = []
+    adapter = make_adapter(sleep=lambda _: asyncio.sleep(0))
+    adapter._last_seq = 42
+
+    class FakeWebSocket:
+        async def send(self, data: str) -> None:
+            sent.append(json.loads(data))
+            adapter._stop_event.set()
+
+    await adapter._heartbeat_loop(FakeWebSocket(), 0)
+
+    assert sent == [{"op": 1, "d": 42}]
+
+
+def test_resume_payload_is_used_when_session_exists() -> None:
+    adapter = make_adapter()
+    adapter._session_id = "session-9"
+    adapter._last_seq = 128
+
+    payload = adapter._resume_or_identify_payload("token-9")
+
+    assert payload == {
+        "op": 6,
+        "d": {
+            "token": "QQBot token-9",
+            "session_id": "session-9",
+            "seq": 128,
+        },
+    }

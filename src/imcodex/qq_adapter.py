@@ -23,11 +23,16 @@ TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 OP_DISPATCH = 0
 OP_HEARTBEAT = 1
 OP_IDENTIFY = 2
+OP_RESUME = 6
 OP_RECONNECT = 7
 OP_INVALID_SESSION = 9
 OP_HELLO = 10
+OP_HEARTBEAT_ACK = 11
 
+INTENT_GUILD_MEMBERS = 1 << 1
+INTENT_DIRECT_MESSAGE = 1 << 12
 INTENT_GROUP_AND_C2C = 1 << 25
+INTENT_PUBLIC_GUILD_MESSAGES = 1 << 30
 SUPPORTED_EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}
 MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
 
@@ -66,6 +71,8 @@ class QQChannelAdapter:
         self._msg_seq: dict[str, int] = defaultdict(int)
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+        self._session_id: str | None = None
+        self._last_seq: int | None = None
 
     async def start(self) -> None:
         if not self.enabled:
@@ -172,6 +179,9 @@ class QQChannelAdapter:
             async with self.websocket_factory(gateway_url) as websocket:
                 async for raw in websocket:
                     payload = json.loads(raw)
+                    seq = payload.get("s")
+                    if isinstance(seq, int):
+                        self._last_seq = seq
                     op = payload.get("op")
                     if op == OP_HELLO:
                         interval_ms = (payload.get("d") or {}).get("heartbeat_interval", 45000)
@@ -180,25 +190,30 @@ class QQChannelAdapter:
                         heartbeat_task = asyncio.create_task(
                             self._heartbeat_loop(websocket, interval_ms / 1000.0)
                         )
-                        await websocket.send(
-                            json.dumps(
-                                {
-                                    "op": OP_IDENTIFY,
-                                    "d": {
-                                        "token": f"QQBot {token}",
-                                        "intents": INTENT_GROUP_AND_C2C,
-                                        "shard": [0, 1],
-                                    },
-                                }
-                            )
-                        )
-                        logger.info("QQ gateway handshake completed")
-                        self._ready_event.set()
+                        await websocket.send(json.dumps(self._resume_or_identify_payload(token)))
                         continue
-                    if op == OP_DISPATCH and payload.get("t") in SUPPORTED_EVENTS:
-                        await self.handle_dispatch_event(payload["t"], payload.get("d") or {})
+                    if op == OP_DISPATCH:
+                        event_type = payload.get("t")
+                        data = payload.get("d") or {}
+                        if event_type == "READY":
+                            self._session_id = data.get("session_id")
+                            logger.info("QQ gateway ready session_id=%s", self._session_id)
+                            self._ready_event.set()
+                            continue
+                        if event_type == "RESUMED":
+                            logger.info("QQ gateway resumed")
+                            self._ready_event.set()
+                            continue
+                        if event_type in SUPPORTED_EVENTS:
+                            await self.handle_dispatch_event(event_type, data)
+                            continue
+                    if op == OP_HEARTBEAT_ACK:
                         continue
-                    if op in {OP_RECONNECT, OP_INVALID_SESSION}:
+                    if op == OP_INVALID_SESSION:
+                        self._session_id = None
+                        self._last_seq = None
+                        break
+                    if op == OP_RECONNECT:
                         break
         finally:
             if heartbeat_task is not None:
@@ -211,7 +226,31 @@ class QQChannelAdapter:
     async def _heartbeat_loop(self, websocket, interval_seconds: float) -> None:
         while not self._stop_event.is_set():
             await self.sleep(interval_seconds)
-            await websocket.send(json.dumps({"op": OP_HEARTBEAT, "d": None}))
+            await websocket.send(json.dumps({"op": OP_HEARTBEAT, "d": self._last_seq}))
+
+    def _resume_or_identify_payload(self, token: str) -> dict[str, Any]:
+        if self._session_id and self._last_seq is not None:
+            return {
+                "op": OP_RESUME,
+                "d": {
+                    "token": f"QQBot {token}",
+                    "session_id": self._session_id,
+                    "seq": self._last_seq,
+                },
+            }
+        return {
+            "op": OP_IDENTIFY,
+            "d": {
+                "token": f"QQBot {token}",
+                "intents": (
+                    INTENT_PUBLIC_GUILD_MESSAGES
+                    | INTENT_GUILD_MEMBERS
+                    | INTENT_DIRECT_MESSAGE
+                    | INTENT_GROUP_AND_C2C
+                ),
+                "shard": [0, 1],
+            },
+        }
 
     async def _get_access_token(self) -> str:
         if self._access_token and self.clock() < self._access_token_expires_at - 60:
