@@ -43,3 +43,45 @@ def test_inbound_webhook_routes_message_to_service() -> None:
     body = response.json()
     assert body["messages"][0]["text"] == "accepted"
     assert service.messages[0].text == "/status"
+
+
+class ErrorService:
+    async def handle_inbound(self, message: InboundMessage):
+        return [
+            {
+                "channel_id": message.channel_id,
+                "conversation_id": message.conversation_id,
+                "message_type": "error",
+                "text": "Choose a working directory first with /cwd <path>.",
+                "ticket_id": None,
+                "metadata": {},
+            }
+        ]
+
+
+def test_inbound_webhook_preserves_sync_error_contract() -> None:
+    client = TestClient(create_app(ErrorService()))
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        json={
+            "channel_id": "demo",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "m1",
+            "text": "inspect the repo",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["messages"] == [
+        {
+            "channel_id": "demo",
+            "conversation_id": "conv-1",
+            "message_type": "error",
+            "text": "Choose a working directory first with /cwd <path>.",
+            "ticket_id": None,
+            "metadata": {},
+        }
+    ]

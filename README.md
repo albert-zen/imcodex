@@ -75,7 +75,7 @@ Example body:
 ## Message Contract
 
 The bridge-visible sync/async contract is documented in
-[docs/message-contract.md](/D:/desktop/imcodex-wt-b-message-contract/docs/message-contract.md).
+[`docs/message-contract.md`](docs/message-contract.md).
 
 In short:
 

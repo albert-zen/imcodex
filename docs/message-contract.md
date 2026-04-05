@@ -7,7 +7,7 @@ Codex notification details.
 
 ## 1. Message Classes
 
-`imcodex` emits five user-visible message classes:
+`imcodex` emits these user-visible message classes:
 
 - `accepted`
   Immediate acknowledgement for a normal natural-language request.
@@ -16,16 +16,17 @@ Codex notification details.
   `/thread attach`.
 - `command_result`
   Immediate result for informational commands and approval responses.
+- `error`
+  Immediate blocked or invalid-command feedback.
+- `approval_request`
+  Asynchronous request for a command or file-change approval.
+- `question_request`
+  Asynchronous request for additional structured user input.
 - `turn_progress`
   Asynchronous partial progress from a non-final agent message.
 - `turn_result`
   Asynchronous terminal content for a completed answer, or terminal status
   output for failed/interrupted turns.
-
-Two more asynchronous request classes are emitted when Codex needs user action:
-
-- `approval_request`
-- `question_request`
 
 ## 2. Natural-Language Turn Lifecycle
 
