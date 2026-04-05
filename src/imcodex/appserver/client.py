@@ -89,6 +89,14 @@ class AppServerClient:
         await asyncio.sleep(0)
         return result
 
+    async def resume_thread(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
+        await self._ensure_ready()
+        payload = dict(params or {})
+        payload.update(kwargs)
+        result = await self._request("thread/resume", self._normalize_thread_start(payload))
+        await asyncio.sleep(0)
+        return result
+
     async def start_turn(
         self,
         thread_id: str | None = None,
@@ -224,7 +232,7 @@ class AppServerClient:
         self.initialized = False
 
     async def _dispatch(self, message: JsonDict) -> None:
-        if "id" in message and "result" in message:
+        if "id" in message and ("result" in message or "error" in message):
             request_id = message["id"]
             future = self._pending_futures.get(request_id)
             if future is not None and not future.done():
@@ -293,6 +301,7 @@ class AppServerClient:
 
     def _normalize_thread_start(self, payload: JsonDict) -> JsonDict:
         mappings = {
+            "thread_id": "threadId",
             "approval_policy": "approvalPolicy",
             "service_name": "serviceName",
         }
