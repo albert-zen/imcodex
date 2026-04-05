@@ -50,10 +50,7 @@ class CodexBackend:
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
-        try:
-            cwd = self.store.get_thread(thread_id).cwd
-        except KeyError:
-            cwd = self._binding_cwd(binding)
+        cwd = self._binding_cwd(binding)
         result = await self.client.resume_thread(
             thread_id=thread_id,
             **self._thread_session_params(cwd),
@@ -217,8 +214,5 @@ class CodexBackend:
         cwd: str,
         preview: str,
     ) -> None:
-        try:
-            self.store.get_thread(thread_id)
-        except KeyError:
-            self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
+        self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
         self.store.set_active_thread(channel_id, conversation_id, thread_id)

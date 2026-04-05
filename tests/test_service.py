@@ -190,6 +190,41 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
 
 
 @pytest.mark.asyncio
+async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    store.record_thread("thr_known", cwd=project.cwd, preview="")
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_known", cwd=project.cwd, preview="Imported thread")
+            store.set_active_thread(channel_id, conversation_id, "thr_known")
+            return "thr_known"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_known",
+        )
+    )
+
+    assert messages[0].text == "Attached thread Imported thread (id: thr_known)."
+
+
+@pytest.mark.asyncio
 async def test_new_command_does_not_require_backend_to_store_thread_before_ack() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     project = store.ensure_project(r"D:\work\alpha")

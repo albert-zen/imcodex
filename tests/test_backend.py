@@ -18,6 +18,7 @@ class FakeClient:
         self.replies: list[tuple[str, dict]] = []
         self.fail_thread_ids: set[str] = set()
         self.fail_resume_ids: set[str] = set()
+        self.resume_results: dict[str, dict[str, str]] = {}
         self.fail_steer_messages: list[str] = []
         self.fail_interrupt = False
 
@@ -25,6 +26,15 @@ class FakeClient:
         self.thread_resumes.append(params)
         if params["thread_id"] in self.fail_resume_ids:
             raise AppServerError("invalid request")
+        result = self.resume_results.get(params["thread_id"])
+        if result is not None:
+            return {
+                "thread": {
+                    "id": result.get("id", params["thread_id"]),
+                    "preview": result.get("preview", ""),
+                    "status": {"type": "idle"},
+                }
+            }
         return {
             "thread": {
                 "id": params["thread_id"],
@@ -156,6 +166,40 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
     assert resumed_client.thread_resumes == [
         {"thread_id": "thr_external", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_prefers_selected_working_directory_over_known_thread_record() -> None:
+    store = make_store()
+    alpha = store.record_thread("thr_known", cwd="D:/repo/alpha", preview="old")
+    beta = store.ensure_project("D:/repo/beta")
+    store.set_active_project("demo", "conv-1", beta.project_id)
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("demo", "conv-1", alpha.thread_id)
+
+    assert thread_id == "thr_known"
+    assert client.thread_resumes == [
+        {"thread_id": "thr_known", "cwd": "D:/repo/beta", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+    ]
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_project_id == beta.project_id
+    assert binding.active_thread_id == "thr_known"
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_refreshes_preview_for_known_thread() -> None:
+    store = make_store()
+    store.record_thread("thr_known", cwd="D:/repo/app", preview="")
+    store.set_active_thread("demo", "conv-1", "thr_known")
+    client = FakeClient()
+    client.resume_results["thr_known"] = {"preview": "Imported thread"}
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.attach_thread("demo", "conv-1", "thr_known")
+
+    assert store.thread_label("thr_known") == "Imported thread"
 
 
 @pytest.mark.asyncio
