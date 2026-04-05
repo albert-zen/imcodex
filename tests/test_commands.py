@@ -133,3 +133,17 @@ def test_router_new_stop_and_approval_commands() -> None:
     answer = router.handle("qq", "conv-1", "/answer T-10 timezone=Asia/Shanghai,UTC+8")
     assert answer.action == "request.answer"
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
+
+
+def test_status_tolerates_missing_active_thread_record() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    binding.active_thread_id = "thr_missing"
+    router = CommandRouter(store)
+
+    status = router.handle("qq", "conv-1", "/status")
+
+    assert "Working directory: D:\\work\\alpha" in status.text
+    assert "Thread: Untitled thread" in status.text
+    assert "Thread id: thr_missing" in status.text

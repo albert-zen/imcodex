@@ -98,7 +98,7 @@ class CommandRouter:
             details = [f"id: {thread.thread_id}"]
             if project_id is None:
                 details.append(f"cwd: {thread.cwd}")
-            lines.append(f"{marker} {self.store.thread_label(thread.thread_id)} ({', '.join(details)})")
+            lines.append(f"{marker} {self._thread_label(thread.thread_id)} ({', '.join(details)})")
         return CommandResponse(action="threads.list", text="\n".join(lines))
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -109,7 +109,7 @@ class CommandRouter:
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
         return CommandResponse(
             action="thread.use",
-            text=f"Switched to thread {self.store.thread_label(thread_id)} (id: {thread_id}) in {thread.cwd}.",
+            text=f"Switched to thread {self._thread_label(thread_id)} (id: {thread_id}) in {thread.cwd}.",
             thread_id=thread_id,
             project_id=thread.project_id,
         )
@@ -137,7 +137,7 @@ class CommandRouter:
             cwd_text = self.store.get_project(binding.active_project_id).cwd
         thread_text = "(none)"
         if binding.active_thread_id is not None:
-            thread_text = self.store.thread_label(binding.active_thread_id)
+            thread_text = self._thread_label(binding.active_thread_id)
         turn_text = binding.active_turn_id or "(none)"
         turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
         lines = [
@@ -212,6 +212,12 @@ class CommandRouter:
         if request is None:
             return CommandResponse(action=f"{action}.missing", text=f"Unknown ticket: {ticket_id}")
         return CommandResponse(action=action, text=f"Recorded {decision} for {ticket_id}.", ticket_id=ticket_id)
+
+    def _thread_label(self, thread_id: str) -> str:
+        try:
+            return self.store.thread_label(thread_id)
+        except KeyError:
+            return "Untitled thread"
 
     def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:
         answers: dict[str, list[str]] = {}

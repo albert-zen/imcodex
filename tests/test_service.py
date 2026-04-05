@@ -150,6 +150,33 @@ async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label()
 
 
 @pytest.mark.asyncio
+async def test_new_command_does_not_require_backend_to_store_thread_before_ack() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/new",
+        )
+    )
+
+    assert backend.created_threads == [("qq", "conv-1")]
+    assert messages[0].text == "Started new thread Untitled thread (id: thr_remote_new)."
+
+
+@pytest.mark.asyncio
 async def test_new_command_without_working_directory_is_user_safe() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     backend = FakeBackend()

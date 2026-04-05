@@ -292,6 +292,10 @@ def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_labe
     )
 
     assert message is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_thread_id == new_thread.thread_id
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None
     assert store.consume_pending_first_thread_label("demo", "conv-1", new_thread.thread_id) is True
 
 
