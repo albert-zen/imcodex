@@ -101,6 +101,43 @@ async def test_interrupt_turn_uses_bound_thread_and_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_interrupt_turn_clears_only_pending_requests_for_active_turn() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_thread_id = "thr_existing"
+    binding.active_turn_id = "turn_existing"
+    store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="9",
+        kind="approval",
+        summary="Approve command",
+        payload={"command": "pytest -q"},
+        thread_id="thr_existing",
+        turn_id="turn_existing",
+    )
+    store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="10",
+        kind="approval",
+        summary="Approve later command",
+        payload={"command": "git status"},
+        thread_id="thr_existing",
+        turn_id="turn_other",
+    )
+
+    await backend.interrupt_active_turn("demo", "conv-1")
+
+    assert store.get_pending_request("9") is None
+    assert store.get_pending_request("10") is not None
+    assert binding.pending_request_ids == ["10"]
+
+
+@pytest.mark.asyncio
 async def test_start_turn_retries_with_new_thread_when_bound_thread_is_stale() -> None:
     store = make_store()
     client = FakeClient()
@@ -182,6 +219,46 @@ async def test_start_turn_falls_back_to_interrupt_and_new_turn_when_steer_fails(
     ]
     assert binding.active_turn_id == "turn_1"
     assert binding.active_turn_status == "inProgress"
+
+
+@pytest.mark.asyncio
+async def test_start_turn_recovery_clears_only_pending_requests_for_recovered_turn() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    client = FakeClient()
+    client.fail_steer_messages = ["invalid request"]
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_thread_id = "thr_existing"
+    binding.active_turn_id = "turn_existing"
+    binding.active_turn_status = "inProgress"
+    store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="11",
+        kind="approval",
+        summary="Approve command",
+        payload={"command": "pytest -q"},
+        thread_id="thr_existing",
+        turn_id="turn_existing",
+    )
+    store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="12",
+        kind="approval",
+        summary="Approve later command",
+        payload={"command": "git status"},
+        thread_id="thr_existing",
+        turn_id="turn_other",
+    )
+
+    turn_id = await backend.start_turn("demo", "conv-1", "Actually focus on failing tests first")
+
+    assert turn_id == "turn_1"
+    assert store.get_pending_request("11") is None
+    assert store.get_pending_request("12") is not None
+    assert binding.pending_request_ids == ["12"]
 
 
 @pytest.mark.asyncio

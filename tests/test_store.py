@@ -107,3 +107,39 @@ def test_clear_stale_active_turns_resets_old_in_progress_bindings() -> None:
     assert cleared == 1
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
+
+
+def test_clear_pending_requests_for_turn_removes_only_matching_requests() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="T-1",
+        kind="approval",
+        summary="Approve shell command",
+        payload={"decision": "accept"},
+        thread_id="thr-1",
+        turn_id="turn-1",
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="T-2",
+        kind="approval",
+        summary="Approve another shell command",
+        payload={"decision": "accept"},
+        thread_id="thr-1",
+        turn_id="turn-2",
+    )
+
+    cleared = store.clear_pending_requests_for_turn(
+        channel_id="qq",
+        conversation_id="conv-1",
+        thread_id="thr-1",
+        turn_id="turn-1",
+    )
+
+    assert cleared == 1
+    assert store.get_pending_request("T-1") is None
+    assert store.get_pending_request("T-2") is not None
+    assert store.get_binding("qq", "conv-1").pending_request_ids == ["T-2"]
