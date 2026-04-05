@@ -141,18 +141,17 @@ async def test_mock_e2e_qq_dispatch_reaches_final_reply() -> None:
     await client.initialize()
     await qq_adapter.start()
     for _ in range(50):
-        if len(outbound_requests) >= 3 and any('"method": "turn/start"' in item for item in codex_ws.sent):
+        if len(outbound_requests) >= 2 and any('"method": "turn/start"' in item for item in codex_ws.sent):
             break
         await asyncio.sleep(0.01)
 
     assert any('"method": "thread/start"' in item for item in codex_ws.sent)
     assert any('"method": "turn/start"' in item for item in codex_ws.sent)
-    assert len(outbound_requests) == 3
+    assert len(outbound_requests) == 2
     contents = [payload["content"] for _, payload in outbound_requests]
-    assert "Accepted for thread thr_qq_1." in contents
-    assert "Processing your request." in contents
+    assert "Working on it." in contents
     assert any("Hello from Codex over QQ" in content for content in contents)
-    assert [payload.get("msg_id") for _, payload in outbound_requests] == ["msg-1", "msg-1", "msg-1"]
+    assert [payload.get("msg_id") for _, payload in outbound_requests] == ["msg-1", "msg-1"]
 
     await qq_adapter.stop()
     await client.close()

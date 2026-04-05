@@ -34,9 +34,14 @@ class BridgeService:
 
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
+        if response.action == "thread.new.missing_project":
+            return [self._message(message, "error", response.text)]
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
-            return [self._message(message, "status", f"Created new thread {thread_id}.")]
+            label = self._thread_label(thread_id)
+            if label == "Untitled thread":
+                self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
+            return [self._message(message, "status", f"Started new thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
         elif response.action.startswith("approval.") or response.action == "request.answer":
@@ -61,15 +66,22 @@ class BridgeService:
                 self._message(
                     message,
                     "error",
-                    "Choose a project first with /cwd <path> or /projects and /project use <project-id>.",
+                    "Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
                 )
             ]
+        prior_thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id
         await self.backend.start_turn(message.channel_id, message.conversation_id, message.text)
-        thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id or "(unknown)"
-        return [
-            self._message(message, "accepted", f"Accepted for thread {thread_id}."),
-            self._message(message, "processing", "Processing your request."),
-        ]
+        binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.active_thread_id is not None and (
+            binding.active_thread_id != prior_thread_id
+            or self.store.consume_pending_first_thread_label(
+                message.channel_id,
+                message.conversation_id,
+                binding.active_thread_id,
+            )
+        ):
+            self.store.note_thread_user_message(binding.active_thread_id, message.text)
+        return [self._message(message, "accepted", "Working on it.")]
 
     async def handle_notification(self, notification: dict[str, Any]) -> list[OutboundMessage]:
         result = self.projector.project_notification(notification, self.store)
@@ -125,3 +137,9 @@ class BridgeService:
             text=text,
             ticket_id=ticket_id,
         )
+
+    def _thread_label(self, thread_id: str) -> str:
+        try:
+            return self.store.thread_label(thread_id)
+        except KeyError:
+            return "Untitled thread"

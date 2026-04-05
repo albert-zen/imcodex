@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from imcodex.store import ConversationStore
 
 
@@ -58,6 +60,47 @@ def test_project_and_thread_switching_updates_binding() -> None:
     binding = store.set_active_thread("qq", "conv-1", "thr_2")
     assert binding.active_project_id == beta.project_id
     assert binding.active_thread_id == "thr_2"
+
+
+def test_thread_label_prefers_preview_then_first_user_message() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="Existing preview")
+    store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="")
+
+    store.note_thread_user_message(
+        "thr_2",
+        "please inspect why the Windows working directory resets after restart",
+    )
+
+    assert store.thread_label("thr_1") == "Existing preview"
+    assert store.thread_label("thr_2") == "please inspect why the Windows working directory resets..."
+
+
+def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
+    store.note_thread_user_message(
+        "thr_1",
+        "please inspect why the Windows working directory resets after restart",
+    )
+
+    reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+
+    assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
+
+
+def test_thread_label_keeps_long_whitespace_free_prompts_readable() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
+
+    prompt = "https://example.com/very/long/path/without/spaces/or/breakpoints/abcdef1234567890"
+    store.note_thread_user_message("thr_1", prompt)
+
+    label = store.thread_label("thr_1")
+    assert label != "..."
+    assert label.startswith("https://example.com/very/long")
+    assert label.endswith("...")
 
 
 def test_pending_requests_round_trip() -> None:
@@ -143,3 +186,43 @@ def test_clear_pending_requests_for_turn_removes_only_matching_requests() -> Non
     assert store.get_pending_request("T-1") is None
     assert store.get_pending_request("T-2") is not None
     assert store.get_binding("qq", "conv-1").pending_request_ids == ["T-2"]
+
+
+def test_switching_back_to_delayed_running_thread_restores_its_turn_state() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
+    new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="new")
+    store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    store.set_active_thread("qq", "conv-1", new_thread.thread_id)
+
+    store.note_turn_started(old_thread.thread_id, turn_id="turn_old", status="inProgress")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.active_thread_id == new_thread.thread_id
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None
+
+    binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    assert binding.active_turn_id == "turn_old"
+    assert binding.active_turn_status == "inProgress"
+
+
+def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_status() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
+    new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="new")
+    store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    store.note_turn_started(old_thread.thread_id, turn_id="turn_old", status="inProgress")
+    store.set_active_thread("qq", "conv-1", new_thread.thread_id)
+    store.note_turn_started(new_thread.thread_id, turn_id="turn_new", status="inProgress")
+
+    store.note_turn_completed(old_thread.thread_id, turn_id="turn_old", status="completed")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.active_thread_id == new_thread.thread_id
+    assert binding.active_turn_id == "turn_new"
+    assert binding.active_turn_status == "inProgress"
+
+    binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None

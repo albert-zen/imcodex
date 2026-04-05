@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import json
+import textwrap
 from pathlib import Path
 from typing import Any, Callable
 from dataclasses import asdict
@@ -25,6 +26,16 @@ def _display_name_for_cwd(cwd: str) -> str:
     return Path(_normalize_cwd(cwd)).name or _normalize_cwd(cwd)
 
 
+def _clip_thread_label(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    shortened = textwrap.shorten(collapsed, width=60, placeholder="...")
+    if shortened != "...":
+        return shortened
+    return f"{collapsed[:57].rstrip()}..."
+
+
 class ConversationStore:
     def __init__(self, clock: Clock, state_path: str | Path | None = None):
         self.clock = clock
@@ -32,6 +43,9 @@ class ConversationStore:
         self._projects: dict[str, ProjectRecord] = {}
         self._projects_by_cwd: dict[str, str] = {}
         self._threads: dict[str, ThreadRecord] = {}
+        self._thread_active_turns: dict[str, tuple[str, str]] = {}
+        self._thread_first_user_messages: dict[str, str] = {}
+        self._pending_first_thread_labels: dict[tuple[str, str], str] = {}
         self._thread_order: list[str] = []
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingRequest] = {}
@@ -73,14 +87,15 @@ class ConversationStore:
         status: str = "idle",
     ) -> ThreadRecord:
         project = self._ensure_project(cwd)
+        existing = self._threads.get(thread_id)
         thread = ThreadRecord(
             thread_id=thread_id,
             project_id=project.project_id,
-            preview=preview,
+            preview=preview or (existing.preview if existing is not None else ""),
             status=status,
             last_used_at=self.clock(),
             cwd=cwd,
-            created_seq=self._next_seq(),
+            created_seq=existing.created_seq if existing is not None else self._next_seq(),
         )
         self._threads[thread_id] = thread
         if thread_id not in self._thread_order:
@@ -99,6 +114,48 @@ class ConversationStore:
 
     def get_project(self, project_id: str) -> ProjectRecord:
         return self._projects[project_id]
+
+    def note_thread_user_message(self, thread_id: str, text: str) -> None:
+        self.get_thread(thread_id)
+        if thread_id in self._thread_first_user_messages:
+            return
+        clipped = _clip_thread_label(text)
+        if not clipped:
+            return
+        self._thread_first_user_messages[thread_id] = clipped
+        self._save()
+
+    def thread_label(self, thread_id: str) -> str:
+        thread = self.get_thread(thread_id)
+        preview = _clip_thread_label(thread.preview)
+        if preview:
+            return preview
+        first_user_message = self._thread_first_user_messages.get(thread_id, "")
+        if first_user_message:
+            return first_user_message
+        return "Untitled thread"
+
+    def mark_pending_first_thread_label(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+    ) -> None:
+        self._pending_first_thread_labels[(channel_id, conversation_id)] = thread_id
+        self._save()
+
+    def consume_pending_first_thread_label(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+    ) -> bool:
+        key = (channel_id, conversation_id)
+        if self._pending_first_thread_labels.get(key) != thread_id:
+            return False
+        self._pending_first_thread_labels.pop(key, None)
+        self._save()
+        return True
 
     def list_projects(self) -> list[ProjectRecord]:
         return sorted(
@@ -133,6 +190,7 @@ class ConversationStore:
     ) -> ConversationBinding:
         self.get_project(project_id)
         binding = self.get_binding(channel_id, conversation_id)
+        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
         binding.active_project_id = project_id
         binding.active_thread_id = None
         binding.active_turn_id = None
@@ -148,8 +206,15 @@ class ConversationStore:
     ) -> ConversationBinding:
         thread = self.get_thread(thread_id)
         binding = self.get_binding(channel_id, conversation_id)
+        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=thread_id)
         binding.active_project_id = thread.project_id
         binding.active_thread_id = thread_id
+        active_turn = self._thread_active_turns.get(thread_id)
+        if active_turn is None:
+            binding.active_turn_id = None
+            binding.active_turn_status = None
+        else:
+            binding.active_turn_id, binding.active_turn_status = active_turn
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)
         self._save()
@@ -165,6 +230,7 @@ class ConversationStore:
         status: str,
     ) -> ConversationBinding:
         binding = self.set_active_thread(channel_id, conversation_id, thread_id)
+        self._thread_active_turns[thread_id] = (turn_id, status)
         binding.active_turn_id = turn_id
         binding.active_turn_status = status
         self._save()
@@ -181,16 +247,33 @@ class ConversationStore:
         self._save()
         return binding
 
-    def clear_active_thread(self, channel_id: str, conversation_id: str) -> ConversationBinding:
+    def clear_active_thread(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        clear_thread_turn: bool = False,
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
+        if clear_thread_turn and binding.active_thread_id is not None:
+            self._thread_active_turns.pop(binding.active_thread_id, None)
+        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
         binding.active_thread_id = None
         binding.active_turn_id = None
         binding.active_turn_status = None
         self._save()
         return binding
 
-    def clear_active_turn(self, channel_id: str, conversation_id: str) -> ConversationBinding:
+    def clear_active_turn(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        clear_thread_turn: bool = True,
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
+        if clear_thread_turn and binding.active_thread_id is not None:
+            self._thread_active_turns.pop(binding.active_thread_id, None)
         binding.active_turn_id = None
         binding.active_turn_status = None
         self._save()
@@ -204,6 +287,9 @@ class ConversationStore:
             binding.active_turn_id = None
             binding.active_turn_status = None
             cleared += 1
+        if self._thread_active_turns:
+            self._thread_active_turns.clear()
+            cleared = max(cleared, 1)
         if cleared:
             self._save()
         return cleared
@@ -218,7 +304,10 @@ class ConversationStore:
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             return None
-        binding.active_thread_id = thread_id
+        self._thread_active_turns[thread_id] = (turn_id, status)
+        if binding.active_thread_id != thread_id:
+            self._save()
+            return binding
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)
         binding.active_turn_id = turn_id
@@ -236,6 +325,12 @@ class ConversationStore:
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             return None
+        stored_turn = self._thread_active_turns.get(thread_id)
+        if stored_turn is not None and stored_turn[0] == turn_id:
+            self._thread_active_turns.pop(thread_id, None)
+        if binding.active_thread_id != thread_id:
+            self._save()
+            return binding
         if binding.active_turn_id == turn_id:
             binding.active_turn_id = None
         binding.active_turn_status = status
@@ -349,6 +444,23 @@ class ConversationStore:
         payload = {
             "projects": [asdict(project) for project in self._projects.values()],
             "threads": [asdict(thread) for thread in self._threads.values()],
+            "thread_active_turns": [
+                {
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "status": status,
+                }
+                for thread_id, (turn_id, status) in self._thread_active_turns.items()
+            ],
+            "thread_first_user_messages": self._thread_first_user_messages,
+            "pending_first_thread_labels": [
+                {
+                    "channel_id": channel_id,
+                    "conversation_id": conversation_id,
+                    "thread_id": thread_id,
+                }
+                for (channel_id, conversation_id), thread_id in self._pending_first_thread_labels.items()
+            ],
             "bindings": [asdict(binding) for binding in self._bindings.values()],
             "pending_requests": [asdict(request) for request in self._pending_requests.values()],
             "thread_order": self._thread_order,
@@ -367,6 +479,15 @@ class ConversationStore:
         self._threads = {
             item["thread_id"]: ThreadRecord(**item) for item in payload.get("threads", [])
         }
+        self._thread_active_turns = {
+            item["thread_id"]: (item["turn_id"], item["status"])
+            for item in payload.get("thread_active_turns", [])
+        }
+        self._thread_first_user_messages = dict(payload.get("thread_first_user_messages", {}))
+        self._pending_first_thread_labels = {
+            (item["channel_id"], item["conversation_id"]): item["thread_id"]
+            for item in payload.get("pending_first_thread_labels", [])
+        }
         self._thread_order = list(payload.get("thread_order", []))
         self._bindings = {
             (item["channel_id"], item["conversation_id"]): ConversationBinding(**item)
@@ -376,3 +497,16 @@ class ConversationStore:
             item["ticket_id"]: PendingRequest(**item) for item in payload.get("pending_requests", [])
         }
         self._seq = int(payload.get("seq", 0))
+
+    def _clear_pending_first_thread_label(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        next_thread_id: str | None,
+    ) -> None:
+        key = (channel_id, conversation_id)
+        pending_thread_id = self._pending_first_thread_labels.get(key)
+        if pending_thread_id is None or pending_thread_id == next_thread_id:
+            return
+        self._pending_first_thread_labels.pop(key, None)

@@ -91,7 +91,8 @@ async def test_mock_e2e_text_turn_streams_final_reply_to_outbound_sink() -> None
     )
     await asyncio.sleep(0)
 
-    assert [message.message_type for message in messages] == ["accepted", "processing"]
+    assert [message.message_type for message in messages] == ["accepted"]
+    assert messages[0].text == "Working on it."
     assert websocket.closed is False
     assert any('"method": "thread/start"' in item for item in websocket.sent)
     assert any('"method": "turn/start"' in item for item in websocket.sent)
