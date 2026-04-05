@@ -102,8 +102,27 @@ class CommandRouter:
         return CommandResponse(action="threads.list", text="\n".join(lines))
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) != 2 or args[0] != "use":
-            return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id>")
+        if len(args) != 2 or args[0] not in {"use", "attach"}:
+            return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id> or /thread attach <thread-id>")
+        if args[0] == "attach":
+            thread_id = args[1]
+            binding = self.store.get_binding(channel_id, conversation_id)
+            if binding.active_project_id is None:
+                projects = self.store.list_projects()
+                if len(projects) != 1:
+                    return CommandResponse(
+                        action="thread.attach.missing_project",
+                        text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+                    )
+                self.store.set_active_project(channel_id, conversation_id, projects[0].project_id)
+                binding = self.store.get_binding(channel_id, conversation_id)
+            project = self.store.get_project(binding.active_project_id)
+            return CommandResponse(
+                action="thread.attach",
+                text=f"Attaching thread {thread_id} in {project.cwd}.",
+                thread_id=thread_id,
+                project_id=project.project_id,
+            )
         thread_id = args[1]
         thread = self.store.get_thread(thread_id)
         self.store.set_active_thread(channel_id, conversation_id, thread_id)

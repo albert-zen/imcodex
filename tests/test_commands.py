@@ -12,6 +12,7 @@ def test_parse_projects_and_switch_commands() -> None:
     assert parse_command(r"/cwd D:\work\alpha").args == [r"D:\work\alpha"]
     assert parse_command("/threads --all").args == ["--all"]
     assert parse_command("/thread use thr-1").args == ["use", "thr-1"]
+    assert parse_command("/thread attach thr-2").args == ["attach", "thr-2"]
     assert parse_command("/new").name == "new"
     assert parse_command("/status").name == "status"
     assert parse_command("/stop").name == "stop"
@@ -92,6 +93,19 @@ def test_router_thread_switch_and_status() -> None:
     assert f"Project id: {alpha.project_id}" in status.text
     assert "Thread: please inspect why the Windows working directory resets..." in status.text
     assert "Thread id: thr_2" in status.text
+
+
+def test_router_thread_attach_uses_selected_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
+    router = CommandRouter(store)
+    store.set_active_project("qq", "conv-1", alpha.project_id)
+
+    response = router.handle("qq", "conv-1", "/thread attach thr_external")
+
+    assert response.action == "thread.attach"
+    assert response.thread_id == "thr_external"
+    assert alpha.cwd in response.text
 
 
 def test_router_new_stop_and_approval_commands() -> None:

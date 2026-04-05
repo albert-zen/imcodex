@@ -12,6 +12,7 @@ from imcodex.store import ConversationStore
 class FakeBackend:
     def __init__(self) -> None:
         self.created_threads: list[tuple[str, str]] = []
+        self.attached_threads: list[tuple[str, str, str]] = []
         self.ensure_threads: list[tuple[str, str]] = []
         self.started_turns: list[tuple[str, str, str]] = []
         self.interrupts: list[tuple[str, str]] = []
@@ -20,6 +21,10 @@ class FakeBackend:
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.created_threads.append((channel_id, conversation_id))
         return "thr_remote_new"
+
+    async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+        self.attached_threads.append((channel_id, conversation_id, thread_id))
+        return thread_id
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         self.ensure_threads.append((channel_id, conversation_id))
@@ -147,6 +152,76 @@ async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label()
         store.thread_label("thr_remote_new")
         == "please inspect why the Windows working directory resets..."
     )
+
+
+@pytest.mark.asyncio
+async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.set_active_thread(channel_id, conversation_id, "thr_attached")
+            return "thr_attached"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+
+    assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
+    assert messages[0].text == "Attached thread External session (id: thr_attached)."
+
+
+@pytest.mark.asyncio
+async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    store.record_thread("thr_known", cwd=project.cwd, preview="")
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_known", cwd=project.cwd, preview="Imported thread")
+            store.set_active_thread(channel_id, conversation_id, "thr_known")
+            return "thr_known"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_known",
+        )
+    )
+
+    assert messages[0].text == "Attached thread Imported thread (id: thr_known)."
 
 
 @pytest.mark.asyncio

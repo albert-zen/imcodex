@@ -48,6 +48,23 @@ class CodexBackend:
         self.store.clear_active_thread(channel_id, conversation_id)
         return await self.ensure_thread(channel_id, conversation_id)
 
+    async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        cwd = self._binding_cwd(binding)
+        result = await self.client.resume_thread(
+            thread_id=thread_id,
+            **self._thread_session_params(cwd),
+        )
+        resolved_thread_id = result["thread"]["id"]
+        self._bind_thread_result(
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+            thread_id=resolved_thread_id,
+            cwd=cwd,
+            preview=result["thread"].get("preview", ""),
+        )
+        return resolved_thread_id
+
     async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
         if (
@@ -183,7 +200,10 @@ class CodexBackend:
             return self.store.get_project(binding.active_project_id).cwd
         if binding.active_thread_id is not None:
             return self.store.get_thread(binding.active_thread_id).cwd
-        return self.store.get_project(binding.active_project_id).cwd
+        projects = self.store.list_projects()
+        if len(projects) == 1:
+            return projects[0].cwd
+        raise KeyError("No working directory selected for thread session")
 
     def _bind_thread_result(
         self,
@@ -194,8 +214,5 @@ class CodexBackend:
         cwd: str,
         preview: str,
     ) -> None:
-        try:
-            self.store.get_thread(thread_id)
-        except KeyError:
-            self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
+        self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
