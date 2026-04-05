@@ -5,7 +5,7 @@ import queue
 
 import pytest
 
-from imcodex.appserver_client import AppServerClient, AppServerError
+from imcodex.appserver import AppServerClient, AppServerError
 
 
 @dataclass

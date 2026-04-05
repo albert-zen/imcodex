@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import websockets
 
-from .models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, OutboundMessage
 
 
 logger = logging.getLogger(__name__)

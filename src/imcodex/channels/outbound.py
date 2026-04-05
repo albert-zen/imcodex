@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import httpx
 
-from .models import OutboundMessage
+from ..models import OutboundMessage
 
 
 class WebhookOutboundSink:

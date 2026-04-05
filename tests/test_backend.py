@@ -4,8 +4,7 @@ import asyncio
 
 import pytest
 
-from imcodex.appserver_client import AppServerError
-from imcodex.backend import CodexBackend
+from imcodex.appserver import AppServerError, CodexBackend
 from imcodex.store import ConversationStore
 
 

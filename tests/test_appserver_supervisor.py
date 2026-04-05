@@ -1,5 +1,5 @@
-import imcodex.appserver_supervisor as supervisor_module
-from imcodex.appserver_supervisor import AppServerSupervisor
+import imcodex.appserver.supervisor as supervisor_module
+from imcodex.appserver import AppServerSupervisor
 import pytest
 from pathlib import Path
 

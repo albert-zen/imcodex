@@ -6,8 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from imcodex.appserver_client import AppServerClient
-from imcodex.backend import CodexBackend
+from imcodex.appserver import AppServerClient, CodexBackend
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.models import InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore

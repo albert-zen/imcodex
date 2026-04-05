@@ -4,14 +4,10 @@ import time
 
 import websockets
 
-from .api import create_app
-from .appserver_client import AppServerClient
-from .appserver_supervisor import AppServerSupervisor
-from .backend import CodexBackend
+from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .bridge import BridgeService, CommandRouter, MessageProjector
+from .channels import MultiplexOutboundSink, QQChannelAdapter, WebhookOutboundSink, create_app
 from .config import Settings
-from .outbound import MultiplexOutboundSink, WebhookOutboundSink
-from .qq_adapter import QQChannelAdapter
 from .runtime import AppRuntime
 from .store import ConversationStore
 

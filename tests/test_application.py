@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from imcodex.application import build_runtime, create_application, open_blocking_websocket
 from imcodex.config import Settings
-from imcodex.outbound import MultiplexOutboundSink
+from imcodex.channels import MultiplexOutboundSink
 
 
 class FakeService:

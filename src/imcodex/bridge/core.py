@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..backend import CodexBackend
+from ..appserver import CodexBackend
 from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
 from .commands import CommandRouter
