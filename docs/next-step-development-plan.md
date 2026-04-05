@@ -7,6 +7,7 @@ It should be read together with:
 
 - `README.md` for current setup and supported entry points
 - `docs/issue-notes.md` for the main classes of problems we already observed
+- `docs/message-contract.md` for the sync/async bridge contract exposed to IM clients
 - `todo.md` for product-direction notes around `cwd` semantics and session portability
 
 ## 1. Where We Are
@@ -25,9 +26,16 @@ predictable as a production-grade IM coding assistant.
 The biggest gap is not raw functionality. It is product and protocol coherence:
 
 1. users do not yet have one clear mental model for "current working context"
-2. sync and async message delivery are not yet defined as one explicit contract
+2. sync and async message delivery now have a defined baseline contract, but richer tool activity is not yet first-class
 3. session continuity across restarts and across Codex surfaces is not yet first-class
 4. Windows runtime and long-lived local process behavior still need stronger operational guardrails
+
+Message-contract baseline:
+
+- `docs/message-contract.md` defines the bridge-visible sync/async contract
+- natural-language turns use immediate `accepted`, optional `turn_progress`,
+  optional approval/question requests, and terminal `turn_result`
+- slash commands return one immediate `status`, `command_result`, or `error`
 
 ## 2. Planning Principles
 

@@ -172,7 +172,13 @@ class MessageProjector:
                 self._emitted_turn_results.add(key)
                 return self._attach_conversation(
                     params.get("threadId", ""),
-                    self.render_turn_progress(text=text),
+                    self.render_turn_completed(
+                        final_text=text,
+                        command_summaries=[],
+                        changed_files=[],
+                        failed=False,
+                        interrupted=False,
+                    ),
                     store,
                 )
         elif item_type == "commandExecution":
