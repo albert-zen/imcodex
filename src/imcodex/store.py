@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import json
+import textwrap
 from pathlib import Path
 from typing import Any, Callable
 from dataclasses import asdict
@@ -25,6 +26,13 @@ def _display_name_for_cwd(cwd: str) -> str:
     return Path(_normalize_cwd(cwd)).name or _normalize_cwd(cwd)
 
 
+def _clip_thread_label(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return ""
+    return textwrap.shorten(collapsed, width=60, placeholder="...")
+
+
 class ConversationStore:
     def __init__(self, clock: Clock, state_path: str | Path | None = None):
         self.clock = clock
@@ -32,6 +40,7 @@ class ConversationStore:
         self._projects: dict[str, ProjectRecord] = {}
         self._projects_by_cwd: dict[str, str] = {}
         self._threads: dict[str, ThreadRecord] = {}
+        self._thread_first_user_messages: dict[str, str] = {}
         self._thread_order: list[str] = []
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingRequest] = {}
@@ -73,14 +82,15 @@ class ConversationStore:
         status: str = "idle",
     ) -> ThreadRecord:
         project = self._ensure_project(cwd)
+        existing = self._threads.get(thread_id)
         thread = ThreadRecord(
             thread_id=thread_id,
             project_id=project.project_id,
-            preview=preview,
+            preview=preview or (existing.preview if existing is not None else ""),
             status=status,
             last_used_at=self.clock(),
             cwd=cwd,
-            created_seq=self._next_seq(),
+            created_seq=existing.created_seq if existing is not None else self._next_seq(),
         )
         self._threads[thread_id] = thread
         if thread_id not in self._thread_order:
@@ -99,6 +109,26 @@ class ConversationStore:
 
     def get_project(self, project_id: str) -> ProjectRecord:
         return self._projects[project_id]
+
+    def note_thread_user_message(self, thread_id: str, text: str) -> None:
+        self.get_thread(thread_id)
+        if thread_id in self._thread_first_user_messages:
+            return
+        clipped = _clip_thread_label(text)
+        if not clipped:
+            return
+        self._thread_first_user_messages[thread_id] = clipped
+        self._save()
+
+    def thread_label(self, thread_id: str) -> str:
+        thread = self.get_thread(thread_id)
+        preview = _clip_thread_label(thread.preview)
+        if preview:
+            return preview
+        first_user_message = self._thread_first_user_messages.get(thread_id, "")
+        if first_user_message:
+            return first_user_message
+        return "Untitled thread"
 
     def list_projects(self) -> list[ProjectRecord]:
         return sorted(
@@ -349,6 +379,7 @@ class ConversationStore:
         payload = {
             "projects": [asdict(project) for project in self._projects.values()],
             "threads": [asdict(thread) for thread in self._threads.values()],
+            "thread_first_user_messages": self._thread_first_user_messages,
             "bindings": [asdict(binding) for binding in self._bindings.values()],
             "pending_requests": [asdict(request) for request in self._pending_requests.values()],
             "thread_order": self._thread_order,
@@ -367,6 +398,7 @@ class ConversationStore:
         self._threads = {
             item["thread_id"]: ThreadRecord(**item) for item in payload.get("threads", [])
         }
+        self._thread_first_user_messages = dict(payload.get("thread_first_user_messages", {}))
         self._thread_order = list(payload.get("thread_order", []))
         self._bindings = {
             (item["channel_id"], item["conversation_id"]): ConversationBinding(**item)

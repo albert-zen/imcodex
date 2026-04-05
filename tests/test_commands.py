@@ -32,11 +32,17 @@ def test_router_projects_and_project_switch() -> None:
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/projects")
-    assert store.get_project(alpha.project_id).display_name in response.text
-    assert store.get_project(beta.project_id).display_name in response.text
+    assert response.text.startswith("Working directories:")
+    assert alpha.cwd in response.text
+    assert beta.cwd in response.text
+    assert alpha.project_id in response.text
+    assert beta.project_id in response.text
 
     response = router.handle("qq", "conv-1", f"/project use {beta.project_id}")
     assert response.action == "project.use"
+    assert response.text.startswith("Working directory set to ")
+    assert beta.cwd in response.text
+    assert beta.project_id in response.text
     assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
     assert store.get_binding("qq", "conv-1").active_thread_id is None
 
@@ -59,18 +65,33 @@ def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
 
 def test_router_thread_switch_and_status() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
-    store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="b")
+    alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
+    store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="")
+    store.note_thread_user_message(
+        "thr_2",
+        "please inspect why the Windows working directory resets after restart",
+    )
     router = CommandRouter(store)
     store.set_active_project("qq", "conv-1", alpha.project_id)
 
+    threads = router.handle("qq", "conv-1", "/threads")
+    assert "seed preview" in threads.text
+    assert "please inspect why the Windows working directory resets..." in threads.text
+    assert threads.text.index("seed preview") < threads.text.index("thr_1")
+    assert threads.text.index("please inspect why the Windows working directory resets...") < threads.text.index("thr_2")
+
     response = router.handle("qq", "conv-1", "/thread use thr_2")
     assert response.action == "thread.use"
+    assert "please inspect why the Windows working directory resets..." in response.text
+    assert response.text.index("please inspect why the Windows working directory resets...") < response.text.index("thr_2")
     assert store.get_binding("qq", "conv-1").active_thread_id == "thr_2"
 
     status = router.handle("qq", "conv-1", "/status")
-    assert "thr_2" in status.text
-    assert alpha.project_id in status.text
+    lines = status.text.splitlines()
+    assert lines[0] == f"Working directory: {alpha.cwd}"
+    assert f"Project id: {alpha.project_id}" in status.text
+    assert "Thread: please inspect why the Windows working directory resets..." in status.text
+    assert "Thread id: thr_2" in status.text
 
 
 def test_router_new_stop_and_approval_commands() -> None:

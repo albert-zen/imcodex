@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 import shlex
 
 from ..store import ConversationStore
@@ -47,19 +48,20 @@ class CommandRouter:
     def _handle_projects(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del channel_id, conversation_id, args
         projects = self.store.list_projects()
-        lines = ["Projects:"]
+        lines = ["Working directories:"]
         for project in projects:
-            lines.append(f"- {project.project_id} | {project.display_name} | {project.cwd}")
+            lines.append(f"- {project.cwd} (project id: {project.project_id}, name: {project.display_name})")
         return CommandResponse(action="projects.list", text="\n".join(lines))
 
     def _handle_project(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         if len(args) != 2 or args[0] != "use":
             return CommandResponse(action="project.invalid", text="Usage: /project use <project-id>")
         project_id = args[1]
+        project = self.store.get_project(project_id)
         self.store.set_active_project(channel_id, conversation_id, project_id)
         return CommandResponse(
             action="project.use",
-            text=f"Switched to project {project_id}.",
+            text=f"Working directory set to {project.cwd} (project id: {project_id}).",
             project_id=project_id,
         )
 
@@ -73,7 +75,7 @@ class CommandRouter:
         self.store.set_active_project(channel_id, conversation_id, project.project_id)
         return CommandResponse(
             action="project.cwd",
-            text=f"Switched to project {project.project_id} at {project.cwd}.",
+            text=f"Working directory set to {project.cwd} (project id: {project.project_id}).",
             project_id=project.project_id,
         )
 
@@ -82,14 +84,21 @@ class CommandRouter:
         if binding.active_project_id is None and "--all" not in args:
             return CommandResponse(
                 action="threads.missing_project",
-                text="Please choose a project first with /projects and /project use <project-id>.",
+                text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
             )
         project_id = None if "--all" in args else binding.active_project_id
         threads = self.store.list_threads(project_id)
-        lines = ["Threads:"]
+        if project_id is None:
+            lines = ["Threads across working directories:"]
+        else:
+            project = self.store.get_project(project_id)
+            lines = [f"Threads for {project.cwd}:"]
         for thread in threads:
             marker = "*" if thread.thread_id == binding.active_thread_id else "-"
-            lines.append(f"{marker} {thread.thread_id} | {thread.preview} | {thread.cwd}")
+            details = [f"id: {thread.thread_id}"]
+            if project_id is None:
+                details.append(f"cwd: {thread.cwd}")
+            lines.append(f"{marker} {self.store.thread_label(thread.thread_id)} ({', '.join(details)})")
         return CommandResponse(action="threads.list", text="\n".join(lines))
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -100,33 +109,40 @@ class CommandRouter:
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
         return CommandResponse(
             action="thread.use",
-            text=f"Switched to thread {thread_id} in project {thread.project_id}.",
+            text=f"Switched to thread {self.store.thread_label(thread_id)} (id: {thread_id}) in {thread.cwd}.",
             thread_id=thread_id,
             project_id=thread.project_id,
         )
 
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del channel_id, conversation_id, args
-        return CommandResponse(action="thread.new", text="Creating a new thread.")
+        del args
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.active_project_id is None:
+            return CommandResponse(action="thread.new", text="Starting a new thread.")
+        project = self.store.get_project(binding.active_project_id)
+        return CommandResponse(action="thread.new", text=f"Starting a new thread for {project.cwd}.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
-        project_text = binding.active_project_id or "(none)"
         cwd_text = "(none)"
         if binding.active_project_id is not None:
             cwd_text = self.store.get_project(binding.active_project_id).cwd
-        thread_text = binding.active_thread_id or "(none)"
+        thread_text = "(none)"
+        if binding.active_thread_id is not None:
+            thread_text = self.store.thread_label(binding.active_thread_id)
         turn_text = binding.active_turn_id or "(none)"
-        turn_status = binding.active_turn_status or "(idle)"
-        text = (
-            f"project={project_text}\n"
-            f"cwd={cwd_text}\n"
-            f"thread={thread_text}\n"
-            f"turn={turn_text}\n"
-            f"turn_status={turn_status}\n"
-            f"pending_requests={len(binding.pending_request_ids)}"
-        )
+        turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
+        lines = [
+            f"Working directory: {cwd_text}",
+            f"Project id: {binding.active_project_id or '(none)'}",
+            f"Thread: {thread_text}",
+            f"Thread id: {binding.active_thread_id or '(none)'}",
+            f"Turn: {turn_text}",
+            f"Turn status: {turn_status}",
+            f"Pending requests: {len(binding.pending_request_ids)}",
+        ]
+        text = "\n".join(lines)
         return CommandResponse(action="status", text=text)
 
     def _handle_stop(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -198,3 +214,7 @@ class CommandRouter:
             key, value = pair.split("=", 1)
             answers[key] = [part for part in value.split(",") if part]
         return answers
+
+    def _humanize_status(self, status: str) -> str:
+        spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", status)
+        return spaced.replace("_", " ").strip().lower()

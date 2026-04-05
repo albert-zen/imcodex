@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from imcodex.store import ConversationStore
 
 
@@ -58,6 +60,34 @@ def test_project_and_thread_switching_updates_binding() -> None:
     binding = store.set_active_thread("qq", "conv-1", "thr_2")
     assert binding.active_project_id == beta.project_id
     assert binding.active_thread_id == "thr_2"
+
+
+def test_thread_label_prefers_preview_then_first_user_message() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="Existing preview")
+    store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="")
+
+    store.note_thread_user_message(
+        "thr_2",
+        "please inspect why the Windows working directory resets after restart",
+    )
+
+    assert store.thread_label("thr_1") == "Existing preview"
+    assert store.thread_label("thr_2") == "please inspect why the Windows working directory resets..."
+
+
+def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
+    store.note_thread_user_message(
+        "thr_1",
+        "please inspect why the Windows working directory resets after restart",
+    )
+
+    reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+
+    assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
 
 
 def test_pending_requests_round_trip() -> None:
