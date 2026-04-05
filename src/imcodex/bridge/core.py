@@ -42,6 +42,14 @@ class BridgeService:
             if label == "Untitled thread":
                 self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
             return [self._message(message, "status", f"Started new thread {label} (id: {thread_id}).")]
+        if response.action == "thread.attach":
+            thread_id = await self.backend.attach_thread(
+                message.channel_id,
+                message.conversation_id,
+                response.thread_id,
+            )
+            label = self._thread_label(thread_id)
+            return [self._message(message, "status", f"Attached thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
         elif response.action.startswith("approval.") or response.action == "request.answer":

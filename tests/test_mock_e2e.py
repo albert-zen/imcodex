@@ -104,3 +104,71 @@ async def test_mock_e2e_text_turn_streams_final_reply_to_outbound_sink() -> None
 
     await client.close()
     assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_mock_e2e_attaches_external_thread_and_continues_on_it() -> None:
+    incoming: asyncio.Queue[str] = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            2: ['{"id":2,"result":{"thread":{"id":"thr_external","preview":"Imported thread"}}}'],
+            3: ['{"id":3,"result":{"thread":{"id":"thr_external","preview":"Imported thread"}}}'],
+            4: [
+                '{"id":4,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}',
+                '{"method":"item/completed","params":{"threadId":"thr_external","turnId":"turn_1","item":{"id":"item_1","type":"agentMessage","text":"Continuing attached thread"}}}',
+                '{"method":"turn/completed","params":{"threadId":"thr_external","turn":{"id":"turn_1","status":"completed"}}}',
+            ],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    sink = CapturingSink()
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        outbound_sink=sink,
+    )
+    client.add_notification_handler(service.handle_notification)
+
+    await client.connect()
+    await client.initialize()
+
+    attach_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+    turn_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="continue from there",
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert attach_messages[0].text == "Attached thread Imported thread (id: thr_external)."
+    assert turn_messages[0].text == "Working on it."
+    assert sum('"method": "thread/resume"' in item for item in websocket.sent) == 2
+    assert any('"threadId": "thr_external"' in item for item in websocket.sent if '"method": "turn/start"' in item)
+    assert sink.messages[-1].message_type == "turn_result"
+    assert "Continuing attached thread" in sink.messages[-1].text
+
+    await client.close()

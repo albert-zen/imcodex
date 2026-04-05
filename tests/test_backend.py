@@ -121,6 +121,44 @@ async def test_ensure_thread_falls_back_to_start_when_resume_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_attach_thread_resumes_unknown_thread_in_selected_working_directory() -> None:
+    store = make_store()
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    assert thread_id == "thr_external"
+    assert client.thread_resumes == [
+        {"thread_id": "thr_external", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+    ]
+    assert store.get_binding("demo", "conv-1").active_thread_id == "thr_external"
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    project = store.ensure_project("D:/repo/app")
+    store.set_active_project("demo", "conv-1", project.project_id)
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    resumed_client = FakeClient()
+    resumed_backend = CodexBackend(client=resumed_client, store=reloaded, service_name="imcodex-test")
+
+    thread_id = await resumed_backend.ensure_thread("demo", "conv-1")
+
+    assert thread_id == "thr_external"
+    assert resumed_client.thread_resumes == [
+        {"thread_id": "thr_external", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_start_turn_tracks_active_turn() -> None:
     store = make_store()
     client = FakeClient()
