@@ -213,6 +213,55 @@ async def test_first_thread_request_connects_and_initializes_lazily():
 
 
 @pytest.mark.asyncio
+async def test_resume_thread_uses_thread_resume_and_thread_id():
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"thread":{"id":"thr_existing"}}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.resume_thread(thread_id="thr_existing", cwd="D:/desktop/project")
+
+    assert result["thread"]["id"] == "thr_existing"
+    assert '"method": "thread/resume"' in websocket.sent[2]
+    assert '"threadId": "thr_existing"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_error_response_raises_app_server_error_without_waiting_for_timeout():
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"error":{"message":"invalid request"}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+        request_timeout_s=0.01,
+    )
+
+    with pytest.raises(AppServerError, match="invalid request"):
+        await client.start_thread(cwd="D:/desktop/project")
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_async_notification_handlers_are_awaited():
     incoming = asyncio.Queue()
     incoming.put_nowait('{"id":1,"result":{"ok":true}}')

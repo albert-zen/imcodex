@@ -14,20 +14,34 @@ class CodexBackend:
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
+        cwd = self._binding_cwd(binding)
         if binding.active_thread_id:
-            return binding.active_thread_id
-        project = self.store.get_project(binding.active_project_id)
-        result = await self.client.start_thread(
-            cwd=project.cwd,
-            approval_policy=None,
-            sandbox=None,
-            model=None,
-            personality="friendly",
-            service_name=self.service_name,
-        )
+            try:
+                result = await self.client.resume_thread(
+                    thread_id=binding.active_thread_id,
+                    **self._thread_session_params(cwd),
+                )
+            except AppServerError:
+                pass
+            else:
+                thread_id = result["thread"]["id"]
+                self._bind_thread_result(
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                    thread_id=thread_id,
+                    cwd=cwd,
+                    preview=result["thread"].get("preview", ""),
+                )
+                return thread_id
+        result = await self.client.start_thread(**self._thread_session_params(cwd))
         thread_id = result["thread"]["id"]
-        self.store.record_thread(thread_id=thread_id, cwd=project.cwd, preview=result["thread"].get("preview", ""))
-        self.store.set_active_thread(channel_id, conversation_id, thread_id)
+        self._bind_thread_result(
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            cwd=cwd,
+            preview=result["thread"].get("preview", ""),
+        )
         return thread_id
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
@@ -153,3 +167,35 @@ class CodexBackend:
 
     def _should_retry_steer(self, error: AppServerError) -> bool:
         return "no active turn" in str(error).lower()
+
+    def _thread_session_params(self, cwd: str) -> dict[str, str | None]:
+        return {
+            "cwd": cwd,
+            "approval_policy": None,
+            "sandbox": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": self.service_name,
+        }
+
+    def _binding_cwd(self, binding) -> str:
+        if binding.active_project_id is not None:
+            return self.store.get_project(binding.active_project_id).cwd
+        if binding.active_thread_id is not None:
+            return self.store.get_thread(binding.active_thread_id).cwd
+        return self.store.get_project(binding.active_project_id).cwd
+
+    def _bind_thread_result(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+        cwd: str,
+        preview: str,
+    ) -> None:
+        try:
+            self.store.get_thread(thread_id)
+        except KeyError:
+            self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
+        self.store.set_active_thread(channel_id, conversation_id, thread_id)
