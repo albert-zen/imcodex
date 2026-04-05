@@ -34,6 +34,8 @@ class BridgeService:
 
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
+        if response.action == "thread.new.missing_project":
+            return [self._message(message, "error", response.text)]
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             label = self._thread_label(thread_id)

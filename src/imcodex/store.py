@@ -278,7 +278,6 @@ class ConversationStore:
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             return None
-        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=thread_id)
         binding.active_thread_id = thread_id
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)

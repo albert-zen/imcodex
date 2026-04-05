@@ -118,7 +118,14 @@ class CommandRouter:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.active_project_id is None:
-            return CommandResponse(action="thread.new", text="Starting a new thread.")
+            projects = self.store.list_projects()
+            if len(projects) != 1:
+                return CommandResponse(
+                    action="thread.new.missing_project",
+                    text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+                )
+            self.store.set_active_project(channel_id, conversation_id, projects[0].project_id)
+            binding = self.store.get_binding(channel_id, conversation_id)
         project = self.store.get_project(binding.active_project_id)
         return CommandResponse(action="thread.new", text=f"Starting a new thread for {project.cwd}.")
 

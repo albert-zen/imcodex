@@ -271,6 +271,30 @@ def test_turn_started_updates_status_for_status_command() -> None:
     assert binding.active_turn_status == "inProgress"
 
 
+def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_label() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
+    new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="")
+    store.set_active_thread("demo", "conv-1", old_thread.thread_id)
+    store.set_active_thread("demo", "conv-1", new_thread.thread_id)
+    store.mark_pending_first_thread_label("demo", "conv-1", new_thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_old",
+                "turn": {"id": "turn_old", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.consume_pending_first_thread_label("demo", "conv-1", new_thread.thread_id) is True
+
+
 def test_turn_completion_still_routes_after_switching_active_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     first = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="first")
