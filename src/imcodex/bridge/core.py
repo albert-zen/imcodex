@@ -26,7 +26,6 @@ class BridgeService:
         self.projector = projector
         self.outbound_sink = outbound_sink
         self.auto_approve_mode = auto_approve_mode
-        self._threads_needing_first_label: set[tuple[str, str, str]] = set()
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         if message.text.startswith("/"):
@@ -39,7 +38,7 @@ class BridgeService:
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             label = self._thread_label(thread_id)
             if label == "Untitled thread":
-                self._threads_needing_first_label.add((message.channel_id, message.conversation_id, thread_id))
+                self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
             return [self._message(message, "status", f"Started new thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
@@ -73,7 +72,11 @@ class BridgeService:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         if binding.active_thread_id is not None and (
             binding.active_thread_id != prior_thread_id
-            or self._consume_pending_first_label(message.channel_id, message.conversation_id, binding.active_thread_id)
+            or self.store.consume_pending_first_thread_label(
+                message.channel_id,
+                message.conversation_id,
+                binding.active_thread_id,
+            )
         ):
             self.store.note_thread_user_message(binding.active_thread_id, message.text)
         return [self._message(message, "accepted", "Working on it.")]
@@ -138,10 +141,3 @@ class BridgeService:
             return self.store.thread_label(thread_id)
         except KeyError:
             return "Untitled thread"
-
-    def _consume_pending_first_label(self, channel_id: str, conversation_id: str, thread_id: str) -> bool:
-        key = (channel_id, conversation_id, thread_id)
-        if key not in self._threads_needing_first_label:
-            return False
-        self._threads_needing_first_label.discard(key)
-        return True

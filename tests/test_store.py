@@ -90,6 +90,19 @@ def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
     assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
 
 
+def test_thread_label_keeps_long_whitespace_free_prompts_readable() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
+
+    prompt = "https://example.com/very/long/path/without/spaces/or/breakpoints/abcdef1234567890"
+    store.note_thread_user_message("thr_1", prompt)
+
+    label = store.thread_label("thr_1")
+    assert label != "..."
+    assert label.startswith("https://example.com/very/long")
+    assert label.endswith("...")
+
+
 def test_pending_requests_round_trip() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.create_pending_request(
