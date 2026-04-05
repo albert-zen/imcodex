@@ -72,6 +72,19 @@ Example body:
 }
 ```
 
+## Message Contract
+
+The bridge-visible sync/async contract is documented in
+[docs/message-contract.md](/D:/desktop/imcodex-wt-b-message-contract/docs/message-contract.md).
+
+In short:
+
+- normal text gets an immediate `accepted`
+- slash commands return one immediate `status`, `command_result`, or `error`
+- async progress is `turn_progress`
+- async terminal content is `turn_result`
+- approvals and user-input requests are `approval_request` and `question_request`
+
 ## Environment
 
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`

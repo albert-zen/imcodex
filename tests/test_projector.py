@@ -124,6 +124,7 @@ def test_project_notification_attaches_turn_completion_to_conversation() -> None
     )
 
     assert early_message is not None
+    assert early_message.message_type == "turn_result"
     assert early_message.channel_id == "demo"
     assert early_message.conversation_id == "conv-1"
     assert "Hello from Codex" in early_message.text
@@ -205,7 +206,7 @@ def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
     assert progress is not None
     assert progress.message_type == "turn_progress"
     assert final is not None
-    assert final.message_type == "turn_progress"
+    assert final.message_type == "turn_result"
     assert "src/imcodex/application.py" in final.text
 
 
