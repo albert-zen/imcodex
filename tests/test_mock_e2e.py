@@ -8,10 +8,8 @@ import pytest
 
 from imcodex.appserver_client import AppServerClient
 from imcodex.backend import CodexBackend
-from imcodex.commands import CommandRouter
+from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.models import InboundMessage, OutboundMessage
-from imcodex.projector import MessageProjector
-from imcodex.service import BridgeService
 from imcodex.store import ConversationStore
 
 

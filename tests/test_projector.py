@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from imcodex.models import PendingRequest
-from imcodex.projector import MessageProjector
+from imcodex.bridge import MessageProjector
 from imcodex.store import ConversationStore
 
 

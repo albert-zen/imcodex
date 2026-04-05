@@ -8,13 +8,11 @@ from .api import create_app
 from .appserver_client import AppServerClient
 from .appserver_supervisor import AppServerSupervisor
 from .backend import CodexBackend
-from .commands import CommandRouter
+from .bridge import BridgeService, CommandRouter, MessageProjector
 from .config import Settings
 from .outbound import MultiplexOutboundSink, WebhookOutboundSink
-from .projector import MessageProjector
 from .qq_adapter import QQChannelAdapter
 from .runtime import AppRuntime
-from .service import BridgeService
 from .store import ConversationStore
 
 

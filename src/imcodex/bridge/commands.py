@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import shlex
-from .store import ConversationStore
+
+from ..store import ConversationStore
 
 
 @dataclass(slots=True)
@@ -106,10 +107,7 @@ class CommandRouter:
 
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del channel_id, conversation_id, args
-        return CommandResponse(
-            action="thread.new",
-            text="Creating a new thread.",
-        )
+        return CommandResponse(action="thread.new", text="Creating a new thread.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
@@ -190,11 +188,7 @@ class CommandRouter:
         request = self.store.get_pending_request(ticket_id)
         if request is None:
             return CommandResponse(action=f"{action}.missing", text=f"Unknown ticket: {ticket_id}")
-        return CommandResponse(
-            action=action,
-            text=f"Recorded {decision} for {ticket_id}.",
-            ticket_id=ticket_id,
-        )
+        return CommandResponse(action=action, text=f"Recorded {decision} for {ticket_id}.", ticket_id=ticket_id)
 
     def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:
         answers: dict[str, list[str]] = {}
