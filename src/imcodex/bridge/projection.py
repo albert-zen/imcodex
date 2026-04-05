@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from .models import OutboundMessage, PendingRequest
+from ..models import OutboundMessage, PendingRequest
 
 
 class MessageProjector:
@@ -57,10 +57,7 @@ class MessageProjector:
         interrupted: bool,
     ) -> OutboundMessage:
         if not failed and not interrupted:
-            if final_text:
-                lines = [final_text]
-            else:
-                lines = []
+            lines = [final_text] if final_text else []
         else:
             status = "Turn interrupted." if interrupted else "Turn failed."
             lines = [status, final_text]

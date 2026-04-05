@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .backend import CodexBackend
+from ..appserver import CodexBackend
+from ..models import InboundMessage, OutboundMessage
+from ..store import ConversationStore
 from .commands import CommandRouter
-from .models import InboundMessage, OutboundMessage, PendingRequest
-from .projector import MessageProjector
-from .store import ConversationStore
+from .projection import MessageProjector
 
 
 class BridgeService:
@@ -77,8 +77,8 @@ class BridgeService:
             return []
         messages = [result]
         if self.outbound_sink is not None:
-            for message in messages:
-                await self.outbound_sink.send_message(message)
+            for outbound in messages:
+                await self.outbound_sink.send_message(outbound)
         return messages
 
     async def handle_server_request(self, request: dict[str, Any]) -> list[OutboundMessage]:
@@ -97,8 +97,8 @@ class BridgeService:
             return []
         messages = [result]
         if self.outbound_sink is not None:
-            for message in messages:
-                await self.outbound_sink.send_message(message)
+            for outbound in messages:
+                await self.outbound_sink.send_message(outbound)
         return messages
 
     def _select_project(self, channel_id: str, conversation_id: str):

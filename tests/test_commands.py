@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from imcodex.commands import CommandRouter, parse_command
+from imcodex.bridge import CommandRouter, parse_command
 from imcodex.store import ConversationStore
 
 

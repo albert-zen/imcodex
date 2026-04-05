@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from imcodex.api import create_app
+from imcodex.channels import create_app
 from imcodex.models import InboundMessage
 
 

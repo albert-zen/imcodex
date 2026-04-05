@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from imcodex.models import OutboundMessage
-from imcodex.qq_adapter import QQChannelAdapter
+from imcodex.channels import QQChannelAdapter
 
 
 class FakeService:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from .models import InboundMessage
+from ..models import InboundMessage
 
 
 def create_app(service) -> FastAPI:

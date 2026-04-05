@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from .appserver_client import AppServerError
-from .store import ConversationStore
+from .client import AppServerError
+from ..store import ConversationStore
 
 
 class CodexBackend:

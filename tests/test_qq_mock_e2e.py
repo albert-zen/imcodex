@@ -7,13 +7,9 @@ from dataclasses import dataclass
 import httpx
 import pytest
 
-from imcodex.appserver_client import AppServerClient
-from imcodex.backend import CodexBackend
-from imcodex.commands import CommandRouter
-from imcodex.outbound import MultiplexOutboundSink
-from imcodex.projector import MessageProjector
-from imcodex.qq_adapter import QQChannelAdapter, TOKEN_URL
-from imcodex.service import BridgeService
+from imcodex.appserver import AppServerClient, CodexBackend
+from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
+from imcodex.channels import MultiplexOutboundSink, QQChannelAdapter, TOKEN_URL
 from imcodex.store import ConversationStore
 
 

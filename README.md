@@ -2,6 +2,36 @@
 
 IM to Codex `app-server` bridge.
 
+## Architecture
+
+The codebase now follows a simple three-layer shape plus a thin wiring root:
+
+- `imcodex.channels`
+  Adapts concrete IM and transport surfaces such as QQ and the generic webhook API.
+- `imcodex.bridge`
+  Owns bridge semantics such as slash commands, conversation state routing, and Codex event projection.
+- `imcodex.appserver`
+  Owns native Codex `app-server` integration, including transport, supervision, and turn/thread lifecycle operations.
+
+Supporting modules:
+
+- `imcodex.composition`
+  Builds the runtime graph and wires the three layers together. This is not a fourth business layer; it is the composition root.
+- `imcodex.application`
+  Exposes the FastAPI app and lifecycle hooks.
+- `imcodex.runtime`
+  Runs startup and shutdown for the assembled services.
+- `imcodex.store`
+  Persists bridge state and conversation bindings.
+
+The dependency direction is intentionally one-way:
+
+- `channels` must not depend on `bridge` or `appserver`
+- `bridge` may depend on `appserver`, but not on `channels`
+- `appserver` must not depend on `bridge` or `channels`
+
+This direction is enforced by architecture tests in [tests/test_architecture.py](/D:/desktop/imcodex-refactor/tests/test_architecture.py).
+
 ## Run
 
 ```powershell

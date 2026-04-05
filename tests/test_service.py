@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from imcodex.commands import CommandRouter
+from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.models import InboundMessage
-from imcodex.projector import MessageProjector
-from imcodex.service import BridgeService
 from imcodex.store import ConversationStore
 
 
