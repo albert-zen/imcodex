@@ -50,6 +50,12 @@ class CodexBackend:
             except AppServerError as exc:
                 if not self._should_recover_from_steer_failure(exc):
                     raise
+                self.store.clear_pending_requests_for_turn(
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                    thread_id=binding.active_thread_id,
+                    turn_id=binding.active_turn_id,
+                )
                 await self._interrupt_best_effort(binding.active_thread_id, binding.active_turn_id)
                 self.store.clear_active_turn(channel_id, conversation_id)
             else:
@@ -97,6 +103,12 @@ class CodexBackend:
         binding = self.store.get_binding(channel_id, conversation_id)
         if not binding.active_thread_id or not binding.active_turn_id:
             return
+        self.store.clear_pending_requests_for_turn(
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+            thread_id=binding.active_thread_id,
+            turn_id=binding.active_turn_id,
+        )
         await self._interrupt_if_possible(binding.active_thread_id, binding.active_turn_id)
         self.store.clear_active_turn(channel_id, conversation_id)
 

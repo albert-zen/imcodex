@@ -305,6 +305,31 @@ class ConversationStore:
         self._save()
         return request
 
+    def clear_pending_requests_for_turn(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+        turn_id: str,
+    ) -> int:
+        target_keys: list[str] = []
+        for ticket_id, request in self._pending_requests.items():
+            if request.channel_id != channel_id or request.conversation_id != conversation_id:
+                continue
+            if request.thread_id != thread_id or request.turn_id != turn_id:
+                continue
+            target_keys.append(ticket_id)
+        if not target_keys:
+            return 0
+        binding = self.get_binding(channel_id, conversation_id)
+        for ticket_id in target_keys:
+            self._pending_requests.pop(ticket_id, None)
+            if ticket_id in binding.pending_request_ids:
+                binding.pending_request_ids.remove(ticket_id)
+        self._save()
+        return len(target_keys)
+
     def active_projects_for_conversation(self, channel_id: str, conversation_id: str) -> list[ProjectRecord]:
         binding = self.get_binding(channel_id, conversation_id)
         if binding.active_project_id:
