@@ -43,6 +43,7 @@ class ConversationStore:
         self._projects: dict[str, ProjectRecord] = {}
         self._projects_by_cwd: dict[str, str] = {}
         self._threads: dict[str, ThreadRecord] = {}
+        self._thread_active_turns: dict[str, tuple[str, str]] = {}
         self._thread_first_user_messages: dict[str, str] = {}
         self._pending_first_thread_labels: dict[tuple[str, str], str] = {}
         self._thread_order: list[str] = []
@@ -208,6 +209,12 @@ class ConversationStore:
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=thread_id)
         binding.active_project_id = thread.project_id
         binding.active_thread_id = thread_id
+        active_turn = self._thread_active_turns.get(thread_id)
+        if active_turn is None:
+            binding.active_turn_id = None
+            binding.active_turn_status = None
+        else:
+            binding.active_turn_id, binding.active_turn_status = active_turn
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)
         self._save()
@@ -223,6 +230,7 @@ class ConversationStore:
         status: str,
     ) -> ConversationBinding:
         binding = self.set_active_thread(channel_id, conversation_id, thread_id)
+        self._thread_active_turns[thread_id] = (turn_id, status)
         binding.active_turn_id = turn_id
         binding.active_turn_status = status
         self._save()
@@ -239,8 +247,16 @@ class ConversationStore:
         self._save()
         return binding
 
-    def clear_active_thread(self, channel_id: str, conversation_id: str) -> ConversationBinding:
+    def clear_active_thread(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        clear_thread_turn: bool = False,
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
+        if clear_thread_turn and binding.active_thread_id is not None:
+            self._thread_active_turns.pop(binding.active_thread_id, None)
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
         binding.active_thread_id = None
         binding.active_turn_id = None
@@ -248,8 +264,16 @@ class ConversationStore:
         self._save()
         return binding
 
-    def clear_active_turn(self, channel_id: str, conversation_id: str) -> ConversationBinding:
+    def clear_active_turn(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        clear_thread_turn: bool = True,
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
+        if clear_thread_turn and binding.active_thread_id is not None:
+            self._thread_active_turns.pop(binding.active_thread_id, None)
         binding.active_turn_id = None
         binding.active_turn_status = None
         self._save()
@@ -263,6 +287,9 @@ class ConversationStore:
             binding.active_turn_id = None
             binding.active_turn_status = None
             cleared += 1
+        if self._thread_active_turns:
+            self._thread_active_turns.clear()
+            cleared = max(cleared, 1)
         if cleared:
             self._save()
         return cleared
@@ -277,9 +304,10 @@ class ConversationStore:
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             return None
+        self._thread_active_turns[thread_id] = (turn_id, status)
         if binding.active_thread_id != thread_id:
+            self._save()
             return binding
-        binding.active_thread_id = thread_id
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)
         binding.active_turn_id = turn_id
@@ -297,6 +325,12 @@ class ConversationStore:
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             return None
+        stored_turn = self._thread_active_turns.get(thread_id)
+        if stored_turn is not None and stored_turn[0] == turn_id:
+            self._thread_active_turns.pop(thread_id, None)
+        if binding.active_thread_id != thread_id:
+            self._save()
+            return binding
         if binding.active_turn_id == turn_id:
             binding.active_turn_id = None
         binding.active_turn_status = status
@@ -410,6 +444,14 @@ class ConversationStore:
         payload = {
             "projects": [asdict(project) for project in self._projects.values()],
             "threads": [asdict(thread) for thread in self._threads.values()],
+            "thread_active_turns": [
+                {
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "status": status,
+                }
+                for thread_id, (turn_id, status) in self._thread_active_turns.items()
+            ],
             "thread_first_user_messages": self._thread_first_user_messages,
             "pending_first_thread_labels": [
                 {
@@ -436,6 +478,10 @@ class ConversationStore:
         }
         self._threads = {
             item["thread_id"]: ThreadRecord(**item) for item in payload.get("threads", [])
+        }
+        self._thread_active_turns = {
+            item["thread_id"]: (item["turn_id"], item["status"])
+            for item in payload.get("thread_active_turns", [])
         }
         self._thread_first_user_messages = dict(payload.get("thread_first_user_messages", {}))
         self._pending_first_thread_labels = {

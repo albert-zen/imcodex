@@ -186,3 +186,43 @@ def test_clear_pending_requests_for_turn_removes_only_matching_requests() -> Non
     assert store.get_pending_request("T-1") is None
     assert store.get_pending_request("T-2") is not None
     assert store.get_binding("qq", "conv-1").pending_request_ids == ["T-2"]
+
+
+def test_switching_back_to_delayed_running_thread_restores_its_turn_state() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
+    new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="new")
+    store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    store.set_active_thread("qq", "conv-1", new_thread.thread_id)
+
+    store.note_turn_started(old_thread.thread_id, turn_id="turn_old", status="inProgress")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.active_thread_id == new_thread.thread_id
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None
+
+    binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    assert binding.active_turn_id == "turn_old"
+    assert binding.active_turn_status == "inProgress"
+
+
+def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_status() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
+    new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="new")
+    store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    store.note_turn_started(old_thread.thread_id, turn_id="turn_old", status="inProgress")
+    store.set_active_thread("qq", "conv-1", new_thread.thread_id)
+    store.note_turn_started(new_thread.thread_id, turn_id="turn_new", status="inProgress")
+
+    store.note_turn_completed(old_thread.thread_id, turn_id="turn_old", status="completed")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.active_thread_id == new_thread.thread_id
+    assert binding.active_turn_id == "turn_new"
+    assert binding.active_turn_status == "inProgress"
+
+    binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None
