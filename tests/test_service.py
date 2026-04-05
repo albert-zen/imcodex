@@ -100,6 +100,54 @@ async def test_new_command_calls_backend_thread_creation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+
+    class RecordingBackend(FakeBackend):
+        async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
+            self.created_threads.append((channel_id, conversation_id))
+            store.record_thread("thr_remote_new", cwd=project.cwd, preview="")
+            store.set_active_thread(channel_id, conversation_id, "thr_remote_new")
+            return "thr_remote_new"
+
+    backend = RecordingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/new",
+        )
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="please inspect why the Windows working directory resets after restart",
+        )
+    )
+
+    assert messages[0].text == "Working on it."
+    assert (
+        store.thread_label("thr_remote_new")
+        == "please inspect why the Windows working directory resets..."
+    )
+
+
+@pytest.mark.asyncio
 async def test_approval_command_replies_before_pending_is_removed() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.create_pending_request(
