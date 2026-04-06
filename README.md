@@ -38,6 +38,13 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 python -m imcodex
 ```
 
+Helper scripts:
+
+```powershell
+pwsh -File .\scripts\doctor.ps1
+pwsh -File .\scripts\start.ps1
+```
+
 ## QQ Bot
 
 Set these environment variables to enable the built-in QQ adapter:
@@ -85,10 +92,25 @@ In short:
 - async terminal content is `turn_result`
 - approvals and user-input requests are `approval_request` and `question_request`
 
+## Deployment
+
+Use [docs/deployment.md](/D:/desktop/imcodex/docs/deployment.md) for a fresh-machine deployment checklist.
+
+The short version is:
+
+1. Install Python 3.13+ and `codex`
+2. Copy `.env.example` to `.env`
+3. Fill in the required settings
+4. Run `pip install -e .`
+5. Run `pwsh -File .\scripts\doctor.ps1`
+6. Start with `pwsh -File .\scripts\start.ps1`
+
 ## Environment
 
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
+- `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
+- `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
 - `IMCODEX_APP_SERVER_HOST`: default `127.0.0.1`
 - `IMCODEX_APP_SERVER_PORT`: default `8765`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target

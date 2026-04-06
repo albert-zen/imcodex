@@ -3,10 +3,16 @@ from __future__ import annotations
 import uvicorn
 
 from .application import create_application
+from .config import Settings
 
 
 def run() -> None:
-    uvicorn.run(create_application(), host="0.0.0.0", port=8000)
+    settings = Settings.from_env()
+    uvicorn.run(
+        create_application(settings=settings),
+        host=settings.http_host,
+        port=settings.http_port,
+    )
 
 
 if __name__ == "__main__":

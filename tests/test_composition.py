@@ -12,6 +12,8 @@ def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path,
         codex_bin="codex",
+        http_host="0.0.0.0",
+        http_port=8000,
         app_server_host="127.0.0.1",
         app_server_port=8765,
         outbound_url=None,

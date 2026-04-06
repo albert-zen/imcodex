@@ -33,6 +33,8 @@ def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
 class Settings:
     data_dir: Path
     codex_bin: str
+    http_host: str
+    http_port: int
     app_server_host: str
     app_server_port: int
     outbound_url: str | None
@@ -55,6 +57,8 @@ class Settings:
         return cls(
             data_dir=root,
             codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
+            http_host=_env("IMCODEX_HTTP_HOST", "0.0.0.0", dotenv),
+            http_port=int(_env("IMCODEX_HTTP_PORT", "8000", dotenv)),
             app_server_host=_env("IMCODEX_APP_SERVER_HOST", "127.0.0.1", dotenv),
             app_server_port=int(_env("IMCODEX_APP_SERVER_PORT", "8765", dotenv)),
             outbound_url=_env("IMCODEX_OUTBOUND_URL", "", dotenv) or None,
