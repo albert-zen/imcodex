@@ -1,254 +1,243 @@
 # IMCodex Next-Step Development Plan
 
-This document turns the current state of `imcodex` into a practical roadmap.
-It is intentionally biased toward sequencing and dependencies rather than
-brainstorming.
+This document updates the execution plan for `imcodex`.
+
+The most important change is strategic:
+
+- We should stop assuming the current bridge is the final kernel.
+- We should plan around a native-first redesign.
+- Existing code should be reused selectively, not preserved by default.
 
 Read this together with:
 
-- `README.md` for current setup and entry points
-- `todo.md` for the concise roadmap view
-- `docs/message-contract.md` for the current sync/async bridge contract
-- `docs/issue-notes.md` for the main classes of problems we already hit
-- `docs/deployment.md` for current deployment and diagnostics workflow
+- `todo.md` for the compact roadmap
+- `docs/native-redesign-plan.md` for the redesign target
+- `docs/issue-notes.md` for the constraints we already learned the hard way
+- `docs/message-contract.md` for the current bridge contract
+- `docs/deployment.md` for current runtime packaging and diagnostics
 
-## 1. Where We Are Now
+## 1. Current Planning Assumption
 
-The bridge already has a solid baseline:
+The bridge already proved three things:
 
-- three-layer structure:
-  - `imcodex.channels`
-  - `imcodex.bridge`
-  - `imcodex.appserver`
-- generic webhook entry plus QQ channel support
-- native `codex app-server` integration
-- slash command routing and conversation binding
-- approval and question round trips
-- auto-approve support
-- documented sync/async message contract
-- deployment packaging and diagnostics scripts
+1. the channel side is feasible
+2. the native `codex app-server` side is feasible
+3. the user-facing pain now comes mostly from bridge-owned behavior, not from a lack of raw connectivity
 
-That means the next milestone is no longer "make it work at all".
-The next milestone is:
+That changes how we should plan.
 
-- make it easier to understand in chat
-- make sessions feel native and portable
-- make runtime behavior easier to trust on Windows
+The next milestone should not be:
 
-## 2. What Is Already Done
+- "improve the existing bridge a little more"
 
-The following should no longer be treated as the primary "next step":
+The next milestone should be:
 
-### 2.1 Messaging contract baseline
+- "define and rebuild a more native bridge core with less custom behavior"
 
-- `docs/message-contract.md` exists
-- sync webhook acknowledgement versus async follow-up is documented
-- the bridge already distinguishes:
-  - immediate command results
-  - immediate accepted responses
-  - async progress
-  - approval or question requests
-  - terminal turn results
+## 2. What The Current System Is Good For
 
-### 2.2 Deployment packaging baseline
+The current implementation is still valuable, but its role has changed.
 
-- `.env.example` exists
-- `scripts/start.ps1` exists
-- `scripts/doctor.ps1` exists
-- `docs/deployment.md` exists
-- host and port configuration are environment-driven
+It now serves as:
 
-### 2.3 Structural simplification baseline
+- a working reference implementation
+- a source of reusable channel adapters
+- a source of reusable app-server transport code
+- a source of tests and operational knowledge
+- a catalog of failure modes already captured in `docs/issue-notes.md`
 
-- channel-specific logic is separated from bridge logic
-- app-server protocol logic is separated from channel logic
-- composition and runtime are thin wiring layers
+It should not automatically be treated as:
 
-## 3. Current Product Gaps
+- the final state model
+- the final approval model
+- the final message-pump model
+- the final user-facing semantics
 
-The biggest remaining gaps are now product and lifecycle gaps rather than
-missing infrastructure.
+## 3. The Main Design Goal
 
-### 3.1 Working-context semantics are still more complex than they need to be
+The new core should be closer to Codex native behavior and lighter in its own state.
 
-Users should only need to understand one concept for where Codex is working.
-Today, the system still carries too much historical `project` vocabulary.
+In practice, that means:
 
-### 3.2 Thread management is still too machine-oriented
+- preserve native Codex thread and turn semantics
+- preserve native approval and sandbox semantics
+- reduce bridge-owned state to channel mapping plus user-facing presentation
+- prefer explicit rebuild over compatibility patches when the old model is wrong
 
-Canonical thread ids are necessary, but they are not good primary UX.
-Thread lists and status output still need more human-readable labels and better
-attach/resume ergonomics.
+## 4. What We Should Rebuild, Not Patch
 
-### 3.3 Tool activity is still under-explained in chat
+These are the areas where continuing to patch the current implementation is
+likely the wrong tradeoff.
 
-The system already pushes progress and final output, but users still do not get
-the best possible visibility into what Codex is actively doing during a longer
-task.
+### 4.1 Session identity model
 
-### 3.4 Session continuity across Codex surfaces is only partially realized
+We still need a cleaner answer to:
 
-The bridge now has the right building blocks, but portability still needs to be
-made explicit and tested as a first-class workflow.
+- what defines continuity:
+  - `threadId`
+  - `cwd`
+  - persisted history mode
+  - session path
+- what belongs to Codex state versus bridge state
 
-### 3.5 Windows runtime trust still depends too much on manual inspection
+This should be redesigned from first principles against native `thread/resume`
+behavior instead of by growing the current store model.
 
-Diagnostics are better than before, but long-running service behavior and
-restart trust still need more productized handling.
+### 4.2 Permission model
 
-## 4. Planning Principles
+The bridge-level auto-approve path was useful as a temporary product escape
+hatch, but it should not be the permanent architecture.
 
-The next phase should follow these principles:
+We should redesign around native Codex concepts:
 
-- Prefer one user-facing concept: `cwd`
-- Preserve native Codex identity whenever possible
-- Keep channel identity, thread identity, turn identity, and request identity separate
-- Show enough progress to keep long-running turns alive without flooding the chat
-- Improve operability in ways that shorten debugging loops on Windows
-- Favor a few high-value end-to-end scenarios over large synthetic test matrices
+- `approval_policy`
+- `sandbox_policy`
+- native permission modes and profiles
 
-## 5. Recommended Roadmap
+### 4.3 Message pump
 
-## Phase 1: Make The IM Experience Coherent
+Current message projection works, but it is still the result of incremental
+fixes around progress, final answers, and async ordering.
 
-### Goal
+The better long-term model is a real per-conversation/per-turn message pump that
+explicitly handles:
 
-Reduce confusion in day-to-day chat usage.
+- throttling
+- deduplication
+- stale-turn suppression
+- partial progress
+- terminal message precedence
 
-### Scope
+### 4.4 Tool visibility model
 
-- converge user-facing semantics on `cwd`
-- improve thread readability
-- reduce noisy routing and processing chatter
-- make tool activity more legible in IM
+Tool visibility should be rebuilt around stable user-facing categories, not
+around raw app-server event shapes.
 
-### Why this comes first
+That is a product model decision first, not only a projector tweak.
 
-This is the highest-value user-facing work remaining.
-The bridge already works, but it still feels more like a capable prototype than
-a polished conversational coding surface.
+## 5. What We Should Keep And Reuse
 
-### Acceptance criteria
+These parts are worth keeping unless the redesign reveals a better replacement:
 
-- `/status` is readable in chat and `cwd`-first
-- thread lists are understandable without raw ids
-- routine chat no longer emits low-value routing chatter
-- users can tell what Codex is doing during longer tasks
+- channel adapters and outbound sinks
+- app-server transport and supervisor code
+- deployment scripts and diagnostics baseline
+- existing test suites as a starting point
+- issue notes and message-contract docs as input constraints
 
-## Phase 2: Make Session Portability First-Class
+## 6. Recommended Execution Order
+
+The next cycle should follow this sequence.
+
+## Phase 1: Design The Native Core
 
 ### Goal
 
-Let IM sessions participate naturally in the broader Codex ecosystem.
+Freeze the right architecture before more feature work accumulates on top of the
+wrong one.
 
-### Scope
+### Deliverables
 
-- preserve and expose canonical thread identity
-- strengthen `thread/resume` and attach workflows
-- define what portability means across:
-  - IM bridge
-  - Codex CLI
-  - Codex Desktop
-- test restart and resume flows explicitly
+- a session identity design
+- a permission model design
+- a message-pump design
+- a tool-visibility design
+- a minimal persisted-state design
 
-### Why this comes second
+### Why first
 
-It is strategically important, but the user-facing vocabulary and thread UX
-should be cleaned up first so that attach/resume flows land on a clearer model.
+Without these decisions, future work on portability, progress visibility, and
+permissions will keep re-litigating the same assumptions.
 
-### Acceptance criteria
-
-- restart does not silently lose conversation continuity
-- an existing native thread can be attached in the bridge
-- the bridge can explain resume success versus stale-thread fallback
-
-## Phase 3: Strengthen Runtime Operability
+## Phase 2: Rebuild The Core Around Native Semantics
 
 ### Goal
 
-Make the service easier to trust and easier to keep running.
+Replace the most legacy-shaped parts of the current bridge with a smaller,
+clearer native-first core.
 
 ### Scope
 
-- stronger startup summaries and runtime diagnostics
-- clearer process and port ownership visibility
-- improved long-running Windows service behavior
-- better logging and troubleshooting guidance
+- rebuild state around native session continuity
+- replace bridge-owned approval shortcuts
+- introduce the new message pump
+- make tool visibility configurable by category
+- keep channel adapters and app-server transport where possible
 
-### Why this follows portability
+### Why second
 
-Operability matters a lot, but the current baseline is already good enough to
-support the next round of product work. This phase should tighten the service,
-not block product iteration.
+This is the first phase where code churn is worth paying for.
+By then, the design should already justify what gets kept and what gets thrown away.
 
-### Acceptance criteria
-
-- it is easy to identify the live bridge process and app-server process
-- restart failures can be diagnosed quickly
-- logs and diagnostics are predictable enough for another machine or operator
-
-## Phase 4: Add More Real-Flow Confidence
+## Phase 3: Reattach Product Features To The New Core
 
 ### Goal
 
-Protect the behaviors users actually feel.
+Reconnect the user-facing experience on top of the rebuilt kernel.
 
 ### Scope
 
-- add more scenario-driven end-to-end tests around:
-  - progress delivery
-  - approval and question loops
-  - interrupted turns
-  - stale-thread recovery
-  - restart continuity
-  - cross-surface attach and resume
+- `cwd`-first terminology
+- human-readable thread labels
+- attach and resume workflows
+- cleaner status output
+- reduced chat noise
 
-### Why this is last
+### Why this follows rebuild
 
-Coverage is already decent. The next confidence jump should lock down the
-behaviors we decide on in Phases 1 through 3, rather than freezing today’s UX
-too early.
+These features should sit on top of the final state and message model, not on
+top of transitional infrastructure.
 
-### Acceptance criteria
+## Phase 4: Harden Operability And Confidence
 
-- the most failure-prone user-visible flows are covered by tests
-- projector or bridge regressions break tests in a meaningful way
+### Goal
 
-## 6. Dependency Order
+Make the rebuilt system easy to trust in practice.
 
-Recommended order for the next development cycle:
+### Scope
 
-1. Phase 1: IM experience coherence
-2. Phase 2: session portability
-3. Phase 3: runtime operability
-4. Phase 4: real-flow end-to-end confidence
+- runtime diagnostics and logs
+- Windows service behavior
+- high-value end-to-end scenarios
+- cross-surface continuation tests
 
-Why this order:
+## 7. Concrete Planning Guidance For The Next Implementation Round
 
-- Phase 1 improves the product immediately
-- Phase 2 builds on clearer `cwd` and thread semantics
-- Phase 3 should harden the now-clearer product surface
-- Phase 4 should then lock down the chosen behavior
+If we start coding after this planning step, the best next slice is not a user
+feature. It is a redesign slice:
 
-## 7. Concrete Next Sprint Recommendation
+1. write the session identity design
+2. write the native permission model design
+3. write the message-pump design
+4. decide what old store data can be intentionally dropped
+5. only then start the rebuild
 
-If we compress this into one realistic sprint, the best slice is:
+This is slower than shipping one more patch, but faster than hardening the wrong
+core for another cycle.
 
-1. make `/status`, selection flows, and thread lists fully `cwd`-first
-2. improve thread display labels and reduce low-value chat noise
-3. expose more meaningful tool activity in IM without raw-token spam
-4. add one explicit attach/resume workflow and one restart-continuity scenario test
+## 8. Architecture Decision Heuristics
 
-This sprint would not solve everything, but it would make the bridge feel much
-closer to a native Codex surface rather than an integration layer with rough
-edges.
+When deciding whether to preserve or replace an existing behavior, prefer these
+rules:
 
-## 8. Definition Of A Good Next Milestone
+### Keep it if
 
-The next milestone is successful if:
+- it already matches native Codex semantics
+- it is a thin adapter around channel or transport reality
+- it reduces operational risk without adding bridge-specific logic
 
-- users can understand the current working context without learning internal vocabulary
-- thread management feels readable and practical in chat
-- long-running turns feel alive rather than silent
-- a session can survive restart and begin to move across Codex surfaces
-- operators can trust what process is actually live on Windows
+### Replace it if
+
+- it exists mainly to paper over an earlier bridge limitation
+- it duplicates a native Codex capability
+- it adds bridge-owned state that users do not actually need
+- it makes cross-surface continuity harder to reason about
+
+## 9. Definition Of A Good Next Milestone
+
+The next milestone is good if:
+
+- the planned core is more native than the current one
+- the bridge owns less policy and less identity than it does today
+- the future IM experience becomes easier to explain
+- we are positioned to discard old state and old approval shortcuts deliberately

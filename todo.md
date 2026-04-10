@@ -1,141 +1,132 @@
 # IMCodex Roadmap
 
-This file is the working product roadmap for `imcodex`.
+This file is the compact roadmap for `imcodex`.
 
-It is intentionally short and execution-oriented:
+It reflects a deliberate change in planning direction:
 
-- `Now` means the next milestone we should actively build.
-- `Next` means the following milestone once `Now` is stable.
-- `Later` means important, but not worth delaying the current milestone.
+- We are no longer assuming that the current bridge should be evolved forever.
+- We should prefer a simpler, more native architecture over preserving legacy bridge behavior.
+- Existing code is now best treated as:
+  - a source of learned constraints
+  - a source of reusable adapters
+  - not a permanent contract
 
 Read this together with:
 
-- `README.md` for the current supported setup
-- `docs/message-contract.md` for the current sync/async bridge contract
-- `docs/issue-notes.md` for the main problem classes we have already hit
-- `docs/next-step-development-plan.md` for the more detailed development plan
+- `docs/native-redesign-plan.md`
+- `docs/next-step-development-plan.md`
+- `docs/issue-notes.md`
+- `docs/message-contract.md`
 
-## Done Foundations
+## Baseline We Keep
 
-These are already in place and should now be treated as baseline, not future work:
+These are assets, not future work:
 
-- Core three-layer structure:
+- QQ and generic webhook channel experience
+- native `codex app-server` connectivity
+- working deployment packaging and diagnostics
+- a good body of tests and failure notes
+- clearer codebase boundaries:
   - `imcodex.channels`
   - `imcodex.bridge`
   - `imcodex.appserver`
-- Generic webhook bridge flow and QQ channel support
-- Native `codex app-server` integration
-- Basic slash commands and conversation binding
-- Approval and question round trips
-- Auto-approve environment switches
-- Sync/async message contract baseline
-- Deployment packaging:
-  - `.env.example`
-  - `scripts/start.ps1`
-  - `scripts/doctor.ps1`
-  - `docs/deployment.md`
 
-## Now: Make The IM Experience Coherent
+## Current Strategy
 
-This is the highest-value next milestone because it directly improves daily use.
+The next milestone should be a native-first redesign, not another layer of patches.
 
-### 1. Unify User Semantics On `cwd`
+That means:
 
-- Treat `cwd`, `current folder`, and working directory as one user-facing concept.
-- Stop teaching `project` as a separate concept in normal chat flows.
-- Keep internal `project_id` only as a persistence and deduplication detail.
-- Update `/status`, selection flows, and command wording to be `cwd`-first.
+- align more closely with native Codex thread, turn, approval, and sandbox semantics
+- shrink bridge-owned state to the minimum required for channel mapping
+- replace legacy bridge behaviors that exist only because earlier architecture was incomplete
+- accept state migration breakage if the replacement model is clearly better
 
-### 2. Make Threads Human-Readable
+## Now: Design The New Native Core
 
-- Improve thread labels so users can understand thread lists without reading raw ids.
-- Prefer a short summary or topic label when available.
-- Otherwise fall back to a clipped version of the first meaningful user message.
-- Keep canonical `threadId` available for attach/resume, but never as the primary label.
+### 1. Native Session Identity
 
-### 3. Reduce Message Noise
+- Define the minimum identity needed for continuity:
+  - `threadId`
+  - `cwd`
+  - possibly native session path or persisted history settings
+- Clarify what must be bridge-owned versus Codex-owned.
+- Define restart, attach, and resume semantics around native Codex behavior first.
 
-- Remove or compress low-value messages like repeated accept/process notices.
-- Keep only the minimum visible feedback needed to show that work has started.
-- Move routing detail such as thread-selection chatter into logs or debug-oriented surfaces.
+### 2. Native Permission Model
 
-### 4. Surface Tool Activity Better
+- Stop treating bridge-level auto-approve as the long-term answer.
+- Rebuild permission handling around native Codex:
+  - `approval_policy`
+  - `sandbox_policy`
+  - native permission profiles or modes
+- Decide what permission choices the IM surface should expose to users.
 
-- Show meaningful tool activity in IM:
-  - searching
-  - reading files
-  - running commands
-  - waiting for approval or input
-- Avoid raw token spam and low-level protocol chatter.
-- Decide what belongs in chat versus what should remain a client-side detail or debug log.
+### 3. Native Message Pump
 
-## Next: Make Sessions Portable Across Codex Surfaces
-
-This is the strategic feature that makes the bridge feel native to the Codex ecosystem.
-
-### 5. Cross-Surface Session Continuity
-
-- Let a session started in IM be resumed from Codex CLI or Codex Desktop when possible.
-- Let a thread started elsewhere be attached inside the IM bridge.
-- Prefer native Codex thread/session primitives instead of bridge-only abstractions.
-- Persist and expose the canonical identifiers needed for `thread/resume`.
-
-### 6. Resume And Attach Flows
-
-- Make restart recovery feel normal, not exceptional.
-- Clarify and test:
-  - IM bridge restart -> continue the same conversation
-  - Codex CLI/Desktop thread -> attach in IM bridge
-  - IM bridge thread -> continue outside the bridge
-- Decide whether surfacing thread id is enough, or whether session path also matters.
-
-## Later: Make The Service Easier To Operate
-
-This work matters, but should not block the UX and portability milestone.
-
-### 7. Runtime Hardening
-
-- Improve long-running Windows service behavior.
-- Add stronger startup and restart diagnostics.
-- Make it easy to tell which process owns:
-  - the IM bridge port
-  - the app-server port
-  - the active data directory
-- Consider a more explicit service-mode or background-runner story.
-
-### 8. Logging And Health
-
-- Standardize runtime logs and log locations.
-- Add a simple health or diagnostics surface beyond ad hoc terminal inspection.
-- Keep debugging loops short when the environment, not the code, is broken.
-
-## Later: Raise Product Confidence
-
-### 9. Higher-Value End-To-End Coverage
-
-- Add more scenario-driven end-to-end tests around:
-  - long-running turns
+- Design a queue or message-pump model for asynchronous chat delivery.
+- The unit of ordering should not just be "messages", but conversation plus turn lifecycle.
+- Support:
+  - throttling
+  - deduplication
+  - stale-turn suppression
   - partial progress delivery
-  - approval and question loops
-  - restart and stale-thread recovery
-  - cross-surface attach and resume
+  - final-result precedence rules
 
-### 10. Stronger Product Contract Docs
+### 4. Tool Visibility Model
 
-- Keep the IM-facing protocol and operational docs aligned with real behavior.
-- Make it easy for another developer to understand:
-  - what arrives synchronously
-  - what arrives asynchronously
-  - what state is bridge-owned
-  - what state is Codex-native
+- Make tool visibility configurable by user-facing category rather than raw protocol event.
+- Decide the stable categories worth exposing in chat.
+- Keep low-value protocol chatter and token deltas out of the main chat flow.
+
+## Next: Rebuild The Bridge Around That Design
+
+### 5. Minimal Persistent State
+
+- Rebuild persisted state around the new native model.
+- Keep only the minimum bridge-owned information:
+  - channel/conversation binding
+  - selected `cwd`
+  - selected native thread
+  - user-facing display preferences
+- Do not preserve legacy bridge state just for compatibility if it complicates the model.
+
+### 6. Replace Legacy Approval And Routing Behavior
+
+- Remove bridge-specific approval shortcuts that duplicate native Codex behavior.
+- Remove legacy routing chatter that only exists to explain internal bridge choices.
+- Make normal chat feel like a native Codex surface rather than a wrapper.
+
+### 7. Rebuild Resume / Attach Around Native Semantics
+
+- Treat `thread/resume` and attach as primary workflows, not optional extras.
+- Make cross-surface continuation explicit:
+  - IM -> CLI/Desktop
+  - CLI/Desktop -> IM
+  - restart -> same conversation
+
+## Later: Harden The New Core
+
+### 8. Operability
+
+- Windows service behavior
+- stronger logs and health checks
+- more explicit runtime diagnostics
+
+### 9. Real-Flow Confidence
+
+- end-to-end tests around the redesigned message pump
+- end-to-end tests around native permission modes
+- attach/resume scenarios across restart and cross-surface continuation
 
 ## Ordering Principles
 
 When choosing work, prefer this order:
 
-1. Reduce user confusion in chat
-2. Preserve native Codex identity and continuity
-3. Improve operability on Windows
-4. Expand confidence with end-to-end coverage
+1. More native Codex semantics
+2. Less bridge-owned complexity
+3. Better IM usability
+4. Better Windows operability
+5. More confidence via end-to-end scenarios
 
-If a change does not improve one of those four things, it is probably not the next best use of time.
+If a change preserves old bridge complexity without improving one of those five things, it is probably the wrong next move.
