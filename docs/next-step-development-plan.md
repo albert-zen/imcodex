@@ -59,6 +59,7 @@ The new core should be closer to Codex native behavior and lighter in its own st
 
 In practice, that means:
 
+- reuse native Codex capabilities whenever they already solve the problem well
 - preserve native Codex thread and turn semantics
 - preserve native approval and sandbox semantics
 - reduce bridge-owned state to channel mapping plus user-facing presentation
@@ -82,6 +83,14 @@ We still need a cleaner answer to:
 
 This should be redesigned from first principles against native `thread/resume`
 behavior instead of by growing the current store model.
+
+It should also explicitly consider which native APIs should become primary:
+
+- `thread/list`
+- `thread/read`
+- `thread/resume`
+- `thread.path`
+- persisted-history support
 
 ### 4.2 Permission model
 
@@ -125,6 +134,15 @@ These parts are worth keeping unless the redesign reveals a better replacement:
 - existing test suites as a starting point
 - issue notes and message-contract docs as input constraints
 
+These native capabilities should also be treated as preferred building blocks,
+not optional extras:
+
+- native `cwd` handling on thread and turn operations
+- native `thread/list` filtering by `cwd`
+- native `thread/read` and `thread/resume`
+- native approval and sandbox policies
+- native thread metadata such as `thread.path`
+
 ## 6. Recommended Execution Order
 
 The next cycle should follow this sequence.
@@ -143,6 +161,7 @@ wrong one.
 - a message-pump design
 - a tool-visibility design
 - a minimal persisted-state design
+- a native-capability audit showing what we can stop owning in the bridge
 
 ### Why first
 

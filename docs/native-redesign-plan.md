@@ -20,6 +20,10 @@ and less like:
 That means the bridge should own less policy, less identity, and less workflow
 logic than it does today.
 
+It also means we should explicitly prefer native Codex capabilities whenever
+they already provide a solid answer, instead of rebuilding the same concepts in
+bridge-owned state.
+
 ## 2. Non-Goals
 
 The redesign should not optimize for:
@@ -47,6 +51,14 @@ Candidate pieces:
 - `cwd`
 - native session path
 - persisted-history configuration
+
+Native capabilities we should explicitly evaluate as primary building blocks:
+
+- `thread/list`
+- `thread/read`
+- `thread/resume`
+- `thread.path`
+- `persistExtendedHistory`
 
 Design target:
 
@@ -117,6 +129,7 @@ Should not own:
 
 - a second session model richer than native Codex needs
 - a second permission policy model if native Codex already has one
+- a registry of thread-to-cwd relationships if native thread metadata already answers it
 
 ### 4.3 `appserver`
 
@@ -148,6 +161,10 @@ Minimum candidate state:
 - selected native `threadId`
 - optional user display and visibility preferences
 - current outbound sequencing metadata needed by the channel
+
+Anything else should be justified against the question:
+
+- "Why can this not be derived from native Codex state?"
 
 Likely removable legacy ideas:
 
@@ -231,3 +248,4 @@ The redesign is successful if:
 - permission behavior is more obviously derived from native Codex modes
 - long-running turns are easier to surface cleanly in IM
 - cross-surface continuation becomes easier to reason about, not harder
+- native APIs such as `thread/list`, `thread/read`, and `thread/resume` are central to the design rather than optional support

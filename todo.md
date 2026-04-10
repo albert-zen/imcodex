@@ -37,6 +37,7 @@ The next milestone should be a native-first redesign, not another layer of patch
 
 That means:
 
+- reuse native Codex capabilities wherever they already solve the problem well
 - align more closely with native Codex thread, turn, approval, and sandbox semantics
 - shrink bridge-owned state to the minimum required for channel mapping
 - replace legacy bridge behaviors that exist only because earlier architecture was incomplete
@@ -49,8 +50,10 @@ That means:
 - Define the minimum identity needed for continuity:
   - `threadId`
   - `cwd`
-  - possibly native session path or persisted history settings
+  - native `thread.path` when it materially matters
+  - persisted history settings when they materially affect resume/read fidelity
 - Clarify what must be bridge-owned versus Codex-owned.
+- Prefer native discovery and recovery paths such as `thread/list`, `thread/read`, and `thread/resume` over bridge-invented registries when possible.
 - Define restart, attach, and resume semantics around native Codex behavior first.
 
 ### 2. Native Permission Model
