@@ -164,6 +164,33 @@ def test_non_final_agent_message_item_is_projected_as_progress_update() -> None:
     assert "main bridge entrypoint" in message.text
 
 
+def test_non_final_agent_message_respects_commentary_visibility_toggle() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_commentary_visibility("demo", "conv-1", enabled=False)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_progress",
+                    "type": "agentMessage",
+                    "phase": "draft",
+                    "text": "I checked the repo structure and found the main bridge entrypoint.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
 def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
@@ -341,3 +368,56 @@ def test_turn_completion_still_routes_after_switching_active_thread() -> None:
     assert message.conversation_id == "conv-1"
     assert "First thread reply" in message.text
     assert final_message is None
+
+
+def test_command_execution_item_is_hidden_when_tool_calls_are_disabled() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "cmd_1",
+                    "type": "commandExecution",
+                    "command": "pytest -q",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
+def test_command_execution_item_can_be_projected_when_tool_calls_are_enabled() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_toolcall_visibility("demo", "conv-1", enabled=True)
+    projector = MessageProjector()
+
+    progress = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "cmd_1",
+                    "type": "commandExecution",
+                    "command": "pytest -q",
+                },
+            },
+        },
+        store,
+    )
+
+    assert progress is not None
+    assert progress.message_type == "turn_progress"
+    assert "Executed `pytest -q`" in progress.text

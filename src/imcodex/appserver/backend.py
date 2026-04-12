@@ -19,7 +19,7 @@ class CodexBackend:
             try:
                 result = await self.client.resume_thread(
                     thread_id=binding.active_thread_id,
-                    **self._thread_session_params(cwd),
+                    **self._thread_session_params(cwd, binding.permission_profile),
                 )
             except AppServerError:
                 pass
@@ -33,7 +33,9 @@ class CodexBackend:
                     preview=result["thread"].get("preview", ""),
                 )
                 return thread_id
-        result = await self.client.start_thread(**self._thread_session_params(cwd))
+        result = await self.client.start_thread(
+            **self._thread_session_params(cwd, binding.permission_profile)
+        )
         thread_id = result["thread"]["id"]
         self._bind_thread_result(
             channel_id=channel_id,
@@ -53,7 +55,7 @@ class CodexBackend:
         cwd = self._binding_cwd(binding)
         result = await self.client.resume_thread(
             thread_id=thread_id,
-            **self._thread_session_params(cwd),
+            **self._thread_session_params(cwd, binding.permission_profile),
         )
         resolved_thread_id = result["thread"]["id"]
         self._bind_thread_result(
@@ -101,13 +103,14 @@ class CodexBackend:
         had_bound_thread = binding.active_thread_id is not None
         thread_id = await self.ensure_thread(channel_id, conversation_id)
         try:
-            result = await self._start_turn(thread_id, text)
+            result = await self._start_turn(thread_id, text, binding.permission_profile)
         except AppServerError:
             if not had_bound_thread:
                 raise
             self.store.clear_active_thread(channel_id, conversation_id)
             thread_id = await self.ensure_thread(channel_id, conversation_id)
-            result = await self._start_turn(thread_id, text)
+            rebound = self.store.get_binding(channel_id, conversation_id)
+            result = await self._start_turn(thread_id, text, rebound.permission_profile)
         turn_id = result["turn"]["id"]
         self.store.set_active_turn(
             channel_id,
@@ -118,13 +121,13 @@ class CodexBackend:
         )
         return turn_id
 
-    async def _start_turn(self, thread_id: str, text: str):
+    async def _start_turn(self, thread_id: str, text: str, permission_profile: str):
         return await self.client.start_turn(
             thread_id=thread_id,
             text=text,
             cwd=None,
             model=None,
-            approval_policy=None,
+            approval_policy=self._approval_policy(permission_profile),
             sandbox_policy=None,
             effort=None,
             summary="concise",
@@ -149,7 +152,7 @@ class CodexBackend:
             raise KeyError(ticket_id)
         client_ticket_id = request.request_id or ticket_id
         await self.client.reply_to_server_request(client_ticket_id, decision_or_answers)
-        self.store.resolve_pending_request(ticket_id, decision_or_answers)
+        self.store.mark_pending_request_submitted(ticket_id, decision_or_answers)
 
     async def _interrupt_if_possible(self, thread_id: str, turn_id: str) -> None:
         await self.client.interrupt_turn(
@@ -185,15 +188,20 @@ class CodexBackend:
     def _should_retry_steer(self, error: AppServerError) -> bool:
         return "no active turn" in str(error).lower()
 
-    def _thread_session_params(self, cwd: str) -> dict[str, str | None]:
+    def _thread_session_params(self, cwd: str, permission_profile: str) -> dict[str, str | None]:
         return {
             "cwd": cwd,
-            "approval_policy": None,
+            "approval_policy": self._approval_policy(permission_profile),
             "sandbox": None,
             "model": None,
             "personality": "friendly",
             "service_name": self.service_name,
         }
+
+    def _approval_policy(self, permission_profile: str) -> str | None:
+        if permission_profile == "autonomous":
+            return "never"
+        return None
 
     def _binding_cwd(self, binding) -> str:
         if binding.active_project_id is not None:

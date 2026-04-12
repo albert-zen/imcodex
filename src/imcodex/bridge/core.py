@@ -53,19 +53,34 @@ class BridgeService:
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
         elif response.action.startswith("approval.") or response.action == "request.answer":
-            ticket_id = response.ticket_id
-            if ticket_id:
-                payload = {"answers": {k: {"answers": v} for k, v in (response.answers or {}).items()}}
-                if response.action != "request.answer":
-                    decision = {
-                        "approval.accept": "accept",
-                        "approval.accept_session": "acceptForSession",
-                        "approval.deny": "decline",
-                        "approval.cancel": "cancel",
-                    }[response.action]
-                    payload = {"decision": decision}
-                await self.backend.reply_to_server_request(ticket_id, payload)
-        return [self._message(message, "command_result", response.text, response.ticket_id)]
+            payload = {"answers": {k: {"answers": v} for k, v in (response.answers or {}).items()}}
+            ticket_ids = response.ticket_ids or ([response.ticket_id] if response.ticket_id else [])
+            if response.action != "request.answer":
+                decision = {
+                    "approval.accept": "accept",
+                    "approval.accept_session": "acceptForSession",
+                    "approval.deny": "decline",
+                    "approval.cancel": "cancel",
+                }[response.action]
+                payload = {"decision": decision}
+            succeeded: list[str] = []
+            failed: list[str] = []
+            for ticket_id in ticket_ids:
+                try:
+                    await self.backend.reply_to_server_request(ticket_id, payload)
+                except Exception:
+                    failed.append(ticket_id)
+                else:
+                    succeeded.append(ticket_id)
+            if failed:
+                parts = []
+                if succeeded:
+                    parts.append(f"Succeeded: {', '.join(succeeded)}.")
+                parts.append(f"Failed: {', '.join(failed)}.")
+                if response.missing_ticket_ids:
+                    parts.append(f"Unknown tickets: {', '.join(response.missing_ticket_ids)}.")
+                response.text = " ".join(parts)
+        return [self._message(message, self._command_message_type(response.action), response.text, response.ticket_id)]
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
         project = self._select_project(message.channel_id, message.conversation_id)
@@ -151,3 +166,15 @@ class BridgeService:
             return self.store.thread_label(thread_id)
         except KeyError:
             return "Untitled thread"
+
+    def _command_message_type(self, action: str) -> str:
+        if action.startswith("settings.") or action in {
+            "project.use",
+            "project.cwd",
+            "thread.use",
+            "recover",
+        }:
+            return "status"
+        if action.endswith(".missing") or action.endswith(".invalid"):
+            return "error"
+        return "command_result"

@@ -344,6 +344,61 @@ class ConversationStore:
         self._save()
         return ticket_id
 
+    def set_permission_profile(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        profile: str,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.permission_profile = profile
+        self._save()
+        return binding
+
+    def set_visibility_profile(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        profile: str,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.visibility_profile = profile
+        if profile == "minimal":
+            binding.show_commentary = False
+            binding.show_toolcalls = False
+        elif profile == "verbose":
+            binding.show_commentary = True
+            binding.show_toolcalls = True
+        else:
+            binding.show_commentary = True
+            binding.show_toolcalls = False
+        self._save()
+        return binding
+
+    def set_commentary_visibility(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        enabled: bool,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.show_commentary = enabled
+        self._save()
+        return binding
+
+    def set_toolcall_visibility(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        enabled: bool,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.show_toolcalls = enabled
+        self._save()
+        return binding
+
     def create_pending_request(
         self,
         *,
@@ -382,6 +437,32 @@ class ConversationStore:
 
     def get_pending_request(self, ticket_id: str) -> PendingRequest | None:
         return self._pending_requests.get(ticket_id)
+
+    def list_pending_requests(
+        self,
+        channel_id: str,
+        conversation_id: str,
+    ) -> list[PendingRequest]:
+        binding = self.get_binding(channel_id, conversation_id)
+        requests = [
+            self._pending_requests[ticket_id]
+            for ticket_id in binding.pending_request_ids
+            if ticket_id in self._pending_requests
+        ]
+        return sorted(requests, key=lambda request: (request.created_at, request.ticket_id))
+
+    def mark_pending_request_submitted(
+        self,
+        ticket_id: str,
+        resolution: dict[str, Any],
+    ) -> PendingRequest | None:
+        request = self._pending_requests.get(ticket_id)
+        if request is None:
+            return None
+        request.submitted_at = self.clock()
+        request.submitted_resolution = resolution
+        self._save()
+        return request
 
     def resolve_pending_request(
         self,

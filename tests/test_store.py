@@ -188,6 +188,48 @@ def test_clear_pending_requests_for_turn_removes_only_matching_requests() -> Non
     assert store.get_binding("qq", "conv-1").pending_request_ids == ["T-2"]
 
 
+def test_permission_and_visibility_settings_round_trip(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+
+    store.set_permission_profile("qq", "conv-1", "autonomous")
+    store.set_visibility_profile("qq", "conv-1", "verbose")
+    store.set_commentary_visibility("qq", "conv-1", enabled=False)
+    store.set_toolcall_visibility("qq", "conv-1", enabled=True)
+
+    reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+    binding = reloaded.get_binding("qq", "conv-1")
+
+    assert binding.permission_profile == "autonomous"
+    assert binding.visibility_profile == "verbose"
+    assert binding.show_commentary is False
+    assert binding.show_toolcalls is True
+
+
+def test_list_pending_requests_returns_binding_order() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Second",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="3",
+        kind="question",
+        summary="Third",
+        payload={},
+    )
+
+    requests = store.list_pending_requests("qq", "conv-1")
+
+    assert [request.ticket_id for request in requests] == ["2", "3"]
+
+
 def test_switching_back_to_delayed_running_thread_restores_its_turn_state() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")

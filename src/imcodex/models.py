@@ -36,6 +36,10 @@ class ConversationBinding:
     pending_request_ids: list[str] = field(default_factory=list)
     next_ticket: int = 1
     known_thread_ids: list[str] = field(default_factory=list)
+    permission_profile: str = "review"
+    visibility_profile: str = "standard"
+    show_commentary: bool = True
+    show_toolcalls: bool = False
 
 
 @dataclass(slots=True)
@@ -52,6 +56,8 @@ class PendingRequest:
     thread_id: str | None = None
     turn_id: str | None = None
     item_id: str | None = None
+    submitted_at: float | None = None
+    submitted_resolution: dict[str, Any] | None = None
     resolved_at: float | None = None
     resolution: dict[str, Any] | None = None
 

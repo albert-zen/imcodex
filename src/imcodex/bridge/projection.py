@@ -162,7 +162,7 @@ class MessageProjector:
             text = item.get("text", "")
             self._turn_messages[key] = [text]
             phase = item.get("phase")
-            if phase and phase != "final_answer" and text:
+            if phase and phase != "final_answer" and text and self._show_commentary(params.get("threadId", ""), store):
                 return self._attach_conversation(
                     params.get("threadId", ""),
                     self.render_turn_progress(text=text),
@@ -185,6 +185,12 @@ class MessageProjector:
             command = item.get("command")
             if command:
                 self._turn_commands[key].append(f"Executed `{command}`")
+                if self._show_toolcalls(params.get("threadId", ""), store):
+                    return self._attach_conversation(
+                        params.get("threadId", ""),
+                        self.render_turn_progress(text=f"Executed `{command}`"),
+                        store,
+                    )
         elif item_type == "fileChange":
             for change in item.get("changes", []):
                 path = change.get("path")
@@ -229,3 +235,11 @@ class MessageProjector:
         message.channel_id = binding.channel_id
         message.conversation_id = binding.conversation_id
         return message
+
+    def _show_commentary(self, thread_id: str, store) -> bool:
+        binding = self._find_binding(store, thread_id)
+        return binding.show_commentary if binding is not None else True
+
+    def _show_toolcalls(self, thread_id: str, store) -> bool:
+        binding = self._find_binding(store, thread_id)
+        return binding.show_toolcalls if binding is not None else False

@@ -466,6 +466,57 @@ async def test_approval_command_replies_before_pending_is_removed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_batch_approval_replies_to_each_known_ticket() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="approval",
+        summary="Approve command",
+        payload={"command": "pytest -q"},
+        request_id="91",
+        request_method="item/commandExecution/requestApproval",
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Approve another command",
+        payload={"command": "git diff"},
+        request_id="92",
+        request_method="item/commandExecution/requestApproval",
+    )
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/approve 1 2 9",
+        )
+    )
+
+    assert [message.message_type for message in messages] == ["command_result"]
+    assert "Unknown tickets: 9." in messages[0].text
+    assert backend.replies == [
+        ("1", {"decision": "accept"}),
+        ("2", {"decision": "accept"}),
+    ]
+    assert store.get_pending_request("1") is not None
+    assert store.get_pending_request("2") is not None
+
+
+@pytest.mark.asyncio
 async def test_plain_text_without_project_mentions_cwd_command() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     backend = FakeBackend()

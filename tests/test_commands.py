@@ -16,14 +16,23 @@ def test_parse_projects_and_switch_commands() -> None:
     assert parse_command("/new").name == "new"
     assert parse_command("/status").name == "status"
     assert parse_command("/stop").name == "stop"
+    assert parse_command("/thread read").args == ["read"]
+    assert parse_command("/recover").name == "recover"
 
 
 def test_parse_approval_and_answer_commands() -> None:
     assert parse_command("/approve T-1").name == "approve"
+    assert parse_command("/approve 1 2 3").args == ["1", "2", "3"]
     assert parse_command("/approve-session T-2").name == "approve-session"
     assert parse_command("/deny T-3").name == "deny"
     assert parse_command("/cancel T-4").name == "cancel"
     assert parse_command("/answer T-5 timezone=Asia/Shanghai,UTC+8").name == "answer"
+    assert parse_command("/permissions autonomous").args == ["autonomous"]
+    assert parse_command("/view verbose").args == ["verbose"]
+    assert parse_command("/show commentary").args == ["commentary"]
+    assert parse_command("/hide toolcalls").args == ["toolcalls"]
+    assert parse_command("/requests").name == "requests"
+    assert parse_command("/doctor").name == "doctor"
 
 
 def test_router_projects_and_project_switch() -> None:
@@ -90,9 +99,12 @@ def test_router_thread_switch_and_status() -> None:
     status = router.handle("qq", "conv-1", "/status")
     lines = status.text.splitlines()
     assert lines[0] == f"Working directory: {alpha.cwd}"
-    assert f"Project id: {alpha.project_id}" in status.text
     assert "Thread: please inspect why the Windows working directory resets..." in status.text
     assert "Thread id: thr_2" in status.text
+    assert "Permission mode: review" in status.text
+    assert "Visibility profile: standard" in status.text
+    assert "Commentary: shown" in status.text
+    assert "Tool calls: hidden" in status.text
 
 
 def test_router_thread_attach_uses_selected_working_directory() -> None:
@@ -142,11 +154,116 @@ def test_router_new_stop_and_approval_commands() -> None:
 
     approve = router.handle("qq", "conv-1", "/approve T-9")
     assert approve.action == "approval.accept"
-    assert approve.ticket_id == "T-9"
+    assert approve.ticket_ids == ["T-9"]
 
     answer = router.handle("qq", "conv-1", "/answer T-10 timezone=Asia/Shanghai,UTC+8")
     assert answer.action == "request.answer"
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
+
+
+def test_router_supports_permission_and_visibility_commands() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+
+    permissions = router.handle("qq", "conv-1", "/permissions autonomous")
+    assert permissions.action == "settings.permissions"
+    assert permissions.text == "Permission profile set to autonomous."
+    assert store.get_binding("qq", "conv-1").permission_profile == "autonomous"
+
+    view = router.handle("qq", "conv-1", "/view verbose")
+    assert view.action == "settings.view"
+    assert view.text == "Visibility profile set to verbose."
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.visibility_profile == "verbose"
+    assert binding.show_commentary is True
+    assert binding.show_toolcalls is True
+
+    hide_commentary = router.handle("qq", "conv-1", "/hide commentary")
+    assert hide_commentary.action == "settings.visibility"
+    assert hide_commentary.text == "Commentary messages hidden."
+    assert store.get_binding("qq", "conv-1").show_commentary is False
+
+    hide_toolcalls = router.handle("qq", "conv-1", "/hide toolcalls")
+    assert hide_toolcalls.action == "settings.visibility"
+    assert hide_toolcalls.text == "Tool-call messages hidden."
+    assert store.get_binding("qq", "conv-1").show_toolcalls is False
+
+    show_toolcalls = router.handle("qq", "conv-1", "/show toolcalls")
+    assert show_toolcalls.action == "settings.visibility"
+    assert show_toolcalls.text == "Tool-call messages shown."
+    assert store.get_binding("qq", "conv-1").show_toolcalls is True
+
+
+def test_router_lists_requests_and_doctor_output() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="3",
+        kind="question",
+        summary="Need branch",
+        payload={},
+    )
+    router = CommandRouter(
+        store,
+        diagnostics_provider=lambda: {
+            "codex_bin": "codex",
+            "app_server": "ws://127.0.0.1:8765",
+            "bridge": "http://127.0.0.1:8000",
+            "pid": 4321,
+            "data_dir": ".imcodex",
+        },
+    )
+
+    requests = router.handle("qq", "conv-1", "/requests")
+    assert requests.action == "requests.list"
+    assert "[2] approval: Run tests" in requests.text
+    assert "[3] question: Need branch" in requests.text
+
+    doctor = router.handle("qq", "conv-1", "/doctor")
+    assert doctor.action == "doctor"
+    assert "Codex binary: codex" in doctor.text
+    assert "App Server: ws://127.0.0.1:8765" in doctor.text
+    assert "PID: 4321" in doctor.text
+    assert "Permission mode: review" in doctor.text
+    assert "Visibility profile: standard" in doctor.text
+
+
+def test_router_supports_batch_approval_with_partial_unknown_ticket() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Inspect logs",
+        payload={},
+    )
+
+    approve = router.handle("qq", "conv-1", "/approve 1 2 9")
+
+    assert approve.action == "approval.accept"
+    assert approve.ticket_ids == ["1", "2"]
+    assert approve.missing_ticket_ids == ["9"]
+    assert "Recorded accept for 1, 2." in approve.text
+    assert "Unknown tickets: 9." in approve.text
 
 
 def test_status_tolerates_missing_active_thread_record() -> None:
@@ -161,3 +278,4 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     assert "Working directory: D:\\work\\alpha" in status.text
     assert "Thread: Untitled thread" in status.text
     assert "Thread id: thr_missing" in status.text
+    assert "Permission mode: review" in status.text

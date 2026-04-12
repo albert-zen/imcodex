@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 import re
 import shlex
+from collections.abc import Callable
 
 from ..store import ConversationStore
 
@@ -22,6 +23,8 @@ class CommandResponse:
     thread_id: str | None = None
     turn_id: str | None = None
     ticket_id: str | None = None
+    ticket_ids: list[str] | None = None
+    missing_ticket_ids: list[str] | None = None
     answers: dict[str, list[str]] | None = None
 
 
@@ -35,8 +38,13 @@ def parse_command(text: str) -> ParsedCommand:
 
 
 class CommandRouter:
-    def __init__(self, store: ConversationStore):
+    def __init__(
+        self,
+        store: ConversationStore,
+        diagnostics_provider: Callable[[], dict[str, object]] | None = None,
+    ):
         self.store = store
+        self.diagnostics_provider = diagnostics_provider or (lambda: {"pid": os.getpid()})
 
     def handle(self, channel_id: str, conversation_id: str, text: str) -> CommandResponse:
         command = parse_command(text)
@@ -102,8 +110,10 @@ class CommandRouter:
         return CommandResponse(action="threads.list", text="\n".join(lines))
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) == 1 and args[0] == "read":
+            return self._handle_thread_read(channel_id, conversation_id)
         if len(args) != 2 or args[0] not in {"use", "attach"}:
-            return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id> or /thread attach <thread-id>")
+            return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id>, /thread attach <thread-id>, or /thread read")
         if args[0] == "attach":
             thread_id = args[1]
             binding = self.store.get_binding(channel_id, conversation_id)
@@ -133,6 +143,29 @@ class CommandRouter:
             project_id=thread.project_id,
         )
 
+    def _handle_thread_read(self, channel_id: str, conversation_id: str) -> CommandResponse:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.active_thread_id is None:
+            return CommandResponse(action="thread.read.none", text="No active thread.")
+        thread_id = binding.active_thread_id
+        try:
+            thread = self.store.get_thread(thread_id)
+        except KeyError:
+            lines = [
+                f"Thread: {self._thread_label(thread_id)}",
+                f"Thread id: {thread_id}",
+                "CWD: (unknown)",
+                "Status: (unknown)",
+            ]
+        else:
+            lines = [
+                f"Thread: {self._thread_label(thread_id)}",
+                f"Thread id: {thread_id}",
+                f"CWD: {thread.cwd}",
+                f"Status: {self._humanize_status(thread.status)}",
+            ]
+        return CommandResponse(action="thread.read", text="\n".join(lines), thread_id=thread_id)
+
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -161,11 +194,14 @@ class CommandRouter:
         turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
         lines = [
             f"Working directory: {cwd_text}",
-            f"Project id: {binding.active_project_id or '(none)'}",
             f"Thread: {thread_text}",
             f"Thread id: {binding.active_thread_id or '(none)'}",
             f"Turn: {turn_text}",
             f"Turn status: {turn_status}",
+            f"Permission mode: {binding.permission_profile}",
+            f"Visibility profile: {binding.visibility_profile}",
+            f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
+            f"Tool calls: {'shown' if binding.show_toolcalls else 'hidden'}",
             f"Pending requests: {len(binding.pending_request_ids)}",
         ]
         text = "\n".join(lines)
@@ -181,6 +217,79 @@ class CommandRouter:
             text=f"Stopping turn {binding.active_turn_id}.",
             turn_id=binding.active_turn_id,
         )
+
+    def _handle_recover(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        del args
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.active_thread_id is None:
+            return CommandResponse(action="recover.none", text="No active thread to recover.")
+        return CommandResponse(
+            action="recover",
+            text=(
+                f"Current thread {binding.active_thread_id} may need recovery. "
+                "Use /new to start a new thread or /thread attach <thread-id> to rebind explicitly."
+            ),
+            thread_id=binding.active_thread_id,
+        )
+
+    def _handle_requests(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        del args
+        requests = self.store.list_pending_requests(channel_id, conversation_id)
+        if not requests:
+            return CommandResponse(action="requests.list", text="No pending requests.")
+        lines = ["Pending requests:"]
+        for request in requests:
+            lines.append(f"[{request.ticket_id}] {request.kind}: {request.summary}")
+        return CommandResponse(action="requests.list", text="\n".join(lines))
+
+    def _handle_doctor(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        del args
+        binding = self.store.get_binding(channel_id, conversation_id)
+        info = self.diagnostics_provider()
+        lines = [
+            f"Codex binary: {info.get('codex_bin', '(unknown)')}",
+            f"App Server: {info.get('app_server', '(unknown)')}",
+            f"Bridge: {info.get('bridge', '(unknown)')}",
+            f"PID: {info.get('pid', '(unknown)')}",
+            f"Data dir: {info.get('data_dir', '(unknown)')}",
+            f"Permission mode: {binding.permission_profile}",
+            f"Visibility profile: {binding.visibility_profile}",
+            f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
+            f"Tool calls: {'shown' if binding.show_toolcalls else 'hidden'}",
+        ]
+        return CommandResponse(action="doctor", text="\n".join(lines))
+
+    def _handle_permissions(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) != 1 or args[0] not in {"autonomous", "review"}:
+            return CommandResponse(
+                action="settings.permissions.invalid",
+                text="Usage: /permissions autonomous|review",
+            )
+        profile = args[0]
+        self.store.set_permission_profile(channel_id, conversation_id, profile)
+        return CommandResponse(
+            action="settings.permissions",
+            text=f"Permission profile set to {profile}.",
+        )
+
+    def _handle_view(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) != 1 or args[0] not in {"minimal", "standard", "verbose"}:
+            return CommandResponse(
+                action="settings.view.invalid",
+                text="Usage: /view minimal|standard|verbose",
+            )
+        profile = args[0]
+        self.store.set_visibility_profile(channel_id, conversation_id, profile)
+        return CommandResponse(
+            action="settings.view",
+            text=f"Visibility profile set to {profile}.",
+        )
+
+    def _handle_show(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        return self._handle_visibility_toggle(channel_id, conversation_id, args, enabled=True)
+
+    def _handle_hide(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        return self._handle_visibility_toggle(channel_id, conversation_id, args, enabled=False)
 
     def _handle_approve(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         return self._handle_resolution(channel_id, conversation_id, args, "accept", "approval.accept")
@@ -224,13 +333,62 @@ class CommandRouter:
         action: str,
     ) -> CommandResponse:
         del channel_id, conversation_id
-        if len(args) != 1:
-            return CommandResponse(action=f"{action}.invalid", text="Usage: /<command> <ticket>")
-        ticket_id = args[0]
-        request = self.store.get_pending_request(ticket_id)
-        if request is None:
-            return CommandResponse(action=f"{action}.missing", text=f"Unknown ticket: {ticket_id}")
-        return CommandResponse(action=action, text=f"Recorded {decision} for {ticket_id}.", ticket_id=ticket_id)
+        if len(args) < 1:
+            return CommandResponse(action=f"{action}.invalid", text="Usage: /<command> <ticket> [ticket...]")
+        ticket_ids: list[str] = []
+        missing_ticket_ids: list[str] = []
+        for ticket_id in args:
+            request = self.store.get_pending_request(ticket_id)
+            if request is None:
+                missing_ticket_ids.append(ticket_id)
+            else:
+                ticket_ids.append(ticket_id)
+        if not ticket_ids:
+            return CommandResponse(
+                action=f"{action}.missing",
+                text=f"Unknown tickets: {', '.join(missing_ticket_ids)}.",
+                missing_ticket_ids=missing_ticket_ids,
+            )
+        parts = [f"Recorded {decision} for {', '.join(ticket_ids)}."]
+        if missing_ticket_ids:
+            parts.append(f"Unknown tickets: {', '.join(missing_ticket_ids)}.")
+        return CommandResponse(
+            action=action,
+            text=" ".join(parts),
+            ticket_id=ticket_ids[0] if len(ticket_ids) == 1 else None,
+            ticket_ids=ticket_ids,
+            missing_ticket_ids=missing_ticket_ids or None,
+        )
+
+    def _handle_visibility_toggle(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        args: list[str],
+        *,
+        enabled: bool,
+    ) -> CommandResponse:
+        if len(args) != 1 or args[0] not in {"commentary", "toolcalls"}:
+            return CommandResponse(
+                action="settings.visibility.invalid",
+                text="Usage: /show|/hide commentary|toolcalls",
+            )
+        target = args[0]
+        if target == "commentary":
+            self.store.set_commentary_visibility(
+                channel_id,
+                conversation_id,
+                enabled=enabled,
+            )
+            text = f"Commentary messages {'shown' if enabled else 'hidden'}."
+        else:
+            self.store.set_toolcall_visibility(
+                channel_id,
+                conversation_id,
+                enabled=enabled,
+            )
+            text = f"Tool-call messages {'shown' if enabled else 'hidden'}."
+        return CommandResponse(action="settings.visibility", text=text)
 
     def _thread_label(self, thread_id: str) -> str:
         try:

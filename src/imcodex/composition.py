@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import websockets
@@ -39,7 +40,16 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     service = BridgeService(
         store=store,
         backend=CodexBackend(client=client, store=store, service_name=settings.service_name),
-        command_router=CommandRouter(store),
+        command_router=CommandRouter(
+            store,
+            diagnostics_provider=lambda: {
+                "codex_bin": settings.codex_bin,
+                "app_server": settings.app_server_ws_url,
+                "bridge": f"http://{settings.http_host}:{settings.http_port}",
+                "pid": os.getpid(),
+                "data_dir": str(settings.data_dir),
+            },
+        ),
         projector=MessageProjector(),
         outbound_sink=None,
         auto_approve_mode=_resolve_auto_approve_mode(settings),
