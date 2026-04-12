@@ -161,6 +161,22 @@ def test_router_new_stop_and_approval_commands() -> None:
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
 
 
+def test_router_recover_clears_active_thread_binding_but_preserves_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    router = CommandRouter(store)
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    response = router.handle("qq", "conv-1", "/recover")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert response.action == "recover"
+    assert "Cleared stale thread binding thr_1." in response.text
+    assert binding.active_thread_id is None
+    assert binding.active_project_id == thread.project_id
+    assert binding.selected_cwd == thread.cwd
+
+
 def test_router_supports_permission_and_visibility_commands() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     router = CommandRouter(store)

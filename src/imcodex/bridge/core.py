@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..appserver import CodexBackend
+from ..appserver import CodexBackend, StaleThreadBindingError
 from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
 from .commands import CommandRouter, parse_command
@@ -117,7 +117,14 @@ class BridgeService:
                 )
             ]
         prior_thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id
-        await self.backend.start_turn(message.channel_id, message.conversation_id, message.text)
+        try:
+            await self.backend.start_turn(message.channel_id, message.conversation_id, message.text)
+        except StaleThreadBindingError as exc:
+            text = (
+                f"Current thread {exc.thread_id} could not be resumed. "
+                "Use /recover to clear the stale binding, /new, or /thread attach <thread-id>."
+            )
+            return [self._message(message, "status", text)]
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         if binding.active_thread_id is not None and binding.active_turn_id is not None:
             self.turn_state.start(binding.active_thread_id, binding.active_turn_id)

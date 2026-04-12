@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from imcodex.appserver import AppServerError, CodexBackend
+from imcodex.appserver import AppServerError, CodexBackend, StaleThreadBindingError
 from imcodex.store import ConversationStore
 
 
@@ -20,6 +20,7 @@ class FakeClient:
         self.replies: list[tuple[str, dict]] = []
         self.fail_thread_ids: set[str] = set()
         self.fail_resume_ids: set[str] = set()
+        self.resume_errors: dict[str, str] = {}
         self.resume_results: dict[str, dict[str, str]] = {}
         self.list_result: list[dict] = []
         self.read_results: dict[str, dict] = {}
@@ -28,6 +29,8 @@ class FakeClient:
 
     async def resume_thread(self, **params):
         self.thread_resumes.append(params)
+        if params["thread_id"] in self.resume_errors:
+            raise AppServerError(self.resume_errors[params["thread_id"]])
         if params["thread_id"] in self.fail_resume_ids:
             raise AppServerError("invalid request")
         result = self.resume_results.get(params["thread_id"])
@@ -122,7 +125,7 @@ async def test_ensure_thread_resumes_bound_thread_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_thread_falls_back_to_start_when_resume_fails() -> None:
+async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
     store = make_store()
     store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
     store.set_active_thread("demo", "conv-1", "thr_existing")
@@ -130,16 +133,16 @@ async def test_ensure_thread_falls_back_to_start_when_resume_fails() -> None:
     client.fail_resume_ids.add("thr_existing")
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    thread_id = await backend.ensure_thread("demo", "conv-1")
+    with pytest.raises(StaleThreadBindingError, match="thr_existing"):
+        await backend.ensure_thread("demo", "conv-1")
 
-    assert thread_id == "thr_new"
     assert client.thread_resumes == [
         {"thread_id": "thr_existing", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
     ]
-    assert client.thread_starts == [
-        {"cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
-    ]
-    assert store.get_binding("demo", "conv-1").active_thread_id == "thr_new"
+    assert client.thread_starts == []
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_thread_id == "thr_existing"
+    assert store.get_thread("thr_existing").status == "stale"
 
 
 @pytest.mark.asyncio
@@ -427,6 +430,42 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
     ]
     assert binding.active_thread_id == "thr_new"
     assert binding.active_turn_id == "turn_1"
+
+
+@pytest.mark.asyncio
+async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restart_recovery() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    store.set_active_thread("demo", "conv-1", "thr_existing")
+    client = FakeClient()
+    client.fail_resume_ids.add("thr_existing")
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(StaleThreadBindingError, match="thr_existing"):
+        await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+
+    assert client.thread_resumes == [
+        {"thread_id": "thr_existing", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+    ]
+    assert client.thread_starts == []
+    assert client.turn_starts == []
+    assert store.get_thread("thr_existing").status == "stale"
+
+
+@pytest.mark.asyncio
+async def test_ensure_thread_preserves_transport_failures_during_resume() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    store.set_active_thread("demo", "conv-1", "thr_existing")
+    client = FakeClient()
+    client.resume_errors["thr_existing"] = "thread/resume timed out after 15.0s"
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="timed out"):
+        await backend.ensure_thread("demo", "conv-1")
+
+    assert client.thread_starts == []
+    assert store.get_thread("thr_existing").status != "stale"
 
 
 @pytest.mark.asyncio

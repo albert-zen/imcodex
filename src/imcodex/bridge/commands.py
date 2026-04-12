@@ -223,13 +223,15 @@ class CommandRouter:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.active_thread_id is None:
             return CommandResponse(action="recover.none", text="No active thread to recover.")
+        thread_id = binding.active_thread_id
+        self.store.clear_active_thread(channel_id, conversation_id)
         return CommandResponse(
             action="recover",
             text=(
-                f"Current thread {binding.active_thread_id} may need recovery. "
-                "Use /new to start a new thread or /thread attach <thread-id> to rebind explicitly."
+                f"Cleared stale thread binding {thread_id}. "
+                "Use /new, /thread attach <thread-id>, or send a new prompt to start a fresh thread."
             ),
-            thread_id=binding.active_thread_id,
+            thread_id=thread_id,
         )
 
     def _handle_requests(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:

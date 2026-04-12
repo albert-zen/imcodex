@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
+from imcodex.appserver import StaleThreadBindingError
 from imcodex.models import InboundMessage
 from imcodex.store import ConversationStore
 
@@ -801,6 +802,72 @@ async def test_plain_text_without_project_mentions_cwd_command() -> None:
     assert messages[0].message_type == "error"
     assert "/cwd <path>" in messages[0].text
     assert "working directory" in messages[0].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_plain_text_surfaces_recoverable_message_when_bound_thread_cannot_resume() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_stale", cwd=r"D:\work\alpha", preview="Stale thread")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    class StaleBackend(FakeBackend):
+        async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
+            self.started_turns.append((channel_id, conversation_id, text))
+            raise StaleThreadBindingError("thr_stale")
+
+    backend = StaleBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="please continue the investigation",
+        )
+    )
+
+    assert backend.started_turns == [("qq", "conv-1", "please continue the investigation")]
+    assert messages[0].message_type == "status"
+    assert "could not be resumed" in messages[0].text
+    assert "/recover" in messages[0].text
+    assert "/new" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_recover_command_clears_stale_binding_for_next_prompt() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_stale", cwd=r"D:\work\alpha", preview="Stale thread")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/recover",
+        )
+    )
+
+    binding = store.get_binding("qq", "conv-1")
+    assert messages[0].message_type == "status"
+    assert "Cleared stale thread binding thr_stale." in messages[0].text
+    assert binding.active_thread_id is None
+    assert binding.selected_cwd == r"D:\work\alpha"
 
 
 @pytest.mark.asyncio

@@ -115,6 +115,17 @@ def test_thread_label_keeps_long_whitespace_free_prompts_readable() -> None:
     assert label.endswith("...")
 
 
+def test_note_thread_status_updates_active_binding_snapshot() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    store.note_thread_status("thr_1", status="stale")
+
+    assert store.get_thread("thr_1").status == "stale"
+    assert store.get_binding("qq", "conv-1").last_seen_thread_status == "stale"
+
+
 def test_pending_requests_round_trip() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.create_pending_request(

@@ -153,6 +153,18 @@ class ConversationStore:
             return first_user_message
         return "Untitled thread"
 
+    def note_thread_status(self, thread_id: str, *, status: str) -> ThreadRecord | None:
+        try:
+            thread = self.get_thread(thread_id)
+        except KeyError:
+            return None
+        thread.status = status
+        binding = self.find_binding_for_thread(thread_id)
+        if binding is not None and binding.active_thread_id == thread_id:
+            binding.last_seen_thread_status = status
+        self._save()
+        return thread
+
     def mark_pending_first_thread_label(
         self,
         channel_id: str,

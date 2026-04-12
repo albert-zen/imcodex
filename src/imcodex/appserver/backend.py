@@ -7,6 +7,12 @@ from ..bridge.thread_directory import NativeThreadSnapshot, ThreadDirectory
 from ..store import ConversationStore
 
 
+class StaleThreadBindingError(RuntimeError):
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+        super().__init__(f"thread binding is stale: {thread_id}")
+
+
 class CodexBackend:
     def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
         self.client = client
@@ -23,8 +29,11 @@ class CodexBackend:
                     thread_id=binding.active_thread_id,
                     **self._thread_session_params(cwd, binding.permission_profile),
                 )
-            except AppServerError:
-                pass
+            except AppServerError as exc:
+                if not self._should_mark_thread_stale(exc):
+                    raise
+                self.store.note_thread_status(binding.active_thread_id, status="stale")
+                raise StaleThreadBindingError(binding.active_thread_id) from exc
             else:
                 thread_id = result["thread"]["id"]
                 self._bind_thread_result(
@@ -246,6 +255,15 @@ class CodexBackend:
 
     def _should_retry_steer(self, error: AppServerError) -> bool:
         return "no active turn" in str(error).lower()
+
+    def _should_mark_thread_stale(self, error: AppServerError) -> bool:
+        message = str(error).lower()
+        return (
+            "invalid request" in message
+            or "not found" in message
+            or "unknown thread" in message
+            or "no such thread" in message
+        )
 
     def _thread_session_params(self, cwd: str, permission_profile: str) -> dict[str, str | None]:
         return {
