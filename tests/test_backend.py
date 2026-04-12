@@ -527,7 +527,7 @@ async def test_reply_to_server_request_uses_server_request_id_when_present() -> 
         request_method="item/commandExecution/requestApproval",
     )
 
-    await backend.reply_to_server_request("7", {"decision": "accept"})
+    await backend.reply_to_server_request("demo", "conv-1", "7", {"decision": "accept"})
 
     assert client.replies == [("99", {"decision": "accept"})]
     pending = store.get_pending_request("7")

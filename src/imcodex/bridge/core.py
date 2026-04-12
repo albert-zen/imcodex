@@ -7,6 +7,10 @@ from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
 from .commands import CommandRouter
 from .projection import MessageProjector
+from .request_registry import RequestRegistry
+from .session_registry import SessionRegistry
+from .thread_directory import ThreadDirectory
+from .turn_state import TurnStateMachine
 
 
 class BridgeService:
@@ -19,6 +23,10 @@ class BridgeService:
         projector: MessageProjector,
         outbound_sink: Any | None = None,
         auto_approve_mode: str | None = None,
+        session_registry: SessionRegistry | None = None,
+        thread_directory: ThreadDirectory | None = None,
+        request_registry: RequestRegistry | None = None,
+        turn_state: TurnStateMachine | None = None,
     ) -> None:
         self.store = store
         self.backend = backend
@@ -26,6 +34,14 @@ class BridgeService:
         self.projector = projector
         self.outbound_sink = outbound_sink
         self.auto_approve_mode = auto_approve_mode
+        self.session_registry = session_registry or SessionRegistry(store)
+        self.thread_directory = thread_directory or ThreadDirectory(store)
+        self.request_registry = request_registry or RequestRegistry(store)
+        self.turn_state = turn_state or TurnStateMachine()
+        if getattr(self.projector, "request_registry", None) is None:
+            self.projector.request_registry = self.request_registry
+        if getattr(self.projector, "turn_state", None) is None:
+            self.projector.turn_state = self.turn_state
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         if message.text.startswith("/"):
@@ -100,6 +116,9 @@ class BridgeService:
         prior_thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id
         await self.backend.start_turn(message.channel_id, message.conversation_id, message.text)
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.active_thread_id is not None and binding.active_turn_id is not None:
+            self.turn_state.start(binding.active_thread_id, binding.active_turn_id)
+            self.turn_state.mark_in_progress(binding.active_thread_id, binding.active_turn_id)
         if binding.active_thread_id is not None and (
             binding.active_thread_id != prior_thread_id
             or self.store.consume_pending_first_thread_label(

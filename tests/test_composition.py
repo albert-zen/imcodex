@@ -31,6 +31,10 @@ def test_build_runtime_attaches_qq_channel_when_enabled(tmp_path: Path) -> None:
     assert len(runtime.managed_channels) == 1
     assert runtime.service.outbound_sink is not None
     assert isinstance(runtime.service.outbound_sink, MultiplexOutboundSink)
+    assert runtime.service.session_registry is not None
+    assert runtime.service.thread_directory is not None
+    assert runtime.service.request_registry is not None
+    assert runtime.service.turn_state is not None
 
 
 def test_open_blocking_websocket_uses_async_websockets_client(monkeypatch) -> None:

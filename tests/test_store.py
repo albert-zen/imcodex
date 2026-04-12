@@ -76,6 +76,18 @@ def test_thread_label_prefers_preview_then_first_user_message() -> None:
     assert store.thread_label("thr_2") == "please inspect why the Windows working directory resets..."
 
 
+def test_thread_label_falls_back_when_imported_name_clips_to_empty() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread(
+        "thr_1",
+        cwd=r"D:\work\alpha",
+        preview="Existing preview",
+        name="   ",
+    )
+
+    assert store.thread_label("thr_1") == "Existing preview"
+
+
 def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
@@ -314,3 +326,13 @@ def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_sta
     binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
+
+
+def test_unknown_thread_turn_events_are_ignored() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+
+    started = store.note_turn_started("thr_missing", turn_id="turn_1", status="inProgress")
+    completed = store.note_turn_completed("thr_missing", turn_id="turn_1", status="completed")
+
+    assert started is None
+    assert completed is None

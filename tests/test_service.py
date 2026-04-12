@@ -674,3 +674,18 @@ async def test_plain_text_does_not_retitle_existing_previewless_thread_on_follow
 
     assert messages[0].text == "Working on it."
     assert store.thread_label("thr_existing") == "Untitled thread"
+
+
+def test_bridge_service_autowires_registry_and_turn_state_into_plain_projector() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = FakeBackend()
+    projector = MessageProjector()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=projector,
+    )
+
+    assert service.projector.request_registry is service.request_registry
+    assert service.projector.turn_state is service.turn_state

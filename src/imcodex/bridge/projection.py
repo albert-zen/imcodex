@@ -6,7 +6,9 @@ from ..models import OutboundMessage, PendingRequest
 
 
 class MessageProjector:
-    def __init__(self) -> None:
+    def __init__(self, *, request_registry=None, turn_state=None) -> None:
+        self.request_registry = request_registry
+        self.turn_state = turn_state
         self._turn_messages: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._turn_commands: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._turn_files: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -136,11 +138,25 @@ class MessageProjector:
             turn_id = turn.get("id")
             status = turn.get("status")
             if thread_id and turn_id and status:
+                if self._is_superseded_turn(thread_id, turn_id, store):
+                    return None
                 store.note_turn_started(thread_id, turn_id=turn_id, status=status)
+                if self.turn_state is not None:
+                    self.turn_state.start(thread_id, turn_id)
+                    self.turn_state.mark_in_progress(thread_id, turn_id)
             return None
         if method == "serverRequest/resolved":
-            request = store.get_pending_request_by_request_id(str(params.get("requestId", "")))
-            if request is not None:
+            request_id = str(params.get("requestId", ""))
+            request = store.get_pending_request_by_request_id(request_id)
+            if self.request_registry is not None:
+                resolved = self.request_registry.resolve_native_request(
+                    native_request_id=request_id,
+                    resolution=(request.submitted_resolution if request is not None else None)
+                    or {"requestId": params.get("requestId")},
+                )
+                if resolved is not None and self.turn_state is not None and resolved.thread_id and resolved.turn_id:
+                    self.turn_state.resolve_request(resolved.thread_id, resolved.turn_id, request_id)
+            elif request is not None:
                 store.resolve_pending_request(
                     request.ticket_id,
                     request.submitted_resolution or {"requestId": params.get("requestId")},
@@ -174,20 +190,43 @@ class MessageProjector:
         binding = self._find_binding(store, params.get("threadId"))
         if binding is None:
             return None
-        ticket_id = store.next_ticket_id(binding.channel_id, binding.conversation_id)
-        request = store.create_pending_request(
-            channel_id=binding.channel_id,
-            conversation_id=binding.conversation_id,
-            ticket_id=ticket_id,
-            kind=kind,
-            summary=summary,
-            payload=params,
-            request_id=str(params.get("_request_id", "")) or None,
-            request_method=request_method,
-            thread_id=params.get("threadId"),
-            turn_id=params.get("turnId"),
-            item_id=params.get("itemId"),
-        )
+        thread_id = params.get("threadId", "")
+        turn_id = params.get("turnId", "")
+        if thread_id and turn_id and self._is_stale_turn(thread_id, turn_id, store):
+            return None
+        if self.request_registry is not None:
+            request = self.request_registry.open_request(
+                channel_id=binding.channel_id,
+                conversation_id=binding.conversation_id,
+                native_request_id=str(params.get("_request_id", "")) or None,
+                request_method=request_method,
+                request_kind=kind,
+                summary=summary,
+                payload=params,
+                thread_id=params.get("threadId"),
+                turn_id=params.get("turnId"),
+                item_id=params.get("itemId"),
+            )
+        else:
+            ticket_id = store.next_ticket_id(binding.channel_id, binding.conversation_id)
+            request = store.create_pending_request(
+                channel_id=binding.channel_id,
+                conversation_id=binding.conversation_id,
+                ticket_id=ticket_id,
+                kind=kind,
+                summary=summary,
+                payload=params,
+                request_id=str(params.get("_request_id", "")) or None,
+                request_method=request_method,
+                thread_id=params.get("threadId"),
+                turn_id=params.get("turnId"),
+                item_id=params.get("itemId"),
+            )
+        if self.turn_state is not None and request.thread_id and request.turn_id and request.request_id:
+            if kind == "approval":
+                self.turn_state.await_approval(request.thread_id, request.turn_id, request.request_id)
+            elif kind == "question":
+                self.turn_state.await_user_input(request.thread_id, request.turn_id, request.request_id)
         return self.render_pending_request(request)
 
     def _capture_item_completed(self, params: dict, store) -> OutboundMessage | None:
@@ -205,7 +244,18 @@ class MessageProjector:
                     store,
                 )
             if phase == "final_answer" and key not in self._emitted_turn_results:
+                if self._is_stale_turn(
+                    params.get("threadId", ""),
+                    params.get("turnId", ""),
+                    store,
+                ):
+                    return None
                 self._emitted_turn_results.add(key)
+                if self.turn_state is not None:
+                    self.turn_state.mark_terminal_emitted(
+                        params.get("threadId", ""),
+                        params.get("turnId", ""),
+                    )
                 return self._attach_conversation(
                     params.get("threadId", ""),
                     self.render_turn_completed(
@@ -250,8 +300,21 @@ class MessageProjector:
         turn_id = turn.get("id", "")
         key = (thread_id, turn_id)
         status = turn.get("status", "")
+        if self._is_stale_turn(thread_id, turn_id, store):
+            self._turn_messages.pop(key, None)
+            self._turn_commands.pop(key, None)
+            self._turn_files.pop(key, None)
+            self._emitted_turn_results.discard(key)
+            return None
         if thread_id and turn_id and status:
             store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
+            if self.turn_state is not None:
+                if status == "completed":
+                    self.turn_state.mark_completed(thread_id, turn_id)
+                elif status == "failed":
+                    self.turn_state.mark_failed(thread_id, turn_id)
+                elif status == "interrupted":
+                    self.turn_state.mark_interrupted(thread_id, turn_id)
         text = "\n".join(self._turn_messages.pop(key, []))
         commands = self._turn_commands.pop(key, [])
         files = self._turn_files.pop(key, [])
@@ -289,6 +352,27 @@ class MessageProjector:
     def _show_toolcalls(self, thread_id: str, store) -> bool:
         binding = self._find_binding(store, thread_id)
         return binding.show_toolcalls if binding is not None else False
+
+    def _is_stale_turn(self, thread_id: str, turn_id: str, store) -> bool:
+        if self.turn_state is not None and self.turn_state.is_stale(thread_id, turn_id):
+            return True
+        if store is None:
+            return False
+        binding = self._find_binding(store, thread_id)
+        if binding is None or binding.active_thread_id != thread_id:
+            return False
+        if binding.active_turn_id is None:
+            return self._is_superseded_turn(thread_id, turn_id, store)
+        return binding.active_turn_id != turn_id
+
+    def _is_superseded_turn(self, thread_id: str, turn_id: str, store) -> bool:
+        if store is None:
+            return False
+        try:
+            thread = store.get_thread(thread_id)
+        except KeyError:
+            return False
+        return turn_id in thread.stale_turn_ids
 
     def _render_plan_update(self, params: dict) -> str:
         lines: list[str] = []

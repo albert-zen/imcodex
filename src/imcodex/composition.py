@@ -6,7 +6,15 @@ import time
 import websockets
 
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
-from .bridge import BridgeService, CommandRouter, MessageProjector
+from .bridge import (
+    BridgeService,
+    CommandRouter,
+    MessageProjector,
+    RequestRegistry,
+    SessionRegistry,
+    ThreadDirectory,
+    TurnStateMachine,
+)
 from .channels import MultiplexOutboundSink, QQChannelAdapter, WebhookOutboundSink
 from .config import Settings
 from .runtime import AppRuntime
@@ -41,6 +49,10 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     default_outbound_sink = (
         WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
     )
+    session_registry = SessionRegistry(store)
+    thread_directory = ThreadDirectory(store)
+    request_registry = RequestRegistry(store)
+    turn_state = TurnStateMachine()
     service = BridgeService(
         store=store,
         backend=CodexBackend(client=client, store=store, service_name=settings.service_name),
@@ -54,9 +66,16 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
                 "data_dir": str(settings.data_dir),
             },
         ),
-        projector=MessageProjector(),
+        projector=MessageProjector(
+            request_registry=request_registry,
+            turn_state=turn_state,
+        ),
         outbound_sink=None,
         auto_approve_mode=_resolve_auto_approve_mode(settings),
+        session_registry=session_registry,
+        thread_directory=thread_directory,
+        request_registry=request_registry,
+        turn_state=turn_state,
     )
     managed_channels = []
     channel_sinks = {}

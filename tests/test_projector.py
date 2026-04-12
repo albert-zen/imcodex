@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from imcodex.models import PendingRequest
 from imcodex.bridge import MessageProjector
+from imcodex.bridge.request_registry import RequestRegistry
+from imcodex.bridge.turn_state import TurnStateMachine
 from imcodex.store import ConversationStore
 
 
@@ -398,6 +402,373 @@ def test_server_request_resolved_is_ignored_for_unknown_request() -> None:
     assert message is None
 
 
+def test_request_registry_backed_approval_request_still_renders() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "itemId": "cmd_1",
+                "_request_id": "99",
+                "command": "pytest -q",
+                "cwd": r"D:\work\alpha",
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "approval_request"
+    assert message.ticket_id == "1"
+    assert "pytest -q" in message.text
+
+
+def test_request_registry_backed_question_request_still_renders() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "itemId": "ask_1",
+                "_request_id": "100",
+                "questions": [
+                    {
+                        "id": "branch",
+                        "question": "Which branch?",
+                    }
+                ],
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "question_request"
+    assert message.ticket_id == "1"
+    assert "branch" in message.text
+
+
+def test_stale_turn_terminal_messages_are_suppressed_after_newer_turn_starts() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    turn_state = TurnStateMachine()
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=turn_state,
+    )
+
+    projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+    projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_2", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+
+    final_item = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Old turn final answer",
+                },
+            },
+        },
+        store,
+    )
+    final_turn = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        },
+        store,
+    )
+
+    assert final_item is None
+    assert final_turn is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id == "turn_2"
+    assert binding.active_turn_status == "inProgress"
+
+
+def test_unknown_turn_terminal_messages_are_not_suppressed_after_restart() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        status="inProgress",
+    )
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    early = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Recovered final answer",
+                },
+            },
+        },
+        store,
+    )
+    final = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        },
+        store,
+    )
+
+    assert early is not None
+    assert early.message_type == "turn_result"
+    assert "Recovered final answer" in early.text
+    assert final is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status == "completed"
+
+
+def test_persisted_active_turn_still_suppresses_stale_turn_after_restart() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_2",
+        status="inProgress",
+    )
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Old turn final answer",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id == "turn_2"
+    assert binding.active_turn_status == "inProgress"
+
+
+def test_completed_newer_turn_still_suppresses_stale_terminal_after_restart(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_1",
+        status="inProgress",
+    )
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_2",
+        status="inProgress",
+    )
+    store.note_turn_completed(thread.thread_id, turn_id="turn_2", status="completed")
+
+    reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    projector = MessageProjector(
+        request_registry=RequestRegistry(reloaded),
+        turn_state=TurnStateMachine(),
+    )
+
+    late_final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Old turn final answer",
+                },
+            },
+        },
+        reloaded,
+    )
+    late_complete = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        },
+        reloaded,
+    )
+
+    assert late_final is None
+    assert late_complete is None
+    binding = reloaded.get_binding("demo", "conv-1")
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status == "completed"
+
+
+def test_unseen_newer_turn_is_not_dropped_after_restart(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_1",
+        status="inProgress",
+    )
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_2",
+        status="inProgress",
+    )
+    store.note_turn_completed(thread.thread_id, turn_id="turn_2", status="completed")
+
+    reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    projector = MessageProjector(
+        request_registry=RequestRegistry(reloaded),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_3",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Recovered newer turn output",
+                },
+            },
+        },
+        reloaded,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_result"
+    assert "Recovered newer turn output" in message.text
+
+
+def test_stale_turn_requests_are_not_projected() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_1",
+        status="inProgress",
+    )
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_2",
+        status="inProgress",
+    )
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "itemId": "item_old",
+                "_request_id": "req-old",
+                "command": "pytest -q",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.list_pending_requests("demo", "conv-1") == []
+
+
 def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_label() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
@@ -424,6 +795,45 @@ def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_labe
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
     assert store.consume_pending_first_thread_label("demo", "conv-1", new_thread.thread_id) is True
+
+
+def test_replayed_stale_turn_started_does_not_replace_current_turn() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_1",
+        status="inProgress",
+    )
+    store.set_active_turn(
+        "demo",
+        "conv-1",
+        thread_id=thread.thread_id,
+        turn_id="turn_2",
+        status="inProgress",
+    )
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_turn_id == "turn_2"
+    assert binding.active_turn_status == "inProgress"
 
 
 def test_turn_completion_still_routes_after_switching_active_thread() -> None:

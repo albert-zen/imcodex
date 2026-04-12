@@ -92,6 +92,8 @@ class ConversationStore:
         cwd: str,
         preview: str,
         status: str = "idle",
+        name: str | None = None,
+        path: str | None = None,
     ) -> ThreadRecord:
         project = self._ensure_project(cwd)
         existing = self._threads.get(thread_id)
@@ -102,6 +104,11 @@ class ConversationStore:
             status=status,
             last_used_at=self.clock(),
             cwd=cwd,
+            name=name if name is not None else (existing.name if existing is not None else None),
+            path=path if path is not None else (existing.path if existing is not None else None),
+            last_turn_id=existing.last_turn_id if existing is not None else None,
+            last_turn_status=existing.last_turn_status if existing is not None else None,
+            stale_turn_ids=list(existing.stale_turn_ids) if existing is not None else [],
             created_seq=existing.created_seq if existing is not None else self._next_seq(),
         )
         self._threads[thread_id] = thread
@@ -134,6 +141,10 @@ class ConversationStore:
 
     def thread_label(self, thread_id: str) -> str:
         thread = self.get_thread(thread_id)
+        if thread.name:
+            label = _clip_thread_label(thread.name)
+            if label:
+                return label
         preview = _clip_thread_label(thread.preview)
         if preview:
             return preview
@@ -200,6 +211,7 @@ class ConversationStore:
         binding = self.get_binding(channel_id, conversation_id)
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
         binding.active_project_id = project_id
+        binding.selected_cwd = self.get_project(project_id).cwd
         binding.active_thread_id = None
         binding.active_turn_id = None
         binding.active_turn_status = None
@@ -216,6 +228,7 @@ class ConversationStore:
         binding = self.get_binding(channel_id, conversation_id)
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=thread_id)
         binding.active_project_id = thread.project_id
+        binding.selected_cwd = thread.cwd
         binding.active_thread_id = thread_id
         active_turn = self._thread_active_turns.get(thread_id)
         if active_turn is None:
@@ -225,6 +238,9 @@ class ConversationStore:
             binding.active_turn_id, binding.active_turn_status = active_turn
         if thread_id not in binding.known_thread_ids:
             binding.known_thread_ids.append(thread_id)
+        binding.last_seen_thread_name = thread.name or self.thread_label(thread_id)
+        binding.last_seen_thread_path = thread.path or thread.cwd
+        binding.last_seen_thread_status = thread.status
         self._save()
         return binding
 
@@ -238,7 +254,11 @@ class ConversationStore:
         status: str,
     ) -> ConversationBinding:
         binding = self.set_active_thread(channel_id, conversation_id, thread_id)
+        thread = self.get_thread(thread_id)
         self._thread_active_turns[thread_id] = (turn_id, status)
+        self._mark_turn_superseded(thread, turn_id)
+        thread.last_turn_id = turn_id
+        thread.last_turn_status = status
         binding.active_turn_id = turn_id
         binding.active_turn_status = status
         self._save()
@@ -309,8 +329,17 @@ class ConversationStore:
         turn_id: str,
         status: str,
     ) -> ConversationBinding | None:
+        try:
+            thread = self.get_thread(thread_id)
+        except KeyError:
+            return None
+        thread.status = status
+        self._mark_turn_superseded(thread, turn_id)
+        thread.last_turn_id = turn_id
+        thread.last_turn_status = status
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
+            self._save()
             return None
         self._thread_active_turns[thread_id] = (turn_id, status)
         if binding.active_thread_id != thread_id:
@@ -320,6 +349,7 @@ class ConversationStore:
             binding.known_thread_ids.append(thread_id)
         binding.active_turn_id = turn_id
         binding.active_turn_status = status
+        binding.last_seen_thread_status = status
         self._save()
         return binding
 
@@ -330,10 +360,25 @@ class ConversationStore:
         turn_id: str,
         status: str,
     ) -> ConversationBinding | None:
-        binding = self.find_binding_for_thread(thread_id)
-        if binding is None:
+        try:
+            thread = self.get_thread(thread_id)
+        except KeyError:
             return None
+        thread.status = status
+        binding = self.find_binding_for_thread(thread_id)
         stored_turn = self._thread_active_turns.get(thread_id)
+        should_update_last_turn = (
+            thread.last_turn_id is None
+            or thread.last_turn_id == turn_id
+            or (stored_turn is not None and stored_turn[0] == turn_id)
+            or (binding is not None and binding.active_turn_id == turn_id)
+        )
+        if should_update_last_turn:
+            thread.last_turn_id = turn_id
+            thread.last_turn_status = status
+        if binding is None:
+            self._save()
+            return None
         if stored_turn is not None and stored_turn[0] == turn_id:
             self._thread_active_turns.pop(thread_id, None)
         if binding.active_thread_id != thread_id:
@@ -341,7 +386,11 @@ class ConversationStore:
             return binding
         if binding.active_turn_id == turn_id:
             binding.active_turn_id = None
-        binding.active_turn_status = status
+            binding.active_turn_status = status
+            binding.last_seen_thread_status = status
+        elif binding.active_turn_id is None:
+            binding.active_turn_status = status
+            binding.last_seen_thread_status = status
         self._save()
         return binding
 
@@ -435,6 +484,7 @@ class ConversationStore:
             thread_id=thread_id,
             turn_id=turn_id,
             item_id=item_id,
+            status="pending",
         )
         self._pending_requests[
             self._pending_request_key(channel_id, conversation_id, ticket_id)
@@ -503,6 +553,7 @@ class ConversationStore:
             return None
         request.submitted_at = self.clock()
         request.submitted_resolution = resolution
+        request.status = "submitted"
         self._save()
         return request
 
@@ -521,6 +572,7 @@ class ConversationStore:
         )
         if request is None:
             return None
+        request.status = "resolved"
         request.resolved_at = self.clock()
         request.resolution = resolution
         binding = self.get_binding(request.channel_id, request.conversation_id)
@@ -647,6 +699,16 @@ class ConversationStore:
         if pending_thread_id is None or pending_thread_id == next_thread_id:
             return
         self._pending_first_thread_labels.pop(key, None)
+
+    def _mark_turn_superseded(self, thread: ThreadRecord, next_turn_id: str) -> None:
+        previous_turn_id = thread.last_turn_id
+        if not previous_turn_id or previous_turn_id == next_turn_id:
+            return
+        if previous_turn_id in thread.stale_turn_ids:
+            return
+        thread.stale_turn_ids.append(previous_turn_id)
+        if len(thread.stale_turn_ids) > 16:
+            thread.stale_turn_ids = thread.stale_turn_ids[-16:]
 
     def _pending_request_key(
         self,
