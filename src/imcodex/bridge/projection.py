@@ -1,18 +1,32 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
 from ..models import OutboundMessage, PendingRequest
+from .message_pump import MessagePump
+from .visibility import VisibilityClassifier
 
 
 class MessageProjector:
-    def __init__(self, *, request_registry=None, turn_state=None) -> None:
+    def __init__(
+        self,
+        *,
+        request_registry=None,
+        turn_state=None,
+        message_pump: MessagePump | None = None,
+        visibility: VisibilityClassifier | None = None,
+    ) -> None:
         self.request_registry = request_registry
         self.turn_state = turn_state
-        self._turn_messages: dict[tuple[str, str], list[str]] = defaultdict(list)
-        self._turn_commands: dict[tuple[str, str], list[str]] = defaultdict(list)
-        self._turn_files: dict[tuple[str, str], list[str]] = defaultdict(list)
-        self._emitted_turn_results: set[tuple[str, str]] = set()
+        self.visibility = visibility or VisibilityClassifier()
+        self.message_pump = message_pump or MessagePump(
+            progress_renderer=lambda text: self.render_turn_progress(text=text),
+            result_renderer=lambda final_text, command_summaries, changed_files, failed, interrupted: self.render_turn_completed(
+                final_text=final_text,
+                command_summaries=command_summaries,
+                changed_files=changed_files,
+                failed=failed,
+                interrupted=interrupted,
+            ),
+        )
 
     def render_pending_request(self, pending: PendingRequest) -> OutboundMessage:
         if pending.kind == "question":
@@ -122,15 +136,14 @@ class MessageProjector:
                 summary="Additional input required",
             )
         if method == "item/agentMessage/delta":
-            key = (params.get("threadId", ""), params.get("turnId", ""))
-            delta = params.get("delta", "")
-            self._turn_messages[key].append(delta)
-            if delta and self._show_commentary(params.get("threadId", ""), store):
-                return self._attach_conversation(
-                    params.get("threadId", ""),
-                    self.render_turn_progress(text=delta),
-                    store,
-                )
+            message = self.message_pump.record_delta(
+                thread_id=params.get("threadId", ""),
+                turn_id=params.get("turnId", ""),
+                delta=params.get("delta", ""),
+                emit_progress=self._show_commentary(params.get("threadId", ""), store),
+            )
+            if message is not None:
+                return self._attach_conversation(params.get("threadId", ""), message, store)
             return None
         if method == "turn/started":
             thread_id = params.get("threadId", "")
@@ -231,80 +244,59 @@ class MessageProjector:
 
     def _capture_item_completed(self, params: dict, store) -> OutboundMessage | None:
         item = params.get("item") or {}
-        key = (params.get("threadId", ""), params.get("turnId", ""))
         item_type = item.get("type")
         if item_type == "agentMessage":
+            thread_id = params.get("threadId", "")
+            turn_id = params.get("turnId", "")
             text = item.get("text", "")
-            self._turn_messages[key] = [text]
             phase = item.get("phase")
-            if phase and phase != "final_answer" and text and self._show_commentary(params.get("threadId", ""), store):
-                return self._attach_conversation(
-                    params.get("threadId", ""),
-                    self.render_turn_progress(text=text),
-                    store,
-                )
-            if phase == "final_answer" and key not in self._emitted_turn_results:
-                if self._is_stale_turn(
-                    params.get("threadId", ""),
-                    params.get("turnId", ""),
-                    store,
-                ):
-                    return None
-                self._emitted_turn_results.add(key)
-                if self.turn_state is not None:
-                    self.turn_state.mark_terminal_emitted(
-                        params.get("threadId", ""),
-                        params.get("turnId", ""),
-                    )
-                return self._attach_conversation(
-                    params.get("threadId", ""),
-                    self.render_turn_completed(
-                        final_text=text,
-                        command_summaries=[],
-                        changed_files=[],
-                        failed=False,
-                        interrupted=False,
-                    ),
-                    store,
-                )
+            if phase == "final_answer" and self._is_stale_turn(thread_id, turn_id, store):
+                return None
+            message = self.message_pump.record_agent_message(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                phase=phase,
+                text=text,
+                emit_commentary=self._show_commentary(thread_id, store),
+            )
+            if phase == "final_answer" and message is not None and self.turn_state is not None:
+                self.turn_state.mark_terminal_emitted(thread_id, turn_id)
+            if message is not None:
+                return self._attach_conversation(thread_id, message, store)
         elif item_type == "commandExecution":
             command = item.get("command")
             if command:
-                self._turn_commands[key].append(f"Executed `{command}`")
-                if self._show_toolcalls(params.get("threadId", ""), store):
-                    return self._attach_conversation(
-                        params.get("threadId", ""),
-                        self.render_turn_progress(text=f"Executed `{command}`"),
-                        store,
-                    )
+                message = self.message_pump.record_command(
+                    thread_id=params.get("threadId", ""),
+                    turn_id=params.get("turnId", ""),
+                    command=command,
+                    emit_progress=self._show_toolcalls(params.get("threadId", ""), store),
+                )
+                if message is not None:
+                    return self._attach_conversation(params.get("threadId", ""), message, store)
         elif item_type == "fileChange":
             paths: list[str] = []
             for change in item.get("changes", []):
                 path = change.get("path")
                 if path:
-                    self._turn_files[key].append(path)
                     paths.append(path)
-            if paths and self._show_toolcalls(params.get("threadId", ""), store):
-                lines = ["Changed files:"]
-                lines.extend(f"- {path}" for path in paths)
-                return self._attach_conversation(
-                    params.get("threadId", ""),
-                    self.render_turn_progress(text="\n".join(lines)),
-                    store,
-                )
+            message = self.message_pump.record_file_change(
+                thread_id=params.get("threadId", ""),
+                turn_id=params.get("turnId", ""),
+                paths=paths,
+                emit_progress=self._show_toolcalls(params.get("threadId", ""), store),
+            )
+            if message is not None:
+                return self._attach_conversation(params.get("threadId", ""), message, store)
         return None
 
     def _finalize_turn(self, params: dict, store) -> OutboundMessage | None:
         thread_id = params.get("threadId", "")
         turn = params.get("turn") or {}
         turn_id = turn.get("id", "")
-        key = (thread_id, turn_id)
         status = turn.get("status", "")
         if self._is_stale_turn(thread_id, turn_id, store):
-            self._turn_messages.pop(key, None)
-            self._turn_commands.pop(key, None)
-            self._turn_files.pop(key, None)
-            self._emitted_turn_results.discard(key)
+            self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
             return None
         if thread_id and turn_id and status:
             store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
@@ -315,20 +307,10 @@ class MessageProjector:
                     self.turn_state.mark_failed(thread_id, turn_id)
                 elif status == "interrupted":
                     self.turn_state.mark_interrupted(thread_id, turn_id)
-        text = "\n".join(self._turn_messages.pop(key, []))
-        commands = self._turn_commands.pop(key, [])
-        files = self._turn_files.pop(key, [])
-        if key in self._emitted_turn_results and status == "completed":
-            self._emitted_turn_results.discard(key)
-            return None
-        if key in self._emitted_turn_results:
-            self._emitted_turn_results.discard(key)
-        message = self.render_turn_completed(
-            final_text=text,
-            command_summaries=commands,
-            changed_files=files,
-            failed=status == "failed",
-            interrupted=status == "interrupted",
+        message = self.message_pump.finalize_turn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            status=status,
         )
         return self._attach_conversation(thread_id, message, store)
 
@@ -338,6 +320,8 @@ class MessageProjector:
         return store.find_binding_for_thread(thread_id)
 
     def _attach_conversation(self, thread_id: str, message: OutboundMessage, store) -> OutboundMessage | None:
+        if message is None:
+            return None
         binding = self._find_binding(store, thread_id) if store is not None else None
         if binding is None:
             return message if message.channel_id and message.conversation_id else None
@@ -346,12 +330,10 @@ class MessageProjector:
         return message
 
     def _show_commentary(self, thread_id: str, store) -> bool:
-        binding = self._find_binding(store, thread_id)
-        return binding.show_commentary if binding is not None else True
+        return self.visibility.should_emit("commentary", thread_id=thread_id, store=store)
 
     def _show_toolcalls(self, thread_id: str, store) -> bool:
-        binding = self._find_binding(store, thread_id)
-        return binding.show_toolcalls if binding is not None else False
+        return self.visibility.should_emit("toolcall", thread_id=thread_id, store=store)
 
     def _is_stale_turn(self, thread_id: str, turn_id: str, store) -> bool:
         if self.turn_state is not None and self.turn_state.is_stale(thread_id, turn_id):

@@ -7,6 +7,7 @@ __all__ = [
     "CommandResponse",
     "CommandRouter",
     "MessageProjector",
+    "MessagePump",
     "NativeThreadSnapshot",
     "ParsedCommand",
     "RequestRecord",
@@ -16,6 +17,7 @@ __all__ = [
     "ThreadDirectory",
     "TurnStateMachine",
     "TurnStateRecord",
+    "VisibilityClassifier",
     "parse_command",
 ]
 
@@ -27,6 +29,7 @@ _EXPORTS = {
     "ParsedCommand": (".commands", "ParsedCommand"),
     "parse_command": (".commands", "parse_command"),
     "MessageProjector": (".projection", "MessageProjector"),
+    "MessagePump": (".message_pump", "MessagePump"),
     "RequestRecord": (".request_registry", "RequestRecord"),
     "RequestRegistry": (".request_registry", "RequestRegistry"),
     "SessionRecord": (".session_registry", "SessionRecord"),
@@ -35,6 +38,7 @@ _EXPORTS = {
     "ThreadDirectory": (".thread_directory", "ThreadDirectory"),
     "TurnStateMachine": (".turn_state", "TurnStateMachine"),
     "TurnStateRecord": (".turn_state", "TurnStateRecord"),
+    "VisibilityClassifier": (".visibility", "VisibilityClassifier"),
 }
 
 
