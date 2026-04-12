@@ -530,3 +530,7 @@ async def test_reply_to_server_request_uses_server_request_id_when_present() -> 
     await backend.reply_to_server_request("7", {"decision": "accept"})
 
     assert client.replies == [("99", {"decision": "accept"})]
+    pending = store.get_pending_request("7")
+    assert pending is not None
+    assert pending.resolved_at is None
+    assert pending.submitted_resolution == {"decision": "accept"}

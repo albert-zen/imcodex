@@ -120,6 +120,14 @@ class MessageProjector:
             if thread_id and turn_id and status:
                 store.note_turn_started(thread_id, turn_id=turn_id, status=status)
             return None
+        if method == "serverRequest/resolved":
+            request = store.get_pending_request_by_request_id(str(params.get("requestId", "")))
+            if request is not None:
+                store.resolve_pending_request(
+                    request.ticket_id,
+                    request.submitted_resolution or {"requestId": params.get("requestId")},
+                )
+            return None
         if method == "item/completed":
             return self._capture_item_completed(params, store)
         if method == "turn/completed":

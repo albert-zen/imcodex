@@ -230,6 +230,24 @@ def test_list_pending_requests_returns_binding_order() -> None:
     assert [request.ticket_id for request in requests] == ["2", "3"]
 
 
+def test_can_find_pending_request_by_native_request_id() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Second",
+        payload={},
+        request_id="native-22",
+    )
+
+    pending = store.get_pending_request_by_request_id("native-22")
+
+    assert pending is not None
+    assert pending.ticket_id == "2"
+
+
 def test_switching_back_to_delayed_running_thread_restores_its_turn_state() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")

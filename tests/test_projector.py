@@ -299,6 +299,59 @@ def test_turn_started_updates_status_for_status_command() -> None:
     assert binding.active_turn_status == "inProgress"
 
 
+def test_server_request_resolved_clears_matching_pending_ticket() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="7",
+        kind="approval",
+        summary="Run tests",
+        payload={"command": "pytest -q"},
+        request_id="99",
+        thread_id="thr_1",
+        turn_id="turn_1",
+    )
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "serverRequest/resolved",
+            "params": {
+                "threadId": "thr_1",
+                "requestId": "99",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.get_pending_request("7") is None
+    assert store.get_binding("demo", "conv-1").pending_request_ids == []
+
+
+def test_server_request_resolved_is_ignored_for_unknown_request() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "serverRequest/resolved",
+            "params": {
+                "threadId": "thr_1",
+                "requestId": "404",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
 def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_label() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")

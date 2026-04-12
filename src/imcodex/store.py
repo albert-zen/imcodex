@@ -438,6 +438,12 @@ class ConversationStore:
     def get_pending_request(self, ticket_id: str) -> PendingRequest | None:
         return self._pending_requests.get(ticket_id)
 
+    def get_pending_request_by_request_id(self, request_id: str) -> PendingRequest | None:
+        for request in self._pending_requests.values():
+            if request.request_id == request_id:
+                return request
+        return None
+
     def list_pending_requests(
         self,
         channel_id: str,
