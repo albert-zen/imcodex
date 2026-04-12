@@ -57,6 +57,29 @@ def test_tool_request_input_is_projected_with_answer_help() -> None:
     assert "/answer 12 timezone=" in message.text
 
 
+def test_approval_request_includes_available_context_fields() -> None:
+    projector = MessageProjector()
+    pending = PendingRequest(
+        ticket_id="7",
+        channel_id="demo",
+        conversation_id="conv-1",
+        kind="approval",
+        summary="Run tests",
+        payload={
+            "command": "pytest -q",
+            "cwd": "D:/repo/app",
+            "reason": "Run project tests",
+            "network": {"host": "api.example.com"},
+        },
+        created_at=1.0,
+    )
+
+    message = projector.render_pending_request(pending)
+
+    assert "CWD: D:/repo/app" in message.text
+    assert "Network: api.example.com" in message.text
+
+
 def test_turn_completed_success_returns_model_text_only() -> None:
     projector = MessageProjector()
 
@@ -189,6 +212,29 @@ def test_non_final_agent_message_respects_commentary_visibility_toggle() -> None
     )
 
     assert message is None
+
+
+def test_agent_message_delta_can_be_projected_when_commentary_is_visible() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "delta": "Inspecting the active thread binding.",
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_progress"
+    assert "Inspecting the active thread binding." in message.text
 
 
 def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
@@ -474,6 +520,45 @@ def test_command_execution_item_can_be_projected_when_tool_calls_are_enabled() -
     assert progress is not None
     assert progress.message_type == "turn_progress"
     assert "Executed `pytest -q`" in progress.text
+
+
+def test_server_request_resolved_closes_matching_pending_request() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    pending = store.create_pending_request(
+        channel_id="demo",
+        conversation_id="conv-1",
+        ticket_id="7",
+        kind="approval",
+        summary="Run tests",
+        payload={"command": "pytest -q"},
+        request_id="99",
+        request_method="item/commandExecution/requestApproval",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        item_id="cmd_1",
+    )
+    store.mark_pending_request_submitted("7", {"decision": "accept"})
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "serverRequest/resolved",
+            "params": {
+                "requestId": "99",
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "itemId": "cmd_1",
+                "result": {"decision": "accept"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.get_pending_request(pending.ticket_id) is None
+    assert store.get_binding("demo", "conv-1").pending_request_ids == []
 
 
 def test_file_change_item_is_hidden_when_tool_calls_are_disabled() -> None:
