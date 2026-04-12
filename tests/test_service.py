@@ -17,6 +17,12 @@ class FakeBackend:
         self.started_turns: list[tuple[str, str, str]] = []
         self.interrupts: list[tuple[str, str]] = []
         self.replies: list[tuple[str, dict]] = []
+        self.list_threads_calls: list[tuple[str, str]] = []
+        self.read_thread_calls: list[tuple[str, str, str]] = []
+        self.list_threads_result: list[object] = []
+        self.read_thread_result: object | None = None
+        self.fail_list_threads = False
+        self.fail_read_thread = False
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.created_threads.append((channel_id, conversation_id))
@@ -45,6 +51,18 @@ class FakeBackend:
         decision_or_answers: dict,
     ) -> None:
         self.replies.append((ticket_id, decision_or_answers))
+
+    async def list_threads(self, channel_id: str, conversation_id: str, include_all: bool = False):
+        self.list_threads_calls.append((channel_id, conversation_id))
+        if self.fail_list_threads:
+            raise RuntimeError("thread/list unavailable")
+        return list(self.list_threads_result)
+
+    async def read_thread(self, channel_id: str, conversation_id: str, thread_id: str):
+        self.read_thread_calls.append((channel_id, conversation_id, thread_id))
+        if self.fail_read_thread:
+            raise RuntimeError("thread/read unavailable")
+        return self.read_thread_result
 
 
 @pytest.mark.asyncio
@@ -255,6 +273,243 @@ async def test_new_command_does_not_require_backend_to_store_thread_before_ack()
 
     assert backend.created_threads == [("qq", "conv-1")]
     assert messages[0].text == "Started new thread Untitled thread (id: thr_remote_new)."
+
+
+@pytest.mark.asyncio
+async def test_threads_command_prefers_native_thread_listing() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    backend = FakeBackend()
+    from imcodex.bridge.thread_directory import NativeThreadSnapshot
+
+    backend.list_threads_result = [
+        NativeThreadSnapshot(
+            thread_id="thr_native_1",
+            cwd=r"D:\work\alpha",
+            preview="Inspect tests",
+            status="idle",
+            name="Investigate alpha",
+            path=r"D:\work\alpha",
+        ),
+        NativeThreadSnapshot(
+            thread_id="thr_native_2",
+            cwd=r"D:\work\alpha",
+            preview="Ready",
+            status="completed",
+            name="Fix beta",
+            path=r"D:\work\alpha",
+        ),
+    ]
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+
+    assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert messages[0].message_type == "command_result"
+    assert "Investigate alpha" in messages[0].text
+    assert "Fix beta" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_thread_read_command_prefers_native_thread_read() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    binding.active_thread_id = "thr_native"
+    backend = FakeBackend()
+    from imcodex.bridge.thread_directory import NativeThreadSnapshot
+
+    backend.read_thread_result = NativeThreadSnapshot(
+        thread_id="thr_native",
+        cwd=r"D:\work\alpha",
+        preview="Inspect tests",
+        status="completed",
+        name="Investigate alpha",
+        path=r"D:\work\alpha",
+    )
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread read",
+        )
+    )
+
+    assert backend.read_thread_calls == [("qq", "conv-1", "thr_native")]
+    assert messages[0].message_type == "command_result"
+    assert "Thread: Investigate alpha" in messages[0].text
+    assert "Status: completed" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_threads_command_falls_back_to_local_state_when_native_query_fails() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_local", cwd=r"D:\work\alpha", preview="Local preview")
+    store.set_active_project("qq", "conv-1", thread.project_id)
+    backend = FakeBackend()
+    backend.fail_list_threads = True
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+
+    assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert "Local preview" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_threads_command_without_selected_cwd_preserves_missing_project_guard() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = FakeBackend()
+    from imcodex.bridge.thread_directory import NativeThreadSnapshot
+
+    backend.list_threads_result = [
+        NativeThreadSnapshot(
+            thread_id="thr_native",
+            cwd=r"D:\work\alpha",
+            preview="Native preview",
+            status="idle",
+            name="Native thread",
+            path=r"D:\work\alpha",
+        )
+    ]
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+
+    assert backend.list_threads_calls == []
+    assert messages[0].message_type == "command_result"
+    assert "/cwd <path>" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_thread_read_command_surfaces_recoverable_status_when_native_query_fails() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_local", cwd=r"D:\work\alpha", preview="Local preview")
+    binding = store.set_active_project("qq", "conv-1", thread.project_id)
+    binding.active_thread_id = "thr_local"
+    backend = FakeBackend()
+    backend.fail_read_thread = True
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread read",
+        )
+    )
+
+    assert backend.read_thread_calls == [("qq", "conv-1", "thr_local")]
+    assert messages[0].message_type == "status"
+    assert "could not be validated" in messages[0].text
+    assert "/recover" in messages[0].text
+    assert "/new" in messages[0].text
+    assert "/thread attach <thread-id>" in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_threads_all_command_requests_cross_workspace_native_listing() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    backend = FakeBackend()
+    from imcodex.bridge.thread_directory import NativeThreadSnapshot
+
+    backend.list_threads_result = [
+        NativeThreadSnapshot(
+            thread_id="thr_alpha",
+            cwd=r"D:\work\alpha",
+            preview="Alpha",
+            status="idle",
+            name="Alpha thread",
+            path=r"D:\work\alpha",
+        ),
+        NativeThreadSnapshot(
+            thread_id="thr_beta",
+            cwd=r"D:\work\beta",
+            preview="Beta",
+            status="idle",
+            name="Beta thread",
+            path=r"D:\work\beta",
+        ),
+    ]
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads --all",
+        )
+    )
+
+    assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert "Alpha thread" in messages[0].text
+    assert "Beta thread" in messages[0].text
+    assert "cwd: D:\\work\\beta" in messages[0].text
 
 
 @pytest.mark.asyncio

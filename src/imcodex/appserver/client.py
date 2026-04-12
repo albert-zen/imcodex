@@ -97,6 +97,20 @@ class AppServerClient:
         await asyncio.sleep(0)
         return result
 
+    async def list_threads(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
+        await self._ensure_ready()
+        payload = dict(params or {})
+        payload.update(kwargs)
+        result = await self._request("thread/list", payload)
+        await asyncio.sleep(0)
+        return result
+
+    async def read_thread(self, thread_id: str) -> JsonDict:
+        await self._ensure_ready()
+        result = await self._request("thread/read", {"threadId": thread_id})
+        await asyncio.sleep(0)
+        return result
+
     async def start_turn(
         self,
         thread_id: str | None = None,

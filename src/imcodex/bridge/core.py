@@ -5,7 +5,7 @@ from typing import Any
 from ..appserver import CodexBackend
 from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
-from .commands import CommandRouter
+from .commands import CommandRouter, parse_command
 from .projection import MessageProjector
 from .request_registry import RequestRegistry
 from .session_registry import SessionRegistry
@@ -49,6 +49,9 @@ class BridgeService:
         return await self._handle_text(message)
 
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
+        native_messages = await self._handle_native_query_command(message)
+        if native_messages is not None:
+            return native_messages
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
         if response.action == "thread.new.missing_project":
             return [self._message(message, "error", response.text)]
@@ -205,3 +208,59 @@ class BridgeService:
         if action.endswith(".missing") or action.endswith(".invalid"):
             return "error"
         return "command_result"
+
+    async def _handle_native_query_command(self, message: InboundMessage) -> list[OutboundMessage] | None:
+        try:
+            command = parse_command(message.text)
+        except ValueError:
+            return None
+        if command.name == "threads":
+            include_all = "--all" in command.args
+            binding = self.store.get_binding(message.channel_id, message.conversation_id)
+            if not include_all and binding.selected_cwd is None:
+                return None
+            try:
+                snapshots = await self.backend.list_threads(
+                    message.channel_id,
+                    message.conversation_id,
+                    include_all=include_all,
+                )
+            except Exception:
+                return None
+            lines = ["Threads:"]
+            for snapshot in snapshots:
+                marker = "*" if snapshot.thread_id == binding.active_thread_id else "-"
+                label = snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)
+                parts = [f"id: {snapshot.thread_id}"]
+                if include_all or binding.selected_cwd is None:
+                    parts.append(f"cwd: {snapshot.cwd}")
+                lines.append(f"{marker} {label} ({', '.join(parts)})")
+            return [self._message(message, "command_result", "\n".join(lines))]
+        if command.name == "thread" and command.args == ["read"]:
+            binding = self.store.get_binding(message.channel_id, message.conversation_id)
+            if binding.active_thread_id is None:
+                return [self._message(message, "command_result", "No active thread.")]
+            try:
+                snapshot = await self.backend.read_thread(
+                    message.channel_id,
+                    message.conversation_id,
+                    binding.active_thread_id,
+                )
+            except Exception:
+                text = (
+                    f"Current thread {binding.active_thread_id} could not be validated. "
+                    "Use /recover, /new, or /thread attach <thread-id>."
+                )
+                return [self._message(message, "status", text)]
+            if snapshot is None:
+                return [self._message(message, "command_result", "No active thread.")]
+            text = "\n".join(
+                [
+                    f"Thread: {snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)}",
+                    f"Thread id: {snapshot.thread_id}",
+                    f"CWD: {snapshot.cwd or '(unknown)'}",
+                    f"Status: {snapshot.status or '(unknown)'}",
+                ]
+            )
+            return [self._message(message, "command_result", text)]
+        return None

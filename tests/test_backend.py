@@ -12,6 +12,8 @@ class FakeClient:
     def __init__(self) -> None:
         self.thread_resumes: list[dict] = []
         self.thread_starts: list[dict] = []
+        self.thread_lists: list[dict] = []
+        self.thread_reads: list[dict] = []
         self.turn_starts: list[dict] = []
         self.turn_steers: list[dict] = []
         self.turn_interrupts: list[dict] = []
@@ -19,6 +21,8 @@ class FakeClient:
         self.fail_thread_ids: set[str] = set()
         self.fail_resume_ids: set[str] = set()
         self.resume_results: dict[str, dict[str, str]] = {}
+        self.list_result: list[dict] = []
+        self.read_results: dict[str, dict] = {}
         self.fail_steer_messages: list[str] = []
         self.fail_interrupt = False
 
@@ -46,6 +50,14 @@ class FakeClient:
     async def start_thread(self, **params):
         self.thread_starts.append(params)
         return {"thread": {"id": "thr_new", "preview": "", "status": {"type": "idle"}}}
+
+    async def list_threads(self, **params):
+        self.thread_lists.append(params)
+        return {"threads": list(self.list_result)}
+
+    async def read_thread(self, thread_id: str):
+        self.thread_reads.append({"thread_id": thread_id})
+        return {"thread": dict(self.read_results.get(thread_id, {"id": thread_id, "status": {"type": "idle"}}))}
 
     async def start_turn(self, **params):
         self.turn_starts.append(params)
@@ -200,6 +212,90 @@ async def test_attach_thread_refreshes_preview_for_known_thread() -> None:
     await backend.attach_thread("demo", "conv-1", "thr_known")
 
     assert store.thread_label("thr_known") == "Imported thread"
+
+
+@pytest.mark.asyncio
+async def test_list_threads_imports_native_thread_metadata() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.list_result = [
+        {
+            "id": "thr_native_1",
+            "name": "Investigate alpha",
+            "cwd": "D:/repo/app",
+            "path": "D:/repo/app",
+            "preview": "Inspect failing tests",
+            "status": "idle",
+        },
+        {
+            "id": "thr_native_2",
+            "name": "Fix beta",
+            "cwd": "D:/repo/other",
+            "path": "D:/repo/other",
+            "preview": "Ready",
+            "status": "completed",
+        },
+    ]
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshots = await backend.list_threads("demo", "conv-1")
+
+    assert [snapshot.thread_id for snapshot in snapshots] == ["thr_native_1"]
+    assert snapshots[0].name == "Investigate alpha"
+    assert store.get_thread("thr_native_1").name == "Investigate alpha"
+    assert client.thread_lists == [{}]
+
+
+@pytest.mark.asyncio
+async def test_list_threads_can_skip_cwd_filter_for_all_threads() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.list_result = [
+        {
+            "id": "thr_native_1",
+            "name": "Investigate alpha",
+            "cwd": "D:/repo/app",
+            "path": "D:/repo/app",
+            "preview": "Inspect failing tests",
+            "status": "idle",
+        },
+        {
+            "id": "thr_native_2",
+            "name": "Fix beta",
+            "cwd": "D:/repo/other",
+            "path": "D:/repo/other",
+            "preview": "Ready",
+            "status": "completed",
+        },
+    ]
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshots = await backend.list_threads("demo", "conv-1", include_all=True)
+
+    assert [snapshot.thread_id for snapshot in snapshots] == ["thr_native_1", "thr_native_2"]
+
+
+@pytest.mark.asyncio
+async def test_read_thread_imports_native_thread_metadata() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.read_results["thr_native"] = {
+        "id": "thr_native",
+        "name": "Investigate alpha",
+        "cwd": "D:/repo/app",
+        "path": "D:/repo/app",
+        "preview": "Inspect failing tests",
+        "status": "completed",
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshot = await backend.read_thread("demo", "conv-1", "thr_native")
+
+    assert snapshot is not None
+    assert snapshot.thread_id == "thr_native"
+    assert snapshot.status == "completed"
+    assert store.get_thread("thr_native").name == "Investigate alpha"
+    assert client.thread_reads == [{"thread_id": "thr_native"}]
 
 
 @pytest.mark.asyncio

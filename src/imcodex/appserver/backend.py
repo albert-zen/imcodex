@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from .client import AppServerError
+from ..bridge.thread_directory import NativeThreadSnapshot, ThreadDirectory
 from ..store import ConversationStore
 
 
@@ -11,6 +12,7 @@ class CodexBackend:
         self.client = client
         self.store = store
         self.service_name = service_name
+        self.thread_directory = ThreadDirectory(store)
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -66,6 +68,48 @@ class CodexBackend:
             preview=result["thread"].get("preview", ""),
         )
         return resolved_thread_id
+
+    async def list_threads(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        include_all: bool = False,
+    ) -> list[NativeThreadSnapshot]:
+        result = await self.client.list_threads()
+        snapshots = self.thread_directory.import_threads(
+            [self._normalize_thread_payload(item) for item in result.get("threads", [])]
+        )
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.selected_cwd and not include_all:
+            normalized = self.thread_directory._normalize_cwd(binding.selected_cwd)
+            return [
+                snapshot
+                for snapshot in snapshots
+                if self.thread_directory._normalize_cwd(snapshot.cwd) == normalized
+            ]
+        return snapshots
+
+    async def read_thread(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+    ) -> NativeThreadSnapshot | None:
+        del channel_id, conversation_id
+        result = await self.client.read_thread(thread_id)
+        payload = result.get("thread")
+        if not isinstance(payload, dict):
+            return None
+        normalized = self._normalize_thread_payload(payload)
+        return self.thread_directory.remember_thread(
+            thread_id=str(normalized["id"]),
+            cwd=str(normalized["cwd"]),
+            preview=str(normalized["preview"]),
+            status=str(normalized["status"]),
+            name=normalized.get("name"),
+            path=normalized.get("path"),
+        )
 
     async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -239,3 +283,17 @@ class CodexBackend:
     ) -> None:
         self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
+
+    def _normalize_thread_payload(self, payload: dict) -> dict[str, str | None]:
+        status = payload.get("status")
+        if isinstance(status, dict):
+            status = status.get("type") or status.get("status")
+        cwd = payload.get("cwd") or payload.get("path") or ""
+        return {
+            "id": str(payload.get("id") or payload.get("threadId") or ""),
+            "cwd": str(cwd),
+            "path": str(payload.get("path") or cwd or ""),
+            "preview": str(payload.get("preview") or ""),
+            "status": str(status or "idle"),
+            "name": payload.get("name"),
+        }
