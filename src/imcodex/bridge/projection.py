@@ -128,6 +128,14 @@ class MessageProjector:
                     request.submitted_resolution or {"requestId": params.get("requestId")},
                 )
             return None
+        if method == "turn/plan/updated":
+            if not self._show_commentary(params.get("threadId", ""), store):
+                return None
+            return self._attach_conversation(
+                params.get("threadId", ""),
+                self.render_turn_progress(text=self._render_plan_update(params)),
+                store,
+            )
         if method == "item/completed":
             return self._capture_item_completed(params, store)
         if method == "turn/completed":
@@ -200,10 +208,20 @@ class MessageProjector:
                         store,
                     )
         elif item_type == "fileChange":
+            paths: list[str] = []
             for change in item.get("changes", []):
                 path = change.get("path")
                 if path:
                     self._turn_files[key].append(path)
+                    paths.append(path)
+            if paths and self._show_toolcalls(params.get("threadId", ""), store):
+                lines = ["Changed files:"]
+                lines.extend(f"- {path}" for path in paths)
+                return self._attach_conversation(
+                    params.get("threadId", ""),
+                    self.render_turn_progress(text="\n".join(lines)),
+                    store,
+                )
         return None
 
     def _finalize_turn(self, params: dict, store) -> OutboundMessage | None:
@@ -251,3 +269,15 @@ class MessageProjector:
     def _show_toolcalls(self, thread_id: str, store) -> bool:
         binding = self._find_binding(store, thread_id)
         return binding.show_toolcalls if binding is not None else False
+
+    def _render_plan_update(self, params: dict) -> str:
+        lines: list[str] = []
+        explanation = params.get("explanation")
+        if explanation:
+            lines.append(str(explanation))
+        for entry in params.get("plan", []):
+            step = entry.get("step")
+            status = entry.get("status")
+            if step and status:
+                lines.append(f"[{status}] {step}")
+        return "\n".join(lines)

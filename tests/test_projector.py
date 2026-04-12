@@ -474,3 +474,104 @@ def test_command_execution_item_can_be_projected_when_tool_calls_are_enabled() -
     assert progress is not None
     assert progress.message_type == "turn_progress"
     assert "Executed `pytest -q`" in progress.text
+
+
+def test_file_change_item_is_hidden_when_tool_calls_are_disabled() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "file_1",
+                    "type": "fileChange",
+                    "changes": [{"path": "src/imcodex/store.py"}],
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
+def test_file_change_item_can_be_projected_when_tool_calls_are_enabled() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_toolcall_visibility("demo", "conv-1", enabled=True)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "file_1",
+                    "type": "fileChange",
+                    "changes": [{"path": "src/imcodex/store.py"}],
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_progress"
+    assert "Changed files:" in message.text
+    assert "src/imcodex/store.py" in message.text
+
+
+def test_turn_plan_update_respects_commentary_visibility() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    shown = projector.project_notification(
+        {
+            "method": "turn/plan/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "explanation": "Plan updated.",
+                "plan": [
+                    {"step": "Inspect current state", "status": "completed"},
+                    {"step": "Implement fix", "status": "inProgress"},
+                ],
+            },
+        },
+        store,
+    )
+
+    assert shown is not None
+    assert shown.message_type == "turn_progress"
+    assert "Plan updated." in shown.text
+    assert "[completed] Inspect current state" in shown.text
+    assert "[inProgress] Implement fix" in shown.text
+
+    store.set_commentary_visibility("demo", "conv-1", enabled=False)
+    hidden = projector.project_notification(
+        {
+            "method": "turn/plan/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "explanation": "Plan updated.",
+                "plan": [
+                    {"step": "Inspect current state", "status": "completed"},
+                ],
+            },
+        },
+        store,
+    )
+
+    assert hidden is None
