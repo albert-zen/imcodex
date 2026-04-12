@@ -33,9 +33,20 @@ class MessageProjector:
             )
         payload = pending.payload
         summary = payload.get("command") or pending.summary
-        text = (
-            f"[ticket {pending.ticket_id}] Approval needed.\n"
-            f"{summary}\n"
+        lines = [
+            f"[ticket {pending.ticket_id}] Approval needed.",
+            str(summary),
+        ]
+        cwd = payload.get("cwd")
+        if cwd:
+            lines.append(f"CWD: {cwd}")
+        if payload.get("path"):
+            lines.append(f"Path: {payload['path']}")
+        network = payload.get("network") or {}
+        host = network.get("host") if isinstance(network, dict) else None
+        if host:
+            lines.append(f"Network: {host}")
+        lines.append(
             f"Use /approve {pending.ticket_id}, /approve-session {pending.ticket_id}, "
             f"/deny {pending.ticket_id}, or /cancel {pending.ticket_id}"
         )
@@ -43,7 +54,7 @@ class MessageProjector:
             channel_id=pending.channel_id,
             conversation_id=pending.conversation_id,
             message_type="approval_request",
-            text=text,
+            text="\n".join(lines),
             ticket_id=pending.ticket_id,
         )
 
@@ -110,7 +121,14 @@ class MessageProjector:
             )
         if method == "item/agentMessage/delta":
             key = (params.get("threadId", ""), params.get("turnId", ""))
-            self._turn_messages[key].append(params.get("delta", ""))
+            delta = params.get("delta", "")
+            self._turn_messages[key].append(delta)
+            if delta and self._show_commentary(params.get("threadId", ""), store):
+                return self._attach_conversation(
+                    params.get("threadId", ""),
+                    self.render_turn_progress(text=delta),
+                    store,
+                )
             return None
         if method == "turn/started":
             thread_id = params.get("threadId", "")
@@ -126,6 +144,8 @@ class MessageProjector:
                 store.resolve_pending_request(
                     request.ticket_id,
                     request.submitted_resolution or {"requestId": params.get("requestId")},
+                    channel_id=request.channel_id,
+                    conversation_id=request.conversation_id,
                 )
             return None
         if method == "turn/plan/updated":

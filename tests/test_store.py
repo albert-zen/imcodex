@@ -230,6 +230,34 @@ def test_list_pending_requests_returns_binding_order() -> None:
     assert [request.ticket_id for request in requests] == ["2", "3"]
 
 
+def test_pending_requests_with_same_ticket_id_are_isolated_by_conversation() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="approval",
+        summary="First conversation",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-2",
+        ticket_id="1",
+        kind="approval",
+        summary="Second conversation",
+        payload={},
+    )
+
+    first = store.get_pending_request("1", channel_id="qq", conversation_id="conv-1")
+    second = store.get_pending_request("1", channel_id="qq", conversation_id="conv-2")
+
+    assert first is not None
+    assert second is not None
+    assert first.summary == "First conversation"
+    assert second.summary == "Second conversation"
+
+
 def test_can_find_pending_request_by_native_request_id() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.create_pending_request(

@@ -146,13 +146,28 @@ class CodexBackend:
         await self._interrupt_if_possible(binding.active_thread_id, binding.active_turn_id)
         self.store.clear_active_turn(channel_id, conversation_id)
 
-    async def reply_to_server_request(self, ticket_id: str, decision_or_answers: dict) -> None:
-        request = self.store.get_pending_request(ticket_id)
+    async def reply_to_server_request(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        ticket_id: str,
+        decision_or_answers: dict,
+    ) -> None:
+        request = self.store.get_pending_request(
+            ticket_id,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+        )
         if request is None:
             raise KeyError(ticket_id)
         client_ticket_id = request.request_id or ticket_id
         await self.client.reply_to_server_request(client_ticket_id, decision_or_answers)
-        self.store.mark_pending_request_submitted(ticket_id, decision_or_answers)
+        self.store.mark_pending_request_submitted(
+            ticket_id,
+            decision_or_answers,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+        )
 
     async def _interrupt_if_possible(self, thread_id: str, turn_id: str) -> None:
         await self.client.interrupt_turn(

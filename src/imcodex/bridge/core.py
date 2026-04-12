@@ -67,7 +67,12 @@ class BridgeService:
             failed: list[str] = []
             for ticket_id in ticket_ids:
                 try:
-                    await self.backend.reply_to_server_request(ticket_id, payload)
+                    await self.backend.reply_to_server_request(
+                        message.channel_id,
+                        message.conversation_id,
+                        ticket_id,
+                        payload,
+                    )
                 except Exception:
                     failed.append(ticket_id)
                 else:
@@ -124,8 +129,11 @@ class BridgeService:
             self.auto_approve_mode is not None
             and request.get("method") in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}
             and result.ticket_id is not None
+            and self.store.get_binding(result.channel_id, result.conversation_id).permission_profile == "autonomous"
         ):
             await self.backend.reply_to_server_request(
+                result.channel_id,
+                result.conversation_id,
                 result.ticket_id,
                 {"decision": self.auto_approve_mode},
             )

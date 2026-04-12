@@ -314,9 +314,19 @@ class CommandRouter:
             return CommandResponse(action="request.answer.invalid", text="Usage: /answer <ticket> <question=value>...")
         ticket_id = args[0]
         answers = self._parse_answers(args[1:])
-        request = self.store.get_pending_request(ticket_id)
+        request = self.store.get_pending_request(
+            ticket_id,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+        )
         if request is None:
             return CommandResponse(action="request.answer.missing", text=f"Unknown ticket: {ticket_id}")
+        if request.kind != "question":
+            return CommandResponse(
+                action="request.answer.invalid_kind",
+                text=f"Ticket {ticket_id} is not a question request.",
+                ticket_id=ticket_id,
+            )
         return CommandResponse(
             action="request.answer",
             text=f"Recorded answer for {ticket_id}.",
@@ -332,14 +342,17 @@ class CommandRouter:
         decision: str,
         action: str,
     ) -> CommandResponse:
-        del channel_id, conversation_id
         if len(args) < 1:
             return CommandResponse(action=f"{action}.invalid", text="Usage: /<command> <ticket> [ticket...]")
         ticket_ids: list[str] = []
         missing_ticket_ids: list[str] = []
         for ticket_id in args:
-            request = self.store.get_pending_request(ticket_id)
-            if request is None:
+            request = self.store.get_pending_request(
+                ticket_id,
+                channel_id=channel_id,
+                conversation_id=conversation_id,
+            )
+            if request is None or request.kind != "approval":
                 missing_ticket_ids.append(ticket_id)
             else:
                 ticket_ids.append(ticket_id)

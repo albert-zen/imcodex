@@ -266,6 +266,35 @@ def test_router_supports_batch_approval_with_partial_unknown_ticket() -> None:
     assert "Unknown tickets: 9." in approve.text
 
 
+def test_router_rejects_wrong_ticket_kind_for_approval_and_answer() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="question",
+        summary="Need branch",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+
+    approve = router.handle("qq", "conv-1", "/approve 1")
+    answer = router.handle("qq", "conv-1", "/answer 2 branch=main")
+
+    assert approve.action == "approval.accept.missing"
+    assert "Unknown tickets: 1." in approve.text
+    assert answer.action == "request.answer.invalid_kind"
+    assert answer.text == "Ticket 2 is not a question request."
+
+
 def test_status_tolerates_missing_active_thread_record() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     project = store.ensure_project(r"D:\work\alpha")

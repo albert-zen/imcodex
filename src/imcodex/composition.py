@@ -19,7 +19,11 @@ async def open_blocking_websocket(url: str):
 
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
-    store = ConversationStore(clock=time.time, state_path=settings.data_dir / "state.json")
+    store = ConversationStore(
+        clock=time.time,
+        state_path=settings.data_dir / "state.json",
+        default_permission_profile="autonomous" if settings.auto_approve else "review",
+    )
     client = AppServerClient(
         websocket_factory=open_blocking_websocket,
         transport_url=settings.app_server_ws_url,

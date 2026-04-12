@@ -37,9 +37,16 @@ def _clip_thread_label(text: str) -> str:
 
 
 class ConversationStore:
-    def __init__(self, clock: Clock, state_path: str | Path | None = None):
+    def __init__(
+        self,
+        clock: Clock,
+        state_path: str | Path | None = None,
+        *,
+        default_permission_profile: str = "review",
+    ):
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
+        self.default_permission_profile = default_permission_profile
         self._projects: dict[str, ProjectRecord] = {}
         self._projects_by_cwd: dict[str, str] = {}
         self._threads: dict[str, ThreadRecord] = {}
@@ -178,6 +185,7 @@ class ConversationStore:
             self._bindings[key] = ConversationBinding(
                 channel_id=channel_id,
                 conversation_id=conversation_id,
+                permission_profile=self.default_permission_profile,
             )
             self._save()
         return self._bindings[key]
@@ -428,15 +436,34 @@ class ConversationStore:
             turn_id=turn_id,
             item_id=item_id,
         )
-        self._pending_requests[ticket_id] = request
+        self._pending_requests[
+            self._pending_request_key(channel_id, conversation_id, ticket_id)
+        ] = request
         binding = self.get_binding(channel_id, conversation_id)
         if ticket_id not in binding.pending_request_ids:
             binding.pending_request_ids.append(ticket_id)
         self._save()
         return request
 
-    def get_pending_request(self, ticket_id: str) -> PendingRequest | None:
-        return self._pending_requests.get(ticket_id)
+    def get_pending_request(
+        self,
+        ticket_id: str,
+        *,
+        channel_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> PendingRequest | None:
+        if channel_id is not None and conversation_id is not None:
+            return self._pending_requests.get(
+                self._pending_request_key(channel_id, conversation_id, ticket_id)
+            )
+        matches = [
+            request
+            for request in self._pending_requests.values()
+            if request.ticket_id == ticket_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
     def get_pending_request_by_request_id(self, request_id: str) -> PendingRequest | None:
         for request in self._pending_requests.values():
@@ -451,9 +478,11 @@ class ConversationStore:
     ) -> list[PendingRequest]:
         binding = self.get_binding(channel_id, conversation_id)
         requests = [
-            self._pending_requests[ticket_id]
+            self._pending_requests[
+                self._pending_request_key(channel_id, conversation_id, ticket_id)
+            ]
             for ticket_id in binding.pending_request_ids
-            if ticket_id in self._pending_requests
+            if self._pending_request_key(channel_id, conversation_id, ticket_id) in self._pending_requests
         ]
         return sorted(requests, key=lambda request: (request.created_at, request.ticket_id))
 
@@ -461,8 +490,15 @@ class ConversationStore:
         self,
         ticket_id: str,
         resolution: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> PendingRequest | None:
-        request = self._pending_requests.get(ticket_id)
+        request = self.get_pending_request(
+            ticket_id,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+        )
         if request is None:
             return None
         request.submitted_at = self.clock()
@@ -474,8 +510,15 @@ class ConversationStore:
         self,
         ticket_id: str,
         resolution: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> PendingRequest | None:
-        request = self._pending_requests.get(ticket_id)
+        request = self.get_pending_request(
+            ticket_id,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+        )
         if request is None:
             return None
         request.resolved_at = self.clock()
@@ -483,7 +526,10 @@ class ConversationStore:
         binding = self.get_binding(request.channel_id, request.conversation_id)
         if ticket_id in binding.pending_request_ids:
             binding.pending_request_ids.remove(ticket_id)
-        self._pending_requests.pop(ticket_id, None)
+        self._pending_requests.pop(
+            self._pending_request_key(request.channel_id, request.conversation_id, ticket_id),
+            None,
+        )
         self._save()
         return request
 
@@ -505,10 +551,13 @@ class ConversationStore:
         if not target_keys:
             return 0
         binding = self.get_binding(channel_id, conversation_id)
-        for ticket_id in target_keys:
-            self._pending_requests.pop(ticket_id, None)
-            if ticket_id in binding.pending_request_ids:
-                binding.pending_request_ids.remove(ticket_id)
+        for request_key in target_keys:
+            request = self._pending_requests.get(request_key)
+            if request is None:
+                continue
+            self._pending_requests.pop(request_key, None)
+            if request.ticket_id in binding.pending_request_ids:
+                binding.pending_request_ids.remove(request.ticket_id)
         self._save()
         return len(target_keys)
 
@@ -581,7 +630,8 @@ class ConversationStore:
             for item in payload.get("bindings", [])
         }
         self._pending_requests = {
-            item["ticket_id"]: PendingRequest(**item) for item in payload.get("pending_requests", [])
+            self._pending_request_key(item["channel_id"], item["conversation_id"], item["ticket_id"]): PendingRequest(**item)
+            for item in payload.get("pending_requests", [])
         }
         self._seq = int(payload.get("seq", 0))
 
@@ -597,3 +647,11 @@ class ConversationStore:
         if pending_thread_id is None or pending_thread_id == next_thread_id:
             return
         self._pending_first_thread_labels.pop(key, None)
+
+    def _pending_request_key(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        ticket_id: str,
+    ) -> str:
+        return f"{channel_id}:{conversation_id}:{ticket_id}"
