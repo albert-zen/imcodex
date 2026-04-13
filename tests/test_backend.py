@@ -202,6 +202,50 @@ async def test_attach_thread_resumes_unknown_thread_in_selected_working_director
 
 
 @pytest.mark.asyncio
+async def test_attach_thread_can_resume_without_selected_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = FakeClient()
+    client.resume_results["thr_external"] = {
+        "id": "thr_external",
+        "cwd": "D:/repo/external",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    assert thread_id == "thr_external"
+    assert client.thread_resumes == [
+        {
+            "thread_id": "thr_external",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_thread_id == "thr_external"
+    assert binding.selected_cwd == "D:/repo/external"
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_without_any_available_cwd_rejects_resume_response() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = FakeClient()
+    client.resume_results["thr_external"] = {
+        "id": "thr_external",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="working directory"):
+        await backend.attach_thread("demo", "conv-1", "thr_external")
+
+
+@pytest.mark.asyncio
 async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
@@ -529,6 +573,18 @@ async def test_list_threads_without_cwd_do_not_create_empty_cwd_thread_records()
     assert snapshots[0].cwd == ""
     with pytest.raises(KeyError):
         store.get_thread("thr_native")
+
+
+@pytest.mark.asyncio
+async def test_ensure_thread_without_explicit_cwd_or_active_thread_raises_key_error() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(KeyError, match="No working directory selected"):
+        await backend.ensure_thread("demo", "conv-1")
+
+    assert client.thread_starts == []
 
 
 @pytest.mark.asyncio

@@ -51,8 +51,8 @@ class CodexBackend:
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
-        cwd = self._binding_cwd(binding)
         if binding.active_thread_id:
+            cwd = self._resume_cwd(binding)
             try:
                 result = await self.client.resume_thread(
                     thread_id=binding.active_thread_id,
@@ -66,27 +66,38 @@ class CodexBackend:
             else:
                 payload = self._normalize_thread_payload(result["thread"])
                 thread_id = str(payload["id"] or "")
+                resolved_cwd = self._require_bound_cwd(
+                    payload_cwd=payload["cwd"],
+                    fallback_cwd=cwd,
+                    thread_id=thread_id,
+                )
                 self._bind_thread_result(
                     channel_id=channel_id,
                     conversation_id=conversation_id,
                     thread_id=thread_id,
-                    cwd=str(payload["cwd"] or cwd),
+                    cwd=resolved_cwd,
                     preview=str(payload["preview"] or ""),
                     status=str(payload["status"] or "idle"),
                     name=payload.get("name"),
                     path=payload.get("path"),
                 )
                 return thread_id
+        cwd = self._start_cwd(binding)
         result = await self.client.start_thread(
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model)
         )
         payload = self._normalize_thread_payload(result["thread"])
         thread_id = str(payload["id"] or "")
+        resolved_cwd = self._require_bound_cwd(
+            payload_cwd=payload["cwd"],
+            fallback_cwd=cwd,
+            thread_id=thread_id,
+        )
         self._bind_thread_result(
             channel_id=channel_id,
             conversation_id=conversation_id,
             thread_id=thread_id,
-            cwd=str(payload["cwd"] or cwd),
+            cwd=resolved_cwd,
             preview=str(payload["preview"] or ""),
             status=str(payload["status"] or "idle"),
             name=payload.get("name"),
@@ -100,18 +111,23 @@ class CodexBackend:
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
-        cwd = self._binding_cwd(binding)
+        cwd = self._resume_cwd(binding)
         result = await self.client.resume_thread(
             thread_id=thread_id,
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model),
         )
         payload = self._normalize_thread_payload(result["thread"])
         resolved_thread_id = str(payload["id"] or "")
+        resolved_cwd = self._require_bound_cwd(
+            payload_cwd=payload["cwd"],
+            fallback_cwd=cwd,
+            thread_id=resolved_thread_id,
+        )
         self._bind_thread_result(
             channel_id=channel_id,
             conversation_id=conversation_id,
             thread_id=resolved_thread_id,
-            cwd=str(payload["cwd"] or cwd),
+            cwd=resolved_cwd,
             preview=str(payload["preview"] or ""),
             status=str(payload["status"] or "idle"),
             name=payload.get("name"),
@@ -322,13 +338,12 @@ class CodexBackend:
 
     def _thread_session_params(
         self,
-        cwd: str,
+        cwd: str | None,
         permission_profile: str,
         model: str | None,
     ) -> dict[str, object | None]:
         profile = self._permission_profile(permission_profile)
-        return {
-            "cwd": cwd,
+        payload: dict[str, object | None] = {
             "approval_policy": profile.approval_policy,
             "sandbox_policy": profile.sandbox_policy,
             "approvals_reviewer": profile.approvals_reviewer,
@@ -336,21 +351,42 @@ class CodexBackend:
             "personality": "friendly",
             "service_name": self.service_name,
         }
+        if cwd is not None:
+            payload["cwd"] = cwd
+        return payload
 
     def _permission_profile(self, permission_profile: str) -> NativePermissionProfile:
         return _PERMISSION_PROFILES.get(permission_profile, _PERMISSION_PROFILES["review"])
 
-    def _binding_cwd(self, binding) -> str:
+    def _resume_cwd(self, binding) -> str | None:
         if binding.selected_cwd is not None:
             return binding.selected_cwd
+        if binding.active_thread_id is not None:
+            try:
+                return self.store.get_thread(binding.active_thread_id).cwd
+            except KeyError:
+                return None
         if binding.active_project_id is not None:
             return self.store.get_project(binding.active_project_id).cwd
-        if binding.active_thread_id is not None:
-            return self.store.get_thread(binding.active_thread_id).cwd
-        projects = self.store.list_projects()
-        if len(projects) == 1:
-            return projects[0].cwd
+        return None
+
+    def _start_cwd(self, binding) -> str:
+        cwd = self._resume_cwd(binding)
+        if cwd is not None:
+            return cwd
         raise KeyError("No working directory selected for thread session")
+
+    def _require_bound_cwd(
+        self,
+        *,
+        payload_cwd: str | None,
+        fallback_cwd: str | None,
+        thread_id: str,
+    ) -> str:
+        resolved_cwd = payload_cwd or fallback_cwd
+        if resolved_cwd:
+            return resolved_cwd
+        raise AppServerError(f"thread {thread_id} did not provide a working directory")
 
     def _bind_thread_result(
         self,

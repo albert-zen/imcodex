@@ -106,17 +106,12 @@ class CommandRouter:
             thread_id = args[1]
             binding = self.store.get_binding(channel_id, conversation_id)
             if binding.selected_cwd is None:
-                projects = self.store.list_projects()
-                if len(projects) != 1:
-                    return CommandResponse(
-                        action="thread.attach.missing_project",
-                        text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
-                    )
-                self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
-                binding = self.store.get_binding(channel_id, conversation_id)
+                text = f"Attaching thread {thread_id}."
+            else:
+                text = f"Attaching thread {thread_id} in {binding.selected_cwd}."
             return CommandResponse(
                 action="thread.attach",
-                text=f"Attaching thread {thread_id} in {binding.selected_cwd}.",
+                text=text,
                 thread_id=thread_id,
                 project_id=binding.active_project_id,
             )
@@ -144,14 +139,10 @@ class CommandRouter:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.selected_cwd is None:
-            projects = self.store.list_projects()
-            if len(projects) != 1:
-                return CommandResponse(
-                    action="thread.new.missing_project",
-                    text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
-                )
-            self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
-            binding = self.store.get_binding(channel_id, conversation_id)
+            return CommandResponse(
+                action="thread.new.missing_project",
+                text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+            )
         return CommandResponse(action="thread.new", text=f"Starting a new thread for {binding.selected_cwd}.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:

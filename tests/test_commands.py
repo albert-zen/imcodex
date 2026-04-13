@@ -140,6 +140,17 @@ def test_router_thread_attach_uses_selected_working_directory() -> None:
     assert alpha.cwd in response.text
 
 
+def test_router_thread_attach_does_not_require_preselected_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/thread attach thr_external")
+
+    assert response.action == "thread.attach"
+    assert response.thread_id == "thr_external"
+    assert response.text == "Attaching thread thr_external."
+
+
 def test_router_new_stop_and_approval_commands() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     project = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
@@ -179,6 +190,17 @@ def test_router_new_stop_and_approval_commands() -> None:
     answer = router.handle("qq", "conv-1", "/answer T-10 timezone=Asia/Shanghai,UTC+8")
     assert answer.action == "request.answer"
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
+
+
+def test_router_new_requires_explicit_working_directory_even_with_single_cached_project() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/new")
+
+    assert response.action == "thread.new.missing_project"
+    assert "/cwd <path>" in response.text
 
 
 def test_router_recover_clears_active_thread_binding_but_preserves_working_directory() -> None:

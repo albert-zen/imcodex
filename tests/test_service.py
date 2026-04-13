@@ -67,7 +67,7 @@ class FakeBackend:
 
 
 @pytest.mark.asyncio
-async def test_plain_text_uses_single_discovered_project_and_starts_turn() -> None:
+async def test_plain_text_requires_explicit_working_directory_even_with_single_cached_project() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
     backend = FakeBackend()
@@ -89,9 +89,9 @@ async def test_plain_text_uses_single_discovered_project_and_starts_turn() -> No
     )
 
     assert backend.ensure_threads == []
-    assert backend.started_turns == [("qq", "conv-1", "please inspect the repo")]
-    assert [message.message_type for message in messages] == ["accepted"]
-    assert messages[0].text == "Working on it."
+    assert backend.started_turns == []
+    assert [message.message_type for message in messages] == ["error"]
+    assert "/cwd <path>" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -212,6 +212,113 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
     assert messages[0].text == "Attached thread External session (id: thr_attached)."
+
+
+@pytest.mark.asyncio
+async def test_thread_attach_can_resume_without_preselected_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_attached", cwd=r"D:\work\alpha", preview="External session")
+            store.set_active_thread(channel_id, conversation_id, "thr_attached")
+            return "thr_attached"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+
+    assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
+    assert messages[0].text == "Attached thread External session (id: thr_attached)."
+
+
+@pytest.mark.asyncio
+async def test_plain_text_after_attach_without_preselected_cwd_uses_attached_thread_workspace() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_attached", cwd=r"D:\work\alpha", preview="External session")
+            store.set_active_thread(channel_id, conversation_id, "thr_attached")
+            return "thr_attached"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="continue from the attached thread",
+        )
+    )
+
+    assert backend.started_turns == [("qq", "conv-1", "continue from the attached thread")]
+    assert messages[0].message_type == "accepted"
+    assert messages[0].text == "Working on it."
+
+
+@pytest.mark.asyncio
+async def test_thread_attach_reports_backend_validation_failure_without_breaking_command_flow() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    class FailingAttachBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            raise RuntimeError("thread thr_external did not provide a working directory")
+
+    backend = FailingAttachBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "could not be attached" in messages[0].text
+    assert "/cwd <path>" in messages[0].text
 
 
 @pytest.mark.asyncio

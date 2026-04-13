@@ -83,7 +83,7 @@ async def test_mock_e2e_qq_dispatch_reaches_final_reply() -> None:
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    store.ensure_project(r"D:\work\alpha")
+    store.set_selected_cwd("qq", "c2c:user-1", r"D:\work\alpha")
     service = BridgeService(
         store=store,
         backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
@@ -181,7 +181,7 @@ async def test_mock_e2e_qq_contract_emits_ack_progress_then_final() -> None:
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    store.ensure_project(r"D:\work\alpha")
+    store.set_selected_cwd("qq", "c2c:user-1", r"D:\work\alpha")
     service = BridgeService(
         store=store,
         backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),

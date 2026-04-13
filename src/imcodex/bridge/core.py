@@ -62,11 +62,18 @@ class BridgeService:
                 self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
             return [self._message(message, "status", f"Started new thread {label} (id: {thread_id}).")]
         if response.action == "thread.attach":
-            thread_id = await self.backend.attach_thread(
-                message.channel_id,
-                message.conversation_id,
-                response.thread_id,
-            )
+            try:
+                thread_id = await self.backend.attach_thread(
+                    message.channel_id,
+                    message.conversation_id,
+                    response.thread_id,
+                )
+            except Exception as exc:
+                text = (
+                    f"Thread {response.thread_id} could not be attached: {exc}. "
+                    "Try /cwd <path> first, then retry /thread attach <thread-id>."
+                )
+                return [self._message(message, "status", text)]
             label = self._thread_label(thread_id)
             return [self._message(message, "status", f"Attached thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
@@ -164,10 +171,11 @@ class BridgeService:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.selected_cwd is not None:
             return binding.selected_cwd
-        projects = self.store.list_projects()
-        if len(projects) == 1:
-            self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
-            return projects[0].cwd
+        if binding.active_thread_id is not None:
+            try:
+                return self.store.get_thread(binding.active_thread_id).cwd
+            except KeyError:
+                return None
         return None
 
     def _message(
