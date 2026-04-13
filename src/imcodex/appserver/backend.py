@@ -216,18 +216,13 @@ class CodexBackend:
                 binding.permission_profile,
                 binding.selected_model,
             )
-        except AppServerError:
+        except AppServerError as exc:
             if not had_bound_thread:
                 raise
-            self.store.clear_active_thread(channel_id, conversation_id)
-            thread_id = await self.ensure_thread(channel_id, conversation_id)
-            rebound = self.store.get_binding(channel_id, conversation_id)
-            result = await self._start_turn(
-                thread_id,
-                text,
-                rebound.permission_profile,
-                rebound.selected_model,
-            )
+            if self._should_surface_stale_bound_thread_error(exc):
+                self.store.note_thread_status(thread_id, status="stale")
+                raise StaleThreadBindingError(thread_id) from exc
+            raise
         turn_id = result["turn"]["id"]
         self.store.set_active_turn(
             channel_id,
@@ -335,6 +330,9 @@ class CodexBackend:
             or "unknown thread" in message
             or "no such thread" in message
         )
+
+    def _should_surface_stale_bound_thread_error(self, error: AppServerError) -> bool:
+        return self._should_mark_thread_stale(error)
 
     def _thread_session_params(
         self,

@@ -943,9 +943,9 @@ Approved tickets 1, 2, and 3.
 Bridge later:
 
 ```text
-The current resume flow still risks silently replacing a stale native thread
-with a new thread. The safer behavior is to surface a recoverable stale-thread
-state and let the user choose /recover, /new, or /thread attach.
+The bridge surfaces stale-thread recovery explicitly and lets the user choose
+/recover, /new, or /thread attach instead of silently replacing the native
+thread identity.
 ```
 
 ## 20. Acceptance Criteria

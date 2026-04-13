@@ -688,8 +688,9 @@ Recorded accept for 3.
 Bridge later:
 
 ```text
-The resume path currently retries by clearing the active thread and starting a
-new one, which risks silently replacing stale native thread identity.
+If the current native thread cannot be resumed or accepts no new turn, the
+bridge surfaces a recoverable stale-thread state instead of silently replacing
+it with a new thread.
 ```
 
 ## 15. Success Criteria

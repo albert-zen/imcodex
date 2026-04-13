@@ -19,6 +19,7 @@ class FakeClient:
         self.turn_interrupts: list[dict] = []
         self.replies: list[tuple[str, dict]] = []
         self.fail_thread_ids: set[str] = set()
+        self.start_errors: dict[str, str] = {}
         self.fail_resume_ids: set[str] = set()
         self.resume_errors: dict[str, str] = {}
         self.resume_results: dict[str, dict[str, str]] = {}
@@ -70,6 +71,8 @@ class FakeClient:
 
     async def start_turn(self, **params):
         self.turn_starts.append(params)
+        if params["thread_id"] in self.start_errors:
+            raise AppServerError(self.start_errors[params["thread_id"]])
         if params["thread_id"] in self.fail_thread_ids:
             self.fail_thread_ids.remove(params["thread_id"])
             raise AppServerError("turn/start timed out after 15.0s")
@@ -818,7 +821,7 @@ async def test_interrupt_turn_clears_only_pending_requests_for_active_turn() -> 
 
 
 @pytest.mark.asyncio
-async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale() -> None:
+async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_when_bound_thread_turn_start_fails() -> None:
     store = make_store()
     store.record_thread("thr_stale", cwd="D:/repo/app", preview="stale")
     client = FakeClient()
@@ -826,11 +829,11 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
     binding = store.get_binding("demo", "conv-1")
     binding.active_thread_id = "thr_stale"
     binding.known_thread_ids.append("thr_stale")
-    client.fail_thread_ids.add("thr_stale")
+    client.start_errors["thr_stale"] = "invalid request"
 
-    turn_id = await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+    with pytest.raises(StaleThreadBindingError, match="thr_stale"):
+        await backend.start_turn("demo", "conv-1", "Please inspect the repo")
 
-    assert turn_id == "turn_1"
     assert client.thread_resumes == [
         {
             "thread_id": "thr_stale",
@@ -843,17 +846,7 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
             "service_name": "imcodex-test",
         }
     ]
-    assert client.thread_starts == [
-        {
-            "cwd": "D:/repo/app",
-            "approval_policy": None,
-            "sandbox_policy": None,
-            "approvals_reviewer": None,
-            "model": None,
-            "personality": "friendly",
-            "service_name": "imcodex-test",
-        }
-    ]
+    assert client.thread_starts == []
     assert client.turn_starts == [
         {
             "thread_id": "thr_stale",
@@ -866,8 +859,43 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
             "effort": None,
             "summary": "concise",
         },
+    ]
+    assert binding.active_thread_id == "thr_stale"
+    assert binding.active_turn_id is None
+    assert binding.active_turn_status is None
+    assert store.get_thread("thr_stale").status == "stale"
+
+
+@pytest.mark.asyncio
+async def test_start_turn_preserves_transport_timeout_without_silent_replacement() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_thread_id = "thr_existing"
+    binding.known_thread_ids.append("thr_existing")
+    client.fail_thread_ids.add("thr_existing")
+
+    with pytest.raises(AppServerError, match="timed out"):
+        await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+
+    assert client.thread_resumes == [
         {
-            "thread_id": "thr_new",
+            "thread_id": "thr_existing",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    assert client.thread_starts == []
+    assert client.turn_starts == [
+        {
+            "thread_id": "thr_existing",
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
@@ -876,10 +904,11 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
             "approvals_reviewer": None,
             "effort": None,
             "summary": "concise",
-        },
+        }
     ]
-    assert binding.active_thread_id == "thr_new"
-    assert binding.active_turn_id == "turn_1"
+    assert binding.active_thread_id == "thr_existing"
+    assert binding.active_turn_id is None
+    assert store.get_thread("thr_existing").status != "stale"
 
 
 @pytest.mark.asyncio
@@ -909,6 +938,65 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
     assert client.thread_starts == []
     assert client.turn_starts == []
     assert store.get_thread("thr_existing").status == "stale"
+
+
+@pytest.mark.asyncio
+async def test_start_turn_after_restart_continues_attached_native_thread(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    client = FakeClient()
+    client.resume_results["thr_external"] = {
+        "id": "thr_external",
+        "cwd": "D:/repo/external",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    client.turn_starts.clear()
+    reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    resumed_client = FakeClient()
+    resumed_client.resume_results["thr_external"] = {
+        "id": "thr_external",
+        "cwd": "D:/repo/external",
+        "status": {"type": "idle"},
+    }
+    resumed_backend = CodexBackend(
+        client=resumed_client,
+        store=reloaded,
+        service_name="imcodex-test",
+    )
+
+    turn_id = await resumed_backend.start_turn("demo", "conv-1", "Continue on the same native thread")
+
+    assert turn_id == "turn_1"
+    assert resumed_client.thread_resumes == [
+        {
+            "thread_id": "thr_external",
+            "cwd": "D:/repo/external",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    assert resumed_client.thread_starts == []
+    assert resumed_client.turn_starts == [
+        {
+            "thread_id": "thr_external",
+            "text": "Continue on the same native thread",
+            "cwd": None,
+            "model": None,
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "effort": None,
+            "summary": "concise",
+        }
+    ]
 
 
 @pytest.mark.asyncio
