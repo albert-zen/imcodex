@@ -203,6 +203,32 @@ def test_router_new_requires_explicit_working_directory_even_with_single_cached_
     assert "/cwd <path>" in response.text
 
 
+def test_router_new_does_not_use_legacy_project_alias_without_selected_cwd() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
+    binding.active_project_id = project.project_id
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/new")
+
+    assert response.action == "thread.new.missing_project"
+    assert "/cwd <path>" in response.text
+
+
+def test_router_threads_do_not_use_legacy_project_alias_without_selected_cwd() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
+    binding.active_project_id = project.project_id
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/threads")
+
+    assert response.action == "threads.missing_project"
+    assert "/cwd <path>" in response.text
+
+
 def test_router_recover_clears_active_thread_binding_but_preserves_working_directory() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")

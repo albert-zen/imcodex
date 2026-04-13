@@ -78,6 +78,31 @@ By the end of the refactor, the system should satisfy all of these:
 11. Item visibility supports separate control for final reply, commentary, and
     tool calls.
 
+## 2.1 Current Execution Status
+
+The plan below is still the right direction, but part of it has already been
+implemented on `main`.
+
+Completed or substantially landed:
+
+- native permission profile cutover
+- native thread metadata persistence and surfacing
+- native `/threads` and `/thread read` query flow
+- first-pass message-pump deduplication
+- explicit `cwd` requirement for new conversations
+- attach-before-cwd support for native `thread/resume`
+- removal of runtime fallback to legacy `active_project_id`
+
+That means the live program is currently between Phase 3 and Phase 5, not at
+the beginning of Phase 1.
+
+The highest-value remaining work is now:
+
+1. reduce persisted workspace state further
+2. replace legacy thread-routing registries
+3. finish message-pump semantics
+4. continue simplifying the user-visible surface around `cwd`
+
 ## 3. What Must Stay Stable During Refactor
 
 To avoid a rewrite stall, these should remain stable unless a phase explicitly

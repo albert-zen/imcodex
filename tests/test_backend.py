@@ -685,6 +685,49 @@ async def test_review_permission_profile_flows_into_native_approval_and_sandbox_
 
 
 @pytest.mark.asyncio
+async def test_ensure_thread_does_not_use_legacy_project_alias_without_selected_cwd() -> None:
+    store = make_store()
+    binding = store.get_binding("demo", "conv-1")
+    binding.selected_cwd = None
+    binding.active_thread_id = None
+    binding.active_turn_id = None
+    binding.active_turn_status = None
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(KeyError, match="No working directory selected"):
+        await backend.ensure_thread("demo", "conv-1")
+
+    assert client.thread_starts == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_thread_still_uses_active_thread_cached_cwd_without_selected_cwd() -> None:
+    store = make_store()
+    store.record_thread("thr_existing", cwd="D:/repo/app", preview="existing")
+    binding = store.set_active_thread("demo", "conv-1", "thr_existing")
+    binding.selected_cwd = None
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.ensure_thread("demo", "conv-1")
+
+    assert thread_id == "thr_existing"
+    assert client.thread_resumes == [
+        {
+            "thread_id": "thr_existing",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_selected_model_flows_into_native_thread_and_turn_requests() -> None:
     store = make_store()
     store.set_model_override("demo", "conv-1", "gpt-5.4")

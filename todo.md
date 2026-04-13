@@ -43,7 +43,20 @@ That means:
 - replace legacy bridge behaviors that exist only because earlier architecture was incomplete
 - accept state migration breakage if the replacement model is clearly better
 
-## Now: Design The New Native Core
+## Done So Far
+
+- native permission profiles now map onto native app-server policy inputs
+- native thread metadata is persisted and surfaced:
+  - `name`
+  - `path`
+  - `status`
+- `/threads` and `/thread read` now prefer native Codex thread queries
+- the message pump now suppresses repeated turn progress within a turn
+- new conversations require an explicit `cwd`
+- `/thread attach` can resume a native thread before a `cwd` is preselected
+- runtime session start no longer falls back to legacy `project` alias state
+
+## Now: Keep Reducing Bridge-Owned Workspace State
 
 ### 1. Native Session Identity
 
@@ -55,15 +68,16 @@ That means:
 - Clarify what must be bridge-owned versus Codex-owned.
 - Prefer native discovery and recovery paths such as `thread/list`, `thread/read`, and `thread/resume` over bridge-invented registries when possible.
 - Define restart, attach, and resume semantics around native Codex behavior first.
+- Continue demoting `project` to a compatibility alias while `selected_cwd` becomes the only runtime workspace identity.
 
 ### 2. Native Permission Model
 
-- Stop treating bridge-level auto-approve as the long-term answer.
+- Keep bridge-level auto-approve out of the long-term design.
 - Rebuild permission handling around native Codex:
   - `approval_policy`
   - `sandbox_policy`
   - native permission profiles or modes
-- Decide what permission choices the IM surface should expose to users.
+- Keep extending the IM surface around native profiles, not bridge-owned shortcuts.
 
 ### 3. Native Message Pump
 
@@ -82,7 +96,7 @@ That means:
 - Decide the stable categories worth exposing in chat.
 - Keep low-value protocol chatter and token deltas out of the main chat flow.
 
-## Next: Rebuild The Bridge Around That Design
+## Next: Finish The Core Cutover
 
 ### 5. Minimal Persistent State
 

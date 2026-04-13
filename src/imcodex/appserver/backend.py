@@ -366,8 +366,6 @@ class CodexBackend:
                 return self.store.get_thread(binding.active_thread_id).cwd
             except KeyError:
                 return None
-        if binding.active_project_id is not None:
-            return self.store.get_project(binding.active_project_id).cwd
         return None
 
     def _start_cwd(self, binding) -> str:

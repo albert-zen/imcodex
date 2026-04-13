@@ -34,6 +34,24 @@ The next milestone should be:
 
 - "define and rebuild a more native bridge core with less custom behavior"
 
+## 1.1 What Has Already Landed
+
+The repo is no longer at pure design stage. These native-first slices are
+already in the mainline:
+
+- native permission profiles wired into app-server request overrides
+- native thread metadata persisted from `thread/start`, `thread/resume`,
+  `thread/read`, and `thread/list`
+- `/threads` and `/thread read` routed through native backend query paths
+- message-pump deduplication for repeated turn progress
+- explicit `cwd` required for new conversations and new threads
+- `/thread attach` allowed before a working directory is preselected
+- runtime session resolution no longer depends on legacy `active_project_id`
+
+So the next phase is not "start the redesign".
+It is "continue replacing the remaining legacy state with the native-first
+model".
+
 ## 2. What The Current System Is Good For
 
 The current implementation is still valuable, but its role has changed.
@@ -147,7 +165,7 @@ not optional extras:
 
 The next cycle should follow this sequence.
 
-## Phase 1: Design The Native Core
+## Phase 1: Finish The Remaining Core Design
 
 ### Goal
 
@@ -165,10 +183,10 @@ wrong one.
 
 ### Why first
 
-Without these decisions, future work on portability, progress visibility, and
-permissions will keep re-litigating the same assumptions.
+Without these remaining decisions, future work on portability, progress
+visibility, and state reduction will keep re-litigating the same assumptions.
 
-## Phase 2: Rebuild The Core Around Native Semantics
+## Phase 2: Continue The Core Cutover
 
 ### Goal
 
@@ -178,7 +196,7 @@ clearer native-first core.
 ### Scope
 
 - rebuild state around native session continuity
-- replace bridge-owned approval shortcuts
+- keep replacing bridge-owned approval and routing shortcuts
 - introduce the new message pump
 - make tool visibility configurable by category
 - keep channel adapters and app-server transport where possible
@@ -222,17 +240,20 @@ Make the rebuilt system easy to trust in practice.
 
 ## 7. Concrete Planning Guidance For The Next Implementation Round
 
-If we start coding after this planning step, the best next slice is not a user
-feature. It is a redesign slice:
+The best next slices are now implementation slices, not more speculative
+planning:
 
-1. write the session identity design
-2. write the native permission model design
-3. write the message-pump design
-4. decide what old store data can be intentionally dropped
-5. only then start the rebuild
+1. demote the persisted `project` layer into a compatibility alias
+2. replace `known_thread_ids` / `find_binding_for_thread()` with a thinner
+   native session index
+3. keep strengthening the message pump:
+   - ordering
+   - throttling
+   - stale-turn suppression
+4. continue shrinking the monolithic store to the minimum bridge-owned state
 
-This is slower than shipping one more patch, but faster than hardening the wrong
-core for another cycle.
+Additional design notes are still useful, but they should only exist to unblock
+those concrete refactor slices.
 
 ## 8. Architecture Decision Heuristics
 

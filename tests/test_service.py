@@ -95,6 +95,36 @@ async def test_plain_text_requires_explicit_working_directory_even_with_single_c
 
 
 @pytest.mark.asyncio
+async def test_plain_text_does_not_use_legacy_project_alias_without_selected_cwd() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
+    binding.active_project_id = project.project_id
+    backend = FakeBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="please inspect the repo",
+        )
+    )
+
+    assert backend.ensure_threads == []
+    assert backend.started_turns == []
+    assert [message.message_type for message in messages] == ["error"]
+    assert "/cwd <path>" in messages[0].text
+
+
+@pytest.mark.asyncio
 async def test_new_command_calls_backend_thread_creation() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
