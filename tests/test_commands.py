@@ -11,9 +11,7 @@ def _state_path(name: str) -> Path:
     return Path.cwd() / f".pytest-state-{name}-{uuid4().hex}.json"
 
 
-def test_parse_projects_and_switch_commands() -> None:
-    assert parse_command("/projects").name == "projects"
-    assert parse_command("/project use proj-1").args == ["use", "proj-1"]
+def test_parse_core_commands() -> None:
     assert parse_command(r"/cwd D:\work\alpha").args == [r"D:\work\alpha"]
     assert parse_command("/threads --all").args == ["--all"]
     assert parse_command("/thread use thr-1").args == ["use", "thr-1"]
@@ -42,30 +40,7 @@ def test_parse_approval_and_answer_commands() -> None:
     assert parse_command("/help").name == "help"
 
 
-def test_router_projects_and_project_switch() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-    alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
-    beta = store.record_thread("thr_2", cwd=r"D:\work\beta", preview="b")
-    router = CommandRouter(store)
-
-    response = router.handle("qq", "conv-1", "/projects")
-    assert response.text.startswith("Legacy project aliases:")
-    assert alpha.cwd in response.text
-    assert beta.cwd in response.text
-    assert alpha.project_id in response.text
-    assert beta.project_id in response.text
-
-    response = router.handle("qq", "conv-1", f"/project use {beta.project_id}")
-    assert response.action == "project.use"
-    assert response.text.startswith("CWD set to ")
-    assert beta.cwd in response.text
-    assert "Prefer /cwd <path>" in response.text
-    assert beta.project_id not in response.text
-    assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
-    assert store.get_binding("qq", "conv-1").active_thread_id is None
-
-
-def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
+def test_router_cwd_sets_working_directory(tmp_path: Path) -> None:
     store = ConversationStore(clock=lambda: 100.0)
     router = CommandRouter(store)
     project_path = tmp_path / "alpha"
@@ -74,12 +49,10 @@ def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
     response = router.handle("qq", "conv-1", f"/cwd {project_path}")
 
     binding = store.get_binding("qq", "conv-1")
-    project = store.get_project(binding.active_project_id)
     assert response.action == "project.cwd"
     assert str(project_path) in response.text
-    assert "project id" not in response.text
     assert response.text.startswith("CWD set to ")
-    assert project.cwd == str(project_path)
+    assert binding.selected_cwd == str(project_path)
     assert binding.active_thread_id is None
 
 
@@ -92,7 +65,7 @@ def test_router_thread_switch_and_status() -> None:
         "please inspect why the Windows working directory resets after restart",
     )
     router = CommandRouter(store)
-    store.set_active_project("qq", "conv-1", alpha.project_id)
+    store.set_selected_cwd("qq", "conv-1", alpha.cwd)
 
     threads = router.handle("qq", "conv-1", "/threads")
     assert threads.action == "threads.query"
@@ -115,12 +88,11 @@ def test_router_thread_switch_and_status() -> None:
     assert "Tool Calls: hidden" in status.text
 
 
-def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
+def test_router_uses_selected_cwd_when_no_active_thread_exists() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
     router = CommandRouter(store)
-    binding = store.set_selected_cwd("qq", "conv-1", thread.cwd)
-    binding.active_project_id = None
+    store.set_selected_cwd("qq", "conv-1", thread.cwd)
 
     threads = router.handle("qq", "conv-1", "/threads")
     status = router.handle("qq", "conv-1", "/status")
@@ -137,7 +109,7 @@ def test_router_thread_attach_uses_selected_working_directory() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
     router = CommandRouter(store)
-    store.set_active_project("qq", "conv-1", alpha.project_id)
+    store.set_selected_cwd("qq", "conv-1", alpha.cwd)
 
     response = router.handle("qq", "conv-1", "/thread attach thr_external")
 
@@ -159,9 +131,9 @@ def test_router_thread_attach_does_not_require_preselected_working_directory() -
 
 def test_router_new_stop_and_approval_commands() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    project = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
     router = CommandRouter(store)
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", thread.cwd)
 
     new_response = router.handle("qq", "conv-1", "/new")
     assert new_response.action == "thread.new"
@@ -198,7 +170,7 @@ def test_router_new_stop_and_approval_commands() -> None:
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
 
 
-def test_router_new_requires_explicit_working_directory_even_with_single_cached_project() -> None:
+def test_router_new_requires_explicit_working_directory() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
     router = CommandRouter(store)
@@ -209,24 +181,8 @@ def test_router_new_requires_explicit_working_directory_even_with_single_cached_
     assert "/cwd <path>" in response.text
 
 
-def test_router_new_does_not_use_legacy_project_alias_without_selected_cwd() -> None:
+def test_router_threads_require_explicit_working_directory() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.get_binding("qq", "conv-1")
-    binding.active_project_id = project.project_id
-    router = CommandRouter(store)
-
-    response = router.handle("qq", "conv-1", "/new")
-
-    assert response.action == "thread.new.missing_project"
-    assert "/cwd <path>" in response.text
-
-
-def test_router_threads_do_not_use_legacy_project_alias_without_selected_cwd() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.get_binding("qq", "conv-1")
-    binding.active_project_id = project.project_id
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/threads")
@@ -247,7 +203,6 @@ def test_router_recover_clears_active_thread_binding_but_preserves_working_direc
     assert response.action == "recover"
     assert "Cleared stale thread binding thr_1." in response.text
     assert binding.active_thread_id is None
-    assert binding.active_project_id == thread.project_id
     assert binding.selected_cwd == thread.cwd
 
 
@@ -304,6 +259,7 @@ def test_router_supports_model_override_and_help_output() -> None:
     assert "/approve <ticket...>" in help_response.text
     assert "/permissions autonomous" in help_response.text
     assert "/model <name|default>" in help_response.text
+    assert "/projects" not in help_response.text
 
 
 def test_router_lists_requests_and_doctor_output() -> None:
@@ -411,8 +367,8 @@ def test_router_rejects_wrong_ticket_kind_for_approval_and_answer() -> None:
 
 def test_status_tolerates_missing_active_thread_record() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
     store.set_model_override("qq", "conv-1", "gpt-5.4")
     binding.active_thread_id = "thr_missing"
     binding.last_seen_thread_name = "Recovered native thread"
@@ -433,8 +389,8 @@ def test_status_tolerates_missing_active_thread_record() -> None:
 
 def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_exists() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
     binding.last_seen_thread_name = "Recovered native thread"
     binding.last_seen_thread_path = r"D:\work\alpha\.codex\threads\thr_missing"
     binding.last_seen_thread_status = "awaitingUserInput"
@@ -450,8 +406,8 @@ def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_ex
 
 def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_is_missing() -> None:
     store = ConversationStore(clock=lambda: 100.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+    binding = store.get_binding("qq", "conv-1")
     binding.active_thread_id = "thr_missing"
     binding.last_seen_thread_name = "Recovered native thread"
     binding.last_seen_thread_path = r"D:\work\alpha\.codex\threads\thr_missing"
@@ -464,29 +420,21 @@ def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_i
     assert response.thread_id == "thr_missing"
 
 
-def test_router_project_aliases_work_after_reloading_cwd_first_state() -> None:
+def test_reloaded_cwd_first_state_keeps_threads_query_usable() -> None:
     state_path = _state_path("commands-cwd-first")
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="alpha")
     store.record_thread("thr_2", cwd=r"D:\work\beta", preview="beta")
-    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\beta")
 
     try:
         reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
         router = CommandRouter(reloaded)
 
-        projects = router.handle("qq", "conv-1", "/projects")
-        beta_project = next(project for project in reloaded.list_projects() if project.cwd == r"D:\work\beta")
+        response = router.handle("qq", "conv-1", "/threads")
 
-        assert projects.action == "projects.list"
-        assert r"D:\work\alpha" in projects.text
-        assert r"D:\work\beta" in projects.text
-        assert beta_project.project_id in projects.text
-
-        response = router.handle("qq", "conv-1", f"/project use {beta_project.project_id}")
-
-        assert response.action == "project.use"
-        assert response.project_id == beta_project.project_id
+        assert response.action == "threads.query"
+        assert response.include_all is False
         assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\beta"
     finally:
         state_path.unlink(missing_ok=True)

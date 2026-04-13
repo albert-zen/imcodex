@@ -101,9 +101,6 @@ async def test_plain_text_requires_explicit_working_directory_even_with_single_c
 @pytest.mark.asyncio
 async def test_plain_text_does_not_use_legacy_project_alias_without_selected_cwd() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.get_binding("qq", "conv-1")
-    binding.active_project_id = project.project_id
     backend = FakeBackend()
     service = BridgeService(
         store=store,
@@ -132,7 +129,7 @@ async def test_plain_text_does_not_use_legacy_project_alias_without_selected_cwd
 async def test_new_command_calls_backend_thread_creation() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
-    store.set_active_project("qq", "conv-1", thread.project_id)
+    store.set_selected_cwd("qq", "conv-1", thread.cwd)
 
     class RecordingBackend(FakeBackend):
         async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
@@ -168,13 +165,13 @@ async def test_new_command_calls_backend_thread_creation() -> None:
 @pytest.mark.asyncio
 async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
 
     class RecordingBackend(FakeBackend):
         async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
             self.created_threads.append((channel_id, conversation_id))
-            store.record_thread("thr_remote_new", cwd=project.cwd, preview="")
+            store.record_thread("thr_remote_new", cwd=cwd, preview="")
             store.set_active_thread(channel_id, conversation_id, "thr_remote_new")
             return "thr_remote_new"
 
@@ -216,13 +213,13 @@ async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label()
 @pytest.mark.asyncio
 async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
 
     class AttachingBackend(FakeBackend):
         async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
             self.attached_threads.append((channel_id, conversation_id, thread_id))
-            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.record_thread("thr_attached", cwd=cwd, preview="External session")
             store.set_active_thread(channel_id, conversation_id, "thr_attached")
             return "thr_attached"
 
@@ -251,12 +248,12 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
 @pytest.mark.asyncio
 async def test_runtime_session_index_routes_server_request_to_latest_attached_conversation() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
+    cwd = r"D:\work\alpha"
 
     class AttachingBackend(FakeBackend):
         async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
             self.attached_threads.append((channel_id, conversation_id, thread_id))
-            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.record_thread("thr_attached", cwd=cwd, preview="External session")
             store.set_active_thread(channel_id, conversation_id, "thr_attached")
             return "thr_attached"
 
@@ -307,12 +304,12 @@ async def test_runtime_session_index_routes_server_request_to_latest_attached_co
 @pytest.mark.asyncio
 async def test_read_only_command_does_not_steal_runtime_thread_owner() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
+    cwd = r"D:\work\alpha"
 
     class AttachingBackend(FakeBackend):
         async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
             self.attached_threads.append((channel_id, conversation_id, thread_id))
-            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.record_thread("thr_attached", cwd=cwd, preview="External session")
             store.set_active_thread(channel_id, conversation_id, "thr_attached")
             return "thr_attached"
 
@@ -479,14 +476,14 @@ async def test_thread_attach_reports_backend_validation_failure_without_breaking
 @pytest.mark.asyncio
 async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
-    store.record_thread("thr_known", cwd=project.cwd, preview="")
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
+    store.record_thread("thr_known", cwd=cwd, preview="")
 
     class AttachingBackend(FakeBackend):
         async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
             self.attached_threads.append((channel_id, conversation_id, thread_id))
-            store.record_thread("thr_known", cwd=project.cwd, preview="Imported thread")
+            store.record_thread("thr_known", cwd=cwd, preview="Imported thread")
             store.set_active_thread(channel_id, conversation_id, "thr_known")
             return "thr_known"
 
@@ -514,8 +511,7 @@ async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> N
 @pytest.mark.asyncio
 async def test_new_command_does_not_require_backend_to_store_thread_before_ack() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     backend = FakeBackend()
     service = BridgeService(
         store=store,
@@ -541,8 +537,8 @@ async def test_new_command_does_not_require_backend_to_store_thread_before_ack()
 @pytest.mark.asyncio
 async def test_threads_command_prefers_native_thread_listing() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
     backend = FakeBackend()
     from imcodex.bridge.thread_directory import NativeThreadSnapshot
 
@@ -583,7 +579,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
 
     assert backend.list_threads_calls == [("qq", "conv-1", False)]
     assert messages[0].message_type == "command_result"
-    assert messages[0].text.startswith(f"Threads in CWD {project.cwd}:")
+    assert messages[0].text.startswith(f"Threads in CWD {cwd}:")
     assert "Investigate alpha" in messages[0].text
     assert "Fix beta" in messages[0].text
     assert "status: in progress" in messages[0].text
@@ -593,8 +589,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
 @pytest.mark.asyncio
 async def test_thread_read_command_prefers_native_thread_read() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    binding = store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     binding.active_thread_id = "thr_native"
     backend = FakeBackend()
     from imcodex.bridge.thread_directory import NativeThreadSnapshot
@@ -635,7 +630,7 @@ async def test_thread_read_command_prefers_native_thread_read() -> None:
 async def test_threads_command_falls_back_to_local_state_when_native_query_fails() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_local", cwd=r"D:\work\alpha", preview="Local preview")
-    store.set_active_project("qq", "conv-1", thread.project_id)
+    store.set_selected_cwd("qq", "conv-1", thread.cwd)
     backend = FakeBackend()
     backend.fail_list_threads = True
     service = BridgeService(
@@ -704,7 +699,7 @@ async def test_threads_command_without_selected_cwd_preserves_missing_project_gu
 async def test_thread_read_command_surfaces_recoverable_status_when_native_query_fails() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_local", cwd=r"D:\work\alpha", preview="Local preview")
-    binding = store.set_active_project("qq", "conv-1", thread.project_id)
+    binding = store.set_selected_cwd("qq", "conv-1", thread.cwd)
     binding.active_thread_id = "thr_local"
     backend = FakeBackend()
     backend.fail_read_thread = True
@@ -736,8 +731,7 @@ async def test_thread_read_command_surfaces_recoverable_status_when_native_query
 @pytest.mark.asyncio
 async def test_threads_all_command_requests_cross_workspace_native_listing() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     backend = FakeBackend()
     from imcodex.bridge.thread_directory import NativeThreadSnapshot
 
@@ -814,13 +808,13 @@ async def test_new_command_without_working_directory_is_user_safe() -> None:
 async def test_new_command_pending_label_survives_restart_before_first_prompt(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
 
     class CreatingBackend(FakeBackend):
         async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
             self.created_threads.append((channel_id, conversation_id))
-            store.record_thread("thr_remote_new", cwd=project.cwd, preview="")
+            store.record_thread("thr_remote_new", cwd=cwd, preview="")
             store.set_active_thread(channel_id, conversation_id, "thr_remote_new")
             return "thr_remote_new"
 
@@ -884,20 +878,20 @@ async def test_new_command_pending_label_survives_restart_before_first_prompt(tm
 @pytest.mark.asyncio
 async def test_new_command_recovery_clears_stale_pending_label_from_abandoned_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
 
     class RecoveringBackend(FakeBackend):
         async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
             self.created_threads.append((channel_id, conversation_id))
-            store.record_thread("thr_remote_new", cwd=project.cwd, preview="")
+            store.record_thread("thr_remote_new", cwd=cwd, preview="")
             store.set_active_thread(channel_id, conversation_id, "thr_remote_new")
             return "thr_remote_new"
 
         async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
             self.started_turns.append((channel_id, conversation_id, text))
             if text.startswith("please inspect"):
-                store.record_thread("thr_recovered", cwd=project.cwd, preview="")
+                store.record_thread("thr_recovered", cwd=cwd, preview="")
                 store.set_active_turn(
                     channel_id,
                     conversation_id,
@@ -1174,13 +1168,13 @@ async def test_server_approval_request_is_still_shown_in_autonomous_mode() -> No
 @pytest.mark.asyncio
 async def test_plain_text_records_first_user_message_for_future_thread_labels() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
 
     class RecordingBackend(FakeBackend):
         async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
             self.started_turns.append((channel_id, conversation_id, text))
-            store.record_thread("thr_new", cwd=project.cwd, preview="")
+            store.record_thread("thr_new", cwd=cwd, preview="")
             store.get_binding(channel_id, conversation_id).active_thread_id = "thr_new"
             return "turn_1"
 

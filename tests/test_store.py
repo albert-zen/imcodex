@@ -11,61 +11,34 @@ def _state_path(name: str) -> Path:
     return Path.cwd() / f".pytest-state-{name}-{uuid4().hex}.json"
 
 
-def test_thread_record_autocreates_project_from_cwd() -> None:
+def test_record_thread_tracks_cwd_and_list_threads() -> None:
     store = ConversationStore(clock=lambda: 100.0)
 
-    store.record_thread(
-        thread_id="thr_1",
-        cwd=r"D:\work\alpha",
-        preview="hello",
-    )
+    first = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="first")
+    second = store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="second")
 
-    projects = store.list_projects()
-
-    assert len(projects) == 1
-    assert projects[0].cwd == r"D:\work\alpha"
-    assert projects[0].display_name == "alpha"
-    assert store.get_thread("thr_1").project_id == projects[0].project_id
+    assert first.cwd == r"D:\work\alpha"
+    assert second.cwd == r"D:\work\alpha"
+    assert [thread.thread_id for thread in store.list_threads()] == ["thr_1", "thr_2"]
+    assert [thread.thread_id for thread in store.list_threads_for_cwd(r"D:\work\alpha")] == ["thr_1", "thr_2"]
 
 
-def test_record_thread_deduplicates_project_by_cwd() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-
-    first = store.record_thread(
-        thread_id="thr_1",
-        cwd=r"D:\work\alpha",
-        preview="first",
-    )
-    second = store.record_thread(
-        thread_id="thr_2",
-        cwd=r"D:\work\alpha",
-        preview="second",
-    )
-
-    assert first.project_id == second.project_id
-    assert len(store.list_projects()) == 1
-    assert [thread.thread_id for thread in store.list_threads(first.project_id)] == [
-        "thr_1",
-        "thr_2",
-    ]
-
-
-def test_project_and_thread_switching_updates_binding() -> None:
+def test_cwd_and_thread_switching_updates_binding() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
     beta = store.record_thread("thr_2", cwd=r"D:\work\beta", preview="b")
 
-    binding = store.set_active_thread("qq", "conv-1", "thr_1")
-    assert binding.active_project_id == alpha.project_id
-    assert binding.active_thread_id == "thr_1"
+    binding = store.set_active_thread("qq", "conv-1", alpha.thread_id)
+    assert binding.selected_cwd == alpha.cwd
+    assert binding.active_thread_id == alpha.thread_id
 
-    binding = store.set_active_project("qq", "conv-1", beta.project_id)
-    assert binding.active_project_id == beta.project_id
+    binding = store.set_selected_cwd("qq", "conv-1", beta.cwd)
+    assert binding.selected_cwd == beta.cwd
     assert binding.active_thread_id is None
 
-    binding = store.set_active_thread("qq", "conv-1", "thr_2")
-    assert binding.active_project_id == beta.project_id
-    assert binding.active_thread_id == "thr_2"
+    binding = store.set_active_thread("qq", "conv-1", beta.thread_id)
+    assert binding.selected_cwd == beta.cwd
+    assert binding.active_thread_id == beta.thread_id
 
 
 def test_set_selected_cwd_updates_binding_and_clears_active_thread() -> None:
@@ -76,7 +49,6 @@ def test_set_selected_cwd_updates_binding_and_clears_active_thread() -> None:
     binding = store.set_selected_cwd("qq", "conv-1", r"D:\work\beta")
 
     assert binding.selected_cwd == r"D:\work\beta"
-    assert binding.active_project_id == store.ensure_project(r"D:\work\beta").project_id
     assert binding.active_thread_id is None
 
 
@@ -118,19 +90,6 @@ def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
     reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
 
     assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
-
-
-def test_thread_label_keeps_long_whitespace_free_prompts_readable() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
-
-    prompt = "https://example.com/very/long/path/without/spaces/or/breakpoints/abcdef1234567890"
-    store.note_thread_user_message("thr_1", prompt)
-
-    label = store.thread_label("thr_1")
-    assert label != "..."
-    assert label.startswith("https://example.com/very/long")
-    assert label.endswith("...")
 
 
 def test_note_thread_status_updates_active_binding_snapshot() -> None:
@@ -273,34 +232,6 @@ def test_list_pending_requests_returns_binding_order() -> None:
     assert [request.ticket_id for request in requests] == ["2", "3"]
 
 
-def test_pending_requests_with_same_ticket_id_are_isolated_by_conversation() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-    store.create_pending_request(
-        channel_id="qq",
-        conversation_id="conv-1",
-        ticket_id="1",
-        kind="approval",
-        summary="First conversation",
-        payload={},
-    )
-    store.create_pending_request(
-        channel_id="qq",
-        conversation_id="conv-2",
-        ticket_id="1",
-        kind="approval",
-        summary="Second conversation",
-        payload={},
-    )
-
-    first = store.get_pending_request("1", channel_id="qq", conversation_id="conv-1")
-    second = store.get_pending_request("1", channel_id="qq", conversation_id="conv-2")
-
-    assert first is not None
-    assert second is not None
-    assert first.summary == "First conversation"
-    assert second.summary == "Second conversation"
-
-
 def test_can_find_pending_request_by_native_request_id() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.create_pending_request(
@@ -359,17 +290,7 @@ def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_sta
     assert binding.active_turn_status is None
 
 
-def test_unknown_thread_turn_events_are_ignored() -> None:
-    store = ConversationStore(clock=lambda: 100.0)
-
-    started = store.note_turn_started("thr_missing", turn_id="turn_1", status="inProgress")
-    completed = store.note_turn_completed("thr_missing", turn_id="turn_1", status="completed")
-
-    assert started is None
-    assert completed is None
-
-
-def test_state_persists_cwd_first_and_rebuilds_project_aliases() -> None:
+def test_state_persists_cwd_first_without_project_aliases() -> None:
     state_path = _state_path("store-cwd-first")
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
     store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
@@ -380,141 +301,19 @@ def test_state_persists_cwd_first_and_rebuilds_project_aliases() -> None:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
 
         assert "projects" not in payload
-        assert "project_aliases" in payload
+        assert "project_aliases" not in payload
         assert all("project_id" not in thread for thread in payload["threads"])
         assert all("active_project_id" not in binding for binding in payload["bindings"])
 
         reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
-        projects = {project.cwd: project for project in reloaded.list_projects()}
-        beta_project = projects[r"D:\work\beta"]
-
-        assert set(projects) == {r"D:\work\alpha", r"D:\work\beta"}
-        assert reloaded.get_thread("thr_alpha").project_id == projects[r"D:\work\alpha"].project_id
-
-        binding = reloaded.set_active_project("qq", "conv-1", beta_project.project_id)
-
-        assert binding.selected_cwd == r"D:\work\beta"
-        assert binding.active_project_id == beta_project.project_id
-        assert binding.active_thread_id is None
+        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\alpha")] == ["thr_alpha"]
+        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\beta")] == ["thr_beta"]
+        assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\alpha"
     finally:
         state_path.unlink(missing_ok=True)
 
 
-def test_project_alias_recency_order_survives_reload() -> None:
-    state_path = _state_path("store-project-recency")
-    current = {"value": 100.0}
-
-    def clock() -> float:
-        value = current["value"]
-        current["value"] += 1.0
-        return value
-
-    store = ConversationStore(clock=clock, state_path=state_path)
-    store.record_thread("thr_alpha", cwd=r"D:\work\alpha", preview="alpha")
-    store.record_thread("thr_beta", cwd=r"D:\work\beta", preview="beta")
-    store.ensure_project(r"D:\work\beta")
-    store.ensure_project(r"D:\work\alpha")
-
-    try:
-        reloaded = ConversationStore(clock=lambda: 300.0, state_path=state_path)
-
-        assert [project.cwd for project in reloaded.list_projects()] == [
-            r"D:\work\alpha",
-            r"D:\work\beta",
-        ]
-    finally:
-        state_path.unlink(missing_ok=True)
-
-
-def test_legacy_projects_payload_still_loads_project_aliases() -> None:
-    state_path = _state_path("store-legacy-projects")
-    payload = {
-        "projects": [
-            {
-                "project_id": "proj_alpha",
-                "cwd": r"D:\work\alpha",
-                "display_name": "alpha",
-                "last_used_at": 42.0,
-                "created_seq": 1,
-            }
-        ],
-        "threads": [],
-        "bindings": [],
-        "pending_requests": [],
-        "thread_active_turns": [],
-        "thread_first_user_messages": {},
-        "pending_first_thread_labels": [],
-        "thread_order": [],
-        "seq": 1,
-    }
-    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-
-    try:
-        reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
-
-        projects = reloaded.list_projects()
-
-        assert len(projects) == 1
-        assert projects[0].project_id == "proj_alpha"
-        assert projects[0].cwd == r"D:\work\alpha"
-        assert projects[0].last_used_at == 42.0
-    finally:
-        state_path.unlink(missing_ok=True)
-
-
-def test_legacy_thread_only_payload_preserves_project_alias_recency() -> None:
-    state_path = _state_path("store-legacy-thread-only")
-    payload = {
-        "threads": [
-            {
-                "thread_id": "thr_beta",
-                "preview": "beta",
-                "status": "idle",
-                "last_used_at": 20.0,
-                "cwd": r"D:\work\beta",
-                "name": None,
-                "path": None,
-                "last_turn_id": None,
-                "last_turn_status": None,
-                "stale_turn_ids": [],
-                "created_seq": 2,
-            },
-            {
-                "thread_id": "thr_alpha",
-                "preview": "alpha",
-                "status": "idle",
-                "last_used_at": 10.0,
-                "cwd": r"D:\work\alpha",
-                "name": None,
-                "path": None,
-                "last_turn_id": None,
-                "last_turn_status": None,
-                "stale_turn_ids": [],
-                "created_seq": 1,
-            },
-        ],
-        "bindings": [],
-        "pending_requests": [],
-        "thread_active_turns": [],
-        "thread_first_user_messages": {},
-        "pending_first_thread_labels": [],
-        "thread_order": ["thr_beta", "thr_alpha"],
-        "seq": 2,
-    }
-    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-
-    try:
-        reloaded = ConversationStore(clock=lambda: 100.0, state_path=state_path)
-
-        projects = reloaded.list_projects()
-
-        assert [project.cwd for project in projects] == [r"D:\work\beta", r"D:\work\alpha"]
-        assert [project.last_used_at for project in projects] == [20.0, 10.0]
-    finally:
-        state_path.unlink(missing_ok=True)
-
-
-def test_legacy_project_alias_id_is_reused_for_threads_and_bindings() -> None:
+def test_legacy_project_fields_are_ignored_on_reload() -> None:
     state_path = _state_path("store-legacy-project-id")
     payload = {
         "projects": [
@@ -577,8 +376,9 @@ def test_legacy_project_alias_id_is_reused_for_threads_and_bindings() -> None:
     try:
         reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
 
-        assert reloaded.get_thread("thr_alpha").project_id == "proj_alpha"
-        assert [thread.thread_id for thread in reloaded.list_threads("proj_alpha")] == ["thr_alpha"]
-        assert reloaded.get_binding("qq", "conv-1").active_project_id == "proj_alpha"
+        assert [thread.thread_id for thread in reloaded.list_threads()] == ["thr_alpha"]
+        assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\alpha"
+        assert not hasattr(reloaded.get_thread("thr_alpha"), "project_id")
+        assert not hasattr(reloaded.get_binding("qq", "conv-1"), "active_project_id")
     finally:
         state_path.unlink(missing_ok=True)

@@ -65,8 +65,7 @@ async def test_mock_e2e_text_turn_streams_final_reply_to_outbound_sink() -> None
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     sink = CapturingSink()
     service = BridgeService(
         store=store,
@@ -129,8 +128,7 @@ async def test_mock_e2e_attaches_external_thread_and_continues_on_it() -> None:
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     sink = CapturingSink()
     service = BridgeService(
         store=store,
@@ -300,8 +298,7 @@ async def test_mock_e2e_sync_ack_then_async_progress_then_final_result() -> None
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     sink = CapturingSink()
     service = BridgeService(
         store=store,
@@ -357,8 +354,7 @@ async def test_mock_e2e_late_tool_progress_after_final_answer_is_not_pushed() ->
         client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
     )
     store = ConversationStore(clock=lambda: 1.0)
-    project = store.ensure_project(r"D:\work\alpha")
-    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
     store.set_toolcall_visibility("qq", "conv-1", enabled=True)
     sink = CapturingSink()
     service = BridgeService(

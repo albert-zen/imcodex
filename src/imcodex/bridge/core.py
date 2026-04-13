@@ -212,7 +212,6 @@ class BridgeService:
 
     def _command_message_type(self, action: str) -> str:
         if action.startswith("settings.") or action in {
-            "project.use",
             "project.cwd",
             "thread.use",
             "recover",

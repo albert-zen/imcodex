@@ -5,22 +5,12 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class ProjectRecord:
-    project_id: str
-    cwd: str
-    display_name: str
-    last_used_at: float
-    created_seq: int = 0
-
-
-@dataclass(slots=True)
 class ThreadRecord:
     thread_id: str
     preview: str
     status: str
     last_used_at: float
     cwd: str
-    project_id: str | None = None
     name: str | None = None
     path: str | None = None
     last_turn_id: str | None = None
@@ -33,7 +23,6 @@ class ThreadRecord:
 class ConversationBinding:
     channel_id: str
     conversation_id: str
-    active_project_id: str | None = None
     selected_cwd: str | None = None
     selected_model: str | None = None
     active_thread_id: str | None = None

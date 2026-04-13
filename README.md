@@ -74,7 +74,7 @@ Example body:
   "conversation_id": "conv-1",
   "user_id": "u1",
   "message_id": "m1",
-  "text": "/projects"
+  "text": "/cwd D:\\work\\alpha"
 }
 ```
 

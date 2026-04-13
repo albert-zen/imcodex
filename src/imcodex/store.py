@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import json
 import textwrap
 from pathlib import Path
 from typing import Any, Callable
 
-from .models import ConversationBinding, PendingRequest, ProjectRecord, ThreadRecord
+from .models import ConversationBinding, PendingRequest, ThreadRecord
 
 
 Clock = Callable[[], float]
@@ -15,14 +14,6 @@ Clock = Callable[[], float]
 
 def _normalize_cwd(cwd: str) -> str:
     return os.path.normcase(os.path.normpath(cwd))
-
-
-def _project_id_for_cwd(cwd: str) -> str:
-    return hashlib.sha1(_normalize_cwd(cwd).encode("utf-8")).hexdigest()[:12]
-
-
-def _display_name_for_cwd(cwd: str) -> str:
-    return Path(_normalize_cwd(cwd)).name or _normalize_cwd(cwd)
 
 
 def _clip_thread_label(text: str) -> str:
@@ -46,8 +37,6 @@ class ConversationStore:
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
         self.default_permission_profile = default_permission_profile
-        self._projects: dict[str, ProjectRecord] = {}
-        self._projects_by_cwd: dict[str, str] = {}
         self._threads: dict[str, ThreadRecord] = {}
         self._thread_active_turns: dict[str, tuple[str, str]] = {}
         self._thread_first_user_messages: dict[str, str] = {}
@@ -58,72 +47,10 @@ class ConversationStore:
         self._seq = 0
         if self.state_path and self.state_path.exists():
             self._load()
-            self._rebuild_project_aliases()
 
     def _next_seq(self) -> int:
         self._seq += 1
         return self._seq
-
-    def _touch_project(self, project: ProjectRecord) -> None:
-        project.last_used_at = self.clock()
-
-    def _project_alias_id_for_cwd(self, cwd: str) -> str:
-        normalized = _normalize_cwd(cwd)
-        return self._projects_by_cwd.get(normalized, _project_id_for_cwd(cwd))
-
-    def _get_or_create_project_alias(
-        self,
-        cwd: str,
-        *,
-        touch: bool,
-        initial_last_used_at: float | None = None,
-        initial_created_seq: int | None = None,
-        explicit_project_id: str | None = None,
-        display_name: str | None = None,
-    ) -> ProjectRecord:
-        normalized = _normalize_cwd(cwd)
-        existing_project_id = self._projects_by_cwd.get(normalized)
-        if existing_project_id is not None:
-            project = self._projects[existing_project_id]
-            if touch:
-                self._touch_project(project)
-            elif initial_last_used_at is not None:
-                project.last_used_at = max(project.last_used_at, initial_last_used_at)
-            if initial_created_seq:
-                if not project.created_seq:
-                    project.created_seq = initial_created_seq
-                else:
-                    project.created_seq = min(project.created_seq, initial_created_seq)
-            return project
-        project = ProjectRecord(
-            project_id=explicit_project_id or _project_id_for_cwd(cwd),
-            cwd=cwd,
-            display_name=display_name or _display_name_for_cwd(cwd),
-            last_used_at=initial_last_used_at if initial_last_used_at is not None else self.clock(),
-            created_seq=initial_created_seq if initial_created_seq is not None else self._next_seq(),
-        )
-        self._projects[project.project_id] = project
-        self._projects_by_cwd[normalized] = project.project_id
-        return project
-
-    def _refresh_thread_project_alias(self, thread: ThreadRecord) -> ThreadRecord:
-        thread.project_id = self._project_alias_id_for_cwd(thread.cwd)
-        return thread
-
-    def _refresh_binding_project_alias(self, binding: ConversationBinding) -> ConversationBinding:
-        if binding.selected_cwd is not None:
-            binding.active_project_id = self._project_alias_id_for_cwd(binding.selected_cwd)
-            return binding
-        if binding.active_thread_id is not None:
-            thread = self._threads.get(binding.active_thread_id)
-            if thread is not None:
-                binding.active_project_id = self._project_alias_id_for_cwd(thread.cwd)
-                return binding
-        binding.active_project_id = None
-        return binding
-
-    def _ensure_project(self, cwd: str) -> ProjectRecord:
-        return self._get_or_create_project_alias(cwd, touch=True)
 
     def record_thread(
         self,
@@ -135,11 +62,9 @@ class ConversationStore:
         name: str | None = None,
         path: str | None = None,
     ) -> ThreadRecord:
-        project = self._ensure_project(cwd)
         existing = self._threads.get(thread_id)
         thread = ThreadRecord(
             thread_id=thread_id,
-            project_id=project.project_id,
             preview=preview or (existing.preview if existing is not None else ""),
             status=status,
             last_used_at=self.clock(),
@@ -154,14 +79,8 @@ class ConversationStore:
         self._threads[thread_id] = thread
         if thread_id not in self._thread_order:
             self._thread_order.append(thread_id)
-        self._touch_project(project)
         self._save()
         return thread
-
-    def ensure_project(self, cwd: str) -> ProjectRecord:
-        project = self._ensure_project(cwd)
-        self._save()
-        return project
 
     def set_selected_cwd(
         self,
@@ -169,11 +88,9 @@ class ConversationStore:
         conversation_id: str,
         cwd: str,
     ) -> ConversationBinding:
-        project = self._ensure_project(cwd)
         binding = self.get_binding(channel_id, conversation_id)
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
-        binding.active_project_id = project.project_id
-        binding.selected_cwd = project.cwd
+        binding.selected_cwd = cwd
         binding.active_thread_id = None
         binding.active_turn_id = None
         binding.active_turn_status = None
@@ -181,10 +98,7 @@ class ConversationStore:
         return binding
 
     def get_thread(self, thread_id: str) -> ThreadRecord:
-        return self._refresh_thread_project_alias(self._threads[thread_id])
-
-    def get_project(self, project_id: str) -> ProjectRecord:
-        return self._projects[project_id]
+        return self._threads[thread_id]
 
     def note_thread_user_message(self, thread_id: str, text: str) -> None:
         self.get_thread(thread_id)
@@ -256,24 +170,8 @@ class ConversationStore:
         self._save()
         return True
 
-    def list_projects(self) -> list[ProjectRecord]:
-        return sorted(
-            self._projects.values(),
-            key=lambda p: (-p.last_used_at, p.created_seq, p.display_name),
-        )
-
-    def list_threads(self, project_id: str | None = None) -> list[ThreadRecord]:
-        threads = self._threads.values()
-        if project_id is not None:
-            threads = [
-                thread
-                for thread in threads
-                if self._project_alias_id_for_cwd(thread.cwd) == project_id
-            ]
-        return sorted(
-            [self._refresh_thread_project_alias(thread) for thread in threads],
-            key=lambda t: (t.created_seq, t.thread_id),
-        )
+    def list_threads(self) -> list[ThreadRecord]:
+        return sorted(list(self._threads.values()), key=lambda t: (t.created_seq, t.thread_id))
 
     def list_threads_for_cwd(self, cwd: str) -> list[ThreadRecord]:
         normalized = _normalize_cwd(cwd)
@@ -295,16 +193,7 @@ class ConversationStore:
                 permission_profile=self.default_permission_profile,
             )
             self._save()
-        return self._refresh_binding_project_alias(self._bindings[key])
-
-    def set_active_project(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        project_id: str,
-    ) -> ConversationBinding:
-        project = self.get_project(project_id)
-        return self.set_selected_cwd(channel_id, conversation_id, project.cwd)
+        return self._bindings[key]
 
     def set_active_thread(
         self,
@@ -315,7 +204,6 @@ class ConversationStore:
         thread = self.get_thread(thread_id)
         binding = self.get_binding(channel_id, conversation_id)
         self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=thread_id)
-        binding.active_project_id = thread.project_id
         binding.selected_cwd = thread.cwd
         binding.active_thread_id = thread_id
         active_turn = self._thread_active_turns.get(thread_id)
@@ -329,7 +217,6 @@ class ConversationStore:
         binding.last_seen_thread_name = thread.name or self.thread_label(thread_id)
         binding.last_seen_thread_path = thread.path or thread.cwd
         binding.last_seen_thread_status = thread.status
-        self._refresh_binding_project_alias(binding)
         self._save()
         return binding
 
@@ -713,14 +600,6 @@ class ConversationStore:
         self._save()
         return len(target_keys)
 
-    def active_projects_for_conversation(self, channel_id: str, conversation_id: str) -> list[ProjectRecord]:
-        binding = self.get_binding(channel_id, conversation_id)
-        if binding.selected_cwd:
-            return [self.ensure_project(binding.selected_cwd)]
-        if binding.active_project_id:
-            return [self.get_project(binding.active_project_id)]
-        return self.list_projects()
-
     def find_binding_for_thread(self, thread_id: str):
         for binding in self._bindings.values():
             if thread_id == binding.active_thread_id or thread_id in binding.known_thread_ids:
@@ -732,7 +611,6 @@ class ConversationStore:
             return
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "project_aliases": [self._serialize_project_alias(project) for project in self._projects.values()],
             "threads": [self._serialize_thread(thread) for thread in self._threads.values()],
             "thread_active_turns": [
                 {
@@ -760,20 +638,9 @@ class ConversationStore:
 
     def _load(self) -> None:
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        raw_project_aliases = payload.get("project_aliases")
-        if raw_project_aliases is None:
-            raw_project_aliases = payload.get("projects", [])
-        self._projects = {
-            item["project_id"]: ProjectRecord(**item) for item in raw_project_aliases
-        }
-        self._projects_by_cwd = {
-            _normalize_cwd(project.cwd): project.project_id for project in self._projects.values()
-        }
         self._threads = {
-            item["thread_id"]: ThreadRecord(**item) for item in payload.get("threads", [])
+            item["thread_id"]: self._load_thread(item) for item in payload.get("threads", [])
         }
-        for thread in self._threads.values():
-            self._refresh_thread_project_alias(thread)
         self._thread_active_turns = {
             item["thread_id"]: (item["turn_id"], item["status"])
             for item in payload.get("thread_active_turns", [])
@@ -785,11 +652,9 @@ class ConversationStore:
         }
         self._thread_order = list(payload.get("thread_order", []))
         self._bindings = {
-            (item["channel_id"], item["conversation_id"]): ConversationBinding(**item)
+            (item["channel_id"], item["conversation_id"]): self._load_binding(item)
             for item in payload.get("bindings", [])
         }
-        for binding in self._bindings.values():
-            self._refresh_binding_project_alias(binding)
         self._pending_requests = {
             self._pending_request_key(item["channel_id"], item["conversation_id"], item["ticket_id"]): PendingRequest(**item)
             for item in payload.get("pending_requests", [])
@@ -827,28 +692,15 @@ class ConversationStore:
     ) -> str:
         return f"{channel_id}:{conversation_id}:{ticket_id}"
 
-    def _rebuild_project_aliases(self) -> None:
-        for thread in self._threads.values():
-            project = self._get_or_create_project_alias(
-                thread.cwd,
-                touch=False,
-                initial_last_used_at=thread.last_used_at,
-                initial_created_seq=thread.created_seq or None,
-            )
-            self._refresh_thread_project_alias(thread)
-        for binding in self._bindings.values():
-            if binding.selected_cwd is not None:
-                self._get_or_create_project_alias(binding.selected_cwd, touch=False)
-            self._refresh_binding_project_alias(binding)
+    def _load_thread(self, item: dict[str, Any]) -> ThreadRecord:
+        payload = dict(item)
+        payload.pop("project_id", None)
+        return ThreadRecord(**payload)
 
-    def _serialize_project_alias(self, project: ProjectRecord) -> dict[str, Any]:
-        return {
-            "project_id": project.project_id,
-            "cwd": project.cwd,
-            "display_name": project.display_name,
-            "last_used_at": project.last_used_at,
-            "created_seq": project.created_seq,
-        }
+    def _load_binding(self, item: dict[str, Any]) -> ConversationBinding:
+        payload = dict(item)
+        payload.pop("active_project_id", None)
+        return ConversationBinding(**payload)
 
     def _serialize_thread(self, thread: ThreadRecord) -> dict[str, Any]:
         return {

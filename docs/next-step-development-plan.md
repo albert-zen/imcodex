@@ -44,7 +44,7 @@ already in the mainline:
   `thread/read`, and `thread/list`
 - `/threads` and `/thread read` routed through native backend query paths
 - runtime session index routing replacing store scans as the primary route
-- `cwd`-first persisted state with legacy project aliases demoted
+- `cwd`-first persisted state with the old project layer removed from runtime flow
 - message-pump deduplication plus final-answer precedence
 - explicit `cwd` required for new conversations and new threads
 - `/thread attach` allowed before a working directory is preselected
@@ -246,7 +246,7 @@ Make the rebuilt system easy to trust in practice.
 The best next slices are now implementation slices, not more speculative
 planning:
 
-1. demote the persisted `project` layer into a compatibility alias
+1. finish deleting the persisted `project` layer from the remaining state model
 2. replace `known_thread_ids` / `find_binding_for_thread()` with a thinner
    native session index
 3. keep strengthening the message pump:

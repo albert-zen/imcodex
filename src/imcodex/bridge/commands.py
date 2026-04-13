@@ -19,7 +19,6 @@ class ParsedCommand:
 class CommandResponse:
     action: str
     text: str
-    project_id: str | None = None
     thread_id: str | None = None
     turn_id: str | None = None
     ticket_id: str | None = None
@@ -54,26 +53,6 @@ class CommandRouter:
             return CommandResponse(action="unknown", text=f"Unknown command: /{command.name}")
         return handler(channel_id, conversation_id, command.args)
 
-    def _handle_projects(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del channel_id, conversation_id, args
-        projects = self.store.list_projects()
-        lines = ["Legacy project aliases:"]
-        for project in projects:
-            lines.append(f"- {project.cwd} (legacy id: {project.project_id})")
-        return CommandResponse(action="projects.list", text="\n".join(lines))
-
-    def _handle_project(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) != 2 or args[0] != "use":
-            return CommandResponse(action="project.invalid", text="Usage: /project use <project-id>")
-        project_id = args[1]
-        project = self.store.get_project(project_id)
-        self.store.set_active_project(channel_id, conversation_id, project_id)
-        return CommandResponse(
-            action="project.use",
-            text=f"CWD set to {project.cwd}. Prefer /cwd <path> for future switches.",
-            project_id=project_id,
-        )
-
     def _handle_cwd(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         if len(args) != 1:
             return CommandResponse(action="project.cwd.invalid", text="Usage: /cwd <path>")
@@ -84,7 +63,6 @@ class CommandRouter:
         return CommandResponse(
             action="project.cwd",
             text=f"CWD set to {binding.selected_cwd}.",
-            project_id=binding.active_project_id,
         )
 
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -113,7 +91,6 @@ class CommandRouter:
                 action="thread.attach",
                 text=text,
                 thread_id=thread_id,
-                project_id=binding.active_project_id,
             )
         thread_id = args[1]
         thread = self.store.get_thread(thread_id)
@@ -122,7 +99,6 @@ class CommandRouter:
             action="thread.use",
             text=f"Switched to thread {self._thread_label(thread_id)} (id: {thread_id}) in CWD {thread.cwd}.",
             thread_id=thread_id,
-            project_id=thread.project_id,
         )
 
     def _handle_thread_read(self, channel_id: str, conversation_id: str) -> CommandResponse:
@@ -305,10 +281,6 @@ class CommandRouter:
             "/show commentary|toolcalls",
             "/hide commentary|toolcalls",
             "/doctor",
-            "",
-            "Legacy compatibility:",
-            "/projects (legacy alias)",
-            "/project use <project-id> (legacy alias)",
         ]
         return CommandResponse(action="help", text="\n".join(lines))
 

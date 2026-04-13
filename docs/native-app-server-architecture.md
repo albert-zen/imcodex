@@ -147,10 +147,8 @@ its own session platform. That conflicts with native thread portability.
 
 ### 2.2 The bridge still teaches `project` as a primary concept
 
-Current commands and status output still expose:
+Current commands and status output should not expose:
 
-- `/projects`
-- `/project use`
 - `project id`
 
 This is the opposite of the `cwd`-first direction already captured in repo docs.
@@ -479,13 +477,11 @@ Keep:
 - `/new`
 - `/stop`
 
-Deprecate or hide by default:
+Do not reintroduce:
 
 - `/projects`
 - `/project use`
 - visible `project id`
-
-If compatibility is needed, keep old commands as aliases only.
 
 ### 6.2 Improve thread identity in IM
 
@@ -703,7 +699,7 @@ Minimum set:
 
 ### Phase E: Remove legacy compatibility weight
 
-- demote old `project` commands to compatibility aliases
+- remove old `project` commands entirely
 - delete duplicated local registries that are no longer needed
 - make native thread discovery the default browsing flow
 

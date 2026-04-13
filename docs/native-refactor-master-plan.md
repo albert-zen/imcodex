@@ -89,7 +89,7 @@ Completed or substantially landed:
 - native thread metadata persistence and surfacing
 - native `/threads` and `/thread read` query flow
 - runtime session index routing for notification and request delivery
-- `cwd`-first persisted state reduction with legacy project aliases preserved
+- `cwd`-first persisted state reduction with the project layer removed from runtime state
 - turn-aware message-pump deduplication and final-answer precedence
 - explicit `cwd` requirement for new conversations
 - attach-before-cwd support for native `thread/resume`
@@ -222,9 +222,9 @@ platform.
 ### Deliverables
 
 - new minimal session registry schema
-- migration loader from old store schema
+- loader behavior that tolerates and ignores old project-heavy state
 - internal-only cwd normalization support
-- demotion of `project` from primary concept to compatibility alias
+- removal of `project` as a primary runtime concept
 
 ### Current pain points this addresses
 
@@ -251,10 +251,9 @@ platform.
 
 ### Migration strategy
 
-1. Add read compatibility for current store payloads.
-2. Write both old and new fields during one transition phase if needed.
-3. Switch readers to the new model.
-4. Remove project-first logic after command layer cutover.
+1. Ignore stale project-heavy fields when reading older state files.
+2. Switch readers to the new model.
+3. Remove project-first logic after command layer cutover.
 
 ### Exit criteria
 
@@ -321,7 +320,7 @@ Converge the user-facing experience on `cwd` plus native thread identity.
 - revised `/status`
 - revised `/threads`
 - revised `/thread attach`
-- compatibility handling for `/projects` and `/project use`
+- help and status cleanup after the project layer removal
 - clearer thread naming rules using native names where available
 - visibility profile commands if desired in the first pass
 - command-driven permission and settings surface
@@ -353,11 +352,6 @@ Primary commands:
 - `/hide toolcalls`
 - `/requests`
 - `/doctor`
-
-Compatibility aliases:
-
-- `/projects`
-- `/project use`
 
 ### Exit criteria
 
@@ -589,7 +583,7 @@ This is the order I would actually ship code in.
 5. PR 5: move current projector behavior onto the message pump.
 6. PR 6: `cwd`-first command and status rewrite.
 7. PR 7: startup diagnostics and restart-resume tests.
-8. PR 8: remove legacy project-heavy persistence paths.
+8. PR 8: remove the final project-heavy persistence paths.
 
 Each PR should leave the app runnable.
 

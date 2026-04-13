@@ -97,7 +97,7 @@ class FakeClient:
 def make_store() -> ConversationStore:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("seed", cwd="D:/repo/app", preview="seed")
-    store.set_active_project("demo", "conv-1", thread.project_id)
+    store.set_selected_cwd("demo", "conv-1", thread.cwd)
     return store
 
 
@@ -252,8 +252,7 @@ async def test_attach_thread_without_any_available_cwd_rejects_resume_response()
 async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
-    project = store.ensure_project("D:/repo/app")
-    store.set_active_project("demo", "conv-1", project.project_id)
+    store.set_selected_cwd("demo", "conv-1", "D:/repo/app")
     client = FakeClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
@@ -284,8 +283,7 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
 async def test_attach_thread_prefers_selected_working_directory_over_known_thread_record() -> None:
     store = make_store()
     alpha = store.record_thread("thr_known", cwd="D:/repo/alpha", preview="old")
-    beta = store.ensure_project("D:/repo/beta")
-    store.set_active_project("demo", "conv-1", beta.project_id)
+    store.set_selected_cwd("demo", "conv-1", "D:/repo/beta")
     client = FakeClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
@@ -305,7 +303,7 @@ async def test_attach_thread_prefers_selected_working_directory_over_known_threa
         }
     ]
     binding = store.get_binding("demo", "conv-1")
-    assert binding.active_project_id == beta.project_id
+    assert binding.selected_cwd == "D:/repo/beta"
     assert binding.active_thread_id == "thr_known"
 
 
@@ -429,7 +427,6 @@ async def test_resume_without_path_preserves_existing_native_thread_path() -> No
 async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing() -> None:
     store = make_store()
     binding = store.set_selected_cwd("demo", "conv-1", "D:/repo/alt")
-    binding.active_project_id = None
     client = FakeClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
