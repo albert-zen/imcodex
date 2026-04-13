@@ -165,6 +165,18 @@ class ConversationStore:
         self._save()
         return thread
 
+    def note_thread_name(self, thread_id: str, *, name: str) -> ThreadRecord | None:
+        try:
+            thread = self.get_thread(thread_id)
+        except KeyError:
+            return None
+        thread.name = name
+        binding = self.find_binding_for_thread(thread_id)
+        if binding is not None and binding.active_thread_id == thread_id:
+            binding.last_seen_thread_name = self.thread_label(thread_id)
+        self._save()
+        return thread
+
     def mark_pending_first_thread_label(
         self,
         channel_id: str,

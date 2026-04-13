@@ -111,6 +111,21 @@ class AppServerClient:
         await asyncio.sleep(0)
         return result
 
+    async def set_thread_name(self, thread_id: str, name: str) -> JsonDict:
+        await self._ensure_ready()
+        result = await self._request(
+            "thread/name/set",
+            {"threadId": thread_id, "name": name},
+        )
+        await asyncio.sleep(0)
+        return result
+
+    async def archive_thread(self, thread_id: str) -> JsonDict:
+        await self._ensure_ready()
+        result = await self._request("thread/archive", {"threadId": thread_id})
+        await asyncio.sleep(0)
+        return result
+
     async def start_turn(
         self,
         thread_id: str | None = None,

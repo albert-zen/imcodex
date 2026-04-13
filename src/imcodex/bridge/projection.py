@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..appserver import normalize_appserver_message
 from ..models import OutboundMessage, PendingRequest
 from .message_pump import MessagePump
 from .visibility import VisibilityClassifier
@@ -109,44 +110,44 @@ class MessageProjector:
         )
 
     def project_notification(self, notification: dict, store) -> OutboundMessage | None:
-        method = notification.get("method")
-        params = notification.get("params", {})
-        if method == "item/commandExecution/requestApproval":
+        event = normalize_appserver_message(notification)
+        params = event.payload
+        if event.kind == "approval_request" and event.method == "item/commandExecution/requestApproval":
             return self._project_pending_request(
                 store,
                 params,
-                request_method=method,
+                request_method=event.method,
                 kind="approval",
                 summary=params.get("reason") or params.get("command") or "Approve command execution",
             )
-        if method == "item/fileChange/requestApproval":
+        if event.kind == "approval_request" and event.method == "item/fileChange/requestApproval":
             return self._project_pending_request(
                 store,
                 params,
-                request_method=method,
+                request_method=event.method,
                 kind="approval",
                 summary=params.get("reason") or "Approve file changes",
             )
-        if method == "item/tool/requestUserInput":
+        if event.kind == "question_request":
             return self._project_pending_request(
                 store,
                 params,
-                request_method=method,
+                request_method=event.method,
                 kind="question",
                 summary="Additional input required",
             )
-        if method == "item/agentMessage/delta":
+        if event.kind == "agent_delta":
             message = self.message_pump.record_delta(
-                thread_id=params.get("threadId", ""),
-                turn_id=params.get("turnId", ""),
+                thread_id=event.thread_id,
+                turn_id=event.turn_id,
                 delta=params.get("delta", ""),
-                emit_progress=self._show_commentary(params.get("threadId", ""), store),
+                emit_progress=self._show_commentary(event.thread_id, store),
             )
             if message is not None:
-                return self._attach_conversation(params.get("threadId", ""), message, store)
+                return self._attach_conversation(event.thread_id, message, store)
             return None
-        if method == "turn/started":
-            thread_id = params.get("threadId", "")
+        if event.kind == "turn_started":
+            thread_id = event.thread_id
             turn = params.get("turn") or {}
             turn_id = turn.get("id")
             status = turn.get("status")
@@ -158,8 +159,8 @@ class MessageProjector:
                     self.turn_state.start(thread_id, turn_id)
                     self.turn_state.mark_in_progress(thread_id, turn_id)
             return None
-        if method == "serverRequest/resolved":
-            request_id = str(params.get("requestId", ""))
+        if event.kind == "request_resolved":
+            request_id = event.request_id or ""
             request = store.get_pending_request_by_request_id(request_id)
             if self.request_registry is not None:
                 resolved = self.request_registry.resolve_native_request(
@@ -177,17 +178,31 @@ class MessageProjector:
                     conversation_id=request.conversation_id,
                 )
             return None
-        if method == "turn/plan/updated":
-            if not self._show_commentary(params.get("threadId", ""), store):
+        if event.kind == "plan_updated":
+            if not self._show_commentary(event.thread_id, store):
                 return None
             return self._attach_conversation(
-                params.get("threadId", ""),
+                event.thread_id,
                 self.render_turn_progress(text=self._render_plan_update(params)),
                 store,
             )
-        if method == "item/completed":
+        if event.kind == "diff_updated":
+            if not self._show_commentary(event.thread_id, store):
+                return None
+            return self._attach_conversation(
+                event.thread_id,
+                self.render_turn_progress(text=self._render_diff_update(params)),
+                store,
+            )
+        if event.kind == "thread_name_updated":
+            name = str(params.get("name", "")).strip()
+            if not name:
+                return None
+            store.note_thread_name(event.thread_id, name=name)
+            return None
+        if event.kind == "item_completed":
             return self._capture_item_completed(params, store)
-        if method == "turn/completed":
+        if event.kind == "turn_completed":
             return self._finalize_turn(params, store)
         return None
 
@@ -366,4 +381,13 @@ class MessageProjector:
             status = entry.get("status")
             if step and status:
                 lines.append(f"[{status}] {step}")
+        return "\n".join(lines)
+
+    def _render_diff_update(self, params: dict) -> str:
+        summary = str(params.get("summary", "")).strip()
+        files = [str(path) for path in params.get("files", []) if str(path).strip()]
+        lines = [summary or "Diff updated."]
+        if files:
+            lines.append("Files:")
+            lines.extend(f"- {path}" for path in files)
         return "\n".join(lines)

@@ -402,6 +402,96 @@ def test_server_request_resolved_is_ignored_for_unknown_request() -> None:
     assert message is None
 
 
+def test_thread_name_updated_refreshes_local_label_without_emitting_message() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "thread/name/updated",
+            "params": {
+                "threadId": "thr_1",
+                "name": "Investigate alpha",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.thread_label("thr_1") == "Investigate alpha"
+    assert store.get_binding("demo", "conv-1").last_seen_thread_name == "Investigate alpha"
+
+
+def test_turn_diff_update_is_projected_as_progress_when_commentary_is_visible() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/diff/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "summary": "Updated 2 files",
+                "files": ["src/imcodex/bridge/core.py", "tests/test_service.py"],
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_progress"
+    assert "Updated 2 files" in message.text
+    assert "src/imcodex/bridge/core.py" in message.text
+
+
+def test_turn_diff_update_respects_commentary_visibility_toggle() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_commentary_visibility("demo", "conv-1", enabled=False)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/diff/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "summary": "Updated 2 files",
+                "files": ["src/imcodex/bridge/core.py"],
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
+def test_unknown_notification_is_ignored_without_crashing() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "future/unknown",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
 def test_request_registry_backed_approval_request_still_renders() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
