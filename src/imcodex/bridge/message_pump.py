@@ -19,6 +19,7 @@ class MessagePump:
         self._turn_commands: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._turn_files: dict[tuple[str, str], list[str]] = defaultdict(list)
         self._emitted_turn_results: set[tuple[str, str]] = set()
+        self._emitted_progress_texts: dict[tuple[str, str], set[str]] = defaultdict(set)
 
     def record_delta(
         self,
@@ -31,7 +32,7 @@ class MessagePump:
         key = (thread_id, turn_id)
         self._turn_messages[key].append(delta)
         if delta and emit_progress:
-            return self.progress_renderer(delta)
+            return self._emit_progress_once(key, delta)
         return None
 
     def record_agent_message(
@@ -51,7 +52,7 @@ class MessagePump:
             self._emitted_turn_results.add(key)
             return self.result_renderer(text, [], [], False, False)
         if phase and phase != "final_answer" and text and emit_commentary:
-            return self.progress_renderer(text)
+            return self._emit_progress_once(key, text)
         return None
 
     def record_command(
@@ -66,7 +67,7 @@ class MessagePump:
         text = f"Executed `{command}`"
         self._turn_commands[key].append(text)
         if emit_progress:
-            return self.progress_renderer(text)
+            return self._emit_progress_once(key, text)
         return None
 
     def record_file_change(
@@ -83,7 +84,7 @@ class MessagePump:
         if paths and emit_progress:
             lines = ["Changed files:"]
             lines.extend(f"- {path}" for path in paths)
-            return self.progress_renderer("\n".join(lines))
+            return self._emit_progress_once(key, "\n".join(lines))
         return None
 
     def finalize_turn(
@@ -97,6 +98,7 @@ class MessagePump:
         text = "\n".join(self._turn_messages.pop(key, []))
         commands = self._turn_commands.pop(key, [])
         files = self._turn_files.pop(key, [])
+        self._emitted_progress_texts.pop(key, None)
         if key in self._emitted_turn_results and status == "completed":
             self._emitted_turn_results.discard(key)
             return None
@@ -116,6 +118,7 @@ class MessagePump:
         self._turn_commands.pop(key, None)
         self._turn_files.pop(key, None)
         self._emitted_turn_results.discard(key)
+        self._emitted_progress_texts.pop(key, None)
 
     def _render_progress(self, text: str) -> OutboundMessage:
         return OutboundMessage(
@@ -124,6 +127,12 @@ class MessagePump:
             message_type="turn_progress",
             text=text,
         )
+
+    def _emit_progress_once(self, key: tuple[str, str], text: str) -> OutboundMessage | None:
+        if text in self._emitted_progress_texts[key]:
+            return None
+        self._emitted_progress_texts[key].add(text)
+        return self.progress_renderer(text)
 
     def _render_result(
         self,
