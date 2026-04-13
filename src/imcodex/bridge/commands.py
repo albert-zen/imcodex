@@ -149,16 +149,18 @@ class CommandRouter:
             thread = self.store.get_thread(thread_id)
         except KeyError:
             lines = [
-                f"Thread: {self._thread_label(thread_id)}",
+                f"Thread: {self._thread_label(thread_id, binding=binding)}",
                 f"Thread id: {thread_id}",
-                "CWD: (unknown)",
-                "Status: (unknown)",
+                f"CWD: {binding.selected_cwd or '(unknown)'}",
+                f"Path: {binding.last_seen_thread_path or '(unknown)'}",
+                f"Status: {self._humanize_status(binding.last_seen_thread_status) if binding.last_seen_thread_status else '(unknown)'}",
             ]
         else:
             lines = [
                 f"Thread: {self._thread_label(thread_id)}",
                 f"Thread id: {thread_id}",
                 f"CWD: {thread.cwd}",
+                f"Path: {thread.path or thread.cwd}",
                 f"Status: {self._humanize_status(thread.status)}",
             ]
         return CommandResponse(action="thread.read", text="\n".join(lines), thread_id=thread_id)
@@ -182,8 +184,16 @@ class CommandRouter:
         binding = self.store.get_binding(channel_id, conversation_id)
         cwd_text = binding.selected_cwd or "(none)"
         thread_text = "(none)"
+        thread_path_text = "(none)"
+        last_seen_thread_status_text = "(none)"
         if binding.active_thread_id is not None:
-            thread_text = self._thread_label(binding.active_thread_id)
+            thread_text = self._thread_label(binding.active_thread_id, binding=binding)
+            thread_path_text = binding.last_seen_thread_path or "(unknown)"
+            last_seen_thread_status_text = (
+                self._humanize_status(binding.last_seen_thread_status)
+                if binding.last_seen_thread_status
+                else "(unknown)"
+            )
         turn_text = binding.active_turn_id or "(none)"
         turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
         model_text = binding.selected_model or "(default)"
@@ -191,6 +201,8 @@ class CommandRouter:
             f"Working directory: {cwd_text}",
             f"Thread: {thread_text}",
             f"Thread id: {binding.active_thread_id or '(none)'}",
+            f"Thread path: {thread_path_text}",
+            f"Last seen thread status: {last_seen_thread_status_text}",
             f"Turn: {turn_text}",
             f"Turn status: {turn_status}",
             f"Model: {model_text}",
@@ -450,10 +462,12 @@ class CommandRouter:
             text = f"Tool-call messages {'shown' if enabled else 'hidden'}."
         return CommandResponse(action="settings.visibility", text=text)
 
-    def _thread_label(self, thread_id: str) -> str:
+    def _thread_label(self, thread_id: str, *, binding=None) -> str:
         try:
             return self.store.thread_label(thread_id)
         except KeyError:
+            if binding is not None and binding.active_thread_id == thread_id and binding.last_seen_thread_name:
+                return binding.last_seen_thread_name
             return "Untitled thread"
 
     def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:

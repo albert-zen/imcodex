@@ -365,6 +365,7 @@ async def test_thread_read_command_prefers_native_thread_read() -> None:
     assert backend.read_thread_calls == [("qq", "conv-1", "thr_native")]
     assert messages[0].message_type == "command_result"
     assert "Thread: Investigate alpha" in messages[0].text
+    assert "Path: D:\\work\\alpha" in messages[0].text
     assert "Status: awaiting user input" in messages[0].text
 
 

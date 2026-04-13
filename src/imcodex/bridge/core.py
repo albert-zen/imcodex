@@ -258,6 +258,7 @@ class BridgeService:
                     f"Thread: {snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)}",
                     f"Thread id: {snapshot.thread_id}",
                     f"CWD: {snapshot.cwd or '(unknown)'}",
+                    f"Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
                     f"Status: {self._humanize_status(snapshot.status or '(unknown)')}",
                 ]
             )

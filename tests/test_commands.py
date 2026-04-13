@@ -365,12 +365,54 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     binding = store.set_active_project("qq", "conv-1", project.project_id)
     store.set_model_override("qq", "conv-1", "gpt-5.4")
     binding.active_thread_id = "thr_missing"
+    binding.last_seen_thread_name = "Recovered native thread"
+    binding.last_seen_thread_path = r"D:\work\alpha\.codex\threads\thr_missing"
+    binding.last_seen_thread_status = "awaitingUserInput"
     router = CommandRouter(store)
 
     status = router.handle("qq", "conv-1", "/status")
 
     assert "Working directory: D:\\work\\alpha" in status.text
-    assert "Thread: Untitled thread" in status.text
+    assert "Thread: Recovered native thread" in status.text
     assert "Thread id: thr_missing" in status.text
+    assert "Thread path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in status.text
+    assert "Last seen thread status: awaiting user input" in status.text
     assert "Model: gpt-5.4" in status.text
     assert "Permission mode: review" in status.text
+
+
+def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_exists() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    binding.last_seen_thread_name = "Recovered native thread"
+    binding.last_seen_thread_path = r"D:\work\alpha\.codex\threads\thr_missing"
+    binding.last_seen_thread_status = "awaitingUserInput"
+    router = CommandRouter(store)
+
+    status = router.handle("qq", "conv-1", "/status")
+
+    assert "Thread: (none)" in status.text
+    assert "Thread id: (none)" in status.text
+    assert "Thread path: (none)" in status.text
+    assert "Last seen thread status: (none)" in status.text
+
+
+def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_is_missing() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    binding = store.set_active_project("qq", "conv-1", project.project_id)
+    binding.active_thread_id = "thr_missing"
+    binding.last_seen_thread_name = "Recovered native thread"
+    binding.last_seen_thread_path = r"D:\work\alpha\.codex\threads\thr_missing"
+    binding.last_seen_thread_status = "awaitingUserInput"
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/thread read")
+
+    assert response.action == "thread.read"
+    assert "Thread: Recovered native thread" in response.text
+    assert "Thread id: thr_missing" in response.text
+    assert "CWD: D:\\work\\alpha" in response.text
+    assert "Path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in response.text
+    assert "Status: awaiting user input" in response.text
