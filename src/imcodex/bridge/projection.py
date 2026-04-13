@@ -141,7 +141,7 @@ class MessageProjector:
                 thread_id=event.thread_id,
                 turn_id=event.turn_id,
                 delta=params.get("delta", ""),
-                emit_progress=self._show_commentary(event.thread_id, store),
+                emit_progress=False,
             )
             if message is not None:
                 return self._attach_conversation(event.thread_id, message, store)

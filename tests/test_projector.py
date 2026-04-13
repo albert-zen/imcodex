@@ -218,7 +218,7 @@ def test_non_final_agent_message_respects_commentary_visibility_toggle() -> None
     assert message is None
 
 
-def test_agent_message_delta_can_be_projected_when_commentary_is_visible() -> None:
+def test_agent_message_delta_is_buffered_without_immediate_projection() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
     store.set_active_thread("demo", "conv-1", thread.thread_id)
@@ -236,9 +236,7 @@ def test_agent_message_delta_can_be_projected_when_commentary_is_visible() -> No
         store,
     )
 
-    assert message is not None
-    assert message.message_type == "turn_progress"
-    assert "Inspecting the active thread binding." in message.text
+    assert message is None
 
 
 def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
