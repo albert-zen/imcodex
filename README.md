@@ -53,7 +53,7 @@ Set these environment variables to enable the built-in QQ adapter:
 - `IMCODEX_QQ_APP_ID=<your AppID>`
 - `IMCODEX_QQ_CLIENT_SECRET=<your AppSecret>`
 - `IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com`
-- `IMCODEX_DEFAULT_PERMISSION_PROFILE=review`
+- `IMCODEX_DEFAULT_PERMISSION_PROFILE=autonomous`
 
 The adapter currently supports:
 
@@ -108,13 +108,14 @@ The short version is:
 
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
+- `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
 - `IMCODEX_APP_SERVER_HOST`: default `127.0.0.1`
 - `IMCODEX_APP_SERVER_PORT`: default `8765`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target
 - `IMCODEX_SERVICE_NAME`: client name sent to app-server, default `imcodex`
-- `IMCODEX_DEFAULT_PERMISSION_PROFILE`: native permission profile for new conversations, `review` or `autonomous`, default `review`
+- `IMCODEX_DEFAULT_PERMISSION_PROFILE`: native permission profile for new conversations, `review` or `autonomous`, default `autonomous`
   - `review` defers to native Codex approval/sandbox defaults
   - `autonomous` overrides approval policy to `never` while keeping native sandbox defaults
 - `IMCODEX_QQ_ENABLED`: enable QQ bot adapter, default `false`

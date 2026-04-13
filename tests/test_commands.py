@@ -82,7 +82,7 @@ def test_router_thread_switch_and_status() -> None:
     assert lines[0] == f"CWD: {alpha.cwd}"
     assert "Thread: please inspect why the Windows working directory resets..." in status.text
     assert "Thread ID: thr_2" in status.text
-    assert "Permission Profile: review" in status.text
+    assert "Permission Profile: autonomous" in status.text
     assert "Visibility: standard" in status.text
     assert "Commentary: shown" in status.text
     assert "Tool Calls: hidden" in status.text
@@ -302,7 +302,7 @@ def test_router_lists_requests_and_doctor_output() -> None:
     assert "Codex binary: codex" in doctor.text
     assert "App Server: ws://127.0.0.1:8765" in doctor.text
     assert "PID: 4321" in doctor.text
-    assert "Permission Profile: review" in doctor.text
+    assert "Permission Profile: autonomous" in doctor.text
     assert "Model: gpt-5.4" in doctor.text
     assert "Visibility: standard" in doctor.text
 
@@ -384,7 +384,7 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     assert "Thread Path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in status.text
     assert "Thread Status: awaiting user input" in status.text
     assert "Model: gpt-5.4" in status.text
-    assert "Permission Profile: review" in status.text
+    assert "Permission Profile: autonomous" in status.text
 
 
 def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_exists() -> None:

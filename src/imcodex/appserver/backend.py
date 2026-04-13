@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 
 from .client import AppServerError
+from ..logging_utils import summarize_text
 from ..store import ConversationStore
+
+logger = logging.getLogger(__name__)
 
 
 class StaleThreadBindingError(RuntimeError):
@@ -44,15 +48,30 @@ _PERMISSION_PROFILES: dict[str, NativePermissionProfile] = {
 
 
 class CodexBackend:
-    def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        client,
+        store: ConversationStore,
+        service_name: str,
+        session_registry=None,
+    ) -> None:
         self.client = client
         self.store = store
         self.service_name = service_name
+        self.session_registry = session_registry
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.active_thread_id:
             cwd = self._resume_cwd(binding)
+            logger.info(
+                "Resuming native thread channel_id=%s conversation_id=%s thread_id=%s cwd=%s",
+                channel_id,
+                conversation_id,
+                binding.active_thread_id,
+                cwd,
+            )
             try:
                 result = await self.client.resume_thread(
                     thread_id=binding.active_thread_id,
@@ -61,7 +80,12 @@ class CodexBackend:
             except AppServerError as exc:
                 if not self._should_mark_thread_stale(exc):
                     raise
-                self.store.note_thread_status(binding.active_thread_id, status="stale")
+                self.store.note_thread_status(
+                    binding.active_thread_id,
+                    status="stale",
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                )
                 raise StaleThreadBindingError(binding.active_thread_id) from exc
             else:
                 payload = self._normalize_thread_payload(result["thread"])
@@ -83,6 +107,12 @@ class CodexBackend:
                 )
                 return thread_id
         cwd = self._start_cwd(binding)
+        logger.info(
+            "Starting native thread channel_id=%s conversation_id=%s cwd=%s",
+            channel_id,
+            conversation_id,
+            cwd,
+        )
         result = await self.client.start_thread(
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model)
         )
@@ -112,6 +142,13 @@ class CodexBackend:
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
         cwd = self._resume_cwd(binding)
+        logger.info(
+            "Attaching native thread channel_id=%s conversation_id=%s requested_thread_id=%s cwd=%s",
+            channel_id,
+            conversation_id,
+            thread_id,
+            cwd,
+        )
         result = await self.client.resume_thread(
             thread_id=thread_id,
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model),
@@ -146,6 +183,13 @@ class CodexBackend:
         params: dict[str, str] = {}
         if binding.selected_cwd and not include_all:
             params["cwd"] = binding.selected_cwd
+        logger.info(
+            "Listing native threads channel_id=%s conversation_id=%s include_all=%s cwd=%s",
+            channel_id,
+            conversation_id,
+            include_all,
+            params.get("cwd"),
+        )
         result = await self.client.list_threads(**params)
         snapshots = [
             self._remember_native_thread(self._normalize_thread_payload(item))
@@ -167,6 +211,7 @@ class CodexBackend:
         thread_id: str,
     ) -> NativeThreadSnapshot | None:
         del channel_id, conversation_id
+        logger.info("Reading native thread thread_id=%s", thread_id)
         result = await self.client.read_thread(thread_id)
         payload = result.get("thread")
         if not isinstance(payload, dict):
@@ -176,6 +221,14 @@ class CodexBackend:
 
     async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
+        logger.info(
+            "Starting turn channel_id=%s conversation_id=%s active_thread_id=%s active_turn_id=%s text=%s",
+            channel_id,
+            conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+            summarize_text(text),
+        )
         if (
             binding.active_thread_id is not None
             and binding.active_turn_id is not None
@@ -220,7 +273,12 @@ class CodexBackend:
             if not had_bound_thread:
                 raise
             if self._should_surface_stale_bound_thread_error(exc):
-                self.store.note_thread_status(thread_id, status="stale")
+                self.store.note_thread_status(
+                    thread_id,
+                    status="stale",
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                )
                 raise StaleThreadBindingError(thread_id) from exc
             raise
         turn_id = result["turn"]["id"]
@@ -256,6 +314,13 @@ class CodexBackend:
         binding = self.store.get_binding(channel_id, conversation_id)
         if not binding.active_thread_id or not binding.active_turn_id:
             return
+        logger.info(
+            "Interrupting active turn channel_id=%s conversation_id=%s thread_id=%s turn_id=%s",
+            channel_id,
+            conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+        )
         self.store.clear_pending_requests_for_turn(
             channel_id=channel_id,
             conversation_id=conversation_id,
@@ -279,6 +344,13 @@ class CodexBackend:
         )
         if request is None:
             raise KeyError(ticket_id)
+        logger.info(
+            "Replying to native server request channel_id=%s conversation_id=%s ticket_id=%s native_request_id=%s",
+            channel_id,
+            conversation_id,
+            ticket_id,
+            request.request_id,
+        )
         client_ticket_id = request.request_id or ticket_id
         await self.client.reply_to_server_request(client_ticket_id, decision_or_answers)
         self.store.mark_pending_request_submitted(
@@ -303,6 +375,13 @@ class CodexBackend:
     async def _steer_active_turn(self, *, thread_id: str, turn_id: str, text: str) -> None:
         for attempt in range(2):
             try:
+                logger.info(
+                    "Steering active turn thread_id=%s turn_id=%s attempt=%s text=%s",
+                    thread_id,
+                    turn_id,
+                    attempt + 1,
+                    summarize_text(text),
+                )
                 await self.client.steer_turn(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -404,6 +483,9 @@ class CodexBackend:
             name=name,
             path=path,
         )
+        if self.session_registry is not None:
+            self.session_registry.bind_thread(channel_id, conversation_id, thread_id)
+            return
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
 
     def _normalize_thread_payload(self, payload: dict) -> dict[str, str | None]:

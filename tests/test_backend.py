@@ -114,7 +114,7 @@ async def test_ensure_thread_creates_thread_when_none_bound() -> None:
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -139,7 +139,7 @@ async def test_ensure_thread_resumes_bound_thread_when_present() -> None:
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -166,7 +166,7 @@ async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -177,6 +177,7 @@ async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
     assert client.thread_starts == []
     binding = store.get_binding("demo", "conv-1")
     assert binding.active_thread_id == "thr_existing"
+    assert binding.last_seen_thread_status == "stale"
     assert store.get_thread("thr_existing").status == "stale"
 
 
@@ -193,7 +194,7 @@ async def test_attach_thread_resumes_unknown_thread_in_selected_working_director
         {
             "thread_id": "thr_external",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -221,7 +222,7 @@ async def test_attach_thread_can_resume_without_selected_working_directory() -> 
     assert client.thread_resumes == [
         {
             "thread_id": "thr_external",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -269,7 +270,7 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
         {
             "thread_id": "thr_external",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -294,7 +295,7 @@ async def test_attach_thread_prefers_selected_working_directory_over_known_threa
         {
             "thread_id": "thr_known",
             "cwd": "D:/repo/beta",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -436,7 +437,7 @@ async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing(
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/alt",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -603,7 +604,7 @@ async def test_start_turn_tracks_active_turn() -> None:
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -717,7 +718,7 @@ async def test_ensure_thread_still_uses_active_thread_cached_cwd_without_selecte
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -740,7 +741,7 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": "gpt-5.4",
@@ -754,7 +755,7 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
             "text": "Please inspect the repo",
             "cwd": None,
             "model": "gpt-5.4",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -834,7 +835,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
         {
             "thread_id": "thr_stale",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -849,7 +850,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -859,6 +860,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
     assert binding.active_thread_id == "thr_stale"
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
+    assert binding.last_seen_thread_status == "stale"
     assert store.get_thread("thr_stale").status == "stale"
 
 
@@ -879,7 +881,7 @@ async def test_start_turn_preserves_transport_timeout_without_silent_replacement
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -894,7 +896,7 @@ async def test_start_turn_preserves_transport_timeout_without_silent_replacement
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -922,7 +924,7 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -932,6 +934,7 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
     ]
     assert client.thread_starts == []
     assert client.turn_starts == []
+    assert store.get_binding("demo", "conv-1").last_seen_thread_status == "stale"
     assert store.get_thread("thr_existing").status == "stale"
 
 
@@ -970,7 +973,7 @@ async def test_start_turn_after_restart_continues_attached_native_thread(tmp_pat
         {
             "thread_id": "thr_external",
             "cwd": "D:/repo/external",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -985,7 +988,7 @@ async def test_start_turn_after_restart_continues_attached_native_thread(tmp_pat
             "text": "Continue on the same native thread",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -1060,7 +1063,7 @@ async def test_start_turn_falls_back_to_interrupt_and_new_turn_when_steer_fails(
             "text": "Actually focus on failing tests first",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -1157,7 +1160,7 @@ async def test_start_turn_recovers_when_steer_is_rejected_and_interrupt_also_fai
             "text": "Actually focus on failing tests first",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,

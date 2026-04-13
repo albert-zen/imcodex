@@ -475,7 +475,6 @@ def test_thread_name_updated_refreshes_local_label_without_emitting_message() ->
 
     assert message is None
     assert store.thread_label("thr_1") == "Investigate alpha"
-    assert store.get_binding("demo", "conv-1").last_seen_thread_name == "Investigate alpha"
 
 
 def test_turn_diff_update_is_projected_as_progress_when_commentary_is_visible() -> None:
@@ -784,6 +783,10 @@ def test_completed_newer_turn_still_suppresses_stale_terminal_after_restart(tmp_
         status="inProgress",
     )
     store.note_turn_completed(thread.thread_id, turn_id="turn_2", status="completed")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_turn_id = None
+    binding.active_turn_status = "completed"
+    store._save()
 
     reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
     projector = MessageProjector(
@@ -844,6 +847,10 @@ def test_unseen_newer_turn_is_not_dropped_after_restart(tmp_path: Path) -> None:
         status="inProgress",
     )
     store.note_turn_completed(thread.thread_id, turn_id="turn_2", status="completed")
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_turn_id = None
+    binding.active_turn_status = "completed"
+    store._save()
 
     reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
     projector = MessageProjector(

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from ..appserver import normalize_appserver_message
+from ..logging_utils import summarize_text
 from ..models import OutboundMessage, PendingRequest
 from .message_pump import MessagePump
 from .session_registry import SessionRegistry
 from .visibility import VisibilityClassifier
+
+logger = logging.getLogger(__name__)
 
 
 class MessageProjector:
@@ -115,31 +120,48 @@ class MessageProjector:
         )
 
     def project_notification(self, notification: dict, store) -> OutboundMessage | None:
+        self._ensure_session_registry(store)
         event = normalize_appserver_message(notification)
         params = event.payload
+        logger.info(
+            "Projecting native event kind=%s method=%s thread_id=%s turn_id=%s",
+            event.kind,
+            event.method,
+            event.thread_id,
+            event.turn_id,
+        )
         if event.kind == "approval_request" and event.method == "item/commandExecution/requestApproval":
-            return self._project_pending_request(
+            return self._log_projection_result(
+                event.kind,
+                self._project_pending_request(
                 store,
                 params,
                 request_method=event.method,
                 kind="approval",
                 summary=params.get("reason") or params.get("command") or "Approve command execution",
+                ),
             )
         if event.kind == "approval_request" and event.method == "item/fileChange/requestApproval":
-            return self._project_pending_request(
+            return self._log_projection_result(
+                event.kind,
+                self._project_pending_request(
                 store,
                 params,
                 request_method=event.method,
                 kind="approval",
                 summary=params.get("reason") or "Approve file changes",
+                ),
             )
         if event.kind == "question_request":
-            return self._project_pending_request(
+            return self._log_projection_result(
+                event.kind,
+                self._project_pending_request(
                 store,
                 params,
                 request_method=event.method,
                 kind="question",
                 summary="Additional input required",
+                ),
             )
         if event.kind == "agent_delta":
             message = self.message_pump.record_delta(
@@ -149,8 +171,11 @@ class MessageProjector:
                 emit_progress=False,
             )
             if message is not None:
-                return self._attach_conversation(event.thread_id, message, store)
-            return None
+                return self._log_projection_result(
+                    event.kind,
+                    self._attach_conversation(event.thread_id, message, store),
+                )
+            return self._log_projection_result(event.kind, None)
         if event.kind == "turn_started":
             thread_id = event.thread_id
             turn = params.get("turn") or {}
@@ -188,19 +213,25 @@ class MessageProjector:
             return None
         if event.kind == "plan_updated":
             if not self._show_commentary(event.thread_id, store):
-                return None
-            return self._attach_conversation(
-                event.thread_id,
-                self.render_turn_progress(text=self._render_plan_update(params)),
-                store,
+                return self._log_projection_result(event.kind, None)
+            return self._log_projection_result(
+                event.kind,
+                self._attach_conversation(
+                    event.thread_id,
+                    self.render_turn_progress(text=self._render_plan_update(params)),
+                    store,
+                ),
             )
         if event.kind == "diff_updated":
             if not self._show_commentary(event.thread_id, store):
-                return None
-            return self._attach_conversation(
-                event.thread_id,
-                self.render_turn_progress(text=self._render_diff_update(params)),
-                store,
+                return self._log_projection_result(event.kind, None)
+            return self._log_projection_result(
+                event.kind,
+                self._attach_conversation(
+                    event.thread_id,
+                    self.render_turn_progress(text=self._render_diff_update(params)),
+                    store,
+                ),
             )
         if event.kind == "thread_name_updated":
             name = str(params.get("name", "")).strip()
@@ -209,10 +240,13 @@ class MessageProjector:
             store.note_thread_name(event.thread_id, name=name)
             return None
         if event.kind == "item_completed":
-            return self._capture_item_completed(params, store)
+            return self._log_projection_result(
+                event.kind,
+                self._capture_item_completed(params, store),
+            )
         if event.kind == "turn_completed":
-            return self._finalize_turn(params, store)
-        return None
+            return self._log_projection_result(event.kind, self._finalize_turn(params, store))
+        return self._log_projection_result(event.kind, None)
 
     def _project_pending_request(
         self,
@@ -343,9 +377,10 @@ class MessageProjector:
     def _find_binding(self, store, thread_id: str | None):
         if not thread_id:
             return None
-        if self.session_registry is not None:
-            return self.session_registry.find_routing_binding(thread_id)
-        return store.find_binding_for_thread(thread_id)
+        registry = self._ensure_session_registry(store)
+        if registry is not None:
+            return registry.find_routing_binding(thread_id)
+        return None
 
     def _attach_conversation(self, thread_id: str, message: OutboundMessage, store) -> OutboundMessage | None:
         if message is None:
@@ -358,9 +393,11 @@ class MessageProjector:
         return message
 
     def _show_commentary(self, thread_id: str, store) -> bool:
+        self._ensure_session_registry(store)
         return self.visibility.should_emit("commentary", thread_id=thread_id, store=store)
 
     def _show_toolcalls(self, thread_id: str, store) -> bool:
+        self._ensure_session_registry(store)
         return self.visibility.should_emit("toolcall", thread_id=thread_id, store=store)
 
     def _is_stale_turn(self, thread_id: str, turn_id: str, store) -> bool:
@@ -404,3 +441,27 @@ class MessageProjector:
             lines.append("Files:")
             lines.extend(f"- {path}" for path in files)
         return "\n".join(lines)
+
+    def _ensure_session_registry(self, store) -> SessionRegistry | None:
+        if self.session_registry is None and store is not None:
+            self.session_registry = SessionRegistry(store)
+            self.visibility.session_registry = self.session_registry
+        return self.session_registry
+
+    def _log_projection_result(
+        self,
+        event_kind: str,
+        message: OutboundMessage | None,
+    ) -> OutboundMessage | None:
+        if message is None:
+            logger.info("Native event produced no outbound message kind=%s", event_kind)
+            return None
+        logger.info(
+            "Projected outbound message kind=%s message_type=%s channel_id=%s conversation_id=%s text=%s",
+            event_kind,
+            message.message_type,
+            message.channel_id,
+            message.conversation_id,
+            summarize_text(message.text),
+        )
+        return message

@@ -91,7 +91,7 @@ async def test_mock_e2e_text_turn_streams_final_reply_to_outbound_sink() -> None
     await asyncio.sleep(0)
 
     assert [message.message_type for message in messages] == ["accepted"]
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert websocket.closed is False
     assert any('"method": "thread/start"' in item for item in websocket.sent)
     assert any('"method": "turn/start"' in item for item in websocket.sent)
@@ -162,8 +162,8 @@ async def test_mock_e2e_attaches_external_thread_and_continues_on_it() -> None:
     )
     await asyncio.sleep(0)
 
-    assert attach_messages[0].text == "Attached to thread Imported thread (id: thr_external)."
-    assert turn_messages[0].text == "Working on it."
+    assert attach_messages[0].text == "[System] Attached to thread Imported thread (id: thr_external)."
+    assert turn_messages[0].text == "[System] Accepted. Processing started."
     assert sum('"method": "thread/resume"' in item for item in websocket.sent) == 2
     assert any('"threadId": "thr_external"' in item for item in websocket.sent if '"method": "turn/start"' in item)
     assert sink.messages[-1].message_type == "turn_result"
@@ -213,7 +213,7 @@ async def test_mock_e2e_restart_reuses_attached_native_thread(tmp_path) -> None:
         )
     )
 
-    assert attach_messages[0].text == "Attached to thread Imported thread (id: thr_external)."
+    assert attach_messages[0].text == "[System] Attached to thread Imported thread (id: thr_external)."
 
     await client.close()
 
@@ -265,7 +265,7 @@ async def test_mock_e2e_restart_reuses_attached_native_thread(tmp_path) -> None:
     )
     await asyncio.sleep(0)
 
-    assert turn_messages[0].text == "Working on it."
+    assert turn_messages[0].text == "[System] Accepted. Processing started."
     assert sum('"method": "thread/resume"' in item for item in restarted_socket.sent) == 1
     assert not any('"method": "thread/start"' in item for item in restarted_socket.sent)
     assert any('"threadId": "thr_external"' in item for item in restarted_socket.sent if '"method": "turn/start"' in item)

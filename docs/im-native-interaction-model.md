@@ -304,7 +304,7 @@ Keep it short.
 
 Good:
 
-- "Working on it."
+- "Accepted. Processing started."
 - "Continuing in the current thread."
 
 Bad:
@@ -656,7 +656,7 @@ User:
 Bridge:
 
 ```text
-Working on it.
+Accepted. Processing started.
 ```
 
 Bridge later:

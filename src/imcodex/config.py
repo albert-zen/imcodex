@@ -33,6 +33,7 @@ def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
 class Settings:
     data_dir: Path
     codex_bin: str
+    log_level: str
     http_host: str
     http_port: int
     app_server_host: str
@@ -62,13 +63,14 @@ class Settings:
             default_permission_profile = (
                 "autonomous"
                 if _env_bool("IMCODEX_AUTO_APPROVE", False, dotenv)
-                else "review"
+                else "autonomous"
             )
         if default_permission_profile not in {"autonomous", "review"}:
             default_permission_profile = "review"
         return cls(
             data_dir=root,
             codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
+            log_level=_env("IMCODEX_LOG_LEVEL", "INFO", dotenv),
             http_host=_env("IMCODEX_HTTP_HOST", "0.0.0.0", dotenv),
             http_port=int(_env("IMCODEX_HTTP_PORT", "8000", dotenv)),
             app_server_host=_env("IMCODEX_APP_SERVER_HOST", "127.0.0.1", dotenv),

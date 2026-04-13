@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 import json
+import logging
 import queue
 
 import pytest
@@ -432,6 +433,43 @@ async def test_async_notification_handlers_are_awaited():
     await asyncio.sleep(0)
 
     assert seen == ["turn/completed"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_logs_agent_messages_and_notifications(caplog):
+    incoming = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            2: ['{"id":2,"result":{"thread":{"id":"thr_1"}}}'],
+            3: [
+                '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}',
+                '{"method":"item/agentMessage/delta","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"item_1","delta":"Hello"}}',
+                '{"method":"item/completed","params":{"threadId":"thr_1","turnId":"turn_1","item":{"id":"item_1","type":"agentMessage","text":"Hello world"}}}',
+            ],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    caplog.set_level(logging.INFO)
+    await client.connect()
+    await client.initialize()
+    thread = await client.start_thread(cwd="D:/desktop/project")
+    await client.start_turn(thread_id=thread["thread"]["id"], text="hello")
+    await asyncio.sleep(0)
+
+    messages = [record.message for record in caplog.records]
+    assert any("Sending app-server request" in message for message in messages)
+    assert any("Dispatching app-server notification" in message for message in messages)
+    assert any("Captured completed item" in message for message in messages)
+    assert not any("Captured agent delta" in message for message in messages)
     await client.close()
 
 

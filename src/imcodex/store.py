@@ -32,7 +32,7 @@ class ConversationStore:
         clock: Clock,
         state_path: str | Path | None = None,
         *,
-        default_permission_profile: str = "review",
+        default_permission_profile: str = "autonomous",
     ):
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
@@ -124,15 +124,23 @@ class ConversationStore:
             return first_user_message
         return "Untitled thread"
 
-    def note_thread_status(self, thread_id: str, *, status: str) -> ThreadRecord | None:
+    def note_thread_status(
+        self,
+        thread_id: str,
+        *,
+        status: str,
+        channel_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> ThreadRecord | None:
         try:
             thread = self.get_thread(thread_id)
         except KeyError:
             return None
         thread.status = status
-        binding = self.find_binding_for_thread(thread_id)
-        if binding is not None and binding.active_thread_id == thread_id:
-            binding.last_seen_thread_status = status
+        if channel_id is not None and conversation_id is not None:
+            binding = self.get_binding(channel_id, conversation_id)
+            if binding.active_thread_id == thread_id:
+                binding.last_seen_thread_status = status
         self._save()
         return thread
 
@@ -142,9 +150,6 @@ class ConversationStore:
         except KeyError:
             return None
         thread.name = name
-        binding = self.find_binding_for_thread(thread_id)
-        if binding is not None and binding.active_thread_id == thread_id:
-            binding.last_seen_thread_name = self.thread_label(thread_id)
         self._save()
         return thread
 
@@ -302,7 +307,7 @@ class ConversationStore:
         *,
         turn_id: str,
         status: str,
-    ) -> ConversationBinding | None:
+    ) -> ThreadRecord | None:
         try:
             thread = self.get_thread(thread_id)
         except KeyError:
@@ -312,18 +317,8 @@ class ConversationStore:
         thread.last_turn_id = turn_id
         thread.last_turn_status = status
         self._thread_active_turns[thread_id] = (turn_id, status)
-        binding = self.find_binding_for_thread(thread_id)
-        if binding is None:
-            self._save()
-            return None
-        if binding.active_thread_id != thread_id:
-            self._save()
-            return binding
-        binding.active_turn_id = turn_id
-        binding.active_turn_status = status
-        binding.last_seen_thread_status = status
         self._save()
-        return binding
+        return thread
 
     def note_turn_completed(
         self,
@@ -331,40 +326,25 @@ class ConversationStore:
         *,
         turn_id: str,
         status: str,
-    ) -> ConversationBinding | None:
+    ) -> ThreadRecord | None:
         try:
             thread = self.get_thread(thread_id)
         except KeyError:
             return None
         thread.status = status
-        binding = self.find_binding_for_thread(thread_id)
         stored_turn = self._thread_active_turns.get(thread_id)
         should_update_last_turn = (
             thread.last_turn_id is None
             or thread.last_turn_id == turn_id
             or (stored_turn is not None and stored_turn[0] == turn_id)
-            or (binding is not None and binding.active_turn_id == turn_id)
         )
         if should_update_last_turn:
             thread.last_turn_id = turn_id
             thread.last_turn_status = status
         if stored_turn is not None and stored_turn[0] == turn_id:
             self._thread_active_turns.pop(thread_id, None)
-        if binding is None:
-            self._save()
-            return None
-        if binding.active_thread_id != thread_id:
-            self._save()
-            return binding
-        if binding.active_turn_id == turn_id:
-            binding.active_turn_id = None
-            binding.active_turn_status = status
-            binding.last_seen_thread_status = status
-        elif binding.active_turn_id is None:
-            binding.active_turn_status = status
-            binding.last_seen_thread_status = status
         self._save()
-        return binding
+        return thread
 
     def next_ticket_id(self, channel_id: str, conversation_id: str) -> str:
         binding = self.get_binding(channel_id, conversation_id)
@@ -596,11 +576,8 @@ class ConversationStore:
         self._save()
         return len(target_keys)
 
-    def find_binding_for_thread(self, thread_id: str):
-        for binding in self._bindings.values():
-            if thread_id == binding.active_thread_id:
-                return binding
-        return None
+    def iter_bindings(self) -> list[ConversationBinding]:
+        return list(self._bindings.values())
 
     def _save(self) -> None:
         if not self.state_path:

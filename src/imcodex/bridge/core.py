@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from ..appserver import CodexBackend, StaleThreadBindingError
+from ..logging_utils import summarize_text
 from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
 from .commands import CommandRouter
@@ -12,6 +14,11 @@ from .request_registry import RequestRegistry
 from .session_registry import SessionRegistry
 from .thread_directory import ThreadDirectory
 from .turn_state import TurnStateMachine
+
+logger = logging.getLogger(__name__)
+
+_SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "command_result", "error"})
+_SYSTEM_PREFIX = "[System] "
 
 
 class BridgeService:
@@ -45,15 +52,30 @@ class BridgeService:
         self.projector.request_registry = self.request_registry
         self.projector.turn_state = self.turn_state
         self.projector.session_registry = self.session_registry
+        if hasattr(self.backend, "session_registry"):
+            self.backend.session_registry = self.session_registry
         if projector_visibility is not None:
             projector_visibility.session_registry = self.session_registry
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
+        logger.info(
+            "Inbound message received channel_id=%s conversation_id=%s message_id=%s text=%s",
+            message.channel_id,
+            message.conversation_id,
+            message.message_id,
+            summarize_text(message.text),
+        )
         if message.text.startswith("/"):
             return await self._handle_command(message)
         return await self._handle_text(message)
 
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
+        logger.info(
+            "Routing command channel_id=%s conversation_id=%s command=%s",
+            message.channel_id,
+            message.conversation_id,
+            summarize_text(message.text),
+        )
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
         if response.action == "threads.query":
             return await self._handle_threads_query(message, include_all=response.include_all)
@@ -124,6 +146,11 @@ class BridgeService:
         return [self._message(message, self._command_message_type(response.action), response.text, response.ticket_id)]
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
+        logger.info(
+            "Routing plain text channel_id=%s conversation_id=%s",
+            message.channel_id,
+            message.conversation_id,
+        )
         selected_cwd = self._select_cwd(message.channel_id, message.conversation_id)
         if selected_cwd is None:
             return [
@@ -156,25 +183,49 @@ class BridgeService:
             )
         ):
             self.store.note_thread_user_message(binding.active_thread_id, message.text)
-        return [self._message(message, "accepted", "Working on it.")]
+        ack = self._message(message, "accepted", "Accepted. Processing started.")
+        logger.info(
+            "Accepted inbound message channel_id=%s conversation_id=%s thread_id=%s turn_id=%s",
+            message.channel_id,
+            message.conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+        )
+        return [ack]
 
     async def handle_notification(self, notification: dict[str, Any]) -> list[OutboundMessage]:
+        logger.info("Handling notification method=%s", notification.get("method"))
         result = self.projector.project_notification(notification, self.store)
         if result is None:
             return []
         messages = [result]
         if self.outbound_sink is not None:
             for outbound in messages:
+                logger.info(
+                    "Pushing notification outbound message_type=%s channel_id=%s conversation_id=%s text=%s",
+                    outbound.message_type,
+                    outbound.channel_id,
+                    outbound.conversation_id,
+                    summarize_text(outbound.text),
+                )
                 await self.outbound_sink.send_message(outbound)
         return messages
 
     async def handle_server_request(self, request: dict[str, Any]) -> list[OutboundMessage]:
+        logger.info("Handling server request method=%s id=%s", request.get("method"), request.get("id"))
         result = self.projector.project_notification(request, self.store)
         if result is None:
             return []
         messages = [result]
         if self.outbound_sink is not None:
             for outbound in messages:
+                logger.info(
+                    "Pushing server-request outbound message_type=%s channel_id=%s conversation_id=%s text=%s",
+                    outbound.message_type,
+                    outbound.channel_id,
+                    outbound.conversation_id,
+                    summarize_text(outbound.text),
+                )
                 await self.outbound_sink.send_message(outbound)
         return messages
 
@@ -200,9 +251,16 @@ class BridgeService:
             channel_id=inbound.channel_id,
             conversation_id=inbound.conversation_id,
             message_type=message_type,
-            text=text,
+            text=self._decorate_text(message_type, text),
             ticket_id=ticket_id,
         )
+
+    def _decorate_text(self, message_type: str, text: str) -> str:
+        if message_type not in _SYSTEM_MESSAGE_TYPES:
+            return text
+        if text.startswith(_SYSTEM_PREFIX):
+            return text
+        return f"{_SYSTEM_PREFIX}{text}"
 
     def _thread_label(self, thread_id: str) -> str:
         try:

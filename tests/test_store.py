@@ -92,7 +92,7 @@ def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
     assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
 
 
-def test_note_thread_status_updates_active_binding_snapshot() -> None:
+def test_note_thread_status_updates_thread_record() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
     store.set_active_thread("qq", "conv-1", thread.thread_id)
@@ -100,7 +100,6 @@ def test_note_thread_status_updates_active_binding_snapshot() -> None:
     store.note_thread_status("thr_1", status="stale")
 
     assert store.get_thread("thr_1").status == "stale"
-    assert store.get_binding("qq", "conv-1").last_seen_thread_status == "stale"
 
 
 def test_pending_requests_round_trip() -> None:
@@ -275,8 +274,7 @@ def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_sta
     new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="new")
     store.set_active_thread("qq", "conv-1", old_thread.thread_id)
     store.note_turn_started(old_thread.thread_id, turn_id="turn_old", status="inProgress")
-    store.set_active_thread("qq", "conv-1", new_thread.thread_id)
-    store.note_turn_started(new_thread.thread_id, turn_id="turn_new", status="inProgress")
+    store.set_active_turn("qq", "conv-1", thread_id=new_thread.thread_id, turn_id="turn_new", status="inProgress")
 
     store.note_turn_completed(old_thread.thread_id, turn_id="turn_old", status="completed")
 

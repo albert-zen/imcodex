@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 from ..store import ConversationStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -29,6 +32,7 @@ class SessionRegistry:
         self.store = store
         self._thread_sessions: dict[str, tuple[str, str]] = {}
         self._session_threads: dict[tuple[str, str], str] = {}
+        self._hydrate_from_store()
 
     def get(self, channel_id: str, conversation_id: str) -> SessionRecord:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -63,7 +67,7 @@ class SessionRegistry:
             if binding.active_thread_id == thread_id:
                 return binding
             self._drop_runtime_thread(thread_id, key)
-        return self.store.find_binding_for_thread(thread_id)
+        return None
 
     def find_routing_binding(self, thread_id: str):
         return self.find_binding(thread_id)
@@ -98,12 +102,8 @@ class SessionRegistry:
                 self._drop_runtime_thread(thread_id, key)
                 key = None
         if key is None:
-            binding = self.store.note_turn_started(thread_id, turn_id=turn_id, status=status)
-            if binding is None:
-                return None
-            if binding.active_thread_id == thread_id:
-                self._bind_runtime((binding.channel_id, binding.conversation_id), thread_id)
-            return self.get(binding.channel_id, binding.conversation_id)
+            self.store.note_turn_started(thread_id, turn_id=turn_id, status=status)
+            return None
         try:
             binding = self.store.set_active_turn(
                 key[0],
@@ -134,12 +134,8 @@ class SessionRegistry:
                 self._drop_runtime_thread(thread_id, key)
                 key = None
         if key is None:
-            binding = self.store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
-            if binding is None:
-                return None
-            if binding.active_thread_id == thread_id:
-                self._bind_runtime((binding.channel_id, binding.conversation_id), thread_id)
-            return self.get(binding.channel_id, binding.conversation_id)
+            self.store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
+            return None
         try:
             thread = self.store.get_thread(thread_id)
             binding = self.store.get_binding(*key)
@@ -180,6 +176,21 @@ class SessionRegistry:
             self._drop_runtime_thread(thread_id, previous_key)
         self._session_threads[key] = thread_id
         self._thread_sessions[thread_id] = key
+
+    def _hydrate_from_store(self) -> None:
+        for binding in self.store.iter_bindings():
+            if not binding.active_thread_id:
+                continue
+            logger.debug(
+                "Hydrating runtime thread binding thread_id=%s channel_id=%s conversation_id=%s",
+                binding.active_thread_id,
+                binding.channel_id,
+                binding.conversation_id,
+            )
+            self._bind_runtime(
+                (binding.channel_id, binding.conversation_id),
+                binding.active_thread_id,
+            )
 
     def _drop_runtime_session(self, key: tuple[str, str]) -> None:
         previous_thread = self._session_threads.get(key)

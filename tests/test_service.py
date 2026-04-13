@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -203,7 +204,7 @@ async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label()
         )
     )
 
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert (
         store.thread_label("thr_remote_new")
         == "please inspect why the Windows working directory resets..."
@@ -242,7 +243,7 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
     )
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
-    assert messages[0].text == "Attached to thread External session (id: thr_attached)."
+    assert messages[0].text == "[System] Attached to thread External session (id: thr_attached)."
 
 
 @pytest.mark.asyncio
@@ -396,7 +397,7 @@ async def test_thread_attach_can_resume_without_preselected_working_directory() 
     )
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
-    assert messages[0].text == "Attached to thread External session (id: thr_attached)."
+    assert messages[0].text == "[System] Attached to thread External session (id: thr_attached)."
 
 
 @pytest.mark.asyncio
@@ -439,7 +440,7 @@ async def test_plain_text_after_attach_without_preselected_cwd_uses_attached_thr
 
     assert backend.started_turns == [("qq", "conv-1", "continue from the attached thread")]
     assert messages[0].message_type == "accepted"
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
 
 
 @pytest.mark.asyncio
@@ -505,7 +506,7 @@ async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> N
         )
     )
 
-    assert messages[0].text == "Attached to thread Imported thread (id: thr_known)."
+    assert messages[0].text == "[System] Attached to thread Imported thread (id: thr_known)."
 
 
 @pytest.mark.asyncio
@@ -531,7 +532,7 @@ async def test_new_command_does_not_require_backend_to_store_thread_before_ack()
     )
 
     assert backend.created_threads == [("qq", "conv-1")]
-    assert messages[0].text == "Started thread Untitled thread (id: thr_remote_new)."
+    assert messages[0].text == "[System] Started thread Untitled thread (id: thr_remote_new)."
 
 
 @pytest.mark.asyncio
@@ -579,7 +580,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
 
     assert backend.list_threads_calls == [("qq", "conv-1", False)]
     assert messages[0].message_type == "command_result"
-    assert messages[0].text.startswith(f"Threads in CWD {cwd}:")
+    assert messages[0].text.startswith(f"[System] Threads in CWD {cwd}:")
     assert "Investigate alpha" in messages[0].text
     assert "Fix beta" in messages[0].text
     assert "status: in progress" in messages[0].text
@@ -771,7 +772,7 @@ async def test_threads_all_command_requests_cross_workspace_native_listing() -> 
     )
 
     assert backend.list_threads_calls == [("qq", "conv-1", True)]
-    assert messages[0].text.startswith("Threads across CWDs:")
+    assert messages[0].text.startswith("[System] Threads across CWDs:")
     assert "Alpha thread" in messages[0].text
     assert "Beta thread" in messages[0].text
     assert "cwd: D:\\work\\beta" in messages[0].text
@@ -868,7 +869,7 @@ async def test_new_command_pending_label_survives_restart_before_first_prompt(tm
         )
     )
 
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert (
         reloaded_store.thread_label("thr_remote_new")
         == "please inspect why the Windows working directory resets..."
@@ -953,7 +954,7 @@ async def test_new_command_recovery_clears_stale_pending_label_from_abandoned_th
         )
     )
 
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert store.thread_label("thr_remote_new") == "Untitled thread"
 
 
@@ -1130,7 +1131,7 @@ async def test_recover_command_clears_stale_binding_for_next_prompt() -> None:
 
     binding = store.get_binding("qq", "conv-1")
     assert messages[0].message_type == "status"
-    assert "Cleared stale thread binding thr_stale." in messages[0].text
+    assert "[System] Cleared stale thread binding thr_stale." in messages[0].text
     assert binding.active_thread_id is None
     assert binding.selected_cwd == r"D:\work\alpha"
 
@@ -1196,7 +1197,7 @@ async def test_plain_text_records_first_user_message_for_future_thread_labels() 
         )
     )
 
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert (
         store.thread_label("thr_new")
         == "please inspect why the Windows working directory resets..."
@@ -1227,7 +1228,7 @@ async def test_plain_text_does_not_retitle_existing_previewless_thread_on_follow
         )
     )
 
-    assert messages[0].text == "Working on it."
+    assert messages[0].text == "[System] Accepted. Processing started."
     assert store.thread_label("thr_existing") == "Untitled thread"
 
 
@@ -1275,3 +1276,46 @@ def test_bridge_service_rebinds_preconfigured_projector_and_visibility_to_servic
     assert service.projector.turn_state is service.turn_state
     assert service.projector.session_registry is service.session_registry
     assert service.projector.visibility.session_registry is service.session_registry
+
+
+@pytest.mark.asyncio
+async def test_plain_text_emits_operational_logs(caplog) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    cwd = r"D:\work\alpha"
+    store.set_selected_cwd("qq", "conv-1", cwd)
+
+    class RecordingBackend(FakeBackend):
+        async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
+            self.started_turns.append((channel_id, conversation_id, text))
+            store.record_thread("thr_new", cwd=cwd, preview="repo help")
+            store.set_active_turn(
+                channel_id,
+                conversation_id,
+                thread_id="thr_new",
+                turn_id="turn_1",
+                status="inProgress",
+            )
+            return "turn_1"
+
+    backend = RecordingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    caplog.set_level(logging.INFO)
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="inspect the repo",
+        )
+    )
+
+    messages = [record.message for record in caplog.records]
+    assert any("Inbound message received" in message for message in messages)
+    assert any("Accepted inbound message" in message for message in messages)
