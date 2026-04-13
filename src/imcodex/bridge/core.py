@@ -67,7 +67,7 @@ class BridgeService:
             label = self._thread_label(thread_id)
             if label == "Untitled thread":
                 self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
-            return [self._message(message, "status", f"Started new thread {label} (id: {thread_id}).")]
+            return [self._message(message, "status", f"Started thread {label} (id: {thread_id}).")]
         if response.action == "thread.attach":
             try:
                 thread_id = await self.backend.attach_thread(
@@ -83,7 +83,7 @@ class BridgeService:
                 return [self._message(message, "status", text)]
             self.session_registry.sync(message.channel_id, message.conversation_id)
             label = self._thread_label(thread_id)
-            return [self._message(message, "status", f"Attached thread {label} (id: {thread_id}).")]
+            return [self._message(message, "status", f"Attached to thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
         elif response.action.startswith("approval.") or response.action == "request.answer":
@@ -130,7 +130,7 @@ class BridgeService:
                 self._message(
                     message,
                     "error",
-                    "Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+                    "Choose a CWD first with /cwd <path>.",
                 )
             ]
         prior_thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id
@@ -242,9 +242,9 @@ class BridgeService:
             )
             return [self._message(message, "status", text)]
         if include_all:
-            lines = ["Threads across working directories:"]
+            lines = ["Threads across CWDs:"]
         else:
-            lines = [f"Threads for {binding.selected_cwd}:"]
+            lines = [f"Threads in CWD {binding.selected_cwd}:"]
         for snapshot in snapshots:
             marker = "*" if snapshot.thread_id == binding.active_thread_id else "-"
             label = snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)

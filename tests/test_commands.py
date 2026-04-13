@@ -49,7 +49,7 @@ def test_router_projects_and_project_switch() -> None:
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/projects")
-    assert response.text.startswith("Working directories (legacy alias for /cwd):")
+    assert response.text.startswith("Legacy project aliases:")
     assert alpha.cwd in response.text
     assert beta.cwd in response.text
     assert alpha.project_id in response.text
@@ -57,9 +57,9 @@ def test_router_projects_and_project_switch() -> None:
 
     response = router.handle("qq", "conv-1", f"/project use {beta.project_id}")
     assert response.action == "project.use"
-    assert response.text.startswith("Working directory set to ")
+    assert response.text.startswith("CWD set to ")
     assert beta.cwd in response.text
-    assert "/cwd <path>" in response.text
+    assert "Prefer /cwd <path>" in response.text
     assert beta.project_id not in response.text
     assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
     assert store.get_binding("qq", "conv-1").active_thread_id is None
@@ -78,6 +78,7 @@ def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
     assert response.action == "project.cwd"
     assert str(project_path) in response.text
     assert "project id" not in response.text
+    assert response.text.startswith("CWD set to ")
     assert project.cwd == str(project_path)
     assert binding.active_thread_id is None
 
@@ -105,13 +106,13 @@ def test_router_thread_switch_and_status() -> None:
 
     status = router.handle("qq", "conv-1", "/status")
     lines = status.text.splitlines()
-    assert lines[0] == f"Working directory: {alpha.cwd}"
+    assert lines[0] == f"CWD: {alpha.cwd}"
     assert "Thread: please inspect why the Windows working directory resets..." in status.text
-    assert "Thread id: thr_2" in status.text
-    assert "Permission mode: review" in status.text
-    assert "Visibility profile: standard" in status.text
+    assert "Thread ID: thr_2" in status.text
+    assert "Permission Profile: review" in status.text
+    assert "Visibility: standard" in status.text
     assert "Commentary: shown" in status.text
-    assert "Tool calls: hidden" in status.text
+    assert "Tool Calls: hidden" in status.text
 
 
 def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
@@ -127,9 +128,9 @@ def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
 
     assert threads.action == "threads.query"
     assert threads.include_all is False
-    assert f"Working directory: {thread.cwd}" in status.text
+    assert f"CWD: {thread.cwd}" in status.text
     assert new_response.action == "thread.new"
-    assert new_response.text == f"Starting a new thread for {thread.cwd}."
+    assert new_response.text == f"Starting a thread in {thread.cwd}."
 
 
 def test_router_thread_attach_uses_selected_working_directory() -> None:
@@ -142,7 +143,7 @@ def test_router_thread_attach_uses_selected_working_directory() -> None:
 
     assert response.action == "thread.attach"
     assert response.thread_id == "thr_external"
-    assert alpha.cwd in response.text
+    assert f"CWD {alpha.cwd}" in response.text
 
 
 def test_router_thread_attach_does_not_require_preselected_working_directory() -> None:
@@ -345,9 +346,9 @@ def test_router_lists_requests_and_doctor_output() -> None:
     assert "Codex binary: codex" in doctor.text
     assert "App Server: ws://127.0.0.1:8765" in doctor.text
     assert "PID: 4321" in doctor.text
-    assert "Permission mode: review" in doctor.text
+    assert "Permission Profile: review" in doctor.text
     assert "Model: gpt-5.4" in doctor.text
-    assert "Visibility profile: standard" in doctor.text
+    assert "Visibility: standard" in doctor.text
 
 
 def test_router_supports_batch_approval_with_partial_unknown_ticket() -> None:
@@ -421,13 +422,13 @@ def test_status_tolerates_missing_active_thread_record() -> None:
 
     status = router.handle("qq", "conv-1", "/status")
 
-    assert "Working directory: D:\\work\\alpha" in status.text
+    assert "CWD: D:\\work\\alpha" in status.text
     assert "Thread: Recovered native thread" in status.text
-    assert "Thread id: thr_missing" in status.text
-    assert "Thread path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in status.text
-    assert "Last seen thread status: awaiting user input" in status.text
+    assert "Thread ID: thr_missing" in status.text
+    assert "Thread Path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in status.text
+    assert "Thread Status: awaiting user input" in status.text
     assert "Model: gpt-5.4" in status.text
-    assert "Permission mode: review" in status.text
+    assert "Permission Profile: review" in status.text
 
 
 def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_exists() -> None:
@@ -442,9 +443,9 @@ def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_ex
     status = router.handle("qq", "conv-1", "/status")
 
     assert "Thread: (none)" in status.text
-    assert "Thread id: (none)" in status.text
-    assert "Thread path: (none)" in status.text
-    assert "Last seen thread status: (none)" in status.text
+    assert "Thread ID: (none)" in status.text
+    assert "Thread Path: (none)" in status.text
+    assert "Thread Status: (none)" in status.text
 
 
 def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_is_missing() -> None:

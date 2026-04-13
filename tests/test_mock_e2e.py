@@ -164,7 +164,7 @@ async def test_mock_e2e_attaches_external_thread_and_continues_on_it() -> None:
     )
     await asyncio.sleep(0)
 
-    assert attach_messages[0].text == "Attached thread Imported thread (id: thr_external)."
+    assert attach_messages[0].text == "Attached to thread Imported thread (id: thr_external)."
     assert turn_messages[0].text == "Working on it."
     assert sum('"method": "thread/resume"' in item for item in websocket.sent) == 2
     assert any('"threadId": "thr_external"' in item for item in websocket.sent if '"method": "turn/start"' in item)
@@ -215,7 +215,7 @@ async def test_mock_e2e_restart_reuses_attached_native_thread(tmp_path) -> None:
         )
     )
 
-    assert attach_messages[0].text == "Attached thread Imported thread (id: thr_external)."
+    assert attach_messages[0].text == "Attached to thread Imported thread (id: thr_external)."
 
     await client.close()
 

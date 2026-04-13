@@ -245,7 +245,7 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
     )
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
-    assert messages[0].text == "Attached thread External session (id: thr_attached)."
+    assert messages[0].text == "Attached to thread External session (id: thr_attached)."
 
 
 @pytest.mark.asyncio
@@ -399,7 +399,7 @@ async def test_thread_attach_can_resume_without_preselected_working_directory() 
     )
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
-    assert messages[0].text == "Attached thread External session (id: thr_attached)."
+    assert messages[0].text == "Attached to thread External session (id: thr_attached)."
 
 
 @pytest.mark.asyncio
@@ -508,7 +508,7 @@ async def test_thread_attach_refreshes_label_for_known_previewless_thread() -> N
         )
     )
 
-    assert messages[0].text == "Attached thread Imported thread (id: thr_known)."
+    assert messages[0].text == "Attached to thread Imported thread (id: thr_known)."
 
 
 @pytest.mark.asyncio
@@ -535,7 +535,7 @@ async def test_new_command_does_not_require_backend_to_store_thread_before_ack()
     )
 
     assert backend.created_threads == [("qq", "conv-1")]
-    assert messages[0].text == "Started new thread Untitled thread (id: thr_remote_new)."
+    assert messages[0].text == "Started thread Untitled thread (id: thr_remote_new)."
 
 
 @pytest.mark.asyncio
@@ -583,7 +583,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
 
     assert backend.list_threads_calls == [("qq", "conv-1", False)]
     assert messages[0].message_type == "command_result"
-    assert messages[0].text.startswith(f"Threads for {project.cwd}:")
+    assert messages[0].text.startswith(f"Threads in CWD {project.cwd}:")
     assert "Investigate alpha" in messages[0].text
     assert "Fix beta" in messages[0].text
     assert "status: in progress" in messages[0].text
@@ -777,7 +777,7 @@ async def test_threads_all_command_requests_cross_workspace_native_listing() -> 
     )
 
     assert backend.list_threads_calls == [("qq", "conv-1", True)]
-    assert messages[0].text.startswith("Threads across working directories:")
+    assert messages[0].text.startswith("Threads across CWDs:")
     assert "Alpha thread" in messages[0].text
     assert "Beta thread" in messages[0].text
     assert "cwd: D:\\work\\beta" in messages[0].text
@@ -1072,7 +1072,7 @@ async def test_plain_text_without_project_mentions_cwd_command() -> None:
 
     assert messages[0].message_type == "error"
     assert "/cwd <path>" in messages[0].text
-    assert "working directory" in messages[0].text.lower()
+    assert "cwd" in messages[0].text.lower()
 
 
 @pytest.mark.asyncio

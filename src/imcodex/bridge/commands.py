@@ -57,9 +57,9 @@ class CommandRouter:
     def _handle_projects(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del channel_id, conversation_id, args
         projects = self.store.list_projects()
-        lines = ["Working directories (legacy alias for /cwd):"]
+        lines = ["Legacy project aliases:"]
         for project in projects:
-            lines.append(f"- {project.cwd} (legacy project id: {project.project_id})")
+            lines.append(f"- {project.cwd} (legacy id: {project.project_id})")
         return CommandResponse(action="projects.list", text="\n".join(lines))
 
     def _handle_project(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -70,7 +70,7 @@ class CommandRouter:
         self.store.set_active_project(channel_id, conversation_id, project_id)
         return CommandResponse(
             action="project.use",
-            text=f"Working directory set to {project.cwd}. Use /cwd <path> for future switches.",
+            text=f"CWD set to {project.cwd}. Prefer /cwd <path> for future switches.",
             project_id=project_id,
         )
 
@@ -83,7 +83,7 @@ class CommandRouter:
         binding = self.store.set_selected_cwd(channel_id, conversation_id, resolved)
         return CommandResponse(
             action="project.cwd",
-            text=f"Working directory set to {binding.selected_cwd}.",
+            text=f"CWD set to {binding.selected_cwd}.",
             project_id=binding.active_project_id,
         )
 
@@ -93,7 +93,7 @@ class CommandRouter:
         if binding.selected_cwd is None and not include_all:
             return CommandResponse(
                 action="threads.missing_project",
-                text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+                text="Choose a CWD first with /cwd <path>.",
             )
         return CommandResponse(action="threads.query", text="", include_all=include_all)
 
@@ -108,7 +108,7 @@ class CommandRouter:
             if binding.selected_cwd is None:
                 text = f"Attaching thread {thread_id}."
             else:
-                text = f"Attaching thread {thread_id} in {binding.selected_cwd}."
+                text = f"Attaching thread {thread_id} from CWD {binding.selected_cwd}."
             return CommandResponse(
                 action="thread.attach",
                 text=text,
@@ -120,7 +120,7 @@ class CommandRouter:
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
         return CommandResponse(
             action="thread.use",
-            text=f"Switched to thread {self._thread_label(thread_id)} (id: {thread_id}) in {thread.cwd}.",
+            text=f"Switched to thread {self._thread_label(thread_id)} (id: {thread_id}) in CWD {thread.cwd}.",
             thread_id=thread_id,
             project_id=thread.project_id,
         )
@@ -141,9 +141,9 @@ class CommandRouter:
         if binding.selected_cwd is None:
             return CommandResponse(
                 action="thread.new.missing_project",
-                text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
+                text="Choose a CWD first with /cwd <path>.",
             )
-        return CommandResponse(action="thread.new", text=f"Starting a new thread for {binding.selected_cwd}.")
+        return CommandResponse(action="thread.new", text=f"Starting a thread in {binding.selected_cwd}.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
@@ -151,11 +151,11 @@ class CommandRouter:
         cwd_text = binding.selected_cwd or "(none)"
         thread_text = "(none)"
         thread_path_text = "(none)"
-        last_seen_thread_status_text = "(none)"
+        thread_status_text = "(none)"
         if binding.active_thread_id is not None:
             thread_text = self._thread_label(binding.active_thread_id, binding=binding)
             thread_path_text = binding.last_seen_thread_path or "(unknown)"
-            last_seen_thread_status_text = (
+            thread_status_text = (
                 self._humanize_status(binding.last_seen_thread_status)
                 if binding.last_seen_thread_status
                 else "(unknown)"
@@ -164,19 +164,19 @@ class CommandRouter:
         turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
         model_text = binding.selected_model or "(default)"
         lines = [
-            f"Working directory: {cwd_text}",
+            f"CWD: {cwd_text}",
             f"Thread: {thread_text}",
-            f"Thread id: {binding.active_thread_id or '(none)'}",
-            f"Thread path: {thread_path_text}",
-            f"Last seen thread status: {last_seen_thread_status_text}",
+            f"Thread ID: {binding.active_thread_id or '(none)'}",
+            f"Thread Path: {thread_path_text}",
+            f"Thread Status: {thread_status_text}",
             f"Turn: {turn_text}",
-            f"Turn status: {turn_status}",
+            f"Turn Status: {turn_status}",
             f"Model: {model_text}",
-            f"Permission mode: {binding.permission_profile}",
-            f"Visibility profile: {binding.visibility_profile}",
+            f"Permission Profile: {binding.permission_profile}",
+            f"Visibility: {binding.visibility_profile}",
             f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
-            f"Tool calls: {'shown' if binding.show_toolcalls else 'hidden'}",
-            f"Pending requests: {len(binding.pending_request_ids)}",
+            f"Tool Calls: {'shown' if binding.show_toolcalls else 'hidden'}",
+            f"Tickets: {len(binding.pending_request_ids)} pending",
         ]
         text = "\n".join(lines)
         return CommandResponse(action="status", text=text)
@@ -228,11 +228,11 @@ class CommandRouter:
             f"Bridge: {info.get('bridge', '(unknown)')}",
             f"PID: {info.get('pid', '(unknown)')}",
             f"Data dir: {info.get('data_dir', '(unknown)')}",
-            f"Permission mode: {binding.permission_profile}",
+            f"Permission Profile: {binding.permission_profile}",
             f"Model: {binding.selected_model or '(default)'}",
-            f"Visibility profile: {binding.visibility_profile}",
+            f"Visibility: {binding.visibility_profile}",
             f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
-            f"Tool calls: {'shown' if binding.show_toolcalls else 'hidden'}",
+            f"Tool Calls: {'shown' if binding.show_toolcalls else 'hidden'}",
         ]
         return CommandResponse(action="doctor", text="\n".join(lines))
 
@@ -305,6 +305,8 @@ class CommandRouter:
             "/show commentary|toolcalls",
             "/hide commentary|toolcalls",
             "/doctor",
+            "",
+            "Legacy compatibility:",
             "/projects (legacy alias)",
             "/project use <project-id> (legacy alias)",
         ]
