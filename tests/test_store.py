@@ -62,6 +62,18 @@ def test_project_and_thread_switching_updates_binding() -> None:
     assert binding.active_thread_id == "thr_2"
 
 
+def test_set_selected_cwd_updates_binding_and_clears_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    binding = store.set_selected_cwd("qq", "conv-1", r"D:\work\beta")
+
+    assert binding.selected_cwd == r"D:\work\beta"
+    assert binding.active_project_id == store.ensure_project(r"D:\work\beta").project_id
+    assert binding.active_thread_id is None
+
+
 def test_thread_label_prefers_preview_then_first_user_message() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="Existing preview")
@@ -74,6 +86,18 @@ def test_thread_label_prefers_preview_then_first_user_message() -> None:
 
     assert store.thread_label("thr_1") == "Existing preview"
     assert store.thread_label("thr_2") == "please inspect why the Windows working directory resets..."
+
+
+def test_thread_label_falls_back_when_imported_name_clips_to_empty() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.record_thread(
+        "thr_1",
+        cwd=r"D:\work\alpha",
+        preview="Existing preview",
+        name="   ",
+    )
+
+    assert store.thread_label("thr_1") == "Existing preview"
 
 
 def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
@@ -101,6 +125,17 @@ def test_thread_label_keeps_long_whitespace_free_prompts_readable() -> None:
     assert label != "..."
     assert label.startswith("https://example.com/very/long")
     assert label.endswith("...")
+
+
+def test_note_thread_status_updates_active_binding_snapshot() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    store.note_thread_status("thr_1", status="stale")
+
+    assert store.get_thread("thr_1").status == "stale"
+    assert store.get_binding("qq", "conv-1").last_seen_thread_status == "stale"
 
 
 def test_pending_requests_round_trip() -> None:
@@ -188,6 +223,96 @@ def test_clear_pending_requests_for_turn_removes_only_matching_requests() -> Non
     assert store.get_binding("qq", "conv-1").pending_request_ids == ["T-2"]
 
 
+def test_permission_and_visibility_settings_round_trip(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+
+    store.set_permission_profile("qq", "conv-1", "autonomous")
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
+    store.set_visibility_profile("qq", "conv-1", "verbose")
+    store.set_commentary_visibility("qq", "conv-1", enabled=False)
+    store.set_toolcall_visibility("qq", "conv-1", enabled=True)
+
+    reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+    binding = reloaded.get_binding("qq", "conv-1")
+
+    assert binding.permission_profile == "autonomous"
+    assert binding.selected_model == "gpt-5.4"
+    assert binding.visibility_profile == "verbose"
+    assert binding.show_commentary is False
+    assert binding.show_toolcalls is True
+
+
+def test_list_pending_requests_returns_binding_order() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Second",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="3",
+        kind="question",
+        summary="Third",
+        payload={},
+    )
+
+    requests = store.list_pending_requests("qq", "conv-1")
+
+    assert [request.ticket_id for request in requests] == ["2", "3"]
+
+
+def test_pending_requests_with_same_ticket_id_are_isolated_by_conversation() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="approval",
+        summary="First conversation",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-2",
+        ticket_id="1",
+        kind="approval",
+        summary="Second conversation",
+        payload={},
+    )
+
+    first = store.get_pending_request("1", channel_id="qq", conversation_id="conv-1")
+    second = store.get_pending_request("1", channel_id="qq", conversation_id="conv-2")
+
+    assert first is not None
+    assert second is not None
+    assert first.summary == "First conversation"
+    assert second.summary == "Second conversation"
+
+
+def test_can_find_pending_request_by_native_request_id() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Second",
+        payload={},
+        request_id="native-22",
+    )
+
+    pending = store.get_pending_request_by_request_id("native-22")
+
+    assert pending is not None
+    assert pending.ticket_id == "2"
+
+
 def test_switching_back_to_delayed_running_thread_restores_its_turn_state() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
@@ -226,3 +351,13 @@ def test_delayed_completion_for_old_thread_does_not_overwrite_current_thread_sta
     binding = store.set_active_thread("qq", "conv-1", old_thread.thread_id)
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
+
+
+def test_unknown_thread_turn_events_are_ignored() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+
+    started = store.note_turn_started("thr_missing", turn_id="turn_1", status="inProgress")
+    completed = store.note_turn_completed("thr_missing", turn_id="turn_1", status="completed")
+
+    assert started is None
+    assert completed is None

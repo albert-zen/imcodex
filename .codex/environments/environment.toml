@@ -1,0 +1,14 @@
+version = 1
+name = "imcodex"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "运行"
+icon = "run"
+command = '''
+cd D:\desktop\imcodex
+conda activate imcodex
+python -m imcodex
+'''

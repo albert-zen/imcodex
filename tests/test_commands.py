@@ -16,14 +16,25 @@ def test_parse_projects_and_switch_commands() -> None:
     assert parse_command("/new").name == "new"
     assert parse_command("/status").name == "status"
     assert parse_command("/stop").name == "stop"
+    assert parse_command("/thread read").args == ["read"]
+    assert parse_command("/recover").name == "recover"
 
 
 def test_parse_approval_and_answer_commands() -> None:
     assert parse_command("/approve T-1").name == "approve"
+    assert parse_command("/approve 1 2 3").args == ["1", "2", "3"]
     assert parse_command("/approve-session T-2").name == "approve-session"
     assert parse_command("/deny T-3").name == "deny"
     assert parse_command("/cancel T-4").name == "cancel"
     assert parse_command("/answer T-5 timezone=Asia/Shanghai,UTC+8").name == "answer"
+    assert parse_command("/permissions autonomous").args == ["autonomous"]
+    assert parse_command("/view verbose").args == ["verbose"]
+    assert parse_command("/show commentary").args == ["commentary"]
+    assert parse_command("/hide toolcalls").args == ["toolcalls"]
+    assert parse_command("/model gpt-5.4").args == ["gpt-5.4"]
+    assert parse_command("/requests").name == "requests"
+    assert parse_command("/doctor").name == "doctor"
+    assert parse_command("/help").name == "help"
 
 
 def test_router_projects_and_project_switch() -> None:
@@ -33,7 +44,7 @@ def test_router_projects_and_project_switch() -> None:
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/projects")
-    assert response.text.startswith("Working directories:")
+    assert response.text.startswith("Working directories (legacy alias for /cwd):")
     assert alpha.cwd in response.text
     assert beta.cwd in response.text
     assert alpha.project_id in response.text
@@ -43,7 +54,8 @@ def test_router_projects_and_project_switch() -> None:
     assert response.action == "project.use"
     assert response.text.startswith("Working directory set to ")
     assert beta.cwd in response.text
-    assert beta.project_id in response.text
+    assert "/cwd <path>" in response.text
+    assert beta.project_id not in response.text
     assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
     assert store.get_binding("qq", "conv-1").active_thread_id is None
 
@@ -60,6 +72,7 @@ def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
     project = store.get_project(binding.active_project_id)
     assert response.action == "project.cwd"
     assert str(project_path) in response.text
+    assert "project id" not in response.text
     assert project.cwd == str(project_path)
     assert binding.active_thread_id is None
 
@@ -76,8 +89,10 @@ def test_router_thread_switch_and_status() -> None:
     store.set_active_project("qq", "conv-1", alpha.project_id)
 
     threads = router.handle("qq", "conv-1", "/threads")
+    assert threads.text.startswith(f"Threads for {alpha.cwd}:")
     assert "seed preview" in threads.text
     assert "please inspect why the Windows working directory resets..." in threads.text
+    assert "status: idle" in threads.text
     assert threads.text.index("seed preview") < threads.text.index("thr_1")
     assert threads.text.index("please inspect why the Windows working directory resets...") < threads.text.index("thr_2")
 
@@ -90,9 +105,30 @@ def test_router_thread_switch_and_status() -> None:
     status = router.handle("qq", "conv-1", "/status")
     lines = status.text.splitlines()
     assert lines[0] == f"Working directory: {alpha.cwd}"
-    assert f"Project id: {alpha.project_id}" in status.text
     assert "Thread: please inspect why the Windows working directory resets..." in status.text
     assert "Thread id: thr_2" in status.text
+    assert "Permission mode: review" in status.text
+    assert "Visibility profile: standard" in status.text
+    assert "Commentary: shown" in status.text
+    assert "Tool calls: hidden" in status.text
+
+
+def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
+    router = CommandRouter(store)
+    binding = store.set_selected_cwd("qq", "conv-1", thread.cwd)
+    binding.active_project_id = None
+
+    threads = router.handle("qq", "conv-1", "/threads")
+    status = router.handle("qq", "conv-1", "/status")
+    new_response = router.handle("qq", "conv-1", "/new")
+
+    assert threads.text.startswith(f"Threads for {thread.cwd}:")
+    assert "seed preview" in threads.text
+    assert f"Working directory: {thread.cwd}" in status.text
+    assert new_response.action == "thread.new"
+    assert new_response.text == f"Starting a new thread for {thread.cwd}."
 
 
 def test_router_thread_attach_uses_selected_working_directory() -> None:
@@ -142,17 +178,192 @@ def test_router_new_stop_and_approval_commands() -> None:
 
     approve = router.handle("qq", "conv-1", "/approve T-9")
     assert approve.action == "approval.accept"
-    assert approve.ticket_id == "T-9"
+    assert approve.ticket_ids == ["T-9"]
 
     answer = router.handle("qq", "conv-1", "/answer T-10 timezone=Asia/Shanghai,UTC+8")
     assert answer.action == "request.answer"
     assert answer.answers == {"timezone": ["Asia/Shanghai", "UTC+8"]}
 
 
+def test_router_recover_clears_active_thread_binding_but_preserves_working_directory() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    router = CommandRouter(store)
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    response = router.handle("qq", "conv-1", "/recover")
+
+    binding = store.get_binding("qq", "conv-1")
+    assert response.action == "recover"
+    assert "Cleared stale thread binding thr_1." in response.text
+    assert binding.active_thread_id is None
+    assert binding.active_project_id == thread.project_id
+    assert binding.selected_cwd == thread.cwd
+
+
+def test_router_supports_permission_and_visibility_commands() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+
+    permissions = router.handle("qq", "conv-1", "/permissions autonomous")
+    assert permissions.action == "settings.permissions"
+    assert permissions.text == "Permission profile set to autonomous."
+    assert store.get_binding("qq", "conv-1").permission_profile == "autonomous"
+
+    view = router.handle("qq", "conv-1", "/view verbose")
+    assert view.action == "settings.view"
+    assert view.text == "Visibility profile set to verbose."
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.visibility_profile == "verbose"
+    assert binding.show_commentary is True
+    assert binding.show_toolcalls is True
+
+    hide_commentary = router.handle("qq", "conv-1", "/hide commentary")
+    assert hide_commentary.action == "settings.visibility"
+    assert hide_commentary.text == "Commentary messages hidden."
+    assert store.get_binding("qq", "conv-1").show_commentary is False
+
+    hide_toolcalls = router.handle("qq", "conv-1", "/hide toolcalls")
+    assert hide_toolcalls.action == "settings.visibility"
+    assert hide_toolcalls.text == "Tool-call messages hidden."
+    assert store.get_binding("qq", "conv-1").show_toolcalls is False
+
+    show_toolcalls = router.handle("qq", "conv-1", "/show toolcalls")
+    assert show_toolcalls.action == "settings.visibility"
+    assert show_toolcalls.text == "Tool-call messages shown."
+    assert store.get_binding("qq", "conv-1").show_toolcalls is True
+
+
+def test_router_supports_model_override_and_help_output() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+
+    model = router.handle("qq", "conv-1", "/model gpt-5.4")
+    assert model.action == "settings.model"
+    assert model.text == "Model override set to gpt-5.4."
+    assert store.get_binding("qq", "conv-1").selected_model == "gpt-5.4"
+
+    cleared = router.handle("qq", "conv-1", "/model default")
+    assert cleared.action == "settings.model"
+    assert cleared.text == "Model override cleared; using the default Codex model."
+    assert store.get_binding("qq", "conv-1").selected_model is None
+
+    help_response = router.handle("qq", "conv-1", "/help")
+    assert help_response.action == "help"
+    assert "/cwd <path>" in help_response.text
+    assert "/approve <ticket...>" in help_response.text
+    assert "/permissions autonomous" in help_response.text
+    assert "/model <name|default>" in help_response.text
+
+
+def test_router_lists_requests_and_doctor_output() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="3",
+        kind="question",
+        summary="Need branch",
+        payload={},
+    )
+    router = CommandRouter(
+        store,
+        diagnostics_provider=lambda: {
+            "codex_bin": "codex",
+            "app_server": "ws://127.0.0.1:8765",
+            "bridge": "http://127.0.0.1:8000",
+            "pid": 4321,
+            "data_dir": ".imcodex",
+        },
+    )
+
+    requests = router.handle("qq", "conv-1", "/requests")
+    assert requests.action == "requests.list"
+    assert "[2] approval: Run tests" in requests.text
+    assert "[3] question: Need branch" in requests.text
+
+    doctor = router.handle("qq", "conv-1", "/doctor")
+    assert doctor.action == "doctor"
+    assert "Codex binary: codex" in doctor.text
+    assert "App Server: ws://127.0.0.1:8765" in doctor.text
+    assert "PID: 4321" in doctor.text
+    assert "Permission mode: review" in doctor.text
+    assert "Model: gpt-5.4" in doctor.text
+    assert "Visibility profile: standard" in doctor.text
+
+
+def test_router_supports_batch_approval_with_partial_unknown_ticket() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Inspect logs",
+        payload={},
+    )
+
+    approve = router.handle("qq", "conv-1", "/approve 1 2 9")
+
+    assert approve.action == "approval.accept"
+    assert approve.ticket_ids == ["1", "2"]
+    assert approve.missing_ticket_ids == ["9"]
+    assert "Recorded accept for 1, 2." in approve.text
+    assert "Unknown tickets: 9." in approve.text
+
+
+def test_router_rejects_wrong_ticket_kind_for_approval_and_answer() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="1",
+        kind="question",
+        summary="Need branch",
+        payload={},
+    )
+    store.create_pending_request(
+        channel_id="qq",
+        conversation_id="conv-1",
+        ticket_id="2",
+        kind="approval",
+        summary="Run tests",
+        payload={},
+    )
+
+    approve = router.handle("qq", "conv-1", "/approve 1")
+    answer = router.handle("qq", "conv-1", "/answer 2 branch=main")
+
+    assert approve.action == "approval.accept.missing"
+    assert "Unknown tickets: 1." in approve.text
+    assert answer.action == "request.answer.invalid_kind"
+    assert answer.text == "Ticket 2 is not a question request."
+
+
 def test_status_tolerates_missing_active_thread_record() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     project = store.ensure_project(r"D:\work\alpha")
     binding = store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
     binding.active_thread_id = "thr_missing"
     router = CommandRouter(store)
 
@@ -161,3 +372,5 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     assert "Working directory: D:\\work\\alpha" in status.text
     assert "Thread: Untitled thread" in status.text
     assert "Thread id: thr_missing" in status.text
+    assert "Model: gpt-5.4" in status.text
+    assert "Permission mode: review" in status.text

@@ -6,3 +6,5 @@ __pycache__/
 .imcodex-run/
 _codex_schema/
 codex-upstream/
+logs/
+src/*.egg-info/

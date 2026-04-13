@@ -21,6 +21,11 @@ class ThreadRecord:
     status: str
     last_used_at: float
     cwd: str
+    name: str | None = None
+    path: str | None = None
+    last_turn_id: str | None = None
+    last_turn_status: str | None = None
+    stale_turn_ids: list[str] = field(default_factory=list)
     created_seq: int = 0
 
 
@@ -29,6 +34,8 @@ class ConversationBinding:
     channel_id: str
     conversation_id: str
     active_project_id: str | None = None
+    selected_cwd: str | None = None
+    selected_model: str | None = None
     active_thread_id: str | None = None
     active_turn_id: str | None = None
     active_turn_status: str | None = None
@@ -36,6 +43,13 @@ class ConversationBinding:
     pending_request_ids: list[str] = field(default_factory=list)
     next_ticket: int = 1
     known_thread_ids: list[str] = field(default_factory=list)
+    permission_profile: str = "review"
+    visibility_profile: str = "standard"
+    show_commentary: bool = True
+    show_toolcalls: bool = False
+    last_seen_thread_name: str | None = None
+    last_seen_thread_path: str | None = None
+    last_seen_thread_status: str | None = None
 
 
 @dataclass(slots=True)
@@ -52,6 +66,9 @@ class PendingRequest:
     thread_id: str | None = None
     turn_id: str | None = None
     item_id: str | None = None
+    status: str = "pending"
+    submitted_at: float | None = None
+    submitted_resolution: dict[str, Any] | None = None
     resolved_at: float | None = None
     resolution: dict[str, Any] | None = None
 

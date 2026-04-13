@@ -238,6 +238,107 @@ async def test_resume_thread_uses_thread_resume_and_thread_id():
 
 
 @pytest.mark.asyncio
+async def test_list_threads_uses_thread_list_method() -> None:
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"threads":[{"id":"thr_1"},{"id":"thr_2"}]}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.list_threads()
+
+    assert [thread["id"] for thread in result["threads"]] == ["thr_1", "thr_2"]
+    assert '"method": "thread/list"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_read_thread_uses_thread_read_method_and_thread_id() -> None:
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"thread":{"id":"thr_read","name":"Investigate","cwd":"D:/desktop/project"}}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.read_thread("thr_read")
+
+    assert result["thread"]["id"] == "thr_read"
+    assert result["thread"]["name"] == "Investigate"
+    assert '"method": "thread/read"' in websocket.sent[2]
+    assert '"threadId": "thr_read"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_set_thread_name_uses_thread_name_set_method() -> None:
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"thread":{"id":"thr_read","name":"Investigate alpha"}}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.set_thread_name("thr_read", "Investigate alpha")
+
+    assert result["thread"]["name"] == "Investigate alpha"
+    assert '"method": "thread/name/set"' in websocket.sent[2]
+    assert '"threadId": "thr_read"' in websocket.sent[2]
+    assert '"name": "Investigate alpha"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_thread_uses_thread_archive_method() -> None:
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"archived":true}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    result = await client.archive_thread("thr_read")
+
+    assert result["archived"] is True
+    assert '"method": "thread/archive"' in websocket.sent[2]
+    assert '"threadId": "thr_read"' in websocket.sent[2]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_error_response_raises_app_server_error_without_waiting_for_timeout():
     incoming = asyncio.Queue()
     websocket = ScriptedWebSocket(
