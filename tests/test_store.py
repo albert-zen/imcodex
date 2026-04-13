@@ -62,6 +62,18 @@ def test_project_and_thread_switching_updates_binding() -> None:
     assert binding.active_thread_id == "thr_2"
 
 
+def test_set_selected_cwd_updates_binding_and_clears_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="a")
+    store.set_active_thread("qq", "conv-1", thread.thread_id)
+
+    binding = store.set_selected_cwd("qq", "conv-1", r"D:\work\beta")
+
+    assert binding.selected_cwd == r"D:\work\beta"
+    assert binding.active_project_id == store.ensure_project(r"D:\work\beta").project_id
+    assert binding.active_thread_id is None
+
+
 def test_thread_label_prefers_preview_then_first_user_message() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="Existing preview")

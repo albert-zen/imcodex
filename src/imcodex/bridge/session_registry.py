@@ -49,8 +49,7 @@ class SessionRegistry:
         )
 
     def bind_cwd(self, channel_id: str, conversation_id: str, cwd: str) -> SessionRecord:
-        project = self.store.ensure_project(cwd)
-        self.store.set_active_project(channel_id, conversation_id, project.project_id)
+        self.store.set_selected_cwd(channel_id, conversation_id, cwd)
         return self.get(channel_id, conversation_id)
 
     def bind_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> SessionRecord:

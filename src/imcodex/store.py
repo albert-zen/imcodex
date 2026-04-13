@@ -123,6 +123,23 @@ class ConversationStore:
         self._save()
         return project
 
+    def set_selected_cwd(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        cwd: str,
+    ) -> ConversationBinding:
+        project = self._ensure_project(cwd)
+        binding = self.get_binding(channel_id, conversation_id)
+        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
+        binding.active_project_id = project.project_id
+        binding.selected_cwd = project.cwd
+        binding.active_thread_id = None
+        binding.active_turn_id = None
+        binding.active_turn_status = None
+        self._save()
+        return binding
+
     def get_thread(self, thread_id: str) -> ThreadRecord:
         return self._threads[thread_id]
 
@@ -214,6 +231,17 @@ class ConversationStore:
             key=lambda t: (t.created_seq, t.thread_id),
         )
 
+    def list_threads_for_cwd(self, cwd: str) -> list[ThreadRecord]:
+        normalized = _normalize_cwd(cwd)
+        return sorted(
+            [
+                thread
+                for thread in self._threads.values()
+                if _normalize_cwd(thread.cwd) == normalized
+            ],
+            key=lambda t: (t.created_seq, t.thread_id),
+        )
+
     def get_binding(self, channel_id: str, conversation_id: str) -> ConversationBinding:
         key = (channel_id, conversation_id)
         if key not in self._bindings:
@@ -231,16 +259,8 @@ class ConversationStore:
         conversation_id: str,
         project_id: str,
     ) -> ConversationBinding:
-        self.get_project(project_id)
-        binding = self.get_binding(channel_id, conversation_id)
-        self._clear_pending_first_thread_label(binding.channel_id, binding.conversation_id, next_thread_id=None)
-        binding.active_project_id = project_id
-        binding.selected_cwd = self.get_project(project_id).cwd
-        binding.active_thread_id = None
-        binding.active_turn_id = None
-        binding.active_turn_status = None
-        self._save()
-        return binding
+        project = self.get_project(project_id)
+        return self.set_selected_cwd(channel_id, conversation_id, project.cwd)
 
     def set_active_thread(
         self,
@@ -650,6 +670,8 @@ class ConversationStore:
 
     def active_projects_for_conversation(self, channel_id: str, conversation_id: str) -> list[ProjectRecord]:
         binding = self.get_binding(channel_id, conversation_id)
+        if binding.selected_cwd:
+            return [self.ensure_project(binding.selected_cwd)]
         if binding.active_project_id:
             return [self.get_project(binding.active_project_id)]
         return self.list_projects()

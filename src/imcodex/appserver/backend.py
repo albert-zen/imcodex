@@ -302,6 +302,8 @@ class CodexBackend:
         return None
 
     def _binding_cwd(self, binding) -> str:
+        if binding.selected_cwd is not None:
+            return binding.selected_cwd
         if binding.active_project_id is not None:
             return self.store.get_project(binding.active_project_id).cwd
         if binding.active_thread_id is not None:

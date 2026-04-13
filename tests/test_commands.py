@@ -113,6 +113,24 @@ def test_router_thread_switch_and_status() -> None:
     assert "Tool calls: hidden" in status.text
 
 
+def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
+    router = CommandRouter(store)
+    binding = store.set_selected_cwd("qq", "conv-1", thread.cwd)
+    binding.active_project_id = None
+
+    threads = router.handle("qq", "conv-1", "/threads")
+    status = router.handle("qq", "conv-1", "/status")
+    new_response = router.handle("qq", "conv-1", "/new")
+
+    assert threads.text.startswith(f"Threads for {thread.cwd}:")
+    assert "seed preview" in threads.text
+    assert f"Working directory: {thread.cwd}" in status.text
+    assert new_response.action == "thread.new"
+    assert new_response.text == f"Starting a new thread for {thread.cwd}."
+
+
 def test_router_thread_attach_uses_selected_working_directory() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")

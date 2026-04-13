@@ -218,6 +218,29 @@ async def test_attach_thread_refreshes_preview_for_known_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing() -> None:
+    store = make_store()
+    binding = store.set_selected_cwd("demo", "conv-1", "D:/repo/alt")
+    binding.active_project_id = None
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.ensure_thread("demo", "conv-1")
+
+    assert thread_id == "thr_new"
+    assert client.thread_starts == [
+        {
+            "cwd": "D:/repo/alt",
+            "approval_policy": None,
+            "sandbox": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_list_threads_imports_native_thread_metadata() -> None:
     store = make_store()
     client = FakeClient()

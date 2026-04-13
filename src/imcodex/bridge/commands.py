@@ -79,32 +79,30 @@ class CommandRouter:
         resolved = os.path.abspath(os.path.expanduser(args[0]))
         if not os.path.isdir(resolved):
             return CommandResponse(action="project.cwd.missing", text=f"Directory not found: {resolved}")
-        project = self.store.ensure_project(resolved)
-        self.store.set_active_project(channel_id, conversation_id, project.project_id)
+        binding = self.store.set_selected_cwd(channel_id, conversation_id, resolved)
         return CommandResponse(
             action="project.cwd",
-            text=f"Working directory set to {project.cwd}.",
-            project_id=project.project_id,
+            text=f"Working directory set to {binding.selected_cwd}.",
+            project_id=binding.active_project_id,
         )
 
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_project_id is None and "--all" not in args:
+        if binding.selected_cwd is None and "--all" not in args:
             return CommandResponse(
                 action="threads.missing_project",
                 text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
             )
-        project_id = None if "--all" in args else binding.active_project_id
-        threads = self.store.list_threads(project_id)
-        if project_id is None:
+        if "--all" in args:
+            threads = self.store.list_threads()
             lines = ["Threads across working directories:"]
         else:
-            project = self.store.get_project(project_id)
-            lines = [f"Threads for {project.cwd}:"]
+            threads = self.store.list_threads_for_cwd(binding.selected_cwd)
+            lines = [f"Threads for {binding.selected_cwd}:"]
         for thread in threads:
             marker = "*" if thread.thread_id == binding.active_thread_id else "-"
             details = [f"id: {thread.thread_id}", f"status: {self._humanize_status(thread.status)}"]
-            if project_id is None:
+            if "--all" in args:
                 details.append(f"cwd: {thread.cwd}")
             lines.append(f"{marker} {self._thread_label(thread.thread_id)} ({', '.join(details)})")
         return CommandResponse(action="threads.list", text="\n".join(lines))
@@ -117,21 +115,20 @@ class CommandRouter:
         if args[0] == "attach":
             thread_id = args[1]
             binding = self.store.get_binding(channel_id, conversation_id)
-            if binding.active_project_id is None:
+            if binding.selected_cwd is None:
                 projects = self.store.list_projects()
                 if len(projects) != 1:
                     return CommandResponse(
                         action="thread.attach.missing_project",
                         text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
                     )
-                self.store.set_active_project(channel_id, conversation_id, projects[0].project_id)
+                self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
                 binding = self.store.get_binding(channel_id, conversation_id)
-            project = self.store.get_project(binding.active_project_id)
             return CommandResponse(
                 action="thread.attach",
-                text=f"Attaching thread {thread_id} in {project.cwd}.",
+                text=f"Attaching thread {thread_id} in {binding.selected_cwd}.",
                 thread_id=thread_id,
-                project_id=project.project_id,
+                project_id=binding.active_project_id,
             )
         thread_id = args[1]
         thread = self.store.get_thread(thread_id)
@@ -169,24 +166,21 @@ class CommandRouter:
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_project_id is None:
+        if binding.selected_cwd is None:
             projects = self.store.list_projects()
             if len(projects) != 1:
                 return CommandResponse(
                     action="thread.new.missing_project",
                     text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
                 )
-            self.store.set_active_project(channel_id, conversation_id, projects[0].project_id)
+            self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
             binding = self.store.get_binding(channel_id, conversation_id)
-        project = self.store.get_project(binding.active_project_id)
-        return CommandResponse(action="thread.new", text=f"Starting a new thread for {project.cwd}.")
+        return CommandResponse(action="thread.new", text=f"Starting a new thread for {binding.selected_cwd}.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
-        cwd_text = "(none)"
-        if binding.active_project_id is not None:
-            cwd_text = self.store.get_project(binding.active_project_id).cwd
+        cwd_text = binding.selected_cwd or "(none)"
         thread_text = "(none)"
         if binding.active_thread_id is not None:
             thread_text = self._thread_label(binding.active_thread_id)

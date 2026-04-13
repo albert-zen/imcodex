@@ -108,8 +108,8 @@ class BridgeService:
         return [self._message(message, self._command_message_type(response.action), response.text, response.ticket_id)]
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
-        project = self._select_project(message.channel_id, message.conversation_id)
-        if project is None:
+        selected_cwd = self._select_cwd(message.channel_id, message.conversation_id)
+        if selected_cwd is None:
             return [
                 self._message(
                     message,
@@ -174,14 +174,14 @@ class BridgeService:
                 await self.outbound_sink.send_message(outbound)
         return messages
 
-    def _select_project(self, channel_id: str, conversation_id: str):
+    def _select_cwd(self, channel_id: str, conversation_id: str) -> str | None:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_project_id is not None:
-            return self.store.get_project(binding.active_project_id)
+        if binding.selected_cwd is not None:
+            return binding.selected_cwd
         projects = self.store.list_projects()
         if len(projects) == 1:
-            self.store.set_active_project(channel_id, conversation_id, projects[0].project_id)
-            return projects[0]
+            self.store.set_selected_cwd(channel_id, conversation_id, projects[0].cwd)
+            return projects[0].cwd
         return None
 
     def _message(
