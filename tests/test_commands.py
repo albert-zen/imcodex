@@ -89,12 +89,8 @@ def test_router_thread_switch_and_status() -> None:
     store.set_active_project("qq", "conv-1", alpha.project_id)
 
     threads = router.handle("qq", "conv-1", "/threads")
-    assert threads.text.startswith(f"Threads for {alpha.cwd}:")
-    assert "seed preview" in threads.text
-    assert "please inspect why the Windows working directory resets..." in threads.text
-    assert "status: idle" in threads.text
-    assert threads.text.index("seed preview") < threads.text.index("thr_1")
-    assert threads.text.index("please inspect why the Windows working directory resets...") < threads.text.index("thr_2")
+    assert threads.action == "threads.query"
+    assert threads.include_all is False
 
     response = router.handle("qq", "conv-1", "/thread use thr_2")
     assert response.action == "thread.use"
@@ -124,8 +120,8 @@ def test_router_uses_selected_cwd_when_project_alias_is_missing() -> None:
     status = router.handle("qq", "conv-1", "/status")
     new_response = router.handle("qq", "conv-1", "/new")
 
-    assert threads.text.startswith(f"Threads for {thread.cwd}:")
-    assert "seed preview" in threads.text
+    assert threads.action == "threads.query"
+    assert threads.include_all is False
     assert f"Working directory: {thread.cwd}" in status.text
     assert new_response.action == "thread.new"
     assert new_response.text == f"Starting a new thread for {thread.cwd}."
@@ -410,9 +406,5 @@ def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_i
 
     response = router.handle("qq", "conv-1", "/thread read")
 
-    assert response.action == "thread.read"
-    assert "Thread: Recovered native thread" in response.text
-    assert "Thread id: thr_missing" in response.text
-    assert "CWD: D:\\work\\alpha" in response.text
-    assert "Path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in response.text
-    assert "Status: awaiting user input" in response.text
+    assert response.action == "thread.read.query"
+    assert response.thread_id == "thr_missing"

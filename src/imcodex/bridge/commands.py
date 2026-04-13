@@ -26,6 +26,7 @@ class CommandResponse:
     ticket_ids: list[str] | None = None
     missing_ticket_ids: list[str] | None = None
     answers: dict[str, list[str]] | None = None
+    include_all: bool = False
 
 
 def parse_command(text: str) -> ParsedCommand:
@@ -88,24 +89,13 @@ class CommandRouter:
 
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.selected_cwd is None and "--all" not in args:
+        include_all = "--all" in args
+        if binding.selected_cwd is None and not include_all:
             return CommandResponse(
                 action="threads.missing_project",
                 text="Choose a working directory first with /cwd <path>. You can still browse /projects and /project use <project-id>.",
             )
-        if "--all" in args:
-            threads = self.store.list_threads()
-            lines = ["Threads across working directories:"]
-        else:
-            threads = self.store.list_threads_for_cwd(binding.selected_cwd)
-            lines = [f"Threads for {binding.selected_cwd}:"]
-        for thread in threads:
-            marker = "*" if thread.thread_id == binding.active_thread_id else "-"
-            details = [f"id: {thread.thread_id}", f"status: {self._humanize_status(thread.status)}"]
-            if "--all" in args:
-                details.append(f"cwd: {thread.cwd}")
-            lines.append(f"{marker} {self._thread_label(thread.thread_id)} ({', '.join(details)})")
-        return CommandResponse(action="threads.list", text="\n".join(lines))
+        return CommandResponse(action="threads.query", text="", include_all=include_all)
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         if len(args) == 1 and args[0] == "read":
@@ -144,26 +134,11 @@ class CommandRouter:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.active_thread_id is None:
             return CommandResponse(action="thread.read.none", text="No active thread.")
-        thread_id = binding.active_thread_id
-        try:
-            thread = self.store.get_thread(thread_id)
-        except KeyError:
-            lines = [
-                f"Thread: {self._thread_label(thread_id, binding=binding)}",
-                f"Thread id: {thread_id}",
-                f"CWD: {binding.selected_cwd or '(unknown)'}",
-                f"Path: {binding.last_seen_thread_path or '(unknown)'}",
-                f"Status: {self._humanize_status(binding.last_seen_thread_status) if binding.last_seen_thread_status else '(unknown)'}",
-            ]
-        else:
-            lines = [
-                f"Thread: {self._thread_label(thread_id)}",
-                f"Thread id: {thread_id}",
-                f"CWD: {thread.cwd}",
-                f"Path: {thread.path or thread.cwd}",
-                f"Status: {self._humanize_status(thread.status)}",
-            ]
-        return CommandResponse(action="thread.read", text="\n".join(lines), thread_id=thread_id)
+        return CommandResponse(
+            action="thread.read.query",
+            text="",
+            thread_id=binding.active_thread_id,
+        )
 
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args

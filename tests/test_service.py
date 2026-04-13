@@ -18,7 +18,7 @@ class FakeBackend:
         self.started_turns: list[tuple[str, str, str]] = []
         self.interrupts: list[tuple[str, str]] = []
         self.replies: list[tuple[str, dict]] = []
-        self.list_threads_calls: list[tuple[str, str]] = []
+        self.list_threads_calls: list[tuple[str, str, bool]] = []
         self.read_thread_calls: list[tuple[str, str, str]] = []
         self.list_threads_result: list[object] = []
         self.read_thread_result: object | None = None
@@ -54,7 +54,7 @@ class FakeBackend:
         self.replies.append((ticket_id, decision_or_answers))
 
     async def list_threads(self, channel_id: str, conversation_id: str, include_all: bool = False):
-        self.list_threads_calls.append((channel_id, conversation_id))
+        self.list_threads_calls.append((channel_id, conversation_id, include_all))
         if self.fail_list_threads:
             raise RuntimeError("thread/list unavailable")
         return list(self.list_threads_result)
@@ -319,7 +319,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
         )
     )
 
-    assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert backend.list_threads_calls == [("qq", "conv-1", False)]
     assert messages[0].message_type == "command_result"
     assert messages[0].text.startswith(f"Threads for {project.cwd}:")
     assert "Investigate alpha" in messages[0].text
@@ -393,9 +393,11 @@ async def test_threads_command_falls_back_to_local_state_when_native_query_fails
         )
     )
 
-    assert backend.list_threads_calls == [("qq", "conv-1")]
-    assert messages[0].text.startswith(f"Threads for {thread.cwd}:")
-    assert "Local preview" in messages[0].text
+    assert backend.list_threads_calls == [("qq", "conv-1", False)]
+    assert messages[0].message_type == "status"
+    assert "could not be refreshed from Codex" in messages[0].text
+    assert "/status" in messages[0].text
+    assert "/thread read" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -512,7 +514,7 @@ async def test_threads_all_command_requests_cross_workspace_native_listing() -> 
         )
     )
 
-    assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert backend.list_threads_calls == [("qq", "conv-1", True)]
     assert messages[0].text.startswith("Threads across working directories:")
     assert "Alpha thread" in messages[0].text
     assert "Beta thread" in messages[0].text

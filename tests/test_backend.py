@@ -431,7 +431,7 @@ async def test_list_threads_imports_native_thread_metadata() -> None:
     assert [snapshot.thread_id for snapshot in snapshots] == ["thr_native_1"]
     assert snapshots[0].name == "Investigate alpha"
     assert store.get_thread("thr_native_1").name == "Investigate alpha"
-    assert client.thread_lists == [{}]
+    assert client.thread_lists == [{"cwd": "D:/repo/app"}]
 
 
 @pytest.mark.asyncio
@@ -461,6 +461,7 @@ async def test_list_threads_can_skip_cwd_filter_for_all_threads() -> None:
     snapshots = await backend.list_threads("demo", "conv-1", include_all=True)
 
     assert [snapshot.thread_id for snapshot in snapshots] == ["thr_native_1", "thr_native_2"]
+    assert client.thread_lists == [{}]
 
 
 @pytest.mark.asyncio

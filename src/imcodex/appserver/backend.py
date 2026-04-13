@@ -126,12 +126,15 @@ class CodexBackend:
         *,
         include_all: bool = False,
     ) -> list[NativeThreadSnapshot]:
-        result = await self.client.list_threads()
+        binding = self.store.get_binding(channel_id, conversation_id)
+        params: dict[str, str] = {}
+        if binding.selected_cwd and not include_all:
+            params["cwd"] = binding.selected_cwd
+        result = await self.client.list_threads(**params)
         snapshots = [
             self._remember_native_thread(self._normalize_thread_payload(item))
             for item in result.get("threads", [])
         ]
-        binding = self.store.get_binding(channel_id, conversation_id)
         if binding.selected_cwd and not include_all:
             normalized = _normalize_cwd(binding.selected_cwd)
             return [
