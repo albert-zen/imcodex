@@ -28,6 +28,21 @@ def _normalize_cwd(cwd: str) -> str:
     return os.path.normcase(os.path.normpath(cwd))
 
 
+@dataclass(frozen=True, slots=True)
+class NativePermissionProfile:
+    approval_policy: str | None = None
+    sandbox_policy: dict[str, str] | None = None
+    approvals_reviewer: str | None = None
+
+
+_PERMISSION_PROFILES: dict[str, NativePermissionProfile] = {
+    "review": NativePermissionProfile(),
+    "autonomous": NativePermissionProfile(
+        approval_policy="never",
+    ),
+}
+
+
 class CodexBackend:
     def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
         self.client = client
@@ -204,8 +219,9 @@ class CodexBackend:
             text=text,
             cwd=None,
             model=model,
-            approval_policy=self._approval_policy(permission_profile),
-            sandbox_policy=None,
+            approval_policy=self._permission_profile(permission_profile).approval_policy,
+            sandbox_policy=self._permission_profile(permission_profile).sandbox_policy,
+            approvals_reviewer=self._permission_profile(permission_profile).approvals_reviewer,
             effort=None,
             summary="concise",
         )
@@ -294,20 +310,20 @@ class CodexBackend:
         cwd: str,
         permission_profile: str,
         model: str | None,
-    ) -> dict[str, str | None]:
+    ) -> dict[str, object | None]:
+        profile = self._permission_profile(permission_profile)
         return {
             "cwd": cwd,
-            "approval_policy": self._approval_policy(permission_profile),
-            "sandbox": None,
+            "approval_policy": profile.approval_policy,
+            "sandbox_policy": profile.sandbox_policy,
+            "approvals_reviewer": profile.approvals_reviewer,
             "model": model,
             "personality": "friendly",
             "service_name": self.service_name,
         }
 
-    def _approval_policy(self, permission_profile: str) -> str | None:
-        if permission_profile == "autonomous":
-            return "never"
-        return None
+    def _permission_profile(self, permission_profile: str) -> NativePermissionProfile:
+        return _PERMISSION_PROFILES.get(permission_profile, _PERMISSION_PROFILES["review"])
 
     def _binding_cwd(self, binding) -> str:
         if binding.selected_cwd is not None:

@@ -15,8 +15,7 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
                 "IMCODEX_DATA_DIR=.imcodex-data",
                 "IMCODEX_HTTP_HOST=127.0.0.1",
                 "IMCODEX_HTTP_PORT=9000",
-                "IMCODEX_AUTO_APPROVE=1",
-                "IMCODEX_AUTO_APPROVE_MODE=session",
+                "IMCODEX_DEFAULT_PERMISSION_PROFILE=autonomous",
             ]
         ),
         encoding="utf-8",
@@ -29,8 +28,7 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.delenv("IMCODEX_DATA_DIR", raising=False)
     monkeypatch.delenv("IMCODEX_HTTP_HOST", raising=False)
     monkeypatch.delenv("IMCODEX_HTTP_PORT", raising=False)
-    monkeypatch.delenv("IMCODEX_AUTO_APPROVE", raising=False)
-    monkeypatch.delenv("IMCODEX_AUTO_APPROVE_MODE", raising=False)
+    monkeypatch.delenv("IMCODEX_DEFAULT_PERMISSION_PROFILE", raising=False)
 
     settings = Settings.from_env()
 
@@ -41,5 +39,4 @@ def test_settings_from_env_reads_dotenv_file(tmp_path: Path, monkeypatch) -> Non
     assert settings.data_dir == Path(".imcodex-data")
     assert settings.http_host == "127.0.0.1"
     assert settings.http_port == 9000
-    assert settings.auto_approve is True
-    assert settings.auto_approve_mode == "session"
+    assert settings.default_permission_profile == "autonomous"

@@ -23,7 +23,6 @@ class BridgeService:
         command_router: CommandRouter,
         projector: MessageProjector,
         outbound_sink: Any | None = None,
-        auto_approve_mode: str | None = None,
         session_registry: SessionRegistry | None = None,
         thread_directory: ThreadDirectory | None = None,
         request_registry: RequestRegistry | None = None,
@@ -34,7 +33,6 @@ class BridgeService:
         self.command_router = command_router
         self.projector = projector
         self.outbound_sink = outbound_sink
-        self.auto_approve_mode = auto_approve_mode
         self.session_registry = session_registry or SessionRegistry(store)
         self.thread_directory = thread_directory or ThreadDirectory(store)
         self.request_registry = request_registry or RequestRegistry(store)
@@ -154,19 +152,6 @@ class BridgeService:
     async def handle_server_request(self, request: dict[str, Any]) -> list[OutboundMessage]:
         result = self.projector.project_notification(request, self.store)
         if result is None:
-            return []
-        if (
-            self.auto_approve_mode is not None
-            and request.get("method") in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}
-            and result.ticket_id is not None
-            and self.store.get_binding(result.channel_id, result.conversation_id).permission_profile == "autonomous"
-        ):
-            await self.backend.reply_to_server_request(
-                result.channel_id,
-                result.conversation_id,
-                result.ticket_id,
-                {"decision": self.auto_approve_mode},
-            )
             return []
         messages = [result]
         if self.outbound_sink is not None:

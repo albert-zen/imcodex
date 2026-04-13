@@ -30,7 +30,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     store = ConversationStore(
         clock=time.time,
         state_path=settings.data_dir / "state.json",
-        default_permission_profile="autonomous" if settings.auto_approve else "review",
+        default_permission_profile=settings.default_permission_profile,
     )
     client = AppServerClient(
         websocket_factory=open_blocking_websocket,
@@ -71,7 +71,6 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             turn_state=turn_state,
         ),
         outbound_sink=None,
-        auto_approve_mode=_resolve_auto_approve_mode(settings),
         session_registry=session_registry,
         thread_directory=thread_directory,
         request_registry=request_registry,
@@ -100,11 +99,3 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         service=service,
         managed_channels=managed_channels,
     )
-
-
-def _resolve_auto_approve_mode(settings: Settings) -> str | None:
-    if not settings.auto_approve:
-        return None
-    if settings.auto_approve_mode.lower() in {"session", "acceptforsession"}:
-        return "acceptForSession"
-    return "accept"

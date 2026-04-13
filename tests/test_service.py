@@ -877,7 +877,7 @@ async def test_recover_command_clears_stale_binding_for_next_prompt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_server_approval_request_can_be_auto_approved_without_prompt() -> None:
+async def test_server_approval_request_is_still_shown_in_autonomous_mode() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
     store.set_active_thread("qq", "conv-1", "thr_seed")
@@ -888,38 +888,6 @@ async def test_server_approval_request_can_be_auto_approved_without_prompt() -> 
         backend=backend,
         command_router=CommandRouter(store),
         projector=MessageProjector(),
-        auto_approve_mode="acceptForSession",
-    )
-
-    messages = await service.handle_server_request(
-        {
-            "method": "item/commandExecution/requestApproval",
-            "params": {
-                "threadId": "thr_seed",
-                "turnId": "turn_1",
-                "command": "pytest -q",
-                "_request_id": "99",
-            },
-        }
-    )
-
-    assert messages == []
-    assert backend.replies == [("1", {"decision": "acceptForSession"})]
-
-
-@pytest.mark.asyncio
-async def test_review_permission_mode_blocks_env_auto_approval() -> None:
-    store = ConversationStore(clock=lambda: 1.0)
-    store.record_thread("thr_seed", cwd=r"D:\work\alpha", preview="seed")
-    store.set_active_thread("qq", "conv-1", "thr_seed")
-    store.set_permission_profile("qq", "conv-1", "review")
-    backend = FakeBackend()
-    service = BridgeService(
-        store=store,
-        backend=backend,
-        command_router=CommandRouter(store),
-        projector=MessageProjector(),
-        auto_approve_mode="acceptForSession",
     )
 
     messages = await service.handle_server_request(

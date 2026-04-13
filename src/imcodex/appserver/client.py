@@ -332,6 +332,8 @@ class AppServerClient:
         mappings = {
             "thread_id": "threadId",
             "approval_policy": "approvalPolicy",
+            "sandbox_policy": "sandboxPolicy",
+            "approvals_reviewer": "approvalsReviewer",
             "service_name": "serviceName",
         }
         return {mappings.get(key, key): value for key, value in payload.items()}
@@ -344,8 +346,17 @@ class AppServerClient:
         mappings = {
             "approval_policy": "approvalPolicy",
             "sandbox_policy": "sandboxPolicy",
+            "approvals_reviewer": "approvalsReviewer",
         }
-        for key in ("cwd", "model", "approval_policy", "sandbox_policy", "effort", "summary"):
+        for key in (
+            "cwd",
+            "model",
+            "approval_policy",
+            "sandbox_policy",
+            "approvals_reviewer",
+            "effort",
+            "summary",
+        ):
             value = payload.get(key)
             if value is not None:
                 out[mappings.get(key, key)] = value

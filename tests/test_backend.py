@@ -103,7 +103,15 @@ async def test_ensure_thread_creates_thread_when_none_bound() -> None:
     assert thread_id == "thr_new"
     assert store.get_binding("demo", "conv-1").active_thread_id == "thr_new"
     assert client.thread_starts == [
-        {"cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
 
 
@@ -119,7 +127,16 @@ async def test_ensure_thread_resumes_bound_thread_when_present() -> None:
 
     assert thread_id == "thr_existing"
     assert client.thread_resumes == [
-        {"thread_id": "thr_existing", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_existing",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert client.thread_starts == []
 
@@ -137,7 +154,16 @@ async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
         await backend.ensure_thread("demo", "conv-1")
 
     assert client.thread_resumes == [
-        {"thread_id": "thr_existing", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_existing",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert client.thread_starts == []
     binding = store.get_binding("demo", "conv-1")
@@ -155,7 +181,16 @@ async def test_attach_thread_resumes_unknown_thread_in_selected_working_director
 
     assert thread_id == "thr_external"
     assert client.thread_resumes == [
-        {"thread_id": "thr_external", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_external",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert store.get_binding("demo", "conv-1").active_thread_id == "thr_external"
 
@@ -179,7 +214,16 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
 
     assert thread_id == "thr_external"
     assert resumed_client.thread_resumes == [
-        {"thread_id": "thr_external", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_external",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
 
 
@@ -196,7 +240,16 @@ async def test_attach_thread_prefers_selected_working_directory_over_known_threa
 
     assert thread_id == "thr_known"
     assert client.thread_resumes == [
-        {"thread_id": "thr_known", "cwd": "D:/repo/beta", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_known",
+            "cwd": "D:/repo/beta",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     binding = store.get_binding("demo", "conv-1")
     assert binding.active_project_id == beta.project_id
@@ -232,7 +285,8 @@ async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing(
         {
             "cwd": "D:/repo/alt",
             "approval_policy": None,
-            "sandbox": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
             "model": None,
             "personality": "friendly",
             "service_name": "imcodex-test",
@@ -335,7 +389,17 @@ async def test_start_turn_tracks_active_turn() -> None:
     assert turn_id == "turn_1"
     assert store.get_binding("demo", "conv-1").active_turn_id == "turn_1"
     assert client.turn_starts == [
-        {"thread_id": "thr_new", "text": "Please inspect the repo", "cwd": None, "model": None, "approval_policy": None, "sandbox_policy": None, "effort": None, "summary": "concise"}
+        {
+            "thread_id": "thr_new",
+            "text": "Please inspect the repo",
+            "cwd": None,
+            "model": None,
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "effort": None,
+            "summary": "concise",
+        }
     ]
 
 
@@ -353,7 +417,8 @@ async def test_autonomous_permission_profile_flows_into_native_approval_policy()
         {
             "cwd": "D:/repo/app",
             "approval_policy": "never",
-            "sandbox": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
             "model": None,
             "personality": "friendly",
             "service_name": "imcodex-test",
@@ -367,6 +432,43 @@ async def test_autonomous_permission_profile_flows_into_native_approval_policy()
             "model": None,
             "approval_policy": "never",
             "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "effort": None,
+            "summary": "concise",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_permission_profile_flows_into_native_approval_and_sandbox_policy() -> None:
+    store = make_store()
+    store.set_permission_profile("demo", "conv-1", "review")
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.ensure_thread("demo", "conv-1")
+    await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+
+    assert client.thread_starts == [
+        {
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    assert client.turn_starts == [
+        {
+            "thread_id": "thr_new",
+            "text": "Please inspect the repo",
+            "cwd": None,
+            "model": None,
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
             "effort": None,
             "summary": "concise",
         }
@@ -387,7 +489,8 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
         {
             "cwd": "D:/repo/app",
             "approval_policy": None,
-            "sandbox": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
             "model": "gpt-5.4",
             "personality": "friendly",
             "service_name": "imcodex-test",
@@ -401,6 +504,7 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
             "model": "gpt-5.4",
             "approval_policy": None,
             "sandbox_policy": None,
+            "approvals_reviewer": None,
             "effort": None,
             "summary": "concise",
         }
@@ -476,14 +580,51 @@ async def test_start_turn_retries_with_resumed_thread_when_bound_thread_is_stale
 
     assert turn_id == "turn_1"
     assert client.thread_resumes == [
-        {"thread_id": "thr_stale", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_stale",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert client.thread_starts == [
-        {"cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert client.turn_starts == [
-        {"thread_id": "thr_stale", "text": "Please inspect the repo", "cwd": None, "model": None, "approval_policy": None, "sandbox_policy": None, "effort": None, "summary": "concise"},
-        {"thread_id": "thr_new", "text": "Please inspect the repo", "cwd": None, "model": None, "approval_policy": None, "sandbox_policy": None, "effort": None, "summary": "concise"},
+        {
+            "thread_id": "thr_stale",
+            "text": "Please inspect the repo",
+            "cwd": None,
+            "model": None,
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "effort": None,
+            "summary": "concise",
+        },
+        {
+            "thread_id": "thr_new",
+            "text": "Please inspect the repo",
+            "cwd": None,
+            "model": None,
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "effort": None,
+            "summary": "concise",
+        },
     ]
     assert binding.active_thread_id == "thr_new"
     assert binding.active_turn_id == "turn_1"
@@ -502,7 +643,16 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
         await backend.start_turn("demo", "conv-1", "Please inspect the repo")
 
     assert client.thread_resumes == [
-        {"thread_id": "thr_existing", "cwd": "D:/repo/app", "approval_policy": None, "sandbox": None, "model": None, "personality": "friendly", "service_name": "imcodex-test"}
+        {
+            "thread_id": "thr_existing",
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
     ]
     assert client.thread_starts == []
     assert client.turn_starts == []
@@ -577,6 +727,7 @@ async def test_start_turn_falls_back_to_interrupt_and_new_turn_when_steer_fails(
             "model": None,
             "approval_policy": None,
             "sandbox_policy": None,
+            "approvals_reviewer": None,
             "effort": None,
             "summary": "concise",
         }
@@ -673,6 +824,7 @@ async def test_start_turn_recovers_when_steer_is_rejected_and_interrupt_also_fai
             "model": None,
             "approval_policy": None,
             "sandbox_policy": None,
+            "approvals_reviewer": None,
             "effort": None,
             "summary": "concise",
         }

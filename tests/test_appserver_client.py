@@ -238,6 +238,44 @@ async def test_resume_thread_uses_thread_resume_and_thread_id():
 
 
 @pytest.mark.asyncio
+async def test_thread_and_turn_requests_include_native_permission_fields() -> None:
+    incoming = asyncio.Queue()
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            1: ['{"id":1,"result":{"ok":true}}'],
+            2: ['{"id":2,"result":{"thread":{"id":"thr_perm"}}}'],
+            3: ['{"id":3,"result":{"turn":{"id":"turn_perm","status":"inProgress"}}}'],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+
+    await client.start_thread(
+        cwd="D:/desktop/project",
+        approval_policy="on-request",
+        sandbox_policy={"type": "workspaceWrite"},
+        approvals_reviewer="user",
+    )
+    await client.start_turn(
+        thread_id="thr_perm",
+        text="hello",
+        approval_policy="never",
+    )
+
+    assert '"approvalPolicy": "on-request"' in websocket.sent[2]
+    assert '"sandboxPolicy": {"type": "workspaceWrite"}' in websocket.sent[2]
+    assert '"approvalsReviewer": "user"' in websocket.sent[2]
+    assert '"approvalPolicy": "never"' in websocket.sent[3]
+    assert '"sandboxPolicy"' not in websocket.sent[3]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_list_threads_uses_thread_list_method() -> None:
     incoming = asyncio.Queue()
     websocket = ScriptedWebSocket(
