@@ -170,3 +170,77 @@ def test_message_pump_suppresses_repeated_progress_even_after_other_updates() ->
     assert first is not None
     assert command is not None
     assert repeated is None
+
+
+def test_message_pump_suppresses_late_progress_after_final_answer_until_completion() -> None:
+    pump = MessagePump()
+
+    early = pump.record_agent_message(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        phase="final_answer",
+        text="Native final answer",
+        emit_commentary=True,
+    )
+    commentary = pump.record_agent_message(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        phase="draft",
+        text="This late commentary should stay hidden.",
+        emit_commentary=True,
+    )
+    command = pump.record_command(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        command="pytest -q",
+        emit_progress=True,
+    )
+    completed = pump.finalize_turn(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        status="completed",
+    )
+
+    assert early is not None
+    assert early.message_type == "turn_result"
+    assert commentary is None
+    assert command is None
+    assert completed is None
+
+
+def test_message_pump_failed_turn_can_override_early_final_answer_without_late_progress_noise() -> None:
+    pump = MessagePump()
+
+    early = pump.record_agent_message(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        phase="final_answer",
+        text="Native final answer",
+        emit_commentary=True,
+    )
+    commentary = pump.record_agent_message(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        phase="draft",
+        text="This late commentary should stay hidden.",
+        emit_commentary=True,
+    )
+    command = pump.record_command(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        command="pytest -q",
+        emit_progress=True,
+    )
+    failed = pump.finalize_turn(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        status="failed",
+    )
+
+    assert early is not None
+    assert commentary is None
+    assert command is None
+    assert failed is not None
+    assert failed.message_type == "turn_result"
+    assert "Turn failed." in failed.text
+    assert "Native final answer" in failed.text

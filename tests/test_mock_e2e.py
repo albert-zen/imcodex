@@ -229,3 +229,60 @@ async def test_mock_e2e_sync_ack_then_async_progress_then_final_result() -> None
     assert sink.messages[1].text == "Here is the final answer."
 
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_mock_e2e_late_tool_progress_after_final_answer_is_not_pushed() -> None:
+    incoming: asyncio.Queue[str] = asyncio.Queue()
+    incoming.put_nowait('{"id":1,"result":{"ok":true}}')
+    websocket = ScriptedWebSocket(
+        sent=[],
+        incoming=incoming,
+        scripts={
+            2: ['{"id":2,"result":{"thread":{"id":"thr_1","preview":"repo help"}}}'],
+            3: [
+                '{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}',
+                '{"method":"item/completed","params":{"threadId":"thr_1","turnId":"turn_1","item":{"id":"item_final","type":"agentMessage","phase":"final_answer","text":"Here is the final answer."}}}',
+                '{"method":"item/completed","params":{"threadId":"thr_1","turnId":"turn_1","item":{"id":"cmd_1","type":"commandExecution","command":"pytest -q"}}}',
+                '{"method":"turn/completed","params":{"threadId":"thr_1","turn":{"id":"turn_1","status":"completed"}}}',
+            ],
+        },
+    )
+    client = AppServerClient(
+        websocket_factory=lambda _: websocket,
+        transport_url="ws://127.0.0.1:8765",
+        client_info={"name": "imcodex", "title": "IM Codex", "version": "0.1.0"},
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+    store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_toolcall_visibility("qq", "conv-1", enabled=True)
+    sink = CapturingSink()
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        outbound_sink=sink,
+    )
+    client.add_notification_handler(service.handle_notification)
+
+    await client.connect()
+    await client.initialize()
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="inspect the repo",
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert [message.message_type for message in messages] == ["accepted"]
+    assert [message.message_type for message in sink.messages] == ["turn_result"]
+    assert sink.messages[0].text == "Here is the final answer."
+
+    await client.close()

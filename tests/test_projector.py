@@ -298,6 +298,49 @@ def test_progress_and_final_answer_are_emitted_as_separate_messages() -> None:
     assert "src/imcodex/application.py" in final.text
 
 
+def test_late_tool_progress_after_final_answer_is_suppressed() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    store.set_toolcall_visibility("demo", "conv-1", enabled=True)
+    projector = MessageProjector()
+
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "The bridge entrypoint is src/imcodex/application.py.",
+                },
+            },
+        },
+        store,
+    )
+    progress = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "cmd_1",
+                    "type": "commandExecution",
+                    "command": "pytest -q",
+                },
+            },
+        },
+        store,
+    )
+
+    assert final is not None
+    assert progress is None
+
+
 def test_final_answer_followed_by_failed_completion_still_surfaces_failure() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
