@@ -56,9 +56,9 @@ class CommandRouter:
     def _handle_projects(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del channel_id, conversation_id, args
         projects = self.store.list_projects()
-        lines = ["Working directories:"]
+        lines = ["Working directories (legacy alias for /cwd):"]
         for project in projects:
-            lines.append(f"- {project.cwd} (project id: {project.project_id}, name: {project.display_name})")
+            lines.append(f"- {project.cwd} (legacy project id: {project.project_id})")
         return CommandResponse(action="projects.list", text="\n".join(lines))
 
     def _handle_project(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
@@ -69,7 +69,7 @@ class CommandRouter:
         self.store.set_active_project(channel_id, conversation_id, project_id)
         return CommandResponse(
             action="project.use",
-            text=f"Working directory set to {project.cwd} (project id: {project_id}).",
+            text=f"Working directory set to {project.cwd}. Use /cwd <path> for future switches.",
             project_id=project_id,
         )
 
@@ -83,7 +83,7 @@ class CommandRouter:
         self.store.set_active_project(channel_id, conversation_id, project.project_id)
         return CommandResponse(
             action="project.cwd",
-            text=f"Working directory set to {project.cwd} (project id: {project.project_id}).",
+            text=f"Working directory set to {project.cwd}.",
             project_id=project.project_id,
         )
 
@@ -103,7 +103,7 @@ class CommandRouter:
             lines = [f"Threads for {project.cwd}:"]
         for thread in threads:
             marker = "*" if thread.thread_id == binding.active_thread_id else "-"
-            details = [f"id: {thread.thread_id}"]
+            details = [f"id: {thread.thread_id}", f"status: {self._humanize_status(thread.status)}"]
             if project_id is None:
                 details.append(f"cwd: {thread.cwd}")
             lines.append(f"{marker} {self._thread_label(thread.thread_id)} ({', '.join(details)})")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..appserver import CodexBackend, StaleThreadBindingError
@@ -234,11 +235,17 @@ class BridgeService:
                 )
             except Exception:
                 return None
-            lines = ["Threads:"]
+            if include_all:
+                lines = ["Threads across working directories:"]
+            else:
+                lines = [f"Threads for {binding.selected_cwd}:"]
             for snapshot in snapshots:
                 marker = "*" if snapshot.thread_id == binding.active_thread_id else "-"
                 label = snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)
-                parts = [f"id: {snapshot.thread_id}"]
+                parts = [
+                    f"id: {snapshot.thread_id}",
+                    f"status: {self._humanize_status(snapshot.status or 'idle')}",
+                ]
                 if include_all or binding.selected_cwd is None:
                     parts.append(f"cwd: {snapshot.cwd}")
                 lines.append(f"{marker} {label} ({', '.join(parts)})")
@@ -266,8 +273,12 @@ class BridgeService:
                     f"Thread: {snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)}",
                     f"Thread id: {snapshot.thread_id}",
                     f"CWD: {snapshot.cwd or '(unknown)'}",
-                    f"Status: {snapshot.status or '(unknown)'}",
+                    f"Status: {self._humanize_status(snapshot.status or '(unknown)')}",
                 ]
             )
             return [self._message(message, "command_result", text)]
         return None
+
+    def _humanize_status(self, status: str) -> str:
+        spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", status)
+        return spaced.replace("_", " ").strip().lower()

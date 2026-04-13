@@ -289,7 +289,7 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
             thread_id="thr_native_1",
             cwd=r"D:\work\alpha",
             preview="Inspect tests",
-            status="idle",
+            status="inProgress",
             name="Investigate alpha",
             path=r"D:\work\alpha",
         ),
@@ -321,8 +321,11 @@ async def test_threads_command_prefers_native_thread_listing() -> None:
 
     assert backend.list_threads_calls == [("qq", "conv-1")]
     assert messages[0].message_type == "command_result"
+    assert messages[0].text.startswith(f"Threads for {project.cwd}:")
     assert "Investigate alpha" in messages[0].text
     assert "Fix beta" in messages[0].text
+    assert "status: in progress" in messages[0].text
+    assert "status: completed" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -338,7 +341,7 @@ async def test_thread_read_command_prefers_native_thread_read() -> None:
         thread_id="thr_native",
         cwd=r"D:\work\alpha",
         preview="Inspect tests",
-        status="completed",
+        status="awaitingUserInput",
         name="Investigate alpha",
         path=r"D:\work\alpha",
     )
@@ -362,7 +365,7 @@ async def test_thread_read_command_prefers_native_thread_read() -> None:
     assert backend.read_thread_calls == [("qq", "conv-1", "thr_native")]
     assert messages[0].message_type == "command_result"
     assert "Thread: Investigate alpha" in messages[0].text
-    assert "Status: completed" in messages[0].text
+    assert "Status: awaiting user input" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -390,6 +393,7 @@ async def test_threads_command_falls_back_to_local_state_when_native_query_fails
     )
 
     assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert messages[0].text.startswith(f"Threads for {thread.cwd}:")
     assert "Local preview" in messages[0].text
 
 
@@ -508,9 +512,11 @@ async def test_threads_all_command_requests_cross_workspace_native_listing() -> 
     )
 
     assert backend.list_threads_calls == [("qq", "conv-1")]
+    assert messages[0].text.startswith("Threads across working directories:")
     assert "Alpha thread" in messages[0].text
     assert "Beta thread" in messages[0].text
     assert "cwd: D:\\work\\beta" in messages[0].text
+    assert "status: idle" in messages[0].text
 
 
 @pytest.mark.asyncio

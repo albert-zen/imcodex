@@ -42,7 +42,7 @@ def test_router_projects_and_project_switch() -> None:
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/projects")
-    assert response.text.startswith("Working directories:")
+    assert response.text.startswith("Working directories (legacy alias for /cwd):")
     assert alpha.cwd in response.text
     assert beta.cwd in response.text
     assert alpha.project_id in response.text
@@ -52,7 +52,8 @@ def test_router_projects_and_project_switch() -> None:
     assert response.action == "project.use"
     assert response.text.startswith("Working directory set to ")
     assert beta.cwd in response.text
-    assert beta.project_id in response.text
+    assert "/cwd <path>" in response.text
+    assert beta.project_id not in response.text
     assert store.get_binding("qq", "conv-1").active_project_id == beta.project_id
     assert store.get_binding("qq", "conv-1").active_thread_id is None
 
@@ -69,6 +70,7 @@ def test_router_cwd_creates_and_selects_project(tmp_path: Path) -> None:
     project = store.get_project(binding.active_project_id)
     assert response.action == "project.cwd"
     assert str(project_path) in response.text
+    assert "project id" not in response.text
     assert project.cwd == str(project_path)
     assert binding.active_thread_id is None
 
@@ -85,8 +87,10 @@ def test_router_thread_switch_and_status() -> None:
     store.set_active_project("qq", "conv-1", alpha.project_id)
 
     threads = router.handle("qq", "conv-1", "/threads")
+    assert threads.text.startswith(f"Threads for {alpha.cwd}:")
     assert "seed preview" in threads.text
     assert "please inspect why the Windows working directory resets..." in threads.text
+    assert "status: idle" in threads.text
     assert threads.text.index("seed preview") < threads.text.index("thr_1")
     assert threads.text.index("please inspect why the Windows working directory resets...") < threads.text.index("thr_2")
 
