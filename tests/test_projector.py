@@ -5,7 +5,9 @@ from pathlib import Path
 from imcodex.models import PendingRequest
 from imcodex.bridge import MessageProjector
 from imcodex.bridge.request_registry import RequestRegistry
+from imcodex.bridge.session_registry import SessionRegistry
 from imcodex.bridge.turn_state import TurnStateMachine
+from imcodex.bridge.visibility import VisibilityClassifier
 from imcodex.store import ConversationStore
 
 
@@ -59,6 +61,17 @@ def test_tool_request_input_is_projected_with_answer_help() -> None:
     assert "[ticket 12]" in message.text
     assert "timezone" in message.text
     assert "/answer 12 timezone=" in message.text
+
+
+def test_projector_rebinds_reused_visibility_classifier_to_its_session_registry() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    stale_registry = SessionRegistry(store)
+    fresh_registry = SessionRegistry(store)
+    visibility = VisibilityClassifier(session_registry=stale_registry)
+
+    projector = MessageProjector(session_registry=fresh_registry, visibility=visibility)
+
+    assert projector.visibility.session_registry is fresh_registry
 
 
 def test_approval_request_includes_available_context_fields() -> None:
@@ -965,6 +978,101 @@ def test_turn_completion_still_routes_after_switching_active_thread() -> None:
     assert message.conversation_id == "conv-1"
     assert "First thread reply" in message.text
     assert final_message is None
+
+
+def test_runtime_session_index_routes_thread_events_before_store_scan() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    registry = SessionRegistry(store)
+    registry.bind_cwd("demo", "conv-1", thread.cwd)
+    registry.bind_thread("demo", "conv-1", thread.thread_id)
+    registry.bind_cwd("demo", "conv-2", thread.cwd)
+    registry.bind_thread("demo", "conv-2", thread.thread_id)
+    projector = MessageProjector(session_registry=registry)
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Route using the runtime session index.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.channel_id == "demo"
+    assert message.conversation_id == "conv-2"
+
+
+def test_projector_drops_late_thread_event_once_runtime_index_detaches_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    registry = SessionRegistry(store)
+    registry.bind_cwd("demo", "conv-1", thread.cwd)
+    registry.bind_thread("demo", "conv-1", thread.thread_id)
+    store.set_selected_cwd("demo", "conv-1", r"D:\work\beta")
+    registry.sync("demo", "conv-1")
+    projector = MessageProjector(session_registry=registry)
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "draft",
+                    "text": "This late commentary should be dropped.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
+def test_projector_routes_late_event_to_same_conversation_after_switching_threads_with_runtime_index() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    first = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="first")
+    second = store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="second")
+    registry = SessionRegistry(store)
+    registry.bind_cwd("demo", "conv-1", first.cwd)
+    registry.bind_thread("demo", "conv-1", first.thread_id)
+    registry.bind_thread("demo", "conv-1", second.thread_id)
+    projector = MessageProjector(session_registry=registry)
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "First thread reply",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.channel_id == "demo"
+    assert message.conversation_id == "conv-1"
+    assert "First thread reply" in message.text
 
 
 def test_command_execution_item_is_hidden_when_tool_calls_are_disabled() -> None:

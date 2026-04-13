@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..appserver import normalize_appserver_message
 from ..models import OutboundMessage, PendingRequest
 from .message_pump import MessagePump
+from .session_registry import SessionRegistry
 from .visibility import VisibilityClassifier
 
 
@@ -13,11 +14,15 @@ class MessageProjector:
         request_registry=None,
         turn_state=None,
         message_pump: MessagePump | None = None,
+        session_registry: SessionRegistry | None = None,
         visibility: VisibilityClassifier | None = None,
     ) -> None:
         self.request_registry = request_registry
         self.turn_state = turn_state
-        self.visibility = visibility or VisibilityClassifier()
+        self.session_registry = session_registry
+        self.visibility = visibility or VisibilityClassifier(session_registry=session_registry)
+        if self.session_registry is not None:
+            self.visibility.session_registry = self.session_registry
         self.message_pump = message_pump or MessagePump(
             progress_renderer=lambda text: self.render_turn_progress(text=text),
             result_renderer=lambda final_text, command_summaries, changed_files, failed, interrupted: self.render_turn_completed(
@@ -154,7 +159,10 @@ class MessageProjector:
             if thread_id and turn_id and status:
                 if self._is_superseded_turn(thread_id, turn_id, store):
                     return None
-                store.note_turn_started(thread_id, turn_id=turn_id, status=status)
+                if self.session_registry is not None:
+                    self.session_registry.note_turn_started(thread_id, turn_id=turn_id, status=status)
+                else:
+                    store.note_turn_started(thread_id, turn_id=turn_id, status=status)
                 if self.turn_state is not None:
                     self.turn_state.start(thread_id, turn_id)
                     self.turn_state.mark_in_progress(thread_id, turn_id)
@@ -314,7 +322,10 @@ class MessageProjector:
             self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
             return None
         if thread_id and turn_id and status:
-            store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
+            if self.session_registry is not None:
+                self.session_registry.note_turn_completed(thread_id, turn_id=turn_id, status=status)
+            else:
+                store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
             if self.turn_state is not None:
                 if status == "completed":
                     self.turn_state.mark_completed(thread_id, turn_id)
@@ -332,6 +343,8 @@ class MessageProjector:
     def _find_binding(self, store, thread_id: str | None):
         if not thread_id:
             return None
+        if self.session_registry is not None:
+            return self.session_registry.find_routing_binding(thread_id)
         return store.find_binding_for_thread(thread_id)
 
     def _attach_conversation(self, thread_id: str, message: OutboundMessage, store) -> OutboundMessage | None:

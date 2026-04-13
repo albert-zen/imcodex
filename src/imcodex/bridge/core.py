@@ -33,14 +33,20 @@ class BridgeService:
         self.command_router = command_router
         self.projector = projector
         self.outbound_sink = outbound_sink
-        self.session_registry = session_registry or SessionRegistry(store)
+        projector_visibility = getattr(self.projector, "visibility", None)
+        projector_session_registry = (
+            getattr(self.projector, "session_registry", None)
+            or getattr(projector_visibility, "session_registry", None)
+        )
+        self.session_registry = session_registry or projector_session_registry or SessionRegistry(store)
         self.thread_directory = thread_directory or ThreadDirectory(store)
-        self.request_registry = request_registry or RequestRegistry(store)
-        self.turn_state = turn_state or TurnStateMachine()
-        if getattr(self.projector, "request_registry", None) is None:
-            self.projector.request_registry = self.request_registry
-        if getattr(self.projector, "turn_state", None) is None:
-            self.projector.turn_state = self.turn_state
+        self.request_registry = request_registry or getattr(self.projector, "request_registry", None) or RequestRegistry(store)
+        self.turn_state = turn_state or getattr(self.projector, "turn_state", None) or TurnStateMachine()
+        self.projector.request_registry = self.request_registry
+        self.projector.turn_state = self.turn_state
+        self.projector.session_registry = self.session_registry
+        if projector_visibility is not None:
+            projector_visibility.session_registry = self.session_registry
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         if message.text.startswith("/"):
@@ -57,6 +63,7 @@ class BridgeService:
             return [self._message(message, "error", response.text)]
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
+            self.session_registry.sync(message.channel_id, message.conversation_id)
             label = self._thread_label(thread_id)
             if label == "Untitled thread":
                 self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
@@ -74,6 +81,7 @@ class BridgeService:
                     "Try /cwd <path> first, then retry /thread attach <thread-id>."
                 )
                 return [self._message(message, "status", text)]
+            self.session_registry.sync(message.channel_id, message.conversation_id)
             label = self._thread_label(thread_id)
             return [self._message(message, "status", f"Attached thread {label} (id: {thread_id}).")]
         if response.action == "turn.stop":
@@ -111,6 +119,8 @@ class BridgeService:
                 if response.missing_ticket_ids:
                     parts.append(f"Unknown tickets: {', '.join(response.missing_ticket_ids)}.")
                 response.text = " ".join(parts)
+        elif response.action in {"project.use", "project.cwd", "thread.use", "recover"}:
+            self.session_registry.sync(message.channel_id, message.conversation_id)
         return [self._message(message, self._command_message_type(response.action), response.text, response.ticket_id)]
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
@@ -133,6 +143,7 @@ class BridgeService:
             )
             return [self._message(message, "status", text)]
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        self.session_registry.sync(message.channel_id, message.conversation_id)
         if binding.active_thread_id is not None and binding.active_turn_id is not None:
             self.turn_state.start(binding.active_thread_id, binding.active_turn_id)
             self.turn_state.mark_in_progress(binding.active_thread_id, binding.active_turn_id)

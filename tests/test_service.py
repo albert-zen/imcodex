@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
+from imcodex.bridge.request_registry import RequestRegistry
+from imcodex.bridge.session_registry import SessionRegistry
+from imcodex.bridge.turn_state import TurnStateMachine
+from imcodex.bridge.visibility import VisibilityClassifier
 from imcodex.appserver import StaleThreadBindingError
 from imcodex.models import InboundMessage
 from imcodex.store import ConversationStore
@@ -242,6 +246,127 @@ async def test_thread_attach_calls_backend_and_reports_canonical_thread() -> Non
 
     assert backend.attached_threads == [("qq", "conv-1", "thr_external")]
     assert messages[0].text == "Attached thread External session (id: thr_attached)."
+
+
+@pytest.mark.asyncio
+async def test_runtime_session_index_routes_server_request_to_latest_attached_conversation() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.set_active_thread(channel_id, conversation_id, "thr_attached")
+            return "thr_attached"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-2",
+            user_id="u2",
+            message_id="m2",
+            text="/thread attach thr_external",
+        )
+    )
+
+    messages = await service.handle_server_request(
+        {
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_attached",
+                "turnId": "turn_1",
+                "_request_id": "99",
+                "command": "pytest -q",
+            },
+        }
+    )
+
+    assert [message.message_type for message in messages] == ["approval_request"]
+    assert messages[0].channel_id == "qq"
+    assert messages[0].conversation_id == "conv-2"
+
+
+@pytest.mark.asyncio
+async def test_read_only_command_does_not_steal_runtime_thread_owner() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    project = store.ensure_project(r"D:\work\alpha")
+
+    class AttachingBackend(FakeBackend):
+        async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+            self.attached_threads.append((channel_id, conversation_id, thread_id))
+            store.record_thread("thr_attached", cwd=project.cwd, preview="External session")
+            store.set_active_thread(channel_id, conversation_id, "thr_attached")
+            return "thr_attached"
+
+    backend = AttachingBackend()
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread attach thr_external",
+        )
+    )
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-2",
+            user_id="u2",
+            message_id="m2",
+            text="/thread attach thr_external",
+        )
+    )
+
+    status_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m3",
+            text="/status",
+        )
+    )
+    assert status_messages[0].message_type == "command_result"
+
+    messages = await service.handle_server_request(
+        {
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_attached",
+                "turnId": "turn_1",
+                "_request_id": "99",
+                "command": "pytest -q",
+            },
+        }
+    )
+
+    assert messages[0].conversation_id == "conv-2"
 
 
 @pytest.mark.asyncio
@@ -1125,3 +1250,34 @@ def test_bridge_service_autowires_registry_and_turn_state_into_plain_projector()
 
     assert service.projector.request_registry is service.request_registry
     assert service.projector.turn_state is service.turn_state
+    assert service.projector.session_registry is service.session_registry
+    assert service.projector.visibility.session_registry is service.session_registry
+
+
+def test_bridge_service_rebinds_preconfigured_projector_and_visibility_to_service_registry() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = FakeBackend()
+    stale_registry = SessionRegistry(store)
+    stale_request_registry = RequestRegistry(store)
+    stale_turn_state = TurnStateMachine()
+    projector = MessageProjector(
+        request_registry=stale_request_registry,
+        turn_state=stale_turn_state,
+        session_registry=stale_registry,
+        visibility=VisibilityClassifier(session_registry=stale_registry),
+    )
+
+    service = BridgeService(
+        store=store,
+        backend=backend,
+        command_router=CommandRouter(store),
+        projector=projector,
+    )
+
+    assert service.request_registry is stale_request_registry
+    assert service.turn_state is stale_turn_state
+    assert service.session_registry is stale_registry
+    assert service.projector.request_registry is service.request_registry
+    assert service.projector.turn_state is service.turn_state
+    assert service.projector.session_registry is service.session_registry
+    assert service.projector.visibility.session_registry is service.session_registry
