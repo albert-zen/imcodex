@@ -31,7 +31,6 @@ class ConversationBinding:
     last_inbound_message_id: str | None = None
     pending_request_ids: list[str] = field(default_factory=list)
     next_ticket: int = 1
-    known_thread_ids: list[str] = field(default_factory=list)
     permission_profile: str = "review"
     visibility_profile: str = "standard"
     show_commentary: bool = True

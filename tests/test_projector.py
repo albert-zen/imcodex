@@ -1085,7 +1085,7 @@ def test_projector_drops_late_thread_event_once_runtime_index_detaches_thread() 
     assert message is None
 
 
-def test_projector_routes_late_event_to_same_conversation_after_switching_threads_with_runtime_index() -> None:
+def test_projector_drops_late_event_after_switching_to_a_different_thread_with_runtime_index() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     first = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="first")
     second = store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="second")
@@ -1112,10 +1112,7 @@ def test_projector_routes_late_event_to_same_conversation_after_switching_thread
         store,
     )
 
-    assert message is not None
-    assert message.channel_id == "demo"
-    assert message.conversation_id == "conv-1"
-    assert "First thread reply" in message.text
+    assert message is None
 
 
 def test_command_execution_item_is_hidden_when_tool_calls_are_disabled() -> None:

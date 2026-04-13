@@ -53,8 +53,6 @@ class SessionRegistry:
     def get_by_thread(self, thread_id: str) -> SessionRecord | None:
         binding = self.find_binding(thread_id)
         if binding is None:
-            binding = self.find_historical_binding(thread_id)
-        if binding is None:
             return None
         return self.get(binding.channel_id, binding.conversation_id)
 
@@ -65,27 +63,10 @@ class SessionRegistry:
             if binding.active_thread_id == thread_id:
                 return binding
             self._drop_runtime_thread(thread_id, key)
-        binding = self.store.find_binding_for_thread(thread_id)
-        if binding is not None and binding.active_thread_id == thread_id:
-            return binding
-        for candidate in self.store._bindings.values():
-            if candidate.active_thread_id == thread_id:
-                return candidate
-        return None
-
-    def find_historical_binding(self, thread_id: str):
         return self.store.find_binding_for_thread(thread_id)
 
     def find_routing_binding(self, thread_id: str):
-        binding = self.find_binding(thread_id)
-        if binding is not None:
-            return binding
-        binding = self.find_historical_binding(thread_id)
-        if binding is None:
-            return None
-        if binding.active_thread_id is None:
-            return None
-        return binding
+        return self.find_binding(thread_id)
 
     def sync(self, channel_id: str, conversation_id: str) -> SessionRecord:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -223,12 +204,6 @@ class SessionRegistry:
             source_binding.active_thread_id = None
             source_binding.active_turn_id = None
             source_binding.active_turn_status = None
-        if thread_id in source_binding.known_thread_ids:
-            source_binding.known_thread_ids = [
-                known_thread_id
-                for known_thread_id in source_binding.known_thread_ids
-                if known_thread_id != thread_id
-            ]
         source_label_key = (source_key[0], source_key[1])
         target_label_key = (target_key[0], target_key[1])
         if self.store._pending_first_thread_labels.get(source_label_key) == thread_id:

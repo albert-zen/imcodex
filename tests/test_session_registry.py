@@ -125,10 +125,7 @@ def test_sync_clears_runtime_mapping_when_session_detaches_thread() -> None:
     registry.sync("qq", "conv-2")
 
     assert registry.find_binding("thr_1") is None
-    session = registry.get_by_thread("thr_1")
-    assert session is not None
-    assert session.conversation_id == "conv-2"
-    assert session.thread_id is None
+    assert registry.get_by_thread("thr_1") is None
 
 
 def test_bind_runtime_moves_pending_requests_to_latest_owner() -> None:
@@ -176,7 +173,6 @@ def test_bind_runtime_clears_stale_active_turn_from_previous_owner() -> None:
     prior = store.get_binding("qq", "conv-1")
     latest = store.get_binding("qq", "conv-2")
     assert prior.active_thread_id is None
-    assert "thr_1" not in prior.known_thread_ids
     assert prior.active_turn_id is None
     assert prior.active_turn_status is None
     assert latest.active_turn_id is None
@@ -280,7 +276,7 @@ def test_bind_runtime_moves_pending_first_prompt_label_to_latest_owner() -> None
     assert store.consume_pending_first_thread_label("qq", "conv-2", "thr_1") is True
 
 
-def test_get_by_thread_preserves_historical_binding_when_thread_is_not_current_active_owner() -> None:
+def test_get_by_thread_returns_none_when_thread_is_not_the_current_active_owner() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     registry = SessionRegistry(store)
 
@@ -288,15 +284,9 @@ def test_get_by_thread_preserves_historical_binding_when_thread_is_not_current_a
     store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="beta")
     registry.bind_cwd("qq", "conv-1", r"D:\work\alpha")
     registry.bind_thread("qq", "conv-1", "thr_2")
-    binding = store.get_binding("qq", "conv-1")
-    binding.known_thread_ids.append("thr_1")
 
     assert registry.find_binding("thr_1") is None
-    session = registry.get_by_thread("thr_1")
-
-    assert session is not None
-    assert session.conversation_id == "conv-1"
-    assert session.thread_id == "thr_2"
+    assert registry.get_by_thread("thr_1") is None
 
 
 def test_late_turn_started_does_not_reattach_recovered_thread_from_stale_runtime_cache() -> None:
@@ -311,9 +301,7 @@ def test_late_turn_started_does_not_reattach_recovered_thread_from_stale_runtime
     session = registry.note_turn_started("thr_1", "turn_1", "inProgress")
     binding = store.get_binding("qq", "conv-1")
 
-    assert session is not None
-    assert session.conversation_id == "conv-1"
-    assert session.thread_id is None
+    assert session is None
     assert binding.active_thread_id is None
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
@@ -332,16 +320,14 @@ def test_late_turn_completed_does_not_keep_stale_runtime_owner_after_recover() -
     session = registry.note_turn_completed("thr_1", "turn_1", "completed")
     binding = store.get_binding("qq", "conv-1")
 
-    assert session is not None
-    assert session.conversation_id == "conv-1"
-    assert session.thread_id is None
+    assert session is None
     assert binding.active_thread_id is None
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
     assert registry.find_binding("thr_1") is None
 
 
-def test_find_routing_binding_preserves_same_conversation_after_switching_threads() -> None:
+def test_find_routing_binding_returns_none_after_switching_to_a_different_thread() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     registry = SessionRegistry(store)
 
@@ -353,6 +339,4 @@ def test_find_routing_binding_preserves_same_conversation_after_switching_thread
 
     binding = registry.find_routing_binding("thr_1")
 
-    assert binding is not None
-    assert binding.conversation_id == "conv-1"
-    assert binding.active_thread_id == "thr_2"
+    assert binding is None

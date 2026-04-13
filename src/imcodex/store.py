@@ -212,8 +212,6 @@ class ConversationStore:
             binding.active_turn_status = None
         else:
             binding.active_turn_id, binding.active_turn_status = active_turn
-        if thread_id not in binding.known_thread_ids:
-            binding.known_thread_ids.append(thread_id)
         binding.last_seen_thread_name = thread.name or self.thread_label(thread_id)
         binding.last_seen_thread_path = thread.path or thread.cwd
         binding.last_seen_thread_status = thread.status
@@ -313,16 +311,14 @@ class ConversationStore:
         self._mark_turn_superseded(thread, turn_id)
         thread.last_turn_id = turn_id
         thread.last_turn_status = status
+        self._thread_active_turns[thread_id] = (turn_id, status)
         binding = self.find_binding_for_thread(thread_id)
         if binding is None:
             self._save()
             return None
-        self._thread_active_turns[thread_id] = (turn_id, status)
         if binding.active_thread_id != thread_id:
             self._save()
             return binding
-        if thread_id not in binding.known_thread_ids:
-            binding.known_thread_ids.append(thread_id)
         binding.active_turn_id = turn_id
         binding.active_turn_status = status
         binding.last_seen_thread_status = status
@@ -352,11 +348,11 @@ class ConversationStore:
         if should_update_last_turn:
             thread.last_turn_id = turn_id
             thread.last_turn_status = status
+        if stored_turn is not None and stored_turn[0] == turn_id:
+            self._thread_active_turns.pop(thread_id, None)
         if binding is None:
             self._save()
             return None
-        if stored_turn is not None and stored_turn[0] == turn_id:
-            self._thread_active_turns.pop(thread_id, None)
         if binding.active_thread_id != thread_id:
             self._save()
             return binding
@@ -602,7 +598,7 @@ class ConversationStore:
 
     def find_binding_for_thread(self, thread_id: str):
         for binding in self._bindings.values():
-            if thread_id == binding.active_thread_id or thread_id in binding.known_thread_ids:
+            if thread_id == binding.active_thread_id:
                 return binding
         return None
 
@@ -729,7 +725,6 @@ class ConversationStore:
             "last_inbound_message_id": binding.last_inbound_message_id,
             "pending_request_ids": list(binding.pending_request_ids),
             "next_ticket": binding.next_ticket,
-            "known_thread_ids": list(binding.known_thread_ids),
             "permission_profile": binding.permission_profile,
             "visibility_profile": binding.visibility_profile,
             "show_commentary": binding.show_commentary,

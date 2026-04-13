@@ -825,7 +825,6 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
     binding = store.get_binding("demo", "conv-1")
     binding.active_thread_id = "thr_stale"
-    binding.known_thread_ids.append("thr_stale")
     client.start_errors["thr_stale"] = "invalid request"
 
     with pytest.raises(StaleThreadBindingError, match="thr_stale"):
@@ -871,7 +870,6 @@ async def test_start_turn_preserves_transport_timeout_without_silent_replacement
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
     binding = store.get_binding("demo", "conv-1")
     binding.active_thread_id = "thr_existing"
-    binding.known_thread_ids.append("thr_existing")
     client.fail_thread_ids.add("thr_existing")
 
     with pytest.raises(AppServerError, match="timed out"):

@@ -354,7 +354,6 @@ def test_legacy_project_fields_are_ignored_on_reload() -> None:
                 "last_inbound_message_id": None,
                 "pending_request_ids": [],
                 "next_ticket": 1,
-                "known_thread_ids": ["thr_alpha"],
                 "permission_profile": "review",
                 "visibility_profile": "standard",
                 "show_commentary": True,
