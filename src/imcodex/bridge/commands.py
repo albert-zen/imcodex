@@ -192,12 +192,14 @@ class CommandRouter:
             thread_text = self._thread_label(binding.active_thread_id)
         turn_text = binding.active_turn_id or "(none)"
         turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
+        model_text = binding.selected_model or "(default)"
         lines = [
             f"Working directory: {cwd_text}",
             f"Thread: {thread_text}",
             f"Thread id: {binding.active_thread_id or '(none)'}",
             f"Turn: {turn_text}",
             f"Turn status: {turn_status}",
+            f"Model: {model_text}",
             f"Permission mode: {binding.permission_profile}",
             f"Visibility profile: {binding.visibility_profile}",
             f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
@@ -255,6 +257,7 @@ class CommandRouter:
             f"PID: {info.get('pid', '(unknown)')}",
             f"Data dir: {info.get('data_dir', '(unknown)')}",
             f"Permission mode: {binding.permission_profile}",
+            f"Model: {binding.selected_model or '(default)'}",
             f"Visibility profile: {binding.visibility_profile}",
             f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
             f"Tool calls: {'shown' if binding.show_toolcalls else 'hidden'}",
@@ -286,6 +289,54 @@ class CommandRouter:
             action="settings.view",
             text=f"Visibility profile set to {profile}.",
         )
+
+    def _handle_model(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) != 1:
+            return CommandResponse(
+                action="settings.model.invalid",
+                text="Usage: /model <name|default>",
+            )
+        if args[0] == "default":
+            self.store.set_model_override(channel_id, conversation_id, None)
+            return CommandResponse(
+                action="settings.model",
+                text="Model override cleared; using the default Codex model.",
+            )
+        self.store.set_model_override(channel_id, conversation_id, args[0])
+        return CommandResponse(
+            action="settings.model",
+            text=f"Model override set to {args[0]}.",
+        )
+
+    def _handle_help(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        del channel_id, conversation_id, args
+        lines = [
+            "Commands:",
+            "/cwd <path>",
+            "/threads [--all]",
+            "/thread attach <thread-id>",
+            "/thread read",
+            "/new",
+            "/recover",
+            "/status",
+            "/stop",
+            "/requests",
+            "/approve <ticket...>",
+            "/approve-session <ticket...>",
+            "/deny <ticket...>",
+            "/cancel <ticket...>",
+            "/answer <ticket> key=value ...",
+            "/permissions autonomous",
+            "/permissions review",
+            "/model <name|default>",
+            "/view minimal|standard|verbose",
+            "/show commentary|toolcalls",
+            "/hide commentary|toolcalls",
+            "/doctor",
+            "/projects (legacy alias)",
+            "/project use <project-id> (legacy alias)",
+        ]
+        return CommandResponse(action="help", text="\n".join(lines))
 
     def _handle_show(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         return self._handle_visibility_toggle(channel_id, conversation_id, args, enabled=True)

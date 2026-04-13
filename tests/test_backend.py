@@ -351,6 +351,40 @@ async def test_autonomous_permission_profile_flows_into_native_approval_policy()
 
 
 @pytest.mark.asyncio
+async def test_selected_model_flows_into_native_thread_and_turn_requests() -> None:
+    store = make_store()
+    store.set_model_override("demo", "conv-1", "gpt-5.4")
+    client = FakeClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.ensure_thread("demo", "conv-1")
+    await backend.start_turn("demo", "conv-1", "Please inspect the repo")
+
+    assert client.thread_starts == [
+        {
+            "cwd": "D:/repo/app",
+            "approval_policy": None,
+            "sandbox": None,
+            "model": "gpt-5.4",
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    assert client.turn_starts == [
+        {
+            "thread_id": "thr_new",
+            "text": "Please inspect the repo",
+            "cwd": None,
+            "model": "gpt-5.4",
+            "approval_policy": None,
+            "sandbox_policy": None,
+            "effort": None,
+            "summary": "concise",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_interrupt_turn_uses_bound_thread_and_turn() -> None:
     store = make_store()
     client = FakeClient()

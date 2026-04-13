@@ -424,6 +424,17 @@ class ConversationStore:
         self._save()
         return binding
 
+    def set_model_override(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        model: str | None,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.selected_model = model
+        self._save()
+        return binding
+
     def set_visibility_profile(
         self,
         channel_id: str,

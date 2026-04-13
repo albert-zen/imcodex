@@ -35,6 +35,7 @@ class ConversationBinding:
     conversation_id: str
     active_project_id: str | None = None
     selected_cwd: str | None = None
+    selected_model: str | None = None
     active_thread_id: str | None = None
     active_turn_id: str | None = None
     active_turn_status: str | None = None

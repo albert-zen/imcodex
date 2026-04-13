@@ -31,8 +31,10 @@ def test_parse_approval_and_answer_commands() -> None:
     assert parse_command("/view verbose").args == ["verbose"]
     assert parse_command("/show commentary").args == ["commentary"]
     assert parse_command("/hide toolcalls").args == ["toolcalls"]
+    assert parse_command("/model gpt-5.4").args == ["gpt-5.4"]
     assert parse_command("/requests").name == "requests"
     assert parse_command("/doctor").name == "doctor"
+    assert parse_command("/help").name == "help"
 
 
 def test_router_projects_and_project_switch() -> None:
@@ -214,8 +216,31 @@ def test_router_supports_permission_and_visibility_commands() -> None:
     assert store.get_binding("qq", "conv-1").show_toolcalls is True
 
 
+def test_router_supports_model_override_and_help_output() -> None:
+    store = ConversationStore(clock=lambda: 100.0)
+    router = CommandRouter(store)
+
+    model = router.handle("qq", "conv-1", "/model gpt-5.4")
+    assert model.action == "settings.model"
+    assert model.text == "Model override set to gpt-5.4."
+    assert store.get_binding("qq", "conv-1").selected_model == "gpt-5.4"
+
+    cleared = router.handle("qq", "conv-1", "/model default")
+    assert cleared.action == "settings.model"
+    assert cleared.text == "Model override cleared; using the default Codex model."
+    assert store.get_binding("qq", "conv-1").selected_model is None
+
+    help_response = router.handle("qq", "conv-1", "/help")
+    assert help_response.action == "help"
+    assert "/cwd <path>" in help_response.text
+    assert "/approve <ticket...>" in help_response.text
+    assert "/permissions autonomous" in help_response.text
+    assert "/model <name|default>" in help_response.text
+
+
 def test_router_lists_requests_and_doctor_output() -> None:
     store = ConversationStore(clock=lambda: 100.0)
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
     store.create_pending_request(
         channel_id="qq",
         conversation_id="conv-1",
@@ -254,6 +279,7 @@ def test_router_lists_requests_and_doctor_output() -> None:
     assert "App Server: ws://127.0.0.1:8765" in doctor.text
     assert "PID: 4321" in doctor.text
     assert "Permission mode: review" in doctor.text
+    assert "Model: gpt-5.4" in doctor.text
     assert "Visibility profile: standard" in doctor.text
 
 
@@ -319,6 +345,7 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     project = store.ensure_project(r"D:\work\alpha")
     binding = store.set_active_project("qq", "conv-1", project.project_id)
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
     binding.active_thread_id = "thr_missing"
     router = CommandRouter(store)
 
@@ -327,4 +354,5 @@ def test_status_tolerates_missing_active_thread_record() -> None:
     assert "Working directory: D:\\work\\alpha" in status.text
     assert "Thread: Untitled thread" in status.text
     assert "Thread id: thr_missing" in status.text
+    assert "Model: gpt-5.4" in status.text
     assert "Permission mode: review" in status.text

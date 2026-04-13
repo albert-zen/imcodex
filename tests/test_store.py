@@ -216,6 +216,7 @@ def test_permission_and_visibility_settings_round_trip(tmp_path: Path) -> None:
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
 
     store.set_permission_profile("qq", "conv-1", "autonomous")
+    store.set_model_override("qq", "conv-1", "gpt-5.4")
     store.set_visibility_profile("qq", "conv-1", "verbose")
     store.set_commentary_visibility("qq", "conv-1", enabled=False)
     store.set_toolcall_visibility("qq", "conv-1", enabled=True)
@@ -224,6 +225,7 @@ def test_permission_and_visibility_settings_round_trip(tmp_path: Path) -> None:
     binding = reloaded.get_binding("qq", "conv-1")
 
     assert binding.permission_profile == "autonomous"
+    assert binding.selected_model == "gpt-5.4"
     assert binding.visibility_profile == "verbose"
     assert binding.show_commentary is False
     assert binding.show_toolcalls is True
