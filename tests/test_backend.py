@@ -22,6 +22,7 @@ class FakeClient:
         self.fail_resume_ids: set[str] = set()
         self.resume_errors: dict[str, str] = {}
         self.resume_results: dict[str, dict[str, str]] = {}
+        self.start_result: dict[str, str] | None = None
         self.list_result: list[dict] = []
         self.read_results: dict[str, dict] = {}
         self.fail_steer_messages: list[str] = []
@@ -39,7 +40,10 @@ class FakeClient:
                 "thread": {
                     "id": result.get("id", params["thread_id"]),
                     "preview": result.get("preview", ""),
-                    "status": {"type": "idle"},
+                    "status": result.get("status", {"type": "idle"}),
+                    "name": result.get("name"),
+                    "path": result.get("path"),
+                    "cwd": result.get("cwd"),
                 }
             }
         return {
@@ -52,6 +56,8 @@ class FakeClient:
 
     async def start_thread(self, **params):
         self.thread_starts.append(params)
+        if self.start_result is not None:
+            return {"thread": dict(self.start_result)}
         return {"thread": {"id": "thr_new", "preview": "", "status": {"type": "idle"}}}
 
     async def list_threads(self, **params):
@@ -271,6 +277,108 @@ async def test_attach_thread_refreshes_preview_for_known_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_thread_persists_native_name_path_and_status_from_start_response() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.start_result = {
+        "id": "thr_new",
+        "preview": "Imported thread",
+        "name": "Native start thread",
+        "path": "D:/repo/app/.codex/threads/thr_new",
+        "cwd": "D:/repo/app",
+        "status": {"type": "awaitingUserInput"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.ensure_thread("demo", "conv-1")
+
+    assert thread_id == "thr_new"
+    thread = store.get_thread("thr_new")
+    binding = store.get_binding("demo", "conv-1")
+    assert thread.name == "Native start thread"
+    assert thread.path == "D:/repo/app/.codex/threads/thr_new"
+    assert thread.status == "awaitingUserInput"
+    assert binding.last_seen_thread_name == "Native start thread"
+    assert binding.last_seen_thread_path == "D:/repo/app/.codex/threads/thr_new"
+    assert binding.last_seen_thread_status == "awaitingUserInput"
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_persists_native_name_path_and_status_from_resume_response() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.resume_results["thr_external"] = {
+        "id": "thr_external",
+        "preview": "Imported thread",
+        "name": "Resumed native thread",
+        "path": "D:/repo/app/.codex/threads/thr_external",
+        "cwd": "D:/repo/app",
+        "status": {"type": "completed"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    assert thread_id == "thr_external"
+    thread = store.get_thread("thr_external")
+    binding = store.get_binding("demo", "conv-1")
+    assert thread.name == "Resumed native thread"
+    assert thread.path == "D:/repo/app/.codex/threads/thr_external"
+    assert thread.status == "completed"
+    assert binding.last_seen_thread_name == "Resumed native thread"
+    assert binding.last_seen_thread_path == "D:/repo/app/.codex/threads/thr_external"
+    assert binding.last_seen_thread_status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_start_response_does_not_treat_native_thread_path_as_working_directory() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.start_result = {
+        "id": "thr_new",
+        "preview": "Imported thread",
+        "path": "D:/repo/app/.codex/threads/thr_new",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.ensure_thread("demo", "conv-1")
+
+    thread = store.get_thread("thr_new")
+    binding = store.get_binding("demo", "conv-1")
+    assert thread.cwd == "D:/repo/app"
+    assert binding.selected_cwd == "D:/repo/app"
+    assert binding.last_seen_thread_path == "D:/repo/app/.codex/threads/thr_new"
+
+
+@pytest.mark.asyncio
+async def test_resume_without_path_preserves_existing_native_thread_path() -> None:
+    store = make_store()
+    store.record_thread(
+        "thr_existing",
+        cwd="D:/repo/app",
+        preview="existing",
+        path="D:/repo/app/.codex/threads/thr_existing",
+    )
+    store.set_active_thread("demo", "conv-1", "thr_existing")
+    client = FakeClient()
+    client.resume_results["thr_existing"] = {
+        "id": "thr_existing",
+        "preview": "Refreshed preview",
+        "cwd": "D:/repo/app",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.ensure_thread("demo", "conv-1")
+
+    thread = store.get_thread("thr_existing")
+    binding = store.get_binding("demo", "conv-1")
+    assert thread.path == "D:/repo/app/.codex/threads/thr_existing"
+    assert binding.last_seen_thread_path == "D:/repo/app/.codex/threads/thr_existing"
+
+
+@pytest.mark.asyncio
 async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing() -> None:
     store = make_store()
     binding = store.set_selected_cwd("demo", "conv-1", "D:/repo/alt")
@@ -376,6 +484,50 @@ async def test_read_thread_imports_native_thread_metadata() -> None:
     assert snapshot.status == "completed"
     assert store.get_thread("thr_native").name == "Investigate alpha"
     assert client.thread_reads == [{"thread_id": "thr_native"}]
+
+
+@pytest.mark.asyncio
+async def test_read_thread_without_cwd_does_not_create_empty_cwd_thread_record() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.read_results["thr_native"] = {
+        "id": "thr_native",
+        "name": "Investigate alpha",
+        "preview": "Inspect failing tests",
+        "status": "completed",
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshot = await backend.read_thread("demo", "conv-1", "thr_native")
+
+    assert snapshot is not None
+    assert snapshot.thread_id == "thr_native"
+    assert snapshot.cwd == ""
+    with pytest.raises(KeyError):
+        store.get_thread("thr_native")
+
+
+@pytest.mark.asyncio
+async def test_list_threads_without_cwd_do_not_create_empty_cwd_thread_records() -> None:
+    store = make_store()
+    client = FakeClient()
+    client.list_result = [
+        {
+            "id": "thr_native",
+            "name": "Investigate alpha",
+            "preview": "Inspect failing tests",
+            "status": "completed",
+        }
+    ]
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshots = await backend.list_threads("demo", "conv-1", include_all=True)
+
+    assert len(snapshots) == 1
+    assert snapshots[0].thread_id == "thr_native"
+    assert snapshots[0].cwd == ""
+    with pytest.raises(KeyError):
+        store.get_thread("thr_native")
 
 
 @pytest.mark.asyncio

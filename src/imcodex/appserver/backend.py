@@ -64,25 +64,33 @@ class CodexBackend:
                 self.store.note_thread_status(binding.active_thread_id, status="stale")
                 raise StaleThreadBindingError(binding.active_thread_id) from exc
             else:
-                thread_id = result["thread"]["id"]
+                payload = self._normalize_thread_payload(result["thread"])
+                thread_id = str(payload["id"] or "")
                 self._bind_thread_result(
                     channel_id=channel_id,
                     conversation_id=conversation_id,
                     thread_id=thread_id,
-                    cwd=cwd,
-                    preview=result["thread"].get("preview", ""),
+                    cwd=str(payload["cwd"] or cwd),
+                    preview=str(payload["preview"] or ""),
+                    status=str(payload["status"] or "idle"),
+                    name=payload.get("name"),
+                    path=payload.get("path"),
                 )
                 return thread_id
         result = await self.client.start_thread(
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model)
         )
-        thread_id = result["thread"]["id"]
+        payload = self._normalize_thread_payload(result["thread"])
+        thread_id = str(payload["id"] or "")
         self._bind_thread_result(
             channel_id=channel_id,
             conversation_id=conversation_id,
             thread_id=thread_id,
-            cwd=cwd,
-            preview=result["thread"].get("preview", ""),
+            cwd=str(payload["cwd"] or cwd),
+            preview=str(payload["preview"] or ""),
+            status=str(payload["status"] or "idle"),
+            name=payload.get("name"),
+            path=payload.get("path"),
         )
         return thread_id
 
@@ -97,13 +105,17 @@ class CodexBackend:
             thread_id=thread_id,
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model),
         )
-        resolved_thread_id = result["thread"]["id"]
+        payload = self._normalize_thread_payload(result["thread"])
+        resolved_thread_id = str(payload["id"] or "")
         self._bind_thread_result(
             channel_id=channel_id,
             conversation_id=conversation_id,
             thread_id=resolved_thread_id,
-            cwd=cwd,
-            preview=result["thread"].get("preview", ""),
+            cwd=str(payload["cwd"] or cwd),
+            preview=str(payload["preview"] or ""),
+            status=str(payload["status"] or "idle"),
+            name=payload.get("name"),
+            path=payload.get("path"),
         )
         return resolved_thread_id
 
@@ -345,28 +357,56 @@ class CodexBackend:
         thread_id: str,
         cwd: str,
         preview: str,
+        status: str,
+        name: str | None,
+        path: str | None,
     ) -> None:
-        self.store.record_thread(thread_id=thread_id, cwd=cwd, preview=preview)
+        self.store.record_thread(
+            thread_id=thread_id,
+            cwd=cwd,
+            preview=preview,
+            status=status,
+            name=name,
+            path=path,
+        )
         self.store.set_active_thread(channel_id, conversation_id, thread_id)
 
     def _normalize_thread_payload(self, payload: dict) -> dict[str, str | None]:
         status = payload.get("status")
         if isinstance(status, dict):
             status = status.get("type") or status.get("status")
-        cwd = payload.get("cwd") or payload.get("path") or ""
+        cwd = payload.get("cwd") or ""
+        path = payload.get("path")
         return {
             "id": str(payload.get("id") or payload.get("threadId") or ""),
             "cwd": str(cwd),
-            "path": str(payload.get("path") or cwd or ""),
+            "path": str(path) if path is not None else None,
             "preview": str(payload.get("preview") or ""),
             "status": str(status or "idle"),
             "name": payload.get("name"),
         }
 
     def _remember_native_thread(self, payload: dict[str, str | None]) -> NativeThreadSnapshot:
+        thread_id = str(payload["id"] or "")
+        existing = None
+        if thread_id:
+            try:
+                existing = self.store.get_thread(thread_id)
+            except KeyError:
+                existing = None
+        resolved_cwd = str(payload["cwd"] or (existing.cwd if existing is not None else ""))
+        if not resolved_cwd:
+            return NativeThreadSnapshot(
+                thread_id=thread_id,
+                cwd="",
+                preview=str(payload["preview"] or (existing.preview if existing is not None else "")),
+                status=str(payload["status"] or (existing.status if existing is not None else "idle")),
+                name=payload.get("name") if payload.get("name") is not None else (existing.name if existing is not None else None),
+                path=payload.get("path") if payload.get("path") is not None else (existing.path if existing is not None else None),
+            )
         thread = self.store.record_thread(
-            thread_id=str(payload["id"] or ""),
-            cwd=str(payload["cwd"] or ""),
+            thread_id=thread_id,
+            cwd=resolved_cwd,
             preview=str(payload["preview"] or ""),
             status=str(payload["status"] or "idle"),
             name=payload.get("name"),
