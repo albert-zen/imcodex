@@ -696,6 +696,7 @@ class ConversationStore:
     def _load_binding(self, item: dict[str, Any]) -> ConversationBinding:
         payload = dict(item)
         payload.pop("active_project_id", None)
+        payload.pop("known_thread_ids", None)
         return ConversationBinding(**payload)
 
     def _serialize_thread(self, thread: ThreadRecord) -> dict[str, Any]:
