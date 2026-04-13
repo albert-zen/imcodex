@@ -51,38 +51,39 @@ That means:
   - `path`
   - `status`
 - `/threads` and `/thread read` now prefer native Codex thread queries
-- the message pump now suppresses repeated turn progress within a turn
+- runtime session routing now prefers a dedicated session index over store scans
+- the message pump now suppresses repeated turn progress within a turn and gives
+  final answers terminal precedence
 - new conversations require an explicit `cwd`
 - `/thread attach` can resume a native thread before a `cwd` is preselected
 - runtime session start no longer falls back to legacy `project` alias state
+- stale native thread bindings now surface `/recover` instead of silently
+  replacing the thread
+- the main user-facing vocabulary is now `cwd`, `thread`, `turn`, and `ticket`
 
-## Now: Keep Reducing Bridge-Owned Workspace State
+## Now: Remove The Last Legacy State And Routing Paths
 
 ### 1. Native Session Identity
 
-- Define the minimum identity needed for continuity:
+- Remove the remaining `project`-heavy fields from primary runtime paths.
+- Continue shrinking runtime identity to:
   - `threadId`
-  - `cwd`
-  - native `thread.path` when it materially matters
-  - persisted history settings when they materially affect resume/read fidelity
-- Clarify what must be bridge-owned versus Codex-owned.
-- Prefer native discovery and recovery paths such as `thread/list`, `thread/read`, and `thread/resume` over bridge-invented registries when possible.
-- Define restart, attach, and resume semantics around native Codex behavior first.
-- Continue demoting `project` to a compatibility alias while `selected_cwd` becomes the only runtime workspace identity.
+  - `selected_cwd`
+  - native thread metadata when it materially helps recovery
+- Replace the remaining `known_thread_ids` and store-scan routing fallbacks with
+  runtime-index or native-query paths.
 
 ### 2. Native Permission Model
 
-- Keep bridge-level auto-approve out of the long-term design.
-- Rebuild permission handling around native Codex:
-  - `approval_policy`
-  - `sandbox_policy`
-  - native permission profiles or modes
-- Keep extending the IM surface around native profiles, not bridge-owned shortcuts.
+- Keep bridge-level auto-approve out of the design.
+- Focus the next round on making native permission profiles clearer in the IM
+  surface and docs, not on inventing bridge-owned policy logic.
 
 ### 3. Native Message Pump
 
-- Design a queue or message-pump model for asynchronous chat delivery.
-- The unit of ordering should not just be "messages", but conversation plus turn lifecycle.
+- Continue turning the outbound queue into a real turn-aware message pump.
+- The unit of ordering should be conversation plus turn lifecycle, not just a
+  flat message stream.
 - Support:
   - throttling
   - deduplication
@@ -92,35 +93,35 @@ That means:
 
 ### 4. Tool Visibility Model
 
-- Make tool visibility configurable by user-facing category rather than raw protocol event.
-- Decide the stable categories worth exposing in chat.
+- Make tool visibility configurable by stable user-facing categories rather than
+  raw protocol events.
 - Keep low-value protocol chatter and token deltas out of the main chat flow.
 
-## Next: Finish The Core Cutover
+## Next: Validate Native Continuity On Real Surfaces
 
 ### 5. Minimal Persistent State
 
-- Rebuild persisted state around the new native model.
-- Keep only the minimum bridge-owned information:
-  - channel/conversation binding
-  - selected `cwd`
-  - selected native thread
-  - user-facing display preferences
-- Do not preserve legacy bridge state just for compatibility if it complicates the model.
-
-### 6. Replace Legacy Approval And Routing Behavior
-
-- Remove bridge-specific approval shortcuts that duplicate native Codex behavior.
-- Remove legacy routing chatter that only exists to explain internal bridge choices.
-- Make normal chat feel like a native Codex surface rather than a wrapper.
-
-### 7. Rebuild Resume / Attach Around Native Semantics
-
-- Treat `thread/resume` and attach as primary workflows, not optional extras.
-- Make cross-surface continuation explicit:
-  - IM -> CLI/Desktop
-  - CLI/Desktop -> IM
+- Verify that the reduced state model still holds up with:
   - restart -> same conversation
+  - IM -> external native thread
+  - external native thread -> IM
+- Do not preserve extra legacy bridge state if it complicates the model.
+
+### 6. Cross-Surface Continuity
+
+- Validate continuity with real Codex CLI and Desktop-native threads.
+- Clarify what roles are played by:
+  - `threadId`
+  - `cwd`
+  - `thread.path`
+  - persisted history
+- Keep recovery explicit when the thread is stale, but avoid misclassifying
+  ordinary transport failures as stale.
+
+### 7. Finish User-Surface Simplification
+
+- Keep reducing routing chatter and legacy vocabulary.
+- Make status, requests, and tool-visibility controls read naturally in IM.
 
 ## Later: Harden The New Core
 

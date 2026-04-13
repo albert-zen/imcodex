@@ -43,14 +43,18 @@ already in the mainline:
 - native thread metadata persisted from `thread/start`, `thread/resume`,
   `thread/read`, and `thread/list`
 - `/threads` and `/thread read` routed through native backend query paths
-- message-pump deduplication for repeated turn progress
+- runtime session index routing replacing store scans as the primary route
+- `cwd`-first persisted state with legacy project aliases demoted
+- message-pump deduplication plus final-answer precedence
 - explicit `cwd` required for new conversations and new threads
 - `/thread attach` allowed before a working directory is preselected
 - runtime session resolution no longer depends on legacy `active_project_id`
+- stale thread bindings surface explicit recovery instead of silent replacement
+- the main user-facing vocabulary is now `CWD`, `thread`, `turn`, and `ticket`
 
 So the next phase is not "start the redesign".
-It is "continue replacing the remaining legacy state with the native-first
-model".
+It is "finish removing the last legacy registries and validate the native model
+against real cross-surface workflows".
 
 ## 2. What The Current System Is Good For
 
@@ -99,8 +103,9 @@ We still need a cleaner answer to:
   - session path
 - what belongs to Codex state versus bridge state
 
-This should be redesigned from first principles against native `thread/resume`
-behavior instead of by growing the current store model.
+The current implementation is much closer to this model now, but the remaining
+problem is not high-level shape. It is the last legacy fallbacks still living
+inside the store and routing helpers.
 
 It should also explicitly consider which native APIs should become primary:
 
@@ -112,8 +117,9 @@ It should also explicitly consider which native APIs should become primary:
 
 ### 4.2 Permission model
 
-The bridge-level auto-approve path was useful as a temporary product escape
-hatch, but it should not be the permanent architecture.
+The bridge-level auto-approve path has already been cut over to native
+permission profiles, so the remaining work here is mostly product fit and
+documentation rather than architectural cleanup.
 
 We should redesign around native Codex concepts:
 
@@ -123,11 +129,11 @@ We should redesign around native Codex concepts:
 
 ### 4.3 Message pump
 
-Current message projection works, but it is still the result of incremental
-fixes around progress, final answers, and async ordering.
+Current message projection is meaningfully better than before, but it is still
+not a fully mature outbound coordinator.
 
-The better long-term model is a real per-conversation/per-turn message pump that
-explicitly handles:
+The remaining work is to keep turning it into a real per-conversation/per-turn
+message pump that explicitly handles:
 
 - throttling
 - deduplication
@@ -165,7 +171,7 @@ not optional extras:
 
 The next cycle should follow this sequence.
 
-## Phase 1: Finish The Remaining Core Design
+## Phase 1: Finish The Remaining Native Core Reduction
 
 ### Goal
 
@@ -174,19 +180,18 @@ wrong one.
 
 ### Deliverables
 
-- a session identity design
-- a permission model design
-- a message-pump design
-- a tool-visibility design
-- a minimal persisted-state design
-- a native-capability audit showing what we can stop owning in the bridge
+- remove the remaining project-heavy persisted fields from primary runtime paths
+- replace the last store-scan routing fallbacks with native or runtime-index paths
+- define the remaining continuity invariants against real native thread behavior
+- tighten the remaining message-pump ordering and throttling rules
 
 ### Why first
 
-Without these remaining decisions, future work on portability, progress
-visibility, and state reduction will keep re-litigating the same assumptions.
+This is the smallest remaining slice that still reduces real architectural
+weight. It keeps us from spending the next round polishing a transitional state
+model.
 
-## Phase 2: Continue The Core Cutover
+## Phase 2: Validate Native Continuity Against Real Surfaces
 
 ### Goal
 
@@ -195,18 +200,17 @@ clearer native-first core.
 
 ### Scope
 
-- rebuild state around native session continuity
-- keep replacing bridge-owned approval and routing shortcuts
-- introduce the new message pump
-- make tool visibility configurable by category
-- keep channel adapters and app-server transport where possible
+- validate CLI/Desktop to IM continuity with native `threadId`
+- verify how far `thread.path`, persisted history, and `cwd` actually define continuity
+- document recovery rules when the native thread is valid but transport is unstable
+- expand high-value mock and real-flow continuity coverage
 
 ### Why second
 
 This is the first phase where code churn is worth paying for.
 By then, the design should already justify what gets kept and what gets thrown away.
 
-## Phase 3: Reattach Product Features To The New Core
+## Phase 3: Finish Product-Surface Simplification
 
 ### Goal
 
@@ -214,11 +218,10 @@ Reconnect the user-facing experience on top of the rebuilt kernel.
 
 ### Scope
 
-- `cwd`-first terminology
-- human-readable thread labels
-- attach and resume workflows
-- cleaner status output
-- reduced chat noise
+- finish removing low-value routing chatter that still leaks through commands or progress
+- make tool visibility category controls more user-comprehensible
+- keep thread naming aligned with native name / preview / first-user-message order
+- refine status and request surfaces without reintroducing project-first vocabulary
 
 ### Why this follows rebuild
 

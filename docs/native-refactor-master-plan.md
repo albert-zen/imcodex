@@ -88,20 +88,24 @@ Completed or substantially landed:
 - native permission profile cutover
 - native thread metadata persistence and surfacing
 - native `/threads` and `/thread read` query flow
-- first-pass message-pump deduplication
+- runtime session index routing for notification and request delivery
+- `cwd`-first persisted state reduction with legacy project aliases preserved
+- turn-aware message-pump deduplication and final-answer precedence
 - explicit `cwd` requirement for new conversations
 - attach-before-cwd support for native `thread/resume`
 - removal of runtime fallback to legacy `active_project_id`
+- stale native threads now surface explicit recovery instead of silent replacement
+- user-facing vocabulary is now `CWD + thread + turn + ticket`
 
-That means the live program is currently between Phase 3 and Phase 5, not at
-the beginning of Phase 1.
+That means the live program has completed the first native-first cutover cycle
+and is now in follow-up reduction work, not at the beginning of Phase 1.
 
 The highest-value remaining work is now:
 
-1. reduce persisted workspace state further
-2. replace legacy thread-routing registries
-3. finish message-pump semantics
-4. continue simplifying the user-visible surface around `cwd`
+1. remove the remaining project-heavy state from models and store internals
+2. finish replacing `known_thread_ids` and store-scan routing fallbacks
+3. extend message-pump throttling, ordering, and stale-turn suppression
+4. validate cross-surface continuity against real CLI/Desktop-native threads
 
 ## 3. What Must Stay Stable During Refactor
 
