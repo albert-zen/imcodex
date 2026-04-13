@@ -16,11 +16,11 @@ class ProjectRecord:
 @dataclass(slots=True)
 class ThreadRecord:
     thread_id: str
-    project_id: str
     preview: str
     status: str
     last_used_at: float
     cwd: str
+    project_id: str | None = None
     name: str | None = None
     path: str | None = None
     last_turn_id: str | None = None

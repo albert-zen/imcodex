@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 from imcodex.bridge import CommandRouter, parse_command
 from imcodex.store import ConversationStore
+
+
+def _state_path(name: str) -> Path:
+    return Path.cwd() / f".pytest-state-{name}-{uuid4().hex}.json"
 
 
 def test_parse_projects_and_switch_commands() -> None:
@@ -456,3 +461,31 @@ def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_i
 
     assert response.action == "thread.read.query"
     assert response.thread_id == "thr_missing"
+
+
+def test_router_project_aliases_work_after_reloading_cwd_first_state() -> None:
+    state_path = _state_path("commands-cwd-first")
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+    store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="alpha")
+    store.record_thread("thr_2", cwd=r"D:\work\beta", preview="beta")
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+
+    try:
+        reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+        router = CommandRouter(reloaded)
+
+        projects = router.handle("qq", "conv-1", "/projects")
+        beta_project = next(project for project in reloaded.list_projects() if project.cwd == r"D:\work\beta")
+
+        assert projects.action == "projects.list"
+        assert r"D:\work\alpha" in projects.text
+        assert r"D:\work\beta" in projects.text
+        assert beta_project.project_id in projects.text
+
+        response = router.handle("qq", "conv-1", f"/project use {beta_project.project_id}")
+
+        assert response.action == "project.use"
+        assert response.project_id == beta_project.project_id
+        assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\beta"
+    finally:
+        state_path.unlink(missing_ok=True)

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from uuid import uuid4
 
 from imcodex.store import ConversationStore
+
+
+def _state_path(name: str) -> Path:
+    return Path.cwd() / f".pytest-state-{name}-{uuid4().hex}.json"
 
 
 def test_thread_record_autocreates_project_from_cwd() -> None:
@@ -361,3 +367,218 @@ def test_unknown_thread_turn_events_are_ignored() -> None:
 
     assert started is None
     assert completed is None
+
+
+def test_state_persists_cwd_first_and_rebuilds_project_aliases() -> None:
+    state_path = _state_path("store-cwd-first")
+    store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+    store.set_selected_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.record_thread("thr_alpha", cwd=r"D:\work\alpha", preview="alpha")
+    store.record_thread("thr_beta", cwd=r"D:\work\beta", preview="beta")
+
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+
+        assert "projects" not in payload
+        assert "project_aliases" in payload
+        assert all("project_id" not in thread for thread in payload["threads"])
+        assert all("active_project_id" not in binding for binding in payload["bindings"])
+
+        reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+        projects = {project.cwd: project for project in reloaded.list_projects()}
+        beta_project = projects[r"D:\work\beta"]
+
+        assert set(projects) == {r"D:\work\alpha", r"D:\work\beta"}
+        assert reloaded.get_thread("thr_alpha").project_id == projects[r"D:\work\alpha"].project_id
+
+        binding = reloaded.set_active_project("qq", "conv-1", beta_project.project_id)
+
+        assert binding.selected_cwd == r"D:\work\beta"
+        assert binding.active_project_id == beta_project.project_id
+        assert binding.active_thread_id is None
+    finally:
+        state_path.unlink(missing_ok=True)
+
+
+def test_project_alias_recency_order_survives_reload() -> None:
+    state_path = _state_path("store-project-recency")
+    current = {"value": 100.0}
+
+    def clock() -> float:
+        value = current["value"]
+        current["value"] += 1.0
+        return value
+
+    store = ConversationStore(clock=clock, state_path=state_path)
+    store.record_thread("thr_alpha", cwd=r"D:\work\alpha", preview="alpha")
+    store.record_thread("thr_beta", cwd=r"D:\work\beta", preview="beta")
+    store.ensure_project(r"D:\work\beta")
+    store.ensure_project(r"D:\work\alpha")
+
+    try:
+        reloaded = ConversationStore(clock=lambda: 300.0, state_path=state_path)
+
+        assert [project.cwd for project in reloaded.list_projects()] == [
+            r"D:\work\alpha",
+            r"D:\work\beta",
+        ]
+    finally:
+        state_path.unlink(missing_ok=True)
+
+
+def test_legacy_projects_payload_still_loads_project_aliases() -> None:
+    state_path = _state_path("store-legacy-projects")
+    payload = {
+        "projects": [
+            {
+                "project_id": "proj_alpha",
+                "cwd": r"D:\work\alpha",
+                "display_name": "alpha",
+                "last_used_at": 42.0,
+                "created_seq": 1,
+            }
+        ],
+        "threads": [],
+        "bindings": [],
+        "pending_requests": [],
+        "thread_active_turns": [],
+        "thread_first_user_messages": {},
+        "pending_first_thread_labels": [],
+        "thread_order": [],
+        "seq": 1,
+    }
+    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    try:
+        reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+
+        projects = reloaded.list_projects()
+
+        assert len(projects) == 1
+        assert projects[0].project_id == "proj_alpha"
+        assert projects[0].cwd == r"D:\work\alpha"
+        assert projects[0].last_used_at == 42.0
+    finally:
+        state_path.unlink(missing_ok=True)
+
+
+def test_legacy_thread_only_payload_preserves_project_alias_recency() -> None:
+    state_path = _state_path("store-legacy-thread-only")
+    payload = {
+        "threads": [
+            {
+                "thread_id": "thr_beta",
+                "preview": "beta",
+                "status": "idle",
+                "last_used_at": 20.0,
+                "cwd": r"D:\work\beta",
+                "name": None,
+                "path": None,
+                "last_turn_id": None,
+                "last_turn_status": None,
+                "stale_turn_ids": [],
+                "created_seq": 2,
+            },
+            {
+                "thread_id": "thr_alpha",
+                "preview": "alpha",
+                "status": "idle",
+                "last_used_at": 10.0,
+                "cwd": r"D:\work\alpha",
+                "name": None,
+                "path": None,
+                "last_turn_id": None,
+                "last_turn_status": None,
+                "stale_turn_ids": [],
+                "created_seq": 1,
+            },
+        ],
+        "bindings": [],
+        "pending_requests": [],
+        "thread_active_turns": [],
+        "thread_first_user_messages": {},
+        "pending_first_thread_labels": [],
+        "thread_order": ["thr_beta", "thr_alpha"],
+        "seq": 2,
+    }
+    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    try:
+        reloaded = ConversationStore(clock=lambda: 100.0, state_path=state_path)
+
+        projects = reloaded.list_projects()
+
+        assert [project.cwd for project in projects] == [r"D:\work\beta", r"D:\work\alpha"]
+        assert [project.last_used_at for project in projects] == [20.0, 10.0]
+    finally:
+        state_path.unlink(missing_ok=True)
+
+
+def test_legacy_project_alias_id_is_reused_for_threads_and_bindings() -> None:
+    state_path = _state_path("store-legacy-project-id")
+    payload = {
+        "projects": [
+            {
+                "project_id": "proj_alpha",
+                "cwd": r"D:\work\alpha",
+                "display_name": "alpha",
+                "last_used_at": 42.0,
+                "created_seq": 1,
+            }
+        ],
+        "threads": [
+            {
+                "thread_id": "thr_alpha",
+                "preview": "alpha",
+                "status": "idle",
+                "last_used_at": 42.0,
+                "cwd": r"D:\work\alpha",
+                "project_id": "proj_alpha",
+                "name": None,
+                "path": None,
+                "last_turn_id": None,
+                "last_turn_status": None,
+                "stale_turn_ids": [],
+                "created_seq": 1,
+            }
+        ],
+        "bindings": [
+            {
+                "channel_id": "qq",
+                "conversation_id": "conv-1",
+                "active_project_id": "proj_alpha",
+                "selected_cwd": r"D:\work\alpha",
+                "selected_model": None,
+                "active_thread_id": "thr_alpha",
+                "active_turn_id": None,
+                "active_turn_status": None,
+                "last_inbound_message_id": None,
+                "pending_request_ids": [],
+                "next_ticket": 1,
+                "known_thread_ids": ["thr_alpha"],
+                "permission_profile": "review",
+                "visibility_profile": "standard",
+                "show_commentary": True,
+                "show_toolcalls": False,
+                "last_seen_thread_name": None,
+                "last_seen_thread_path": None,
+                "last_seen_thread_status": None,
+            }
+        ],
+        "pending_requests": [],
+        "thread_active_turns": [],
+        "thread_first_user_messages": {},
+        "pending_first_thread_labels": [],
+        "thread_order": ["thr_alpha"],
+        "seq": 1,
+    }
+    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+    try:
+        reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
+
+        assert reloaded.get_thread("thr_alpha").project_id == "proj_alpha"
+        assert [thread.thread_id for thread in reloaded.list_threads("proj_alpha")] == ["thr_alpha"]
+        assert reloaded.get_binding("qq", "conv-1").active_project_id == "proj_alpha"
+    finally:
+        state_path.unlink(missing_ok=True)
