@@ -360,4 +360,5 @@ class QQChannelAdapter:
         if not callable(get_binding):
             return None
         binding = get_binding("qq", conversation_id)
-        return getattr(binding, "last_inbound_message_id", None)
+        reply_context = getattr(binding, "reply_context", None) or {}
+        return reply_context.get("last_inbound_message_id") or getattr(binding, "last_inbound_message_id", None)

@@ -4,19 +4,13 @@ import asyncio
 import contextlib
 import inspect
 import json
-import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..logging_utils import summarize_text
-
 
 JsonDict = dict[str, Any]
-WebSocketFactory = Callable[[str], Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
-
-logger = logging.getLogger(__name__)
 
 
 class AppServerError(RuntimeError):
@@ -27,43 +21,28 @@ class AppServerClient:
     def __init__(
         self,
         *,
-        websocket_factory: WebSocketFactory,
-        transport_url: str,
+        supervisor,
         client_info: dict[str, str],
         request_timeout_s: float = 15.0,
     ) -> None:
-        self._websocket_factory = websocket_factory
-        self._transport_url = transport_url
+        self._supervisor = supervisor
         self._client_info = client_info
-        self._ws: Any = None
+        self._request_timeout_s = request_timeout_s
+        self._process: Any = None
+        self._stdin: Any = None
+        self._stdout: Any = None
         self._listener_task: asyncio.Task[None] | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
-        self._pending_requests: dict[str, JsonDict] = {}
+        self._pending_server_requests: dict[str, JsonDict] = {}
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
-        self._agent_message_buffers: dict[tuple[str, str, str], list[str]] = {}
-        self._request_timeout_s = request_timeout_s
         self.initialized = False
-        self.last_agent_message = ""
 
     async def connect(self) -> None:
-        if self._ws is not None:
-            return
-        logger.info("Connecting to app-server transport url=%s", self._transport_url)
-        ws = self._websocket_factory(self._transport_url)
-        if isinstance(ws, Awaitable):
-            ws = await ws
-        self._ws = ws
-        self._listener_task = asyncio.create_task(self._receive_loop())
+        await self._ensure_connected()
 
     async def close(self) -> None:
-        logger.info("Closing app-server transport")
-        if self._listener_task is not None:
-            self._listener_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._listener_task
-            self._listener_task = None
         await self._reset_connection()
 
     def add_notification_handler(self, handler: NotificationHandler) -> None:
@@ -72,95 +51,40 @@ class AppServerClient:
     def add_server_request_handler(self, handler: ServerRequestHandler) -> None:
         self._server_request_handlers.append(handler)
 
-    def pending_requests(self) -> list[JsonDict]:
-        return [
-            {"ticket_id": ticket_id, **request}
-            for ticket_id, request in self._pending_requests.items()
-        ]
-
     async def initialize(self) -> JsonDict:
         await self._ensure_connected()
-        logger.info("Initializing app-server client")
-        result = await self._request(
-            "initialize",
-            {"clientInfo": self._client_info},
-        )
+        result = await self._request_without_initialize("initialize", {"clientInfo": self._client_info})
         await self._notify("initialized", {})
         self.initialized = True
         return result
 
     async def start_thread(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
-        await self._ensure_ready()
         payload = dict(params or {})
         payload.update(kwargs)
-        result = await self._request("thread/start", self._normalize_thread_start(payload))
-        await asyncio.sleep(0)
-        return result
+        return await self._request("thread/start", self._normalize_thread_params(payload))
 
     async def resume_thread(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
-        await self._ensure_ready()
         payload = dict(params or {})
         payload.update(kwargs)
-        result = await self._request("thread/resume", self._normalize_thread_start(payload))
-        await asyncio.sleep(0)
-        return result
+        return await self._request("thread/resume", self._normalize_thread_params(payload))
 
     async def list_threads(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
-        await self._ensure_ready()
         payload = dict(params or {})
         payload.update(kwargs)
-        result = await self._request("thread/list", payload)
-        await asyncio.sleep(0)
-        return result
+        return await self._request("thread/list", payload)
 
     async def read_thread(self, thread_id: str) -> JsonDict:
-        await self._ensure_ready()
-        result = await self._request("thread/read", {"threadId": thread_id})
-        await asyncio.sleep(0)
-        return result
+        return await self._request("thread/read", {"threadId": thread_id})
 
-    async def set_thread_name(self, thread_id: str, name: str) -> JsonDict:
-        await self._ensure_ready()
-        result = await self._request(
-            "thread/name/set",
-            {"threadId": thread_id, "name": name},
-        )
-        await asyncio.sleep(0)
-        return result
-
-    async def archive_thread(self, thread_id: str) -> JsonDict:
-        await self._ensure_ready()
-        result = await self._request("thread/archive", {"threadId": thread_id})
-        await asyncio.sleep(0)
-        return result
-
-    async def start_turn(
-        self,
-        thread_id: str | None = None,
-        text: str | None = None,
-        **kwargs: Any,
-    ) -> JsonDict:
-        await self._ensure_ready()
-        if thread_id is not None:
-            kwargs["thread_id"] = thread_id
-        if text is not None:
-            kwargs["text"] = text
-        result = await self._request(
-            "turn/start",
-            self._normalize_turn_start(kwargs),
-        )
-        await asyncio.sleep(0)
-        return result
-
-    async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
-        await self._ensure_ready()
-        return await self._request(
-            "turn/interrupt",
-            {"threadId": thread_id, "turnId": turn_id},
-        )
+    async def start_turn(self, thread_id: str, text: str, **kwargs: Any) -> JsonDict:
+        payload = {"threadId": thread_id, "input": [{"type": "text", "text": text}]}
+        for key in ("cwd", "model", "summary"):
+            value = kwargs.get(key)
+            if value is not None:
+                payload[key] = value
+        return await self._request("turn/start", payload)
 
     async def steer_turn(self, thread_id: str, turn_id: str, text: str) -> JsonDict:
-        await self._ensure_ready()
         return await self._request(
             "turn/steer",
             {
@@ -170,40 +94,36 @@ class AppServerClient:
             },
         )
 
-    async def reply_to_server_request(
-        self,
-        ticket_id: str,
-        decision_or_answers: JsonDict,
-    ) -> JsonDict:
-        request = self._pending_requests.pop(ticket_id, None)
-        if request is None:
-            raise AppServerError(f"unknown pending request: {ticket_id}")
-        logger.info(
-            "Sending server-request reply ticket_id=%s method=%s",
-            ticket_id,
-            request.get("method"),
-        )
-        payload = {
-            "id": request["id"],
-            "result": decision_or_answers,
-        }
-        if self._ws is not None:
-            await self._send_json(payload)
+    async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
+        return await self._request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+
+    async def reply_to_server_request(self, request_id: str, result: JsonDict) -> JsonDict:
+        await self._ensure_connected()
+        pending = self._pending_server_requests.get(request_id)
+        if pending is None:
+            raise AppServerError(f"unknown pending request: {request_id}")
+        for key in self._pending_request_keys(pending):
+            self._pending_server_requests.pop(key, None)
+        payload = {"id": pending["id"], "result": result}
+        await self._send_json(payload)
         return payload
 
     async def _ensure_connected(self) -> None:
-        if self._listener_task is not None and not self._pending_futures and self.initialized:
-            await asyncio.sleep(0)
-        transport_closed = self._ws is not None and getattr(self._ws, "connected", True) is False
-        if transport_closed:
-            await self._reset_connection()
         if self._listener_task is not None and self._listener_task.done():
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._listener_task
             self._listener_task = None
             await self._reset_connection()
-        if self._ws is None:
-            await self.connect()
+        if self._process is not None and getattr(self._process, "returncode", None) is not None:
+            await self._reset_connection()
+        if self._process is None:
+            self._process = await self._supervisor.start()
+            self._stdin = getattr(self._process, "stdin", None)
+            self._stdout = getattr(self._process, "stdout", None)
+            if self._stdin is None or self._stdout is None:
+                raise AppServerError("stdio app-server process missing stdin/stdout pipes")
+            self._listener_task = asyncio.create_task(self._receive_loop())
+            self.initialized = False
 
     async def _ensure_ready(self) -> None:
         await self._ensure_connected()
@@ -211,58 +131,96 @@ class AppServerClient:
             await self.initialize()
 
     async def _request(self, method: str, params: JsonDict) -> JsonDict:
+        await self._ensure_ready()
+        return await self._request_without_initialize(method, params)
+
+    async def _request_without_initialize(self, method: str, params: JsonDict) -> JsonDict:
+        await self._ensure_connected()
         request_id = self._next_request_id
         self._next_request_id += 1
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
         self._pending_futures[request_id] = future
-        logger.info(
-            "Sending app-server request id=%s method=%s params=%s",
-            request_id,
-            method,
-            summarize_text(json.dumps(params, ensure_ascii=True)),
-        )
         await self._send_json({"id": request_id, "method": method, "params": params})
         try:
             response = await asyncio.wait_for(future, timeout=self._request_timeout_s)
         except asyncio.TimeoutError as exc:
             await self._reset_connection()
-            raise AppServerError(
-                f"{method} timed out after {self._request_timeout_s:.1f}s"
-            ) from exc
-        except Exception as exc:
-            await self._reset_connection()
-            raise AppServerError(str(exc) or f"{method} failed") from exc
+            raise AppServerError(f"{method} timed out after {self._request_timeout_s:.1f}s") from exc
         finally:
             self._pending_futures.pop(request_id, None)
         if "error" in response:
             error = response["error"]
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise AppServerError(message or f"{method} failed")
-        logger.info("Received app-server response id=%s method=%s", request_id, method)
         return response["result"]
 
     async def _notify(self, method: str, params: JsonDict) -> None:
         await self._send_json({"method": method, "params": params})
 
     async def _send_json(self, payload: JsonDict) -> None:
-        if self._ws is None:
+        if self._stdin is None:
             raise AppServerError("transport is not connected")
-        await self._call_transport(self._ws.send, json.dumps(payload))
+        data = (json.dumps(payload) + "\n").encode("utf-8")
+        self._stdin.write(data)
+        drain = getattr(self._stdin, "drain", None)
+        if callable(drain):
+            result = drain()
+            if inspect.isawaitable(result):
+                await result
 
     async def _receive_loop(self) -> None:
+        error: Exception | None = None
         try:
-            while self._ws is not None:
-                raw = await self._call_transport(self._ws.recv)
-                message = json.loads(raw)
+            while self._stdout is not None:
+                raw = await self._stdout.readline()
+                if not raw:
+                    error = AppServerError("app-server connection closed")
+                    break
+                message = json.loads(raw.decode("utf-8"))
                 await self._dispatch(message)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # pragma: no cover - defensive
-            self._ws = None
+        except Exception as exc:
+            error = exc
+        finally:
+            if error is not None:
+                for future in self._pending_futures.values():
+                    if not future.done():
+                        future.set_exception(error)
             self.initialized = False
-            for future in self._pending_futures.values():
-                if not future.done():
-                    future.set_exception(exc)
+            self._process = None
+            self._stdin = None
+            self._stdout = None
+
+    async def _dispatch(self, message: JsonDict) -> None:
+        if "id" in message and ("result" in message or "error" in message):
+            future = self._pending_futures.get(int(message["id"]))
+            if future is not None and not future.done():
+                future.set_result(message)
+            return
+        if "id" in message and "method" in message:
+            request_id = str(message["id"])
+            for key in self._pending_request_keys(message):
+                self._pending_server_requests[key] = message
+            enriched = {
+                "id": message["id"],
+                "method": message["method"],
+                "params": {
+                    **(message.get("params") or {}),
+                    "_request_id": request_id,
+                },
+            }
+            for handler in list(self._server_request_handlers):
+                result = handler(enriched)
+                if inspect.isawaitable(result):
+                    await result
+            return
+        if "method" in message:
+            notification = {"method": message["method"], "params": message.get("params", {})}
+            for handler in list(self._notification_handlers):
+                result = handler(notification)
+                if inspect.isawaitable(result):
+                    await result
 
     async def _reset_connection(self) -> None:
         listener_task = self._listener_task
@@ -272,110 +230,18 @@ class AppServerClient:
                 listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await listener_task
-        if self._ws is not None:
-            close = getattr(self._ws, "close", None)
+        if self._stdin is not None:
+            close = getattr(self._stdin, "close", None)
             if callable(close):
-                with contextlib.suppress(Exception):
-                    await self._call_transport(close)
-        self._ws = None
+                close()
+        self._process = None
+        self._stdin = None
+        self._stdout = None
+        self._pending_server_requests.clear()
         self.initialized = False
+        await self._supervisor.stop()
 
-    async def _dispatch(self, message: JsonDict) -> None:
-        if "id" in message and ("result" in message or "error" in message):
-            logger.info("Dispatching app-server response id=%s", message.get("id"))
-            request_id = message["id"]
-            future = self._pending_futures.get(request_id)
-            if future is not None and not future.done():
-                future.set_result(message)
-            return
-        if "id" in message and "method" in message:
-            logger.info(
-                "Dispatching app-server server request id=%s method=%s",
-                message.get("id"),
-                message.get("method"),
-            )
-            await self._capture_server_request(message)
-            return
-        if "method" in message:
-            logger.info("Dispatching app-server notification method=%s", message.get("method"))
-            if message["method"] == "item/agentMessage/delta":
-                self._record_agent_delta(message)
-            if message["method"] == "item/completed":
-                self._record_completed_item(message)
-            notification = {"method": message["method"], "params": message.get("params", {})}
-            for handler in list(self._notification_handlers):
-                result = handler(notification)
-                if isinstance(result, Awaitable):
-                    await result
-
-    async def _call_transport(self, func, *args):
-        if inspect.iscoroutinefunction(func):
-            return await func(*args)
-        return await asyncio.to_thread(func, *args)
-
-    async def _capture_server_request(self, message: JsonDict) -> None:
-        ticket_id = str(message["id"])
-        logger.info(
-            "Captured native server request id=%s method=%s",
-            ticket_id,
-            message.get("method"),
-        )
-        self._pending_requests[ticket_id] = {
-            "id": message["id"],
-            "method": message["method"],
-            "params": message.get("params", {}),
-        }
-        enriched = {
-            "id": message["id"],
-            "method": message["method"],
-            "params": {
-                **(message.get("params", {}) or {}),
-                "_request_id": str(message["id"]),
-            },
-        }
-        for handler in list(self._server_request_handlers):
-            result = handler(enriched)
-            if isinstance(result, Awaitable):
-                await result
-
-    def _record_agent_delta(self, message: JsonDict) -> None:
-        params = message.get("params", {})
-        logger.debug(
-            "Captured agent delta thread_id=%s turn_id=%s item_id=%s delta=%s",
-            params.get("threadId", ""),
-            params.get("turnId", ""),
-            params.get("itemId", ""),
-            summarize_text(str(params.get("delta", ""))),
-        )
-        key = (
-            str(params.get("threadId", "")),
-            str(params.get("turnId", "")),
-            str(params.get("itemId", "")),
-        )
-        self._agent_message_buffers.setdefault(key, []).append(str(params.get("delta", "")))
-
-    def _record_completed_item(self, message: JsonDict) -> None:
-        params = message.get("params", {})
-        item = params.get("item") or {}
-        logger.info(
-            "Captured completed item thread_id=%s turn_id=%s item_type=%s phase=%s text=%s",
-            params.get("threadId", ""),
-            params.get("turnId", ""),
-            item.get("type"),
-            item.get("phase"),
-            summarize_text(str(item.get("text", ""))),
-        )
-        if item.get("type") == "agentMessage":
-            text = item.get("text", "")
-            key = (
-                str(params.get("threadId", "")),
-                str(params.get("turnId", "")),
-                str(item.get("id", "")),
-            )
-            delta_text = "".join(self._agent_message_buffers.pop(key, []))
-            self.last_agent_message = text or delta_text
-
-    def _normalize_thread_start(self, payload: JsonDict) -> JsonDict:
+    def _normalize_thread_params(self, payload: JsonDict) -> JsonDict:
         mappings = {
             "thread_id": "threadId",
             "approval_policy": "approvalPolicy",
@@ -385,26 +251,12 @@ class AppServerClient:
         }
         return {mappings.get(key, key): value for key, value in payload.items()}
 
-    def _normalize_turn_start(self, payload: JsonDict) -> JsonDict:
-        out: JsonDict = {
-            "threadId": payload["thread_id"],
-            "input": [{"type": "text", "text": payload["text"]}],
-        }
-        mappings = {
-            "approval_policy": "approvalPolicy",
-            "sandbox_policy": "sandboxPolicy",
-            "approvals_reviewer": "approvalsReviewer",
-        }
-        for key in (
-            "cwd",
-            "model",
-            "approval_policy",
-            "sandbox_policy",
-            "approvals_reviewer",
-            "effort",
-            "summary",
-        ):
-            value = payload.get(key)
-            if value is not None:
-                out[mappings.get(key, key)] = value
-        return out
+    def _pending_request_keys(self, message: JsonDict) -> set[str]:
+        keys = {str(message.get("id") or "")}
+        params = message.get("params")
+        if isinstance(params, dict):
+            native_request_id = params.get("requestId")
+            if native_request_id is not None:
+                keys.add(str(native_request_id))
+        keys.discard("")
+        return keys

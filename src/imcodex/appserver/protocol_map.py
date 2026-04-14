@@ -34,11 +34,12 @@ def normalize_appserver_message(message: dict[str, Any]) -> AppServerEvent:
     payload = message.get("params", {})
     if not isinstance(payload, dict):
         payload = {}
+    request_id = payload.get("requestId") or payload.get("_request_id")
     return AppServerEvent(
         method=method,
         kind=_EVENT_KINDS.get(method, "unknown"),
         payload=payload,
         thread_id=str(payload.get("threadId", "") or ""),
         turn_id=str(payload.get("turnId", "") or ""),
-        request_id=str(payload.get("requestId", "") or "") or None,
+        request_id=str(request_id) if request_id is not None else None,
     )

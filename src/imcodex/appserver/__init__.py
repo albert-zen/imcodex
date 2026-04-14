@@ -1,4 +1,4 @@
-from .backend import CodexBackend, StaleThreadBindingError
+from .backend import CodexBackend, StaleThreadBindingError, TurnSubmission
 from .client import AppServerClient, AppServerError
 from .protocol_map import AppServerEvent, normalize_appserver_message
 from .supervisor import AppServerSupervisor
@@ -6,9 +6,10 @@ from .supervisor import AppServerSupervisor
 __all__ = [
     "AppServerClient",
     "AppServerError",
-    "AppServerSupervisor",
     "AppServerEvent",
+    "AppServerSupervisor",
     "CodexBackend",
     "StaleThreadBindingError",
+    "TurnSubmission",
     "normalize_appserver_message",
 ]

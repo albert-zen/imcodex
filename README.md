@@ -1,6 +1,6 @@
 # IMCodex
 
-IM to Codex `app-server` bridge.
+IM to Codex `app-server` thin bridge.
 
 ## Architecture
 
@@ -9,9 +9,9 @@ The codebase now follows a simple three-layer shape plus a thin wiring root:
 - `imcodex.channels`
   Adapts concrete IM and transport surfaces such as QQ and the generic webhook API.
 - `imcodex.bridge`
-  Owns bridge semantics such as slash commands, conversation state routing, and Codex event projection.
+  Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
 - `imcodex.appserver`
-  Owns native Codex `app-server` integration, including transport, supervision, and turn/thread lifecycle operations.
+  Owns native Codex `app-server` integration over `stdio`, including supervision and thread/turn operations.
 
 Supporting modules:
 
@@ -22,7 +22,7 @@ Supporting modules:
 - `imcodex.runtime`
   Runs startup and shutdown for the assembled services.
 - `imcodex.store`
-  Persists bridge state and conversation bindings.
+  Persists only minimal bridge state: conversation bindings, visibility preferences, reply context, and pending native request routes.
 
 The dependency direction is intentionally one-way:
 
@@ -45,6 +45,24 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
+## Native-First State
+
+`imcodex` now treats native Codex as the source of truth for:
+
+- thread lifecycle
+- turn lifecycle
+- request identity
+- model continuity
+- permission and sandbox behavior
+
+Persisted bridge state is intentionally small:
+
+- `channel_id + conversation_id -> native thread_id`
+- `bootstrap_cwd` before a native thread exists
+- visibility preferences
+- channel reply context
+- pending native request routing
+
 ## QQ Bot
 
 Set these environment variables to enable the built-in QQ adapter:
@@ -53,7 +71,6 @@ Set these environment variables to enable the built-in QQ adapter:
 - `IMCODEX_QQ_APP_ID=<your AppID>`
 - `IMCODEX_QQ_CLIENT_SECRET=<your AppSecret>`
 - `IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com`
-- `IMCODEX_DEFAULT_PERMISSION_PROFILE=autonomous`
 
 The adapter currently supports:
 
@@ -111,13 +128,8 @@ The short version is:
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
-- `IMCODEX_APP_SERVER_HOST`: default `127.0.0.1`
-- `IMCODEX_APP_SERVER_PORT`: default `8765`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target
 - `IMCODEX_SERVICE_NAME`: client name sent to app-server, default `imcodex`
-- `IMCODEX_DEFAULT_PERMISSION_PROFILE`: native permission profile for new conversations, `review` or `autonomous`, default `autonomous`
-  - `review` defers to native Codex approval/sandbox defaults
-  - `autonomous` overrides approval policy to `never` while keeping native sandbox defaults
 - `IMCODEX_QQ_ENABLED`: enable QQ bot adapter, default `false`
 - `IMCODEX_QQ_APP_ID`: QQ bot AppID
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret

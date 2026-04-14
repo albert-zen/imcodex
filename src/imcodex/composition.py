@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-import os
 import time
 
-import websockets
-
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
-from .bridge import (
-    BridgeService,
-    CommandRouter,
-    MessageProjector,
-    RequestRegistry,
-    SessionRegistry,
-    ThreadDirectory,
-    TurnStateMachine,
-)
+from .bridge import BridgeService, CommandRouter, MessageProjector
 from .channels import MultiplexOutboundSink, QQChannelAdapter, WebhookOutboundSink
 from .config import Settings
 from .logging_utils import configure_logging
@@ -22,62 +11,23 @@ from .runtime import AppRuntime
 from .store import ConversationStore
 
 
-async def open_blocking_websocket(url: str):
-    return await websockets.connect(url, open_timeout=10)
-
-
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
-    store = ConversationStore(
-        clock=time.time,
-        state_path=settings.data_dir / "state.json",
-        default_permission_profile=settings.default_permission_profile,
-    )
+    store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
+    supervisor = AppServerSupervisor(codex_bin=settings.codex_bin)
     client = AppServerClient(
-        websocket_factory=open_blocking_websocket,
-        transport_url=settings.app_server_ws_url,
-        client_info={
-            "name": settings.service_name,
-            "title": "IM Codex Bridge",
-            "version": "0.1.0",
-        },
+        supervisor=supervisor,
+        client_info={"name": settings.service_name, "title": "IM Codex Bridge", "version": "0.1.0"},
     )
-    supervisor = AppServerSupervisor(
-        port=settings.app_server_port,
-        codex_bin=settings.codex_bin,
-        host=settings.app_server_host,
-    )
-    default_outbound_sink = (
-        WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
-    )
-    session_registry = SessionRegistry(store)
-    thread_directory = ThreadDirectory(store)
-    request_registry = RequestRegistry(store)
-    turn_state = TurnStateMachine()
     service = BridgeService(
         store=store,
         backend=CodexBackend(client=client, store=store, service_name=settings.service_name),
-        command_router=CommandRouter(
-            store,
-            diagnostics_provider=lambda: {
-                "codex_bin": settings.codex_bin,
-                "app_server": settings.app_server_ws_url,
-                "bridge": f"http://{settings.http_host}:{settings.http_port}",
-                "pid": os.getpid(),
-                "data_dir": str(settings.data_dir),
-            },
-        ),
-        projector=MessageProjector(
-            request_registry=request_registry,
-            turn_state=turn_state,
-        ),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
         outbound_sink=None,
-        session_registry=session_registry,
-        thread_directory=thread_directory,
-        request_registry=request_registry,
-        turn_state=turn_state,
     )
+    default_outbound_sink = WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
     managed_channels = []
     channel_sinks = {}
     if settings.qq_enabled:
@@ -91,13 +41,5 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         managed_channels.append(qq_adapter)
         channel_sinks["qq"] = qq_adapter
     if channel_sinks or default_outbound_sink is not None:
-        service.outbound_sink = MultiplexOutboundSink(
-            channel_sinks=channel_sinks,
-            default_sink=default_outbound_sink,
-        )
-    return AppRuntime(
-        supervisor=supervisor,
-        client=client,
-        service=service,
-        managed_channels=managed_channels,
-    )
+        service.outbound_sink = MultiplexOutboundSink(channel_sinks=channel_sinks, default_sink=default_outbound_sink)
+    return AppRuntime(client=client, service=service, managed_channels=managed_channels)

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-import logging
-import os
 
-from .client import AppServerError
-from ..logging_utils import summarize_text
+from ..models import NativeThreadSnapshot
 from ..store import ConversationStore
-
-logger = logging.getLogger(__name__)
+from .client import AppServerError
 
 
 class StaleThreadBindingError(RuntimeError):
@@ -19,143 +14,54 @@ class StaleThreadBindingError(RuntimeError):
 
 
 @dataclass(slots=True)
-class NativeThreadSnapshot:
+class TurnSubmission:
+    kind: str
     thread_id: str
-    cwd: str
-    preview: str
-    status: str
-    name: str | None
-    path: str | None
-
-
-def _normalize_cwd(cwd: str) -> str:
-    return os.path.normcase(os.path.normpath(cwd))
-
-
-@dataclass(frozen=True, slots=True)
-class NativePermissionProfile:
-    approval_policy: str | None = None
-    sandbox_policy: dict[str, str] | None = None
-    approvals_reviewer: str | None = None
-
-
-_PERMISSION_PROFILES: dict[str, NativePermissionProfile] = {
-    "review": NativePermissionProfile(),
-    "autonomous": NativePermissionProfile(
-        approval_policy="never",
-    ),
-}
+    turn_id: str
 
 
 class CodexBackend:
-    def __init__(
-        self,
-        *,
-        client,
-        store: ConversationStore,
-        service_name: str,
-        session_registry=None,
-    ) -> None:
+    def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
         self.client = client
         self.store = store
         self.service_name = service_name
-        self.session_registry = session_registry
+
+    async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
+        self.store.clear_thread_binding(channel_id, conversation_id)
+        return await self.ensure_thread(channel_id, conversation_id)
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_thread_id:
-            cwd = self._resume_cwd(binding)
-            logger.info(
-                "Resuming native thread channel_id=%s conversation_id=%s thread_id=%s cwd=%s",
-                channel_id,
-                conversation_id,
-                binding.active_thread_id,
-                cwd,
-            )
+        if binding.thread_id:
             try:
                 result = await self.client.resume_thread(
-                    thread_id=binding.active_thread_id,
-                    **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model),
+                    thread_id=binding.thread_id,
+                    service_name=self.service_name,
+                    personality="friendly",
                 )
             except AppServerError as exc:
-                if not self._should_mark_thread_stale(exc):
-                    raise
-                self.store.note_thread_status(
-                    binding.active_thread_id,
-                    status="stale",
-                    channel_id=channel_id,
-                    conversation_id=conversation_id,
-                )
-                raise StaleThreadBindingError(binding.active_thread_id) from exc
-            else:
-                payload = self._normalize_thread_payload(result["thread"])
-                thread_id = str(payload["id"] or "")
-                resolved_cwd = payload["cwd"] or cwd
-                self._bind_thread_result(
-                    channel_id=channel_id,
-                    conversation_id=conversation_id,
-                    thread_id=thread_id,
-                    cwd=resolved_cwd,
-                    preview=str(payload["preview"] or ""),
-                    status=str(payload["status"] or "idle"),
-                    name=payload.get("name"),
-                    path=payload.get("path"),
-                )
-                return thread_id
-        cwd = self._start_cwd(binding)
-        logger.info(
-            "Starting native thread channel_id=%s conversation_id=%s cwd=%s",
-            channel_id,
-            conversation_id,
-            cwd,
-        )
+                if self._is_stale_thread_error(exc):
+                    raise StaleThreadBindingError(binding.thread_id) from exc
+                raise
+            snapshot = self._remember_snapshot(result.get("thread") or {})
+            self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+            return snapshot.thread_id
+        if binding.bootstrap_cwd is None:
+            raise KeyError("No working directory selected for thread session")
         result = await self.client.start_thread(
-            **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model)
+            cwd=binding.bootstrap_cwd,
+            service_name=self.service_name,
+            personality="friendly",
         )
-        payload = self._normalize_thread_payload(result["thread"])
-        thread_id = str(payload["id"] or "")
-        resolved_cwd = self._require_bound_cwd(
-            payload_cwd=payload["cwd"],
-            fallback_cwd=cwd,
-            thread_id=thread_id,
-        )
-        self._bind_thread_result(
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-            thread_id=thread_id,
-            cwd=resolved_cwd,
-            preview=str(payload["preview"] or ""),
-            status=str(payload["status"] or "idle"),
-            name=payload.get("name"),
-            path=payload.get("path"),
-        )
-        return thread_id
-
-    async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
-        self.store.clear_active_thread(channel_id, conversation_id)
-        return await self.ensure_thread(channel_id, conversation_id)
+        snapshot = self._remember_snapshot(result.get("thread") or {})
+        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        return snapshot.thread_id
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
-        logger.info(
-            "Attaching native thread channel_id=%s conversation_id=%s requested_thread_id=%s",
-            channel_id,
-            conversation_id,
-            thread_id,
-        )
         snapshot = await self.read_thread(channel_id, conversation_id, thread_id)
         if snapshot is None:
             raise AppServerError(f"thread {thread_id} is not available in Codex")
-        self._bind_thread_result(
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-            thread_id=snapshot.thread_id,
-            cwd=snapshot.cwd or None,
-            preview=snapshot.preview,
-            status=snapshot.status or "idle",
-            name=snapshot.name,
-            path=snapshot.path,
-            merge_existing=False,
-        )
+        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         return snapshot.thread_id
 
     async def list_threads(
@@ -165,31 +71,12 @@ class CodexBackend:
         *,
         include_all: bool = False,
     ) -> list[NativeThreadSnapshot]:
-        binding = self.store.get_binding(channel_id, conversation_id)
         params: dict[str, str] = {}
-        session_cwd = self._session_cwd(binding)
-        if session_cwd and not include_all:
-            params["cwd"] = session_cwd
-        logger.info(
-            "Listing native threads channel_id=%s conversation_id=%s include_all=%s cwd=%s",
-            channel_id,
-            conversation_id,
-            include_all,
-            params.get("cwd"),
-        )
+        cwd = self.store.current_cwd(channel_id, conversation_id)
+        if cwd and not include_all:
+            params["cwd"] = cwd
         result = await self.client.list_threads(**params)
-        snapshots = [
-            self._remember_native_thread(self._normalize_thread_payload(item))
-            for item in result.get("threads", [])
-        ]
-        if session_cwd and not include_all:
-            normalized = _normalize_cwd(session_cwd)
-            return [
-                snapshot
-                for snapshot in snapshots
-                if _normalize_cwd(snapshot.cwd) == normalized
-            ]
-        return snapshots
+        return [self._remember_snapshot(item) for item in result.get("threads", [])]
 
     async def read_thread(
         self,
@@ -198,343 +85,86 @@ class CodexBackend:
         thread_id: str,
     ) -> NativeThreadSnapshot | None:
         del channel_id, conversation_id
-        logger.info("Reading native thread thread_id=%s", thread_id)
         result = await self.client.read_thread(thread_id)
         payload = result.get("thread")
         if not isinstance(payload, dict):
             return None
-        normalized = self._normalize_thread_payload(payload)
-        return self._remember_native_thread(normalized)
+        return self._remember_snapshot(payload)
 
-    async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
+    async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
         binding = self.store.get_binding(channel_id, conversation_id)
-        logger.info(
-            "Starting turn channel_id=%s conversation_id=%s active_thread_id=%s active_turn_id=%s text=%s",
-            channel_id,
-            conversation_id,
-            binding.active_thread_id,
-            binding.active_turn_id,
-            summarize_text(text),
-        )
-        if (
-            binding.active_thread_id is not None
-            and binding.active_turn_id is not None
-            and binding.active_turn_status == "inProgress"
-        ):
-            try:
-                await self._steer_active_turn(
-                    thread_id=binding.active_thread_id,
-                    turn_id=binding.active_turn_id,
-                    text=text,
-                )
-            except AppServerError as exc:
-                if not self._should_recover_from_steer_failure(exc):
-                    raise
-                self.store.clear_pending_requests_for_turn(
-                    channel_id=channel_id,
-                    conversation_id=conversation_id,
-                    thread_id=binding.active_thread_id,
-                    turn_id=binding.active_turn_id,
-                )
-                await self._interrupt_best_effort(binding.active_thread_id, binding.active_turn_id)
-                self.store.clear_active_turn(channel_id, conversation_id)
-            else:
-                self.store.set_active_turn(
-                    channel_id,
-                    conversation_id,
-                    thread_id=binding.active_thread_id,
-                    turn_id=binding.active_turn_id,
-                    status="inProgress",
-                )
-                return binding.active_turn_id
-        had_bound_thread = binding.active_thread_id is not None
+        if binding.thread_id is not None:
+            active = self.store.get_active_turn(binding.thread_id)
+            if active is not None and active[1] == "inProgress":
+                try:
+                    await self.client.steer_turn(binding.thread_id, active[0], text)
+                except AppServerError as exc:
+                    if not self._is_stale_turn_error(exc):
+                        raise
+                    self.store.clear_active_turn(binding.thread_id)
+                else:
+                    return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
         thread_id = await self.ensure_thread(channel_id, conversation_id)
+        model_override = self.store.pop_next_model_override(channel_id, conversation_id)
+        result = await self.client.start_turn(thread_id=thread_id, text=text, model=model_override, summary="concise")
+        turn = result.get("turn") or {}
+        turn_id = str(turn.get("id") or "")
+        status = str(turn.get("status") or "inProgress")
+        self.store.note_active_turn(thread_id, turn_id, status)
+        return TurnSubmission(kind="start", thread_id=thread_id, turn_id=turn_id)
+
+    async def interrupt_active_turn(self, channel_id: str, conversation_id: str) -> bool:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.thread_id is None:
+            return False
+        active = self.store.get_active_turn(binding.thread_id)
+        if active is None:
+            return False
         try:
-            result = await self._start_turn(
-                thread_id,
-                text,
-                binding.permission_profile,
-                binding.selected_model,
-            )
+            await self.client.interrupt_turn(binding.thread_id, active[0])
         except AppServerError as exc:
-            if not had_bound_thread:
+            if not self._is_stale_turn_error(exc):
                 raise
-            if self._should_surface_stale_bound_thread_error(exc):
-                self.store.note_thread_status(
-                    thread_id,
-                    status="stale",
-                    channel_id=channel_id,
-                    conversation_id=conversation_id,
-                )
-                raise StaleThreadBindingError(thread_id) from exc
-            raise
-        turn_id = result["turn"]["id"]
-        self.store.set_active_turn(
-            channel_id,
-            conversation_id,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            status=result["turn"].get("status", "inProgress"),
-        )
-        return turn_id
+            self.store.suppress_turn(binding.thread_id, active[0])
+            self.store.clear_active_turn(binding.thread_id)
+            self.store.remove_pending_requests_for_turn(binding.thread_id, active[0])
+            return False
+        self.store.suppress_turn(binding.thread_id, active[0])
+        self.store.clear_active_turn(binding.thread_id)
+        self.store.remove_pending_requests_for_turn(binding.thread_id, active[0])
+        return True
 
-    async def _start_turn(
-        self,
-        thread_id: str,
-        text: str,
-        permission_profile: str,
-        model: str | None,
-    ):
-        return await self.client.start_turn(
-            thread_id=thread_id,
-            text=text,
-            cwd=None,
-            model=model,
-            approval_policy=self._permission_profile(permission_profile).approval_policy,
-            sandbox_policy=self._permission_profile(permission_profile).sandbox_policy,
-            approvals_reviewer=self._permission_profile(permission_profile).approvals_reviewer,
-            effort=None,
-            summary="concise",
-        )
+    async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
+        await self.client.reply_to_server_request(request_id, decision_or_answers)
 
-    async def interrupt_active_turn(self, channel_id: str, conversation_id: str) -> None:
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if not binding.active_thread_id or not binding.active_turn_id:
-            return
-        logger.info(
-            "Interrupting active turn channel_id=%s conversation_id=%s thread_id=%s turn_id=%s",
-            channel_id,
-            conversation_id,
-            binding.active_thread_id,
-            binding.active_turn_id,
-        )
-        self.store.clear_pending_requests_for_turn(
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-            thread_id=binding.active_thread_id,
-            turn_id=binding.active_turn_id,
-        )
-        await self._interrupt_if_possible(binding.active_thread_id, binding.active_turn_id)
-        self.store.clear_active_turn(channel_id, conversation_id)
-
-    async def reply_to_server_request(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        ticket_id: str,
-        decision_or_answers: dict,
-    ) -> None:
-        request = self.store.get_pending_request(
-            ticket_id,
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-        )
-        if request is None:
-            raise KeyError(ticket_id)
-        logger.info(
-            "Replying to native server request channel_id=%s conversation_id=%s ticket_id=%s native_request_id=%s",
-            channel_id,
-            conversation_id,
-            ticket_id,
-            request.request_id,
-        )
-        client_ticket_id = request.request_id or ticket_id
-        await self.client.reply_to_server_request(client_ticket_id, decision_or_answers)
-        self.store.mark_pending_request_submitted(
-            ticket_id,
-            decision_or_answers,
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-        )
-
-    async def _interrupt_if_possible(self, thread_id: str, turn_id: str) -> None:
-        await self.client.interrupt_turn(
-            thread_id=thread_id,
-            turn_id=turn_id,
-        )
-
-    async def _interrupt_best_effort(self, thread_id: str, turn_id: str) -> None:
-        try:
-            await self._interrupt_if_possible(thread_id, turn_id)
-        except AppServerError:
-            return
-
-    async def _steer_active_turn(self, *, thread_id: str, turn_id: str, text: str) -> None:
-        for attempt in range(2):
-            try:
-                logger.info(
-                    "Steering active turn thread_id=%s turn_id=%s attempt=%s text=%s",
-                    thread_id,
-                    turn_id,
-                    attempt + 1,
-                    summarize_text(text),
-                )
-                await self.client.steer_turn(
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    text=text,
-                )
-                return
-            except AppServerError as exc:
-                if attempt == 0 and self._should_retry_steer(exc):
-                    await asyncio.sleep(0.05)
-                    continue
-                raise
-
-    def _should_recover_from_steer_failure(self, error: AppServerError) -> bool:
-        message = str(error).lower()
-        return "invalid request" in message or "no active turn" in message
-
-    def _should_retry_steer(self, error: AppServerError) -> bool:
-        return "no active turn" in str(error).lower()
-
-    def _should_mark_thread_stale(self, error: AppServerError) -> bool:
-        message = str(error).lower()
-        return (
-            "invalid request" in message
-            or "not found" in message
-            or "unknown thread" in message
-            or "no such thread" in message
-        )
-
-    def _should_surface_stale_bound_thread_error(self, error: AppServerError) -> bool:
-        return self._should_mark_thread_stale(error)
-
-    def _thread_session_params(
-        self,
-        cwd: str | None,
-        permission_profile: str,
-        model: str | None,
-    ) -> dict[str, object | None]:
-        profile = self._permission_profile(permission_profile)
-        payload: dict[str, object | None] = {
-            "approval_policy": profile.approval_policy,
-            "sandbox_policy": profile.sandbox_policy,
-            "approvals_reviewer": profile.approvals_reviewer,
-            "model": model,
-            "personality": "friendly",
-            "service_name": self.service_name,
-        }
-        if cwd is not None:
-            payload["cwd"] = cwd
-        return payload
-
-    def _permission_profile(self, permission_profile: str) -> NativePermissionProfile:
-        return _PERMISSION_PROFILES.get(permission_profile, _PERMISSION_PROFILES["review"])
-
-    def _resume_cwd(self, binding) -> str | None:
-        return self._session_cwd(binding)
-
-    def _session_cwd(self, binding) -> str | None:
-        if binding.active_thread_id is not None:
-            try:
-                thread = self.store.get_thread(binding.active_thread_id)
-            except KeyError:
-                return binding.selected_cwd
-            return thread.cwd or binding.selected_cwd
-        return binding.selected_cwd
-
-    def _start_cwd(self, binding) -> str:
-        cwd = self._resume_cwd(binding)
-        if cwd is not None:
-            return cwd
-        raise KeyError("No working directory selected for thread session")
-
-    def _require_bound_cwd(
-        self,
-        *,
-        payload_cwd: str | None,
-        fallback_cwd: str | None,
-        thread_id: str,
-    ) -> str:
-        resolved_cwd = payload_cwd or fallback_cwd
-        if resolved_cwd:
-            return resolved_cwd
-        raise AppServerError(f"thread {thread_id} did not provide a working directory")
-
-    def _bind_thread_result(
-        self,
-        *,
-        channel_id: str,
-        conversation_id: str,
-        thread_id: str,
-        cwd: str | None,
-        preview: str,
-        status: str,
-        name: str | None,
-        path: str | None,
-        merge_existing: bool = True,
-    ) -> None:
-        if cwd:
-            self.store.record_thread(
-                thread_id=thread_id,
-                cwd=cwd,
-                preview=preview,
-                status=status,
-                name=name,
-                path=path,
-                merge_existing=merge_existing,
-            )
-        if self.session_registry is not None:
-            self.session_registry.bind_thread(channel_id, conversation_id, thread_id)
-        else:
-            self.store.set_active_thread(channel_id, conversation_id, thread_id)
-        binding = self.store.get_binding(channel_id, conversation_id)
-        thread = self.store._threads.get(thread_id)
-        binding.last_seen_thread_name = (
-            name
-            or (thread.name if thread is not None else None)
-            or (preview or None)
-            or (thread.preview if thread is not None else None)
-        )
-        binding.last_seen_thread_path = (
-            path
-            or (thread.path if thread is not None else None)
-            or cwd
-        )
-        binding.last_seen_thread_status = status or (thread.status if thread is not None else None)
-
-    def _normalize_thread_payload(self, payload: dict) -> dict[str, str | None]:
+    def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = payload.get("status")
         if isinstance(status, dict):
             status = status.get("type") or status.get("status")
-        cwd = payload.get("cwd") or ""
-        path = payload.get("path")
-        return {
-            "id": str(payload.get("id") or payload.get("threadId") or ""),
-            "cwd": str(cwd),
-            "path": str(path) if path is not None else None,
-            "preview": str(payload.get("preview") or ""),
-            "status": str(status or "idle"),
-            "name": payload.get("name"),
-        }
-
-    def _remember_native_thread(self, payload: dict[str, str | None]) -> NativeThreadSnapshot:
-        thread_id = str(payload["id"] or "")
-        resolved_cwd = str(payload["cwd"] or "")
-        if not resolved_cwd:
-            return NativeThreadSnapshot(
-                thread_id=thread_id,
-                cwd="",
-                preview=str(payload["preview"] or ""),
-                status=str(payload["status"] or "idle"),
-                name=payload.get("name"),
-                path=payload.get("path"),
-            )
-        thread = self.store.record_thread(
-            thread_id=thread_id,
-            cwd=resolved_cwd,
-            preview=str(payload["preview"] or ""),
-            status=str(payload["status"] or "idle"),
-            name=payload.get("name"),
-            path=payload.get("path"),
-            merge_existing=False,
+        snapshot = NativeThreadSnapshot(
+            thread_id=str(payload.get("id") or payload.get("threadId") or ""),
+            cwd=str(payload.get("cwd") or ""),
+            preview=str(payload.get("preview") or ""),
+            status=str(status or "idle"),
+            name=str(payload["name"]) if payload.get("name") is not None else None,
+            path=str(payload["path"]) if payload.get("path") is not None else None,
         )
-        return NativeThreadSnapshot(
-            thread_id=thread.thread_id,
-            cwd=thread.cwd,
-            preview=thread.preview,
-            status=thread.status,
-            name=thread.name,
-            path=thread.path,
+        self.store.note_thread_snapshot(snapshot)
+        return snapshot
+
+    def _is_stale_thread_error(self, error: AppServerError) -> bool:
+        message = str(error).lower()
+        return any(marker in message for marker in ("invalid request", "not found", "unknown thread", "no such thread"))
+
+    def _is_stale_turn_error(self, error: AppServerError) -> bool:
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "no active turn",
+                "unknown turn",
+                "no such turn",
+                "turn not found",
+                "expected turn",
+            )
         )

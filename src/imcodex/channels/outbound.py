@@ -1,11 +1,6 @@
 from __future__ import annotations
 
 import httpx
-import logging
-
-from ..models import OutboundMessage
-
-logger = logging.getLogger(__name__)
 
 
 class WebhookOutboundSink:
@@ -13,13 +8,7 @@ class WebhookOutboundSink:
         self.outbound_url = outbound_url
         self.client = client or httpx.AsyncClient()
 
-    async def send_message(self, message: OutboundMessage) -> None:
-        logger.info(
-            "Sending webhook outbound message_type=%s channel_id=%s conversation_id=%s",
-            message.message_type,
-            message.channel_id,
-            message.conversation_id,
-        )
+    async def send_message(self, message) -> None:
         await self.client.post(
             self.outbound_url,
             json={
@@ -27,7 +16,7 @@ class WebhookOutboundSink:
                 "conversation_id": message.conversation_id,
                 "message_type": message.message_type,
                 "text": message.text,
-                "ticket_id": message.ticket_id,
+                "request_id": message.request_id,
                 "metadata": message.metadata,
             },
         )
@@ -43,20 +32,8 @@ class MultiplexOutboundSink:
         self.channel_sinks = channel_sinks or {}
         self.default_sink = default_sink
 
-    async def send_message(self, message: OutboundMessage) -> None:
+    async def send_message(self, message) -> None:
         sink = self.channel_sinks.get(message.channel_id) or self.default_sink
         if sink is None:
-            logger.info(
-                "Dropping outbound message without sink message_type=%s channel_id=%s conversation_id=%s",
-                message.message_type,
-                message.channel_id,
-                message.conversation_id,
-            )
             return
-        logger.info(
-            "Dispatching outbound message to sink message_type=%s channel_id=%s conversation_id=%s",
-            message.message_type,
-            message.channel_id,
-            message.conversation_id,
-        )
         await sink.send_message(message)

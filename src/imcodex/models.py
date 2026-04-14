@@ -5,76 +5,38 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class ThreadRecord:
-    thread_id: str
-    preview: str
-    status: str
-    last_used_at: float
-    cwd: str
-    name: str | None = None
-    path: str | None = None
-    last_turn_id: str | None = None
-    last_turn_status: str | None = None
-    stale_turn_ids: list[str] = field(default_factory=list)
-    created_seq: int = 0
-
-
-@dataclass(slots=True)
 class ConversationBinding:
     channel_id: str
     conversation_id: str
     thread_id: str | None = None
     bootstrap_cwd: str | None = None
-    selected_model: str | None = None
-    active_turn_id: str | None = None
-    active_turn_status: str | None = None
-    last_inbound_message_id: str | None = None
-    pending_request_ids: list[str] = field(default_factory=list)
-    next_ticket: int = 1
-    permission_profile: str = "review"
     visibility_profile: str = "standard"
     show_commentary: bool = True
     show_toolcalls: bool = False
-    last_seen_thread_name: str | None = None
-    last_seen_thread_path: str | None = None
-    last_seen_thread_status: str | None = None
-
-    @property
-    def active_thread_id(self) -> str | None:
-        return self.thread_id
-
-    @active_thread_id.setter
-    def active_thread_id(self, value: str | None) -> None:
-        self.thread_id = value
-
-    @property
-    def selected_cwd(self) -> str | None:
-        return self.bootstrap_cwd
-
-    @selected_cwd.setter
-    def selected_cwd(self, value: str | None) -> None:
-        self.bootstrap_cwd = value
+    reply_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
-class PendingRequest:
-    ticket_id: str
+class PendingNativeRequestRoute:
+    request_id: str
+    request_handle: str | None
     channel_id: str
     conversation_id: str
+    thread_id: str | None
+    turn_id: str | None
     kind: str
-    summary: str
-    payload: dict[str, Any]
-    created_at: float
-    request_id: str | None = None
-    request_method: str | None = None
-    thread_id: str | None = None
-    turn_id: str | None = None
-    item_id: str | None = None
-    status: str = "pending"
-    submitted_at: float | None = None
-    submitted_resolution: dict[str, Any] | None = None
-    resolved_at: float | None = None
-    resolution: dict[str, Any] | None = None
+    request_method: str | None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class NativeThreadSnapshot:
+    thread_id: str
+    cwd: str
+    preview: str
+    status: str
+    name: str | None = None
+    path: str | None = None
 
 
 @dataclass(slots=True)
@@ -94,5 +56,5 @@ class OutboundMessage:
     conversation_id: str
     message_type: str
     text: str
-    ticket_id: str | None = None
+    request_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

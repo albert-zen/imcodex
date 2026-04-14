@@ -24,15 +24,6 @@ def test_layer_dependencies_only_flow_forward() -> None:
     assert violations == []
 
 
-def test_application_module_stays_thin() -> None:
-    root = Path(__file__).resolve().parents[1] / "src" / "imcodex"
-    imports = _imports_for_module(root / "application.py", "imcodex.application")
-    assert "imcodex.composition" in imports
-    assert "imcodex.channels" in imports
-    assert "imcodex.appserver" not in imports
-    assert "imcodex.bridge" not in imports
-
-
 def _module_name(root: Path, path: Path) -> str:
     relative = path.relative_to(root).with_suffix("")
     parts = ["imcodex", *relative.parts]

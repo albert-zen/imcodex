@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
 
 from ..models import OutboundMessage
-
-ProgressKind = Literal["commentary", "toolcall"]
 
 
 @dataclass(slots=True)
@@ -19,14 +16,7 @@ class TurnBuffer:
 
 
 class MessagePump:
-    def __init__(
-        self,
-        *,
-        progress_renderer=None,
-        result_renderer=None,
-    ) -> None:
-        self.progress_renderer = progress_renderer or self._render_progress
-        self.result_renderer = result_renderer or self._render_result
+    def __init__(self) -> None:
         self._turns: dict[tuple[str, str], TurnBuffer] = {}
 
     def record_delta(
@@ -37,7 +27,7 @@ class MessagePump:
         delta: str,
         emit_progress: bool,
     ) -> OutboundMessage | None:
-        buffer = self._turn(thread_id, turn_id)
+        buffer = self._buffer(thread_id, turn_id)
         if delta:
             buffer.deltas.append(delta)
         if not emit_progress or buffer.final_visible or not delta:
@@ -53,16 +43,18 @@ class MessagePump:
         text: str,
         emit_commentary: bool,
     ) -> OutboundMessage | None:
-        buffer = self._turn(thread_id, turn_id)
-        if phase is None:
-            if text:
-                buffer.final_text = text
-            return None
+        buffer = self._buffer(thread_id, turn_id)
         if phase == "final_answer":
             buffer.final_text = text
             buffer.final_visible = True
-            return self.result_renderer(text, [], [], False, False)
-        if not phase or phase == "final_answer" or not text or not emit_commentary or buffer.final_visible:
+            return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
+        if phase is None:
+            if text:
+                buffer.final_text = text
+            if not text or not emit_commentary or buffer.final_visible:
+                return None
+            return self._emit_progress(buffer, text)
+        if not text or not emit_commentary or buffer.final_visible:
             return None
         return self._emit_progress(buffer, text)
 
@@ -74,7 +66,7 @@ class MessagePump:
         command: str,
         emit_progress: bool,
     ) -> OutboundMessage | None:
-        buffer = self._turn(thread_id, turn_id)
+        buffer = self._buffer(thread_id, turn_id)
         text = f"Executed `{command}`"
         buffer.command_summaries.append(text)
         if not emit_progress or buffer.final_visible:
@@ -89,7 +81,7 @@ class MessagePump:
         paths: list[str],
         emit_progress: bool,
     ) -> OutboundMessage | None:
-        buffer = self._turn(thread_id, turn_id)
+        buffer = self._buffer(thread_id, turn_id)
         buffer.changed_files.extend(paths)
         if not paths or not emit_progress or buffer.final_visible:
             return None
@@ -97,33 +89,35 @@ class MessagePump:
         lines.extend(f"- {path}" for path in paths)
         return self._emit_progress(buffer, "\n".join(lines))
 
-    def finalize_turn(
-        self,
-        *,
-        thread_id: str,
-        turn_id: str,
-        status: str,
-    ) -> OutboundMessage | None:
-        key = (thread_id, turn_id)
-        buffer = self._turns.pop(key, None)
+    def finalize_turn(self, *, thread_id: str, turn_id: str, status: str) -> OutboundMessage | None:
+        buffer = self._turns.pop((thread_id, turn_id), None)
         if buffer is None:
-            return None
-
-        final_text = buffer.final_text or "".join(buffer.deltas)
+            if status == "completed":
+                return None
+            text = "Turn interrupted." if status == "interrupted" else "Turn failed."
+            return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
         if status == "completed" and buffer.final_visible:
             return None
-        return self._render_result(
-            final_text,
-            buffer.command_summaries,
-            buffer.changed_files,
-            status == "failed",
-            status == "interrupted",
-        )
+        final_text = buffer.final_text or "".join(buffer.deltas)
+        changed_files_text = ""
+        if buffer.changed_files:
+            lines = ["Changed files:"]
+            lines.extend(f"- {path}" for path in dict.fromkeys(buffer.changed_files))
+            changed_files_text = "\n".join(lines)
+        if status == "completed":
+            text = final_text
+        elif status == "interrupted":
+            text = "\n".join(part for part in ("Turn interrupted.", final_text, changed_files_text) if part)
+        else:
+            text = "\n".join(part for part in ("Turn failed.", final_text, changed_files_text) if part)
+        if not text and buffer.command_summaries:
+            text = "\n".join(buffer.command_summaries)
+        return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
 
     def discard_turn(self, *, thread_id: str, turn_id: str) -> None:
         self._turns.pop((thread_id, turn_id), None)
 
-    def _turn(self, thread_id: str, turn_id: str) -> TurnBuffer:
+    def _buffer(self, thread_id: str, turn_id: str) -> TurnBuffer:
         key = (thread_id, turn_id)
         buffer = self._turns.get(key)
         if buffer is None:
@@ -135,37 +129,4 @@ class MessagePump:
         if text in buffer.emitted_progress_texts:
             return None
         buffer.emitted_progress_texts.add(text)
-        return self.progress_renderer(text)
-
-    def _render_progress(self, text: str) -> OutboundMessage:
-        return OutboundMessage(
-            channel_id="",
-            conversation_id="",
-            message_type="turn_progress",
-            text=text,
-        )
-
-    def _render_result(
-        self,
-        final_text: str,
-        command_summaries: list[str],
-        changed_files: list[str],
-        failed: bool,
-        interrupted: bool,
-    ) -> OutboundMessage:
-        if not failed and not interrupted:
-            lines = [final_text] if final_text else []
-        else:
-            status = "Turn interrupted." if interrupted else "Turn failed."
-            lines = [status, final_text]
-        if (failed or interrupted or not final_text) and command_summaries:
-            lines.extend(command_summaries)
-        if (failed or interrupted or not final_text) and changed_files:
-            lines.append("Changed files:")
-            lines.extend(f"- {path}" for path in changed_files)
-        return OutboundMessage(
-            channel_id="",
-            conversation_id="",
-            message_type="turn_result",
-            text="\n".join(part for part in lines if part),
-        )
+        return OutboundMessage(channel_id="", conversation_id="", message_type="turn_progress", text=text)

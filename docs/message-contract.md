@@ -1,6 +1,7 @@
 # IMCodex Message Contract
 
-This document defines the bridge-visible message contract for `imcodex`.
+This document defines the current bridge-visible message contract for
+`imcodex`.
 
 It focuses on what an IM or webhook integrator can rely on, not on internal
 Codex notification details.
@@ -10,23 +11,25 @@ Codex notification details.
 `imcodex` emits these user-visible message classes:
 
 - `accepted`
-  Immediate acknowledgement for a normal natural-language request.
+  Immediate acknowledgement for a natural-language request that started or
+  steered a native turn.
 - `status`
   Immediate setup or thread-management feedback such as `/new` and
   `/thread attach`.
 - `command_result`
-  Immediate result for informational commands and approval responses.
+  Immediate result for informational commands such as `/status`, `/threads`,
+  and `/thread read`.
 - `error`
-  Immediate blocked or invalid-command feedback.
+  Immediate invalid or blocked-command feedback.
 - `approval_request`
-  Asynchronous request for a command or file-change approval.
+  Asynchronous request for native approval.
 - `question_request`
-  Asynchronous request for additional structured user input.
+  Asynchronous request for native user input.
 - `turn_progress`
-  Asynchronous partial progress from a non-final agent message.
+  Asynchronous projected progress from non-final agent output or allowed
+  commentary/tool activity.
 - `turn_result`
-  Asynchronous terminal content for a completed answer, or terminal status
-  output for failed/interrupted turns.
+  Asynchronous final visible output for a turn.
 
 ## 2. Natural-Language Turn Lifecycle
 
@@ -40,19 +43,34 @@ For a normal text request, the logical lifecycle is:
 Important notes:
 
 - Successful `final_answer` content is emitted as `turn_result`
-- A later `turn/completed(status=completed)` updates local state only and does
-  not emit a duplicate terminal message
+- A later `turn/completed(status=completed)` updates internal runtime state but
+  does not emit a duplicate terminal message
 - Failed or interrupted turns still emit a terminal `turn_result`
+- If a late tool event arrives after a visible final answer, it is suppressed
 
-## 3. Slash Command Contract
+## 3. Request Identity
+
+Native Codex `requestId` is authoritative.
+
+- Outbound approval/question messages use `request_id`, not `ticket_id`
+- The bridge may show a short request handle for readability, but that handle
+  is not the source of truth
+- `/approve`, `/deny`, `/cancel`, and `/answer` target the native request id
+  or a unique prefix
+- If exactly one matching pending request exists, `/approve`, `/deny`, or
+  `/cancel` may omit the id
+
+## 4. Slash Command Contract
 
 Slash commands do not use `accepted`.
 
 They return one immediate message:
 
-- `status` for thread-management/setup flows such as `/new` and `/thread attach`
-- `command_result` for informational commands such as `/status` and `/threads`
-- `error` for invalid or blocked commands
+- `status` for setup and thread-management flows such as `/cwd`, `/new`,
+  `/thread attach`, `/model`, `/show`, and `/hide`
+- `command_result` for informational commands such as `/status`, `/threads`,
+  and `/thread read`
+- `error` for invalid, missing, ambiguous, or blocked commands
 
 Examples:
 
@@ -60,19 +78,16 @@ Examples:
 - `/threads` -> `command_result`
 - `/new` -> `status`
 - `/thread attach <thread-id>` -> `status`
-- `/approve <ticket>` -> `command_result`
+- `/approve <request-id-or-prefix>` -> `command_result`
 
-## 4. Transport Expectations
+## 5. Transport Expectations
 
 Webhook clients should treat the HTTP response from
-`POST /api/channels/webhook/inbound` as the sync channel for immediate messages.
+`POST /api/channels/webhook/inbound` as the sync channel for immediate
+messages.
 
 Channel sinks such as QQ should treat outbound push delivery as the channel for
 asynchronous progress, approvals, questions, and final results.
-
-The logical lifecycle is stable, but integrators should not assume strict wall-
-clock ordering between the immediate ack and later asynchronous pushes when the
-transport itself is long-lived and asynchronous.
 
 The safe client rule is:
 
@@ -80,14 +95,15 @@ The safe client rule is:
 - merge later async messages by conversation id
 - treat `turn_result` as terminal for user-visible content
 
-## 5. Tool Activity
+## 6. Webhook Outbound Shape
 
-In this phase, tool activity is only part of the contract at a high level:
+Webhook outbound messages keep this envelope:
 
-- command approvals -> `approval_request`
-- tool/user input prompts -> `question_request`
-- intermediate prose from Codex -> `turn_progress`
-- final prose from Codex -> `turn_result`
+- `channel_id`
+- `conversation_id`
+- `message_type`
+- `text`
+- `request_id`
+- `metadata`
 
-Rich UI treatment of command execution and file changes is intentionally left
-for a later iteration.
+`ticket_id` is obsolete in the current implementation.

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-import re
 import shlex
-from collections.abc import Callable
+from dataclasses import dataclass
 
 from ..store import ConversationStore
 
@@ -20,10 +18,7 @@ class CommandResponse:
     action: str
     text: str
     thread_id: str | None = None
-    turn_id: str | None = None
-    ticket_id: str | None = None
-    ticket_ids: list[str] | None = None
-    missing_ticket_ids: list[str] | None = None
+    request_id: str | None = None
     answers: dict[str, list[str]] | None = None
     include_all: bool = False
 
@@ -38,13 +33,8 @@ def parse_command(text: str) -> ParsedCommand:
 
 
 class CommandRouter:
-    def __init__(
-        self,
-        store: ConversationStore,
-        diagnostics_provider: Callable[[], dict[str, object]] | None = None,
-    ):
+    def __init__(self, store: ConversationStore) -> None:
         self.store = store
-        self.diagnostics_provider = diagnostics_provider or (lambda: {"pid": os.getpid()})
 
     def handle(self, channel_id: str, conversation_id: str, text: str) -> CommandResponse:
         command = parse_command(text)
@@ -59,84 +49,49 @@ class CommandRouter:
         resolved = os.path.abspath(os.path.expanduser(args[0]))
         if not os.path.isdir(resolved):
             return CommandResponse(action="project.cwd.missing", text=f"Directory not found: {resolved}")
-        binding = self.store.set_selected_cwd(channel_id, conversation_id, resolved)
-        return CommandResponse(
-            action="project.cwd",
-            text=f"CWD set to {binding.selected_cwd}.",
-        )
+        self.store.set_bootstrap_cwd(channel_id, conversation_id, resolved)
+        return CommandResponse(action="project.cwd", text=f"CWD set to {resolved}.")
 
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        binding = self.store.get_binding(channel_id, conversation_id)
         include_all = "--all" in args
-        if binding.selected_cwd is None and binding.active_thread_id is None and not include_all:
-            return CommandResponse(
-                action="threads.missing_project",
-                text="Choose a CWD first with /cwd <path>.",
-            )
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.bootstrap_cwd is None and binding.thread_id is None and not include_all:
+            return CommandResponse(action="threads.missing_project", text="Choose a CWD first with /cwd <path>.")
         return CommandResponse(action="threads.query", text="", include_all=include_all)
 
     def _handle_thread(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) == 1 and args[0] == "read":
-            return self._handle_thread_read(channel_id, conversation_id)
-        if len(args) != 2 or args[0] not in {"use", "attach"}:
-            return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id>, /thread attach <thread-id>, or /thread read")
-        thread_id = args[1]
-        return CommandResponse(
-            action="thread.attach",
-            text=f"Attaching thread {thread_id}.",
-            thread_id=thread_id,
-        )
-
-    def _handle_thread_read(self, channel_id: str, conversation_id: str) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_thread_id is None:
-            return CommandResponse(action="thread.read.none", text="No active thread.")
+        if len(args) == 1 and args[0] == "read":
+            if binding.thread_id is None:
+                return CommandResponse(action="thread.read.none", text="No active thread.")
+            return CommandResponse(action="thread.read.query", text="", thread_id=binding.thread_id)
+        if len(args) == 2 and args[0] == "attach":
+            return CommandResponse(action="thread.attach", text=f"Attaching thread {args[1]}.", thread_id=args[1])
         return CommandResponse(
-            action="thread.read.query",
-            text="",
-            thread_id=binding.active_thread_id,
+            action="thread.invalid",
+            text="Usage: /thread attach <thread-id> or /thread read",
         )
 
     def _handle_new(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.selected_cwd is None:
-            return CommandResponse(
-                action="thread.new.missing_project",
-                text="Choose a CWD first with /cwd <path>.",
-            )
-        return CommandResponse(action="thread.new", text=f"Starting a thread in {binding.selected_cwd}.")
+        cwd = self.store.current_cwd(channel_id, conversation_id)
+        if cwd is None:
+            return CommandResponse(action="thread.new.missing_project", text="Choose a CWD first with /cwd <path>.")
+        return CommandResponse(action="thread.new", text=f"Starting a thread in {cwd}.")
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del args
+        del channel_id, conversation_id, args
         return CommandResponse(action="status.query", text="")
 
     def _handle_stop(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
         binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_turn_id is None:
+        if binding.thread_id is None:
             return CommandResponse(action="turn.stop.none", text="No active turn to stop.")
-        return CommandResponse(
-            action="turn.stop",
-            text=f"Stopping turn {binding.active_turn_id}.",
-            turn_id=binding.active_turn_id,
-        )
-
-    def _handle_recover(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del args
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.active_thread_id is None:
-            return CommandResponse(action="recover.none", text="No active thread to recover.")
-        thread_id = binding.active_thread_id
-        self.store.clear_active_thread(channel_id, conversation_id)
-        return CommandResponse(
-            action="recover",
-            text=(
-                f"Cleared stale thread binding {thread_id}. "
-                "Use /new, /thread attach <thread-id>, or send a new prompt to start a fresh thread."
-            ),
-            thread_id=thread_id,
-        )
+        active = self.store.get_active_turn(binding.thread_id)
+        if active is None:
+            return CommandResponse(action="turn.stop.none", text="No active turn to stop.")
+        return CommandResponse(action="turn.stop", text=f"Stopping turn {active[0]}.")
 
     def _handle_requests(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
@@ -144,99 +99,49 @@ class CommandRouter:
         if not requests:
             return CommandResponse(action="requests.list", text="No pending requests.")
         lines = ["Pending requests:"]
-        for request in requests:
-            lines.append(f"[{request.ticket_id}] {request.kind}: {request.summary}")
+        for route in requests:
+            handle = route.request_handle or route.request_id[:8]
+            lines.append(f"- [{handle}] {route.kind}: {route.request_id}")
         return CommandResponse(action="requests.list", text="\n".join(lines))
 
-    def _handle_doctor(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del args
-        binding = self.store.get_binding(channel_id, conversation_id)
-        info = self.diagnostics_provider()
-        lines = [
-            f"Codex binary: {info.get('codex_bin', '(unknown)')}",
-            f"App Server: {info.get('app_server', '(unknown)')}",
-            f"Bridge: {info.get('bridge', '(unknown)')}",
-            f"PID: {info.get('pid', '(unknown)')}",
-            f"Data dir: {info.get('data_dir', '(unknown)')}",
-            f"Permission Profile: {binding.permission_profile}",
-            f"Model: {binding.selected_model or '(default)'}",
-            f"Visibility: {binding.visibility_profile}",
-            f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
-            f"Tool Calls: {'shown' if binding.show_toolcalls else 'hidden'}",
-        ]
-        return CommandResponse(action="doctor", text="\n".join(lines))
+    def _handle_approve(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        return self._handle_resolution(channel_id, conversation_id, args, "approval.accept", "accept")
 
-    def _handle_permissions(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) != 1 or args[0] not in {"autonomous", "review"}:
-            return CommandResponse(
-                action="settings.permissions.invalid",
-                text="Usage: /permissions autonomous|review",
-            )
-        profile = args[0]
-        self.store.set_permission_profile(channel_id, conversation_id, profile)
+    def _handle_deny(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        return self._handle_resolution(channel_id, conversation_id, args, "approval.deny", "decline")
+
+    def _handle_cancel(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        return self._handle_resolution(channel_id, conversation_id, args, "approval.cancel", "cancel")
+
+    def _handle_answer(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if not args:
+            return CommandResponse(action="request.answer.invalid", text="Usage: /answer <request-id> key=value ...")
+        if "=" in args[0]:
+            token = None
+            answer_parts = args
+        else:
+            token = args[0]
+            answer_parts = args[1:]
+        if not answer_parts:
+            return CommandResponse(action="request.answer.invalid", text="Usage: /answer <request-id> key=value ...")
+        try:
+            route = self.store.match_pending_request(channel_id, conversation_id, token, kind="question")
+        except ValueError as exc:
+            return CommandResponse(action="request.answer.missing", text=str(exc))
+        if route is None:
+            return CommandResponse(action="request.answer.missing", text="Unknown question request.")
         return CommandResponse(
-            action="settings.permissions",
-            text=f"Permission profile set to {profile}.",
+            action="request.answer",
+            text=f"Recorded answer for {route.request_id}.",
+            request_id=route.request_id,
+            answers=self._parse_answers(answer_parts),
         )
 
     def _handle_view(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         if len(args) != 1 or args[0] not in {"minimal", "standard", "verbose"}:
-            return CommandResponse(
-                action="settings.view.invalid",
-                text="Usage: /view minimal|standard|verbose",
-            )
-        profile = args[0]
-        self.store.set_visibility_profile(channel_id, conversation_id, profile)
-        return CommandResponse(
-            action="settings.view",
-            text=f"Visibility profile set to {profile}.",
-        )
-
-    def _handle_model(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) != 1:
-            return CommandResponse(
-                action="settings.model.invalid",
-                text="Usage: /model <name|default>",
-            )
-        if args[0] == "default":
-            self.store.set_model_override(channel_id, conversation_id, None)
-            return CommandResponse(
-                action="settings.model",
-                text="Model override cleared; using the default Codex model.",
-            )
-        self.store.set_model_override(channel_id, conversation_id, args[0])
-        return CommandResponse(
-            action="settings.model",
-            text=f"Model override set to {args[0]}.",
-        )
-
-    def _handle_help(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        del channel_id, conversation_id, args
-        lines = [
-            "Commands:",
-            "/cwd <path>",
-            "/threads [--all]",
-            "/thread attach <thread-id>",
-            "/thread read",
-            "/new",
-            "/recover",
-            "/status",
-            "/stop",
-            "/requests",
-            "/approve <ticket...>",
-            "/approve-session <ticket...>",
-            "/deny <ticket...>",
-            "/cancel <ticket...>",
-            "/answer <ticket> key=value ...",
-            "/permissions autonomous",
-            "/permissions review",
-            "/model <name|default>",
-            "/view minimal|standard|verbose",
-            "/show commentary|toolcalls",
-            "/hide commentary|toolcalls",
-            "/doctor",
-        ]
-        return CommandResponse(action="help", text="\n".join(lines))
+            return CommandResponse(action="settings.view.invalid", text="Usage: /view minimal|standard|verbose")
+        self.store.set_visibility_profile(channel_id, conversation_id, args[0])
+        return CommandResponse(action="settings.view", text=f"Visibility profile set to {args[0]}.")
 
     def _handle_show(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         return self._handle_visibility_toggle(channel_id, conversation_id, args, enabled=True)
@@ -244,47 +149,40 @@ class CommandRouter:
     def _handle_hide(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         return self._handle_visibility_toggle(channel_id, conversation_id, args, enabled=False)
 
-    def _handle_approve(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        return self._handle_resolution(channel_id, conversation_id, args, "accept", "approval.accept")
+    def _handle_model(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        if len(args) != 1:
+            return CommandResponse(action="settings.model.invalid", text="Usage: /model <name|default>")
+        if args[0] == "default":
+            self.store.set_next_model_override(channel_id, conversation_id, None)
+            return CommandResponse(action="settings.model", text="Next-turn model override cleared.")
+        self.store.set_next_model_override(channel_id, conversation_id, args[0])
+        return CommandResponse(action="settings.model", text=f"Next turn will use model {args[0]}.")
 
-    def _handle_approve_session(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        return self._handle_resolution(
-            channel_id,
-            conversation_id,
-            args,
-            "acceptForSession",
-            "approval.accept_session",
-        )
-
-    def _handle_deny(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        return self._handle_resolution(channel_id, conversation_id, args, "decline", "approval.deny")
-
-    def _handle_cancel(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        return self._handle_resolution(channel_id, conversation_id, args, "cancel", "approval.cancel")
-
-    def _handle_answer(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
-        if len(args) < 2:
-            return CommandResponse(action="request.answer.invalid", text="Usage: /answer <ticket> <question=value>...")
-        ticket_id = args[0]
-        answers = self._parse_answers(args[1:])
-        request = self.store.get_pending_request(
-            ticket_id,
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-        )
-        if request is None:
-            return CommandResponse(action="request.answer.missing", text=f"Unknown ticket: {ticket_id}")
-        if request.kind != "question":
-            return CommandResponse(
-                action="request.answer.invalid_kind",
-                text=f"Ticket {ticket_id} is not a question request.",
-                ticket_id=ticket_id,
-            )
+    def _handle_help(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
+        del channel_id, conversation_id, args
         return CommandResponse(
-            action="request.answer",
-            text=f"Recorded answer for {ticket_id}.",
-            ticket_id=ticket_id,
-            answers=answers,
+            action="help",
+            text="\n".join(
+                [
+                    "Commands:",
+                    "/cwd <path>",
+                    "/threads [--all]",
+                    "/thread attach <thread-id>",
+                    "/thread read",
+                    "/new",
+                    "/status",
+                    "/stop",
+                    "/requests",
+                    "/approve [request-id-or-prefix]",
+                    "/deny [request-id-or-prefix]",
+                    "/cancel [request-id-or-prefix]",
+                    "/answer [request-id-or-prefix] key=value ...",
+                    "/model <name|default>",
+                    "/view minimal|standard|verbose",
+                    "/show commentary|toolcalls",
+                    "/hide commentary|toolcalls",
+                ]
+            ),
         )
 
     def _handle_resolution(
@@ -292,38 +190,20 @@ class CommandRouter:
         channel_id: str,
         conversation_id: str,
         args: list[str],
-        decision: str,
         action: str,
+        decision: str,
     ) -> CommandResponse:
-        if len(args) < 1:
-            return CommandResponse(action=f"{action}.invalid", text="Usage: /<command> <ticket> [ticket...]")
-        ticket_ids: list[str] = []
-        missing_ticket_ids: list[str] = []
-        for ticket_id in args:
-            request = self.store.get_pending_request(
-                ticket_id,
-                channel_id=channel_id,
-                conversation_id=conversation_id,
-            )
-            if request is None or request.kind != "approval":
-                missing_ticket_ids.append(ticket_id)
-            else:
-                ticket_ids.append(ticket_id)
-        if not ticket_ids:
-            return CommandResponse(
-                action=f"{action}.missing",
-                text=f"Unknown tickets: {', '.join(missing_ticket_ids)}.",
-                missing_ticket_ids=missing_ticket_ids,
-            )
-        parts = [f"Recorded {decision} for {', '.join(ticket_ids)}."]
-        if missing_ticket_ids:
-            parts.append(f"Unknown tickets: {', '.join(missing_ticket_ids)}.")
+        token = args[0] if args else None
+        try:
+            route = self.store.match_pending_request(channel_id, conversation_id, token, kind="approval")
+        except ValueError as exc:
+            return CommandResponse(action=f"{action}.missing", text=str(exc))
+        if route is None:
+            return CommandResponse(action=f"{action}.missing", text="Unknown approval request.")
         return CommandResponse(
             action=action,
-            text=" ".join(parts),
-            ticket_id=ticket_ids[0] if len(ticket_ids) == 1 else None,
-            ticket_ids=ticket_ids,
-            missing_ticket_ids=missing_ticket_ids or None,
+            text=f"Recorded {decision} for {route.request_id}.",
+            request_id=route.request_id,
         )
 
     def _handle_visibility_toggle(
@@ -335,34 +215,12 @@ class CommandRouter:
         enabled: bool,
     ) -> CommandResponse:
         if len(args) != 1 or args[0] not in {"commentary", "toolcalls"}:
-            return CommandResponse(
-                action="settings.visibility.invalid",
-                text="Usage: /show|/hide commentary|toolcalls",
-            )
-        target = args[0]
-        if target == "commentary":
-            self.store.set_commentary_visibility(
-                channel_id,
-                conversation_id,
-                enabled=enabled,
-            )
-            text = f"Commentary messages {'shown' if enabled else 'hidden'}."
-        else:
-            self.store.set_toolcall_visibility(
-                channel_id,
-                conversation_id,
-                enabled=enabled,
-            )
-            text = f"Tool-call messages {'shown' if enabled else 'hidden'}."
-        return CommandResponse(action="settings.visibility", text=text)
-
-    def _thread_label(self, thread_id: str, *, binding=None) -> str:
-        try:
-            return self.store.thread_label(thread_id)
-        except KeyError:
-            if binding is not None and binding.active_thread_id == thread_id and binding.last_seen_thread_name:
-                return binding.last_seen_thread_name
-            return "Untitled thread"
+            return CommandResponse(action="settings.visibility.invalid", text="Usage: /show|/hide commentary|toolcalls")
+        if args[0] == "commentary":
+            self.store.set_commentary_visibility(channel_id, conversation_id, enabled=enabled)
+            return CommandResponse(action="settings.visibility", text=f"Commentary messages {'shown' if enabled else 'hidden'}.")
+        self.store.set_toolcall_visibility(channel_id, conversation_id, enabled=enabled)
+        return CommandResponse(action="settings.visibility", text=f"Tool-call messages {'shown' if enabled else 'hidden'}.")
 
     def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:
         answers: dict[str, list[str]] = {}
@@ -372,7 +230,3 @@ class CommandRouter:
             key, value = pair.split("=", 1)
             answers[key] = [part for part in value.split(",") if part]
         return answers
-
-    def _humanize_status(self, status: str) -> str:
-        spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", status)
-        return spaced.replace("_", " ").strip().lower()
