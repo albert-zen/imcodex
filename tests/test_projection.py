@@ -146,6 +146,73 @@ def test_projector_preserves_terminal_text_when_agent_message_has_no_phase() -> 
     assert final.text == "final text without phase"
 
 
+def test_projector_does_not_emit_progress_for_agent_deltas() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "delta": "partial text",
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
+def test_projector_uses_buffered_deltas_as_terminal_fallback() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector()
+
+    projector.project_notification(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "delta": "hello ",
+            },
+        },
+        store,
+    )
+    projector.project_notification(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "delta": "world",
+            },
+        },
+        store,
+    )
+    final = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        },
+        store,
+    )
+
+    assert final is not None
+    assert final.message_type == "turn_result"
+    assert final.text == "hello world"
+
+
 def test_protocol_mapping_prefers_native_request_id() -> None:
     event = normalize_appserver_message(
         {

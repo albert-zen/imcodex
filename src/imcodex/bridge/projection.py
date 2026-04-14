@@ -81,13 +81,13 @@ class MessageProjector:
         if event.kind == "agent_delta":
             if self._is_stale_turn(event.thread_id, event.turn_id, store):
                 return None
-            message = self.message_pump.record_delta(
+            self.message_pump.record_delta(
                 thread_id=event.thread_id,
                 turn_id=event.turn_id,
                 delta=str(event.payload.get("delta") or ""),
-                emit_progress=self._show_commentary(event.thread_id, store),
+                emit_progress=False,
             )
-            return self._attach_to_thread(event.thread_id, store, message)
+            return None
         if event.kind == "item_completed":
             return self._attach_to_thread(event.thread_id, store, self._capture_item_completed(event.payload, store))
         if event.kind == "turn_completed":
