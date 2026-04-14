@@ -164,7 +164,8 @@ async def test_mock_e2e_attaches_external_thread_and_continues_on_it() -> None:
 
     assert attach_messages[0].text == "[System] Attached to thread Imported thread (id: thr_external)."
     assert turn_messages[0].text == "[System] Accepted. Processing started."
-    assert sum('"method": "thread/resume"' in item for item in websocket.sent) == 2
+    assert sum('"method": "thread/read"' in item for item in websocket.sent) == 1
+    assert sum('"method": "thread/resume"' in item for item in websocket.sent) == 1
     assert any('"threadId": "thr_external"' in item for item in websocket.sent if '"method": "turn/start"' in item)
     assert sink.messages[-1].message_type == "turn_result"
     assert "Continuing attached thread" in sink.messages[-1].text

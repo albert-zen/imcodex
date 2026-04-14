@@ -609,6 +609,33 @@ def test_request_registry_backed_question_request_still_renders() -> None:
     assert "branch" in message.text
 
 
+def test_question_request_with_empty_questions_list_does_not_crash() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
+    store.set_active_thread("demo", "conv-1", thread.thread_id)
+    projector = MessageProjector(
+        request_registry=RequestRegistry(store),
+        turn_state=TurnStateMachine(),
+    )
+
+    message = projector.project_notification(
+        {
+            "method": "item/tool/requestUserInput",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "_request_id": "native-1",
+                "questions": [],
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "question_request"
+    assert "/answer 1 question=value" in message.text
+
+
 def test_stale_turn_terminal_messages_are_suppressed_after_newer_turn_starts() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
@@ -764,7 +791,7 @@ def test_persisted_active_turn_still_suppresses_stale_turn_after_restart() -> No
     assert binding.active_turn_status == "inProgress"
 
 
-def test_completed_newer_turn_still_suppresses_stale_terminal_after_restart(tmp_path: Path) -> None:
+def test_completed_newer_turn_is_not_suppressed_after_restart_without_runtime_turn_state(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     thread = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed")
@@ -821,7 +848,9 @@ def test_completed_newer_turn_still_suppresses_stale_terminal_after_restart(tmp_
         reloaded,
     )
 
-    assert late_final is None
+    assert late_final is not None
+    assert late_final.message_type == "turn_result"
+    assert late_final.text == "Old turn final answer"
     assert late_complete is None
     binding = reloaded.get_binding("demo", "conv-1")
     assert binding.active_turn_id is None
@@ -920,13 +949,12 @@ def test_stale_turn_requests_are_not_projected() -> None:
     assert store.list_pending_requests("demo", "conv-1") == []
 
 
-def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_label() -> None:
+def test_delayed_turn_started_for_older_thread_does_not_replace_current_thread_binding() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     old_thread = store.record_thread("thr_old", cwd=r"D:\work\alpha", preview="old")
     new_thread = store.record_thread("thr_new", cwd=r"D:\work\alpha", preview="")
     store.set_active_thread("demo", "conv-1", old_thread.thread_id)
     store.set_active_thread("demo", "conv-1", new_thread.thread_id)
-    store.mark_pending_first_thread_label("demo", "conv-1", new_thread.thread_id)
     projector = MessageProjector()
 
     message = projector.project_notification(
@@ -945,7 +973,6 @@ def test_delayed_turn_started_for_older_thread_preserves_pending_new_thread_labe
     assert binding.active_thread_id == new_thread.thread_id
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
-    assert store.consume_pending_first_thread_label("demo", "conv-1", new_thread.thread_id) is True
 
 
 def test_replayed_stale_turn_started_does_not_replace_current_turn() -> None:

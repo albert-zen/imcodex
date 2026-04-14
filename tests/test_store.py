@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from imcodex.store import ConversationStore
 
 
@@ -52,18 +54,13 @@ def test_set_selected_cwd_updates_binding_and_clears_active_thread() -> None:
     assert binding.active_thread_id is None
 
 
-def test_thread_label_prefers_preview_then_first_user_message() -> None:
+def test_thread_label_prefers_preview_and_falls_back_to_untitled() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="Existing preview")
     store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="")
 
-    store.note_thread_user_message(
-        "thr_2",
-        "please inspect why the Windows working directory resets after restart",
-    )
-
     assert store.thread_label("thr_1") == "Existing preview"
-    assert store.thread_label("thr_2") == "please inspect why the Windows working directory resets..."
+    assert store.thread_label("thr_2") == "Untitled thread"
 
 
 def test_thread_label_falls_back_when_imported_name_clips_to_empty() -> None:
@@ -78,18 +75,15 @@ def test_thread_label_falls_back_when_imported_name_clips_to_empty() -> None:
     assert store.thread_label("thr_1") == "Existing preview"
 
 
-def test_thread_label_persists_across_store_reload(tmp_path: Path) -> None:
+def test_thread_records_do_not_persist_across_store_reload(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
     store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="")
-    store.note_thread_user_message(
-        "thr_1",
-        "please inspect why the Windows working directory resets after restart",
-    )
 
     reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
 
-    assert reloaded.thread_label("thr_1") == "please inspect why the Windows working directory resets..."
+    with pytest.raises(KeyError):
+        reloaded.thread_label("thr_1")
 
 
 def test_note_thread_status_updates_thread_record() -> None:
@@ -201,10 +195,10 @@ def test_permission_and_visibility_settings_round_trip(tmp_path: Path) -> None:
     binding = reloaded.get_binding("qq", "conv-1")
 
     assert binding.permission_profile == "autonomous"
-    assert binding.selected_model == "gpt-5.4"
-    assert binding.visibility_profile == "verbose"
-    assert binding.show_commentary is False
-    assert binding.show_toolcalls is True
+    assert binding.selected_model is None
+    assert binding.visibility_profile == "standard"
+    assert binding.show_commentary is True
+    assert binding.show_toolcalls is False
 
 
 def test_list_pending_requests_returns_binding_order() -> None:
@@ -300,12 +294,12 @@ def test_state_persists_cwd_first_without_project_aliases() -> None:
 
         assert "projects" not in payload
         assert "project_aliases" not in payload
-        assert all("project_id" not in thread for thread in payload["threads"])
+        assert "threads" not in payload
         assert all("active_project_id" not in binding for binding in payload["bindings"])
 
         reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
-        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\alpha")] == ["thr_alpha"]
-        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\beta")] == ["thr_beta"]
+        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\alpha")] == []
+        assert [thread.thread_id for thread in reloaded.list_threads_for_cwd(r"D:\work\beta")] == []
         assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\alpha"
     finally:
         state_path.unlink(missing_ok=True)
@@ -373,9 +367,9 @@ def test_legacy_project_fields_are_ignored_on_reload() -> None:
     try:
         reloaded = ConversationStore(clock=lambda: 200.0, state_path=state_path)
 
-        assert [thread.thread_id for thread in reloaded.list_threads()] == ["thr_alpha"]
+        assert [thread.thread_id for thread in reloaded.list_threads()] == []
         assert reloaded.get_binding("qq", "conv-1").selected_cwd == r"D:\work\alpha"
-        assert not hasattr(reloaded.get_thread("thr_alpha"), "project_id")
         assert not hasattr(reloaded.get_binding("qq", "conv-1"), "active_project_id")
+        assert reloaded.get_binding("qq", "conv-1").active_thread_id == "thr_alpha"
     finally:
         state_path.unlink(missing_ok=True)

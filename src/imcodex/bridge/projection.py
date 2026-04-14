@@ -45,11 +45,14 @@ class MessageProjector:
             body = "\n".join(
                 f"- {question.get('id')}: {question.get('question')}" for question in questions
             )
+            first_question_id = "question"
+            if questions:
+                first_question_id = questions[0].get("id", "question")
             text = (
                 f"[ticket {pending.ticket_id}] Codex needs more input.\n"
                 f"{body}\n"
                 f"Reply with /answer {pending.ticket_id} "
-                f"{questions[0].get('id', 'question')}=value"
+                f"{first_question_id}=value"
             )
             return OutboundMessage(
                 channel_id=pending.channel_id,

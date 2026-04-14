@@ -164,7 +164,7 @@ async def test_new_command_calls_backend_thread_creation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label() -> None:
+async def test_new_command_followed_by_first_prompt_keeps_native_thread_identity_plain() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     cwd = r"D:\work\alpha"
     store.set_selected_cwd("qq", "conv-1", cwd)
@@ -205,10 +205,7 @@ async def test_new_command_followed_by_first_prompt_sets_fallback_thread_label()
     )
 
     assert messages[0].text == "[System] Accepted. Processing started."
-    assert (
-        store.thread_label("thr_remote_new")
-        == "please inspect why the Windows working directory resets..."
-    )
+    assert store.thread_label("thr_remote_new") == "Untitled thread"
 
 
 @pytest.mark.asyncio
@@ -471,7 +468,7 @@ async def test_thread_attach_reports_backend_validation_failure_without_breaking
 
     assert messages[0].message_type == "status"
     assert "could not be attached" in messages[0].text
-    assert "/cwd <path>" in messages[0].text
+    assert "/thread read <thread-id>" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -532,7 +529,7 @@ async def test_new_command_does_not_require_backend_to_store_thread_before_ack()
     )
 
     assert backend.created_threads == [("qq", "conv-1")]
-    assert messages[0].text == "[System] Started thread Untitled thread (id: thr_remote_new)."
+    assert messages[0].text == "[System] Started thread (id: thr_remote_new)."
 
 
 @pytest.mark.asyncio
@@ -697,7 +694,7 @@ async def test_threads_command_without_selected_cwd_preserves_missing_project_gu
 
 
 @pytest.mark.asyncio
-async def test_thread_read_command_surfaces_recoverable_status_when_native_query_fails() -> None:
+async def test_thread_read_command_surfaces_transient_status_when_native_query_fails() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     thread = store.record_thread("thr_local", cwd=r"D:\work\alpha", preview="Local preview")
     binding = store.set_selected_cwd("qq", "conv-1", thread.cwd)
@@ -723,10 +720,8 @@ async def test_thread_read_command_surfaces_recoverable_status_when_native_query
 
     assert backend.read_thread_calls == [("qq", "conv-1", "thr_local")]
     assert messages[0].message_type == "status"
-    assert "could not be validated" in messages[0].text
-    assert "/recover" in messages[0].text
-    assert "/new" in messages[0].text
-    assert "/thread attach <thread-id>" in messages[0].text
+    assert "could not be queried from Codex right now" in messages[0].text
+    assert "Try again in a moment." in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -806,7 +801,7 @@ async def test_new_command_without_working_directory_is_user_safe() -> None:
 
 
 @pytest.mark.asyncio
-async def test_new_command_pending_label_survives_restart_before_first_prompt(tmp_path: Path) -> None:
+async def test_new_command_does_not_persist_pending_label_across_restart(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     cwd = r"D:\work\alpha"
@@ -870,10 +865,8 @@ async def test_new_command_pending_label_survives_restart_before_first_prompt(tm
     )
 
     assert messages[0].text == "[System] Accepted. Processing started."
-    assert (
-        reloaded_store.thread_label("thr_remote_new")
-        == "please inspect why the Windows working directory resets..."
-    )
+    assert reloaded_store.get_binding("qq", "conv-1").active_thread_id == "thr_remote_new"
+    assert "thr_remote_new" not in [thread.thread_id for thread in reloaded_store.list_threads()]
 
 
 @pytest.mark.asyncio
@@ -938,10 +931,7 @@ async def test_new_command_recovery_clears_stale_pending_label_from_abandoned_th
         )
     )
 
-    assert (
-        store.thread_label("thr_recovered")
-        == "please inspect why the Windows working directory resets..."
-    )
+    assert store.thread_label("thr_recovered") == "Untitled thread"
 
     store.set_active_thread("qq", "conv-1", "thr_remote_new")
     messages = await service.handle_inbound(
@@ -1167,7 +1157,7 @@ async def test_server_approval_request_is_still_shown_in_autonomous_mode() -> No
 
 
 @pytest.mark.asyncio
-async def test_plain_text_records_first_user_message_for_future_thread_labels() -> None:
+async def test_plain_text_does_not_invent_thread_labels_from_first_user_message() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     cwd = r"D:\work\alpha"
     store.set_selected_cwd("qq", "conv-1", cwd)
@@ -1198,10 +1188,7 @@ async def test_plain_text_records_first_user_message_for_future_thread_labels() 
     )
 
     assert messages[0].text == "[System] Accepted. Processing started."
-    assert (
-        store.thread_label("thr_new")
-        == "please inspect why the Windows working directory resets..."
-    )
+    assert store.thread_label("thr_new") == "Untitled thread"
 
 
 @pytest.mark.asyncio

@@ -23,9 +23,9 @@ class ThreadRecord:
 class ConversationBinding:
     channel_id: str
     conversation_id: str
-    selected_cwd: str | None = None
+    thread_id: str | None = None
+    bootstrap_cwd: str | None = None
     selected_model: str | None = None
-    active_thread_id: str | None = None
     active_turn_id: str | None = None
     active_turn_status: str | None = None
     last_inbound_message_id: str | None = None
@@ -38,6 +38,22 @@ class ConversationBinding:
     last_seen_thread_name: str | None = None
     last_seen_thread_path: str | None = None
     last_seen_thread_status: str | None = None
+
+    @property
+    def active_thread_id(self) -> str | None:
+        return self.thread_id
+
+    @active_thread_id.setter
+    def active_thread_id(self, value: str | None) -> None:
+        self.thread_id = value
+
+    @property
+    def selected_cwd(self) -> str | None:
+        return self.bootstrap_cwd
+
+    @selected_cwd.setter
+    def selected_cwd(self, value: str | None) -> None:
+        self.bootstrap_cwd = value
 
 
 @dataclass(slots=True)

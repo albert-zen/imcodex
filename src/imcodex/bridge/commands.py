@@ -68,7 +68,7 @@ class CommandRouter:
     def _handle_threads(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
         include_all = "--all" in args
-        if binding.selected_cwd is None and not include_all:
+        if binding.selected_cwd is None and binding.active_thread_id is None and not include_all:
             return CommandResponse(
                 action="threads.missing_project",
                 text="Choose a CWD first with /cwd <path>.",
@@ -80,24 +80,10 @@ class CommandRouter:
             return self._handle_thread_read(channel_id, conversation_id)
         if len(args) != 2 or args[0] not in {"use", "attach"}:
             return CommandResponse(action="thread.invalid", text="Usage: /thread use <thread-id>, /thread attach <thread-id>, or /thread read")
-        if args[0] == "attach":
-            thread_id = args[1]
-            binding = self.store.get_binding(channel_id, conversation_id)
-            if binding.selected_cwd is None:
-                text = f"Attaching thread {thread_id}."
-            else:
-                text = f"Attaching thread {thread_id} from CWD {binding.selected_cwd}."
-            return CommandResponse(
-                action="thread.attach",
-                text=text,
-                thread_id=thread_id,
-            )
         thread_id = args[1]
-        thread = self.store.get_thread(thread_id)
-        self.store.set_active_thread(channel_id, conversation_id, thread_id)
         return CommandResponse(
-            action="thread.use",
-            text=f"Switched to thread {self._thread_label(thread_id)} (id: {thread_id}) in CWD {thread.cwd}.",
+            action="thread.attach",
+            text=f"Attaching thread {thread_id}.",
             thread_id=thread_id,
         )
 
@@ -123,39 +109,7 @@ class CommandRouter:
 
     def _handle_status(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args
-        binding = self.store.get_binding(channel_id, conversation_id)
-        cwd_text = binding.selected_cwd or "(none)"
-        thread_text = "(none)"
-        thread_path_text = "(none)"
-        thread_status_text = "(none)"
-        if binding.active_thread_id is not None:
-            thread_text = self._thread_label(binding.active_thread_id, binding=binding)
-            thread_path_text = binding.last_seen_thread_path or "(unknown)"
-            thread_status_text = (
-                self._humanize_status(binding.last_seen_thread_status)
-                if binding.last_seen_thread_status
-                else "(unknown)"
-            )
-        turn_text = binding.active_turn_id or "(none)"
-        turn_status = self._humanize_status(binding.active_turn_status) if binding.active_turn_status else "idle"
-        model_text = binding.selected_model or "(default)"
-        lines = [
-            f"CWD: {cwd_text}",
-            f"Thread: {thread_text}",
-            f"Thread ID: {binding.active_thread_id or '(none)'}",
-            f"Thread Path: {thread_path_text}",
-            f"Thread Status: {thread_status_text}",
-            f"Turn: {turn_text}",
-            f"Turn Status: {turn_status}",
-            f"Model: {model_text}",
-            f"Permission Profile: {binding.permission_profile}",
-            f"Visibility: {binding.visibility_profile}",
-            f"Commentary: {'shown' if binding.show_commentary else 'hidden'}",
-            f"Tool Calls: {'shown' if binding.show_toolcalls else 'hidden'}",
-            f"Tickets: {len(binding.pending_request_ids)} pending",
-        ]
-        text = "\n".join(lines)
-        return CommandResponse(action="status", text=text)
+        return CommandResponse(action="status.query", text="")
 
     def _handle_stop(self, channel_id: str, conversation_id: str, args: list[str]) -> CommandResponse:
         del args

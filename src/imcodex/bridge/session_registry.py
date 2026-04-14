@@ -104,20 +104,17 @@ class SessionRegistry:
         if key is None:
             self.store.note_turn_started(thread_id, turn_id=turn_id, status=status)
             return None
-        try:
-            binding = self.store.set_active_turn(
-                key[0],
-                key[1],
-                thread_id=thread_id,
-                turn_id=turn_id,
-                status=status,
-            )
-            thread = self.store.get_thread(thread_id)
-        except KeyError:
-            return None
-        thread.status = status
+        binding = self.store.set_active_turn(
+            key[0],
+            key[1],
+            thread_id=thread_id,
+            turn_id=turn_id,
+            status=status,
+        )
+        thread = self.store._threads.get(thread_id)
+        if thread is not None:
+            thread.status = status
         binding.last_seen_thread_status = status
-        self.store._save()
         self._bind_runtime(key, thread_id)
         return self.get(*key)
 
@@ -136,20 +133,19 @@ class SessionRegistry:
         if key is None:
             self.store.note_turn_completed(thread_id, turn_id=turn_id, status=status)
             return None
-        try:
-            thread = self.store.get_thread(thread_id)
-            binding = self.store.get_binding(*key)
-        except KeyError:
-            return None
-        thread.status = status
+        thread = self.store._threads.get(thread_id)
+        binding = self.store.get_binding(*key)
+        if thread is not None:
+            thread.status = status
         stored_turn = self.store._thread_active_turns.get(thread_id)
         should_update_last_turn = (
-            thread.last_turn_id is None
+            thread is None
+            or thread.last_turn_id is None
             or thread.last_turn_id == turn_id
             or (stored_turn is not None and stored_turn[0] == turn_id)
             or binding.active_turn_id == turn_id
         )
-        if should_update_last_turn:
+        if should_update_last_turn and thread is not None:
             thread.last_turn_id = turn_id
             thread.last_turn_status = status
         if stored_turn is not None and stored_turn[0] == turn_id:
@@ -162,7 +158,6 @@ class SessionRegistry:
             elif binding.active_turn_id is None:
                 binding.active_turn_status = status
                 binding.last_seen_thread_status = status
-        self.store._save()
         self._bind_runtime(key, thread_id)
         return self.get(*key)
 
@@ -172,7 +167,7 @@ class SessionRegistry:
             self._drop_runtime_thread(previous_thread, key)
         previous_key = self._thread_sessions.get(thread_id)
         if previous_key is not None and previous_key != key:
-            self._move_thread_runtime_state(thread_id, previous_key, key)
+            self._release_runtime_owner(thread_id, previous_key)
             self._drop_runtime_thread(thread_id, previous_key)
         self._session_threads[key] = thread_id
         self._thread_sessions[thread_id] = key
@@ -203,46 +198,13 @@ class SessionRegistry:
         if self._session_threads.get(key) == thread_id:
             self._session_threads.pop(key, None)
 
-    def _move_thread_runtime_state(
+    def _release_runtime_owner(
         self,
         thread_id: str,
         source_key: tuple[str, str],
-        target_key: tuple[str, str],
     ) -> None:
         source_binding = self.store.get_binding(*source_key)
-        target_binding = self.store.get_binding(*target_key)
         if source_binding.active_thread_id == thread_id:
             source_binding.active_thread_id = None
             source_binding.active_turn_id = None
             source_binding.active_turn_status = None
-        source_label_key = (source_key[0], source_key[1])
-        target_label_key = (target_key[0], target_key[1])
-        if self.store._pending_first_thread_labels.get(source_label_key) == thread_id:
-            self.store._pending_first_thread_labels.pop(source_label_key, None)
-            self.store._pending_first_thread_labels[target_label_key] = thread_id
-        moved_ticket_ids: list[tuple[str, str]] = []
-        for request_key, request in list(self.store._pending_requests.items()):
-            if request.channel_id != source_key[0] or request.conversation_id != source_key[1]:
-                continue
-            if request.thread_id != thread_id:
-                continue
-            original_ticket_id = request.ticket_id
-            self.store._pending_requests.pop(request_key, None)
-            request.channel_id = target_key[0]
-            request.conversation_id = target_key[1]
-            target_ticket_id = original_ticket_id
-            target_request_key = self.store._pending_request_key(target_key[0], target_key[1], target_ticket_id)
-            while target_request_key in self.store._pending_requests:
-                target_ticket_id = self.store.next_ticket_id(target_key[0], target_key[1])
-                request.ticket_id = target_ticket_id
-                target_request_key = self.store._pending_request_key(target_key[0], target_key[1], target_ticket_id)
-            self.store._pending_requests[target_request_key] = request
-            moved_ticket_ids.append((original_ticket_id, target_ticket_id))
-            if target_ticket_id.isdigit():
-                target_binding.next_ticket = max(target_binding.next_ticket, int(target_ticket_id) + 1)
-        for source_ticket_id, target_ticket_id in moved_ticket_ids:
-            if source_ticket_id in source_binding.pending_request_ids:
-                source_binding.pending_request_ids.remove(source_ticket_id)
-            if target_ticket_id not in target_binding.pending_request_ids:
-                target_binding.pending_request_ids.append(target_ticket_id)
-        self.store._save()
