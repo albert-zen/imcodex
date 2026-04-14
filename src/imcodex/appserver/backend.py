@@ -7,6 +7,9 @@ from ..store import ConversationStore
 from .client import AppServerError
 
 
+DEFAULT_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer"]
+
+
 class StaleThreadBindingError(RuntimeError):
     def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
@@ -71,12 +74,23 @@ class CodexBackend:
         *,
         include_all: bool = False,
     ) -> list[NativeThreadSnapshot]:
-        params: dict[str, str] = {}
-        cwd = self.store.current_cwd(channel_id, conversation_id)
-        if cwd and not include_all:
-            params["cwd"] = cwd
+        preferred_cwd = self.store.current_cwd(channel_id, conversation_id)
+        params: dict[str, str | list[str]] = {"sortKey": "updated_at"}
+        if not include_all:
+            params["sourceKinds"] = list(DEFAULT_THREAD_SOURCE_KINDS)
         result = await self.client.list_threads(**params)
-        return [self._remember_snapshot(item) for item in result.get("threads", [])]
+        threads = [self._remember_snapshot(item) for item in self._thread_list_items(result)]
+        binding = self.store.get_binding(channel_id, conversation_id)
+        seen_thread_ids = {snapshot.thread_id for snapshot in threads}
+        if binding.thread_id and binding.thread_id not in seen_thread_ids:
+            snapshot = await self.read_thread(channel_id, conversation_id, binding.thread_id)
+            if snapshot is not None:
+                threads.append(snapshot)
+        return self._prioritize_threads(
+            threads,
+            bound_thread_id=binding.thread_id,
+            preferred_cwd=preferred_cwd,
+        )
 
     async def read_thread(
         self,
@@ -148,9 +162,35 @@ class CodexBackend:
             status=str(status or "idle"),
             name=str(payload["name"]) if payload.get("name") is not None else None,
             path=str(payload["path"]) if payload.get("path") is not None else None,
+            source=str(payload["source"]) if payload.get("source") is not None else None,
         )
         self.store.note_thread_snapshot(snapshot)
         return snapshot
+
+    def _prioritize_threads(
+        self,
+        threads: list[NativeThreadSnapshot],
+        *,
+        bound_thread_id: str | None,
+        preferred_cwd: str | None,
+    ) -> list[NativeThreadSnapshot]:
+        ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
+        for index, snapshot in enumerate(threads):
+            priority = 2
+            if bound_thread_id and snapshot.thread_id == bound_thread_id:
+                priority = 0
+            elif preferred_cwd and snapshot.cwd == preferred_cwd:
+                priority = 1
+            ranked.append((priority, index, snapshot))
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return [snapshot for _, _, snapshot in ranked]
+
+    def _thread_list_items(self, payload: dict) -> list[dict]:
+        for key in ("threads", "data"):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        return []
 
     def _is_stale_thread_error(self, error: AppServerError) -> bool:
         message = str(error).lower()

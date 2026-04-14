@@ -127,7 +127,11 @@ class BridgeService:
         for snapshot in threads:
             marker = "*" if snapshot.thread_id == binding.thread_id else "-"
             label = snapshot.name or snapshot.preview or snapshot.thread_id
-            parts = [f"id: {snapshot.thread_id}", f"status: {snapshot.status}"]
+            parts = [
+                f"id: {snapshot.thread_id}",
+                f"status: {snapshot.status}",
+                f"source: {snapshot.source or 'unknown'}",
+            ]
             if include_all:
                 parts.append(f"cwd: {snapshot.cwd}")
             lines.append(f"{marker} {label} ({', '.join(parts)})")
@@ -137,12 +141,15 @@ class BridgeService:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         cwd = self.store.current_cwd(message.channel_id, message.conversation_id) or "(none)"
         if binding.thread_id is None:
+            app_server_mode = getattr(self.backend.client, "connection_mode", "disconnected")
             return "\n".join(
                 [
+                    f"App Server: {app_server_mode}",
                     f"CWD: {cwd}",
                     "Thread: (none)",
                     "Thread ID: (none)",
                     "Thread Status: (none)",
+                    "Thread Source: (none)",
                     f"Requests: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id))} pending",
                 ]
             )
@@ -150,12 +157,15 @@ class BridgeService:
         if snapshot is None:
             return f"Current thread {binding.thread_id} is no longer available in Codex."
         active = self.store.get_active_turn(binding.thread_id)
+        app_server_mode = getattr(self.backend.client, "connection_mode", "disconnected")
         return "\n".join(
             [
+                f"App Server: {app_server_mode}",
                 f"CWD: {snapshot.cwd or cwd}",
                 f"Thread: {snapshot.name or snapshot.preview or snapshot.thread_id}",
                 f"Thread ID: {snapshot.thread_id}",
                 f"Thread Status: {snapshot.status}",
+                f"Thread Source: {snapshot.source or 'unknown'}",
                 f"Turn: {active[0] if active else '(none)'}",
                 f"Turn Status: {active[1] if active else 'idle'}",
                 f"Requests: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id))} pending",
@@ -178,6 +188,7 @@ class BridgeService:
                 f"CWD: {snapshot.cwd or '(unknown)'}",
                 f"Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
                 f"Status: {snapshot.status}",
+                f"Source: {snapshot.source or 'unknown'}",
             ]
         )
 

@@ -5,7 +5,7 @@ import contextlib
 import inspect
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Protocol
 
 
 JsonDict = dict[str, Any]
@@ -15,6 +15,75 @@ ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
 
 class AppServerError(RuntimeError):
     pass
+
+
+class AppServerTransport(Protocol):
+    async def send_json(self, payload: JsonDict) -> None: ...
+
+    async def receive_json(self) -> JsonDict: ...
+
+    async def close(self) -> None: ...
+
+    def is_closed(self) -> bool: ...
+
+
+class StdioAppServerTransport:
+    def __init__(self, process: Any) -> None:
+        self._process = process
+        self._stdin = getattr(process, "stdin", None)
+        self._stdout = getattr(process, "stdout", None)
+        if self._stdin is None or self._stdout is None:
+            raise AppServerError("stdio app-server process missing stdin/stdout pipes")
+
+    async def send_json(self, payload: JsonDict) -> None:
+        data = (json.dumps(payload) + "\n").encode("utf-8")
+        self._stdin.write(data)
+        drain = getattr(self._stdin, "drain", None)
+        if callable(drain):
+            result = drain()
+            if inspect.isawaitable(result):
+                await result
+
+    async def receive_json(self) -> JsonDict:
+        raw = await self._stdout.readline()
+        if not raw:
+            raise AppServerError("app-server connection closed")
+        return json.loads(raw.decode("utf-8"))
+
+    async def close(self) -> None:
+        close = getattr(self._stdin, "close", None)
+        if callable(close):
+            close()
+
+    def is_closed(self) -> bool:
+        return getattr(self._process, "returncode", None) is not None
+
+
+class WebSocketAppServerTransport:
+    def __init__(self, websocket: Any) -> None:
+        self._websocket = websocket
+
+    async def send_json(self, payload: JsonDict) -> None:
+        await self._websocket.send(json.dumps(payload))
+
+    async def receive_json(self) -> JsonDict:
+        try:
+            raw = await self._websocket.recv()
+        except Exception as exc:
+            raise AppServerError("app-server connection closed") from exc
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw)
+
+    async def close(self) -> None:
+        close = getattr(self._websocket, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+
+    def is_closed(self) -> bool:
+        return bool(getattr(self._websocket, "closed", False))
 
 
 class AppServerClient:
@@ -28,15 +97,14 @@ class AppServerClient:
         self._supervisor = supervisor
         self._client_info = client_info
         self._request_timeout_s = request_timeout_s
-        self._process: Any = None
-        self._stdin: Any = None
-        self._stdout: Any = None
+        self._transport: AppServerTransport | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
         self._pending_server_requests: dict[str, JsonDict] = {}
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
+        self.connection_mode = "disconnected"
         self.initialized = False
 
     async def connect(self) -> None:
@@ -114,14 +182,17 @@ class AppServerClient:
                 await self._listener_task
             self._listener_task = None
             await self._reset_connection()
-        if self._process is not None and getattr(self._process, "returncode", None) is not None:
+        if self._transport is not None and self._transport.is_closed():
             await self._reset_connection()
-        if self._process is None:
-            self._process = await self._supervisor.start()
-            self._stdin = getattr(self._process, "stdin", None)
-            self._stdout = getattr(self._process, "stdout", None)
-            if self._stdin is None or self._stdout is None:
-                raise AppServerError("stdio app-server process missing stdin/stdout pipes")
+        if self._transport is None:
+            websocket = await self._supervisor.connect_shared()
+            if websocket is not None:
+                self._transport = WebSocketAppServerTransport(websocket)
+                self.connection_mode = "shared-ws"
+            else:
+                process = await self._supervisor.start()
+                self._transport = StdioAppServerTransport(process)
+                self.connection_mode = "spawned-stdio"
             self._listener_task = asyncio.create_task(self._receive_loop())
             self.initialized = False
 
@@ -158,25 +229,15 @@ class AppServerClient:
         await self._send_json({"method": method, "params": params})
 
     async def _send_json(self, payload: JsonDict) -> None:
-        if self._stdin is None:
+        if self._transport is None:
             raise AppServerError("transport is not connected")
-        data = (json.dumps(payload) + "\n").encode("utf-8")
-        self._stdin.write(data)
-        drain = getattr(self._stdin, "drain", None)
-        if callable(drain):
-            result = drain()
-            if inspect.isawaitable(result):
-                await result
+        await self._transport.send_json(payload)
 
     async def _receive_loop(self) -> None:
         error: Exception | None = None
         try:
-            while self._stdout is not None:
-                raw = await self._stdout.readline()
-                if not raw:
-                    error = AppServerError("app-server connection closed")
-                    break
-                message = json.loads(raw.decode("utf-8"))
+            while self._transport is not None:
+                message = await self._transport.receive_json()
                 await self._dispatch(message)
         except asyncio.CancelledError:
             raise
@@ -188,9 +249,6 @@ class AppServerClient:
                     if not future.done():
                         future.set_exception(error)
             self.initialized = False
-            self._process = None
-            self._stdin = None
-            self._stdout = None
 
     async def _dispatch(self, message: JsonDict) -> None:
         if "id" in message and ("result" in message or "error" in message):
@@ -230,15 +288,14 @@ class AppServerClient:
                 listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await listener_task
-        if self._stdin is not None:
-            close = getattr(self._stdin, "close", None)
-            if callable(close):
-                close()
-        self._process = None
-        self._stdin = None
-        self._stdout = None
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                await transport.close()
         self._pending_server_requests.clear()
         self.initialized = False
+        self.connection_mode = "disconnected"
         await self._supervisor.stop()
 
     def _normalize_thread_params(self, payload: JsonDict) -> JsonDict:

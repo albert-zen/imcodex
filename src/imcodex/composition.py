@@ -15,7 +15,10 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
     configure_logging(settings.log_level)
     store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
-    supervisor = AppServerSupervisor(codex_bin=settings.codex_bin)
+    supervisor = AppServerSupervisor(
+        codex_bin=settings.codex_bin,
+        app_server_url=settings.app_server_url,
+    )
     client = AppServerClient(
         supervisor=supervisor,
         client_info={"name": settings.service_name, "title": "IM Codex Bridge", "version": "0.1.0"},

@@ -583,3 +583,182 @@ async def test_model_override_survives_steer_and_applies_to_next_started_turn() 
     ]
     assert turn_start_payloads[-1]["model"] == "gpt-5.4"
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_matching_cwd() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_other",
+                                "cwd": r"D:\work\beta",
+                                "preview": "Other thread",
+                                "status": "idle",
+                                "source": "cli",
+                            },
+                            {
+                                "id": "thr_match",
+                                "cwd": r"D:\work\alpha",
+                                "preview": "Matching cwd thread",
+                                "status": "idle",
+                                "source": "vscode",
+                            },
+                        ]
+                    },
+                }
+            ],
+            "thread/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "thread": {
+                            "id": "thr_bound",
+                            "cwd": r"D:\work\gamma",
+                            "preview": "Bound thread",
+                            "status": "idle",
+                            "source": "appServer",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_bound")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    lines = messages[0].text.splitlines()
+    assert lines[1].startswith("* Bound thread")
+    assert "source: appServer" in lines[1]
+    assert "source: vscode" in lines[2]
+    assert "source: cli" in lines[3]
+    thread_list_payloads = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "thread/list"
+    ]
+    assert thread_list_payloads == [
+        {
+            "sourceKinds": ["cli", "vscode", "appServer"],
+            "sortKey": "updated_at",
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_all_command_omits_default_source_filter() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads --all",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    thread_list_payloads = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "thread/list"
+    ]
+    assert thread_list_payloads == [{"sortKey": "updated_at"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_status_and_thread_read_render_transport_mode_and_thread_source() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                            "path": r"D:\work\alpha",
+                            "source": "appServer",
+                        }
+                    },
+                },
+                {
+                    "id": 3,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                            "path": r"D:\work\alpha",
+                            "source": "appServer",
+                        }
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    status_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+    thread_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/thread read",
+        )
+    )
+
+    assert "App Server: spawned-stdio" in status_messages[0].text
+    assert "Thread Source: appServer" in status_messages[0].text
+    assert "Source: appServer" in thread_messages[0].text
+    await client.close()

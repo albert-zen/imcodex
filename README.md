@@ -11,7 +11,7 @@ The codebase now follows a simple three-layer shape plus a thin wiring root:
 - `imcodex.bridge`
   Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
 - `imcodex.appserver`
-  Owns native Codex `app-server` integration over `stdio`, including supervision and thread/turn operations.
+  Owns native Codex `app-server` integration, preferring a shared websocket server when available and falling back to local `stdio` supervision for thread/turn operations.
 
 Supporting modules:
 
@@ -121,10 +121,16 @@ The short version is:
 5. Run `pwsh -File .\scripts\doctor.ps1`
 6. Start with `pwsh -File .\scripts\start.ps1`
 
+Codex version requirement:
+
+- Use `codex-cli 0.120.0` or newer.
+- Older Codex builds can miss current thread-list compatibility and may fail against newer local Codex state.
+
 ## Environment
 
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
+- `IMCODEX_APP_SERVER_URL`: optional websocket URL for a shared Codex app-server; default probe is `ws://127.0.0.1:8765`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`

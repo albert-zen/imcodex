@@ -65,6 +65,31 @@ class ScriptedProcess:
         return self.returncode
 
 
+class ScriptedWebSocket:
+    def __init__(self, scripts: dict[str, list[dict]]) -> None:
+        self.scripts = scripts
+        self.sent: list[dict] = []
+        self.messages: asyncio.Queue[str] = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, data: str) -> None:
+        payload = json.loads(data)
+        self.sent.append(payload)
+        method = payload.get("method")
+        if method == "initialized":
+            return
+        if method is None:
+            return
+        for message in self.scripts.get(method, []):
+            await self.messages.put(json.dumps(message))
+
+    async def recv(self) -> str:
+        return await self.messages.get()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
 async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_server_request() -> None:
     process = ScriptedProcess(
@@ -281,3 +306,109 @@ async def test_default_spawn_does_not_pipe_stderr(monkeypatch) -> None:
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     assert captured["kwargs"]["stdout"] == asyncio.subprocess.PIPE
     assert "stderr" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_client_uses_explicit_websocket_app_server_before_spawning() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    spawned = False
+
+    async def unexpected_spawn(*args):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("stdio spawn should not be used when websocket connection succeeds")
+
+    captured_urls: list[str] = []
+
+    async def websocket_factory(url: str):
+        captured_urls.append(url)
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        app_server_url="ws://127.0.0.1:9999",
+        spawn_process=unexpected_spawn,
+        websocket_factory=websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert captured_urls == ["ws://127.0.0.1:9999"]
+    assert spawned is False
+    assert client.connection_mode == "shared-ws"
+    assert websocket.sent[0]["method"] == "initialize"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_probes_default_websocket_app_server_before_spawning() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    captured_urls: list[str] = []
+
+    async def websocket_factory(url: str):
+        captured_urls.append(url)
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        websocket_factory=websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert captured_urls == ["ws://127.0.0.1:8765"]
+    assert client.connection_mode == "shared-ws"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_falls_back_to_stdio_when_websocket_connection_fails() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    captured_urls: list[str] = []
+
+    async def websocket_factory(url: str):
+        captured_urls.append(url)
+        raise OSError("connection refused")
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        websocket_factory=websocket_factory,
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert captured_urls == ["ws://127.0.0.1:8765"]
+    assert client.connection_mode == "spawned-stdio"
+    assert process.sent[0]["method"] == "initialize"
+    await client.close()

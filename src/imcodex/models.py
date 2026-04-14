@@ -37,6 +37,7 @@ class NativeThreadSnapshot:
     status: str
     name: str | None = None
     path: str | None = None
+    source: str | None = None
 
 
 @dataclass(slots=True)
