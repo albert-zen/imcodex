@@ -5,6 +5,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 $python = if ($env:IMCODEX_PYTHON) { $env:IMCODEX_PYTHON } else { "python" }
+$minimumCodexVersion = [Version]"0.120.0"
 
 function Write-Check([string]$Label, [bool]$Ok, [string]$Detail) {
     $status = if ($Ok) { "OK" } else { "FAIL" }
@@ -59,6 +60,21 @@ Write-Check "Codex binary" ($null -ne $codexCommand) ($codexCommand.Path ?? "not
 
 if ($null -ne $codexCommand) {
     try {
+        $codexVersionText = (& $codexBin --version | Select-Object -First 1).Trim()
+        $codexVersionMatch = [regex]::Match($codexVersionText, '(\d+\.\d+\.\d+)')
+        if ($codexVersionMatch.Success) {
+            $codexVersion = [Version]$codexVersionMatch.Groups[1].Value
+            $codexOk = $codexVersion -ge $minimumCodexVersion
+            $codexDetail = "$codexVersionText (need >= $minimumCodexVersion)"
+            Write-Check "Codex version" $codexOk $codexDetail
+        } else {
+            Write-Check "Codex version" $false ("unable to parse version from '{0}'" -f $codexVersionText)
+        }
+    } catch {
+        Write-Check "Codex version" $false $_.Exception.Message
+    }
+
+    try {
         & $codexBin app-server --help | Out-Null
         Write-Check "Codex app-server" $true "app-server command is available"
     } catch {
@@ -70,20 +86,32 @@ $envFileOk = Test-Path $dotenvPath
 Write-Check ".env" $envFileOk ($dotenvPath)
 
 $httpPort = [int](Get-Setting "IMCODEX_HTTP_PORT" "8000")
-$appPort = [int](Get-Setting "IMCODEX_APP_SERVER_PORT" "8765")
+$appServerUrl = Get-Setting "IMCODEX_APP_SERVER_URL"
 $dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex-data"
 
 Write-Check "HTTP port" $true $httpPort
-Write-Check "App-server port" $true $appPort
+Write-Check "App-server URL" $true ($(if ($appServerUrl) { $appServerUrl } else { "not configured (shared-ws probe + stdio fallback)" }))
 Write-Check "Data dir" $true $dataDir
 
 $httpListeners = Get-NetTCPConnection -LocalPort $httpPort -ErrorAction SilentlyContinue
-$appListeners = Get-NetTCPConnection -LocalPort $appPort -ErrorAction SilentlyContinue
 
 $httpPortDetail = if ($httpListeners) { "occupied" } else { "free" }
-$appPortDetail = if ($appListeners) { "occupied" } else { "free" }
 Write-Check "HTTP port free" ($null -eq $httpListeners) $httpPortDetail
-Write-Check "App-server port free" ($null -eq $appListeners) $appPortDetail
+
+if ($appServerUrl) {
+    try {
+        $uri = [Uri]$appServerUrl
+        if ($uri.Scheme -in @("ws", "wss") -and $uri.Host -in @("127.0.0.1", "localhost") -and $uri.Port -gt 0) {
+            $appListeners = Get-NetTCPConnection -LocalPort $uri.Port -ErrorAction SilentlyContinue
+            $appPortDetail = if ($appListeners) { "listening" } else { "not listening" }
+            Write-Check "Shared app-server listener" ($null -ne $appListeners) ("{0}:{1} {2}" -f $uri.Host, $uri.Port, $appPortDetail)
+        } else {
+            Write-Check "Shared app-server listener" $true "skipped non-local websocket check"
+        }
+    } catch {
+        Write-Check "Shared app-server listener" $false ("invalid IMCODEX_APP_SERVER_URL: {0}" -f $appServerUrl)
+    }
+}
 
 $qqEnabled = (Get-Setting "IMCODEX_QQ_ENABLED" "0").ToLower() -in @("1", "true", "yes", "on")
 Write-Check "QQ enabled" $true $qqEnabled
