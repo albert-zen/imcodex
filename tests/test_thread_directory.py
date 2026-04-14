@@ -7,7 +7,7 @@ from imcodex.bridge.thread_directory import ThreadDirectory
 from imcodex.store import ConversationStore
 
 
-def test_thread_directory_imports_native_thread_metadata_into_store(tmp_path: Path) -> None:
+def test_thread_directory_imports_native_thread_metadata_into_runtime_store(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 100.0, state_path=state_path)
     directory = ThreadDirectory(store)
@@ -41,9 +41,7 @@ def test_thread_directory_imports_native_thread_metadata_into_store(tmp_path: Pa
 
     reloaded = ThreadDirectory(ConversationStore(clock=lambda: 200.0, state_path=state_path))
     snapshot = reloaded.get("thr_1")
-    assert snapshot is not None
-    assert snapshot.path == r"D:\work\alpha"
-    assert snapshot.preview == "Check the failing tests"
+    assert snapshot is None
 
 
 def test_thread_directory_can_filter_by_cwd() -> None:

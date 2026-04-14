@@ -618,7 +618,7 @@ Rules:
 Example:
 
 ```text
-Working on it.
+Accepted. Processing started.
 ```
 
 ## 11.2 Status

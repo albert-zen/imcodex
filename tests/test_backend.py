@@ -114,7 +114,7 @@ async def test_ensure_thread_creates_thread_when_none_bound() -> None:
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -139,7 +139,7 @@ async def test_ensure_thread_resumes_bound_thread_when_present() -> None:
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -148,6 +148,38 @@ async def test_ensure_thread_resumes_bound_thread_when_present() -> None:
         }
     ]
     assert client.thread_starts == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_thread_accepts_bound_resume_without_native_cwd_when_none_is_known() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    binding = store.get_binding("demo", "conv-1")
+    binding.active_thread_id = "thr_existing"
+    client = FakeClient()
+    client.resume_results["thr_existing"] = {
+        "id": "thr_existing",
+        "preview": "Imported thread",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.ensure_thread("demo", "conv-1")
+
+    assert thread_id == "thr_existing"
+    assert client.thread_resumes == [
+        {
+            "thread_id": "thr_existing",
+            "approval_policy": "never",
+            "sandbox_policy": None,
+            "approvals_reviewer": None,
+            "model": None,
+            "personality": "friendly",
+            "service_name": "imcodex-test",
+        }
+    ]
+    bound = store.get_binding("demo", "conv-1")
+    assert bound.active_thread_id == "thr_existing"
+    assert bound.selected_cwd is None
 
 
 @pytest.mark.asyncio
@@ -166,7 +198,7 @@ async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -177,38 +209,15 @@ async def test_ensure_thread_marks_binding_stale_when_resume_fails() -> None:
     assert client.thread_starts == []
     binding = store.get_binding("demo", "conv-1")
     assert binding.active_thread_id == "thr_existing"
+    assert binding.last_seen_thread_status == "stale"
     assert store.get_thread("thr_existing").status == "stale"
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_resumes_unknown_thread_in_selected_working_directory() -> None:
+async def test_attach_thread_validates_with_native_read_and_binds_native_cwd() -> None:
     store = make_store()
     client = FakeClient()
-    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
-
-    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
-
-    assert thread_id == "thr_external"
-    assert client.thread_resumes == [
-        {
-            "thread_id": "thr_external",
-            "cwd": "D:/repo/app",
-            "approval_policy": None,
-            "sandbox_policy": None,
-            "approvals_reviewer": None,
-            "model": None,
-            "personality": "friendly",
-            "service_name": "imcodex-test",
-        }
-    ]
-    assert store.get_binding("demo", "conv-1").active_thread_id == "thr_external"
-
-
-@pytest.mark.asyncio
-async def test_attach_thread_can_resume_without_selected_working_directory() -> None:
-    store = ConversationStore(clock=lambda: 1.0)
-    client = FakeClient()
-    client.resume_results["thr_external"] = {
+    client.read_results["thr_external"] = {
         "id": "thr_external",
         "cwd": "D:/repo/external",
         "status": {"type": "idle"},
@@ -218,34 +227,53 @@ async def test_attach_thread_can_resume_without_selected_working_directory() -> 
     thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
 
     assert thread_id == "thr_external"
-    assert client.thread_resumes == [
-        {
-            "thread_id": "thr_external",
-            "approval_policy": None,
-            "sandbox_policy": None,
-            "approvals_reviewer": None,
-            "model": None,
-            "personality": "friendly",
-            "service_name": "imcodex-test",
-        }
-    ]
+    assert client.thread_reads == [{"thread_id": "thr_external"}]
+    assert client.thread_resumes == []
     binding = store.get_binding("demo", "conv-1")
     assert binding.active_thread_id == "thr_external"
     assert binding.selected_cwd == "D:/repo/external"
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_without_any_available_cwd_rejects_resume_response() -> None:
+async def test_attach_thread_can_resume_without_selected_working_directory() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = FakeClient()
-    client.resume_results["thr_external"] = {
+    client.read_results["thr_external"] = {
+        "id": "thr_external",
+        "cwd": "D:/repo/external",
+        "status": {"type": "idle"},
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    assert thread_id == "thr_external"
+    assert client.thread_reads == [{"thread_id": "thr_external"}]
+    assert client.thread_resumes == []
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_thread_id == "thr_external"
+    assert binding.selected_cwd == "D:/repo/external"
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_without_native_cwd_clears_bootstrap_cwd_instead_of_falling_back() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_selected_cwd("demo", "conv-1", "D:/repo/app")
+    client = FakeClient()
+    client.read_results["thr_external"] = {
         "id": "thr_external",
         "status": {"type": "idle"},
     }
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    with pytest.raises(AppServerError, match="working directory"):
-        await backend.attach_thread("demo", "conv-1", "thr_external")
+    thread_id = await backend.attach_thread("demo", "conv-1", "thr_external")
+
+    assert thread_id == "thr_external"
+    binding = store.get_binding("demo", "conv-1")
+    assert binding.active_thread_id == "thr_external"
+    assert binding.selected_cwd is None
+    with pytest.raises(KeyError):
+        store.get_thread("thr_external")
 
 
 @pytest.mark.asyncio
@@ -254,6 +282,11 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     store.set_selected_cwd("demo", "conv-1", "D:/repo/app")
     client = FakeClient()
+    client.read_results["thr_external"] = {
+        "id": "thr_external",
+        "cwd": "D:/repo/external",
+        "status": {"type": "idle"},
+    }
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     await backend.attach_thread("demo", "conv-1", "thr_external")
@@ -268,8 +301,8 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
     assert resumed_client.thread_resumes == [
         {
             "thread_id": "thr_external",
-            "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "cwd": "D:/repo/external",
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -280,30 +313,26 @@ async def test_attach_thread_persists_across_restart_and_reuses_resumed_thread(t
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_prefers_selected_working_directory_over_known_thread_record() -> None:
+async def test_attach_thread_uses_native_read_instead_of_selected_working_directory() -> None:
     store = make_store()
     alpha = store.record_thread("thr_known", cwd="D:/repo/alpha", preview="old")
     store.set_selected_cwd("demo", "conv-1", "D:/repo/beta")
     client = FakeClient()
+    client.read_results["thr_known"] = {
+        "id": "thr_known",
+        "cwd": "D:/repo/alpha",
+        "preview": "Imported thread",
+        "status": {"type": "idle"},
+    }
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     thread_id = await backend.attach_thread("demo", "conv-1", alpha.thread_id)
 
     assert thread_id == "thr_known"
-    assert client.thread_resumes == [
-        {
-            "thread_id": "thr_known",
-            "cwd": "D:/repo/beta",
-            "approval_policy": None,
-            "sandbox_policy": None,
-            "approvals_reviewer": None,
-            "model": None,
-            "personality": "friendly",
-            "service_name": "imcodex-test",
-        }
-    ]
+    assert client.thread_reads == [{"thread_id": "thr_known"}]
+    assert client.thread_resumes == []
     binding = store.get_binding("demo", "conv-1")
-    assert binding.selected_cwd == "D:/repo/beta"
+    assert binding.selected_cwd == "D:/repo/alpha"
     assert binding.active_thread_id == "thr_known"
 
 
@@ -313,7 +342,12 @@ async def test_attach_thread_refreshes_preview_for_known_thread() -> None:
     store.record_thread("thr_known", cwd="D:/repo/app", preview="")
     store.set_active_thread("demo", "conv-1", "thr_known")
     client = FakeClient()
-    client.resume_results["thr_known"] = {"preview": "Imported thread"}
+    client.read_results["thr_known"] = {
+        "id": "thr_known",
+        "cwd": "D:/repo/app",
+        "preview": "Imported thread",
+        "status": {"type": "idle"},
+    }
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     await backend.attach_thread("demo", "conv-1", "thr_known")
@@ -352,7 +386,7 @@ async def test_ensure_thread_persists_native_name_path_and_status_from_start_res
 async def test_attach_thread_persists_native_name_path_and_status_from_resume_response() -> None:
     store = make_store()
     client = FakeClient()
-    client.resume_results["thr_external"] = {
+    client.read_results["thr_external"] = {
         "id": "thr_external",
         "preview": "Imported thread",
         "name": "Resumed native thread",
@@ -373,6 +407,39 @@ async def test_attach_thread_persists_native_name_path_and_status_from_resume_re
     assert binding.last_seen_thread_name == "Resumed native thread"
     assert binding.last_seen_thread_path == "D:/repo/app/.codex/threads/thr_external"
     assert binding.last_seen_thread_status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_read_thread_does_not_fill_missing_native_metadata_from_local_cache() -> None:
+    store = make_store()
+    store.record_thread(
+        "thr_native",
+        cwd="D:/repo/stale",
+        preview="Old preview",
+        name="Old title",
+        path="D:/repo/stale/.codex/threads/thr_native",
+        status="idle",
+    )
+    client = FakeClient()
+    client.read_results["thr_native"] = {
+        "id": "thr_native",
+        "cwd": "D:/repo/fresh",
+        "status": "completed",
+    }
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    snapshot = await backend.read_thread("demo", "conv-1", "thr_native")
+
+    assert snapshot is not None
+    assert snapshot.cwd == "D:/repo/fresh"
+    assert snapshot.preview == ""
+    assert snapshot.name is None
+    assert snapshot.path is None
+    thread = store.get_thread("thr_native")
+    assert thread.cwd == "D:/repo/fresh"
+    assert thread.preview == ""
+    assert thread.name is None
+    assert thread.path is None
 
 
 @pytest.mark.asyncio
@@ -436,7 +503,7 @@ async def test_ensure_thread_prefers_selected_cwd_when_project_alias_is_missing(
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/alt",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -603,7 +670,7 @@ async def test_start_turn_tracks_active_turn() -> None:
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -717,7 +784,7 @@ async def test_ensure_thread_still_uses_active_thread_cached_cwd_without_selecte
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -740,7 +807,7 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
     assert client.thread_starts == [
         {
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": "gpt-5.4",
@@ -754,7 +821,7 @@ async def test_selected_model_flows_into_native_thread_and_turn_requests() -> No
             "text": "Please inspect the repo",
             "cwd": None,
             "model": "gpt-5.4",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -834,7 +901,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
         {
             "thread_id": "thr_stale",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -849,7 +916,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -859,6 +926,7 @@ async def test_start_turn_surfaces_stale_binding_instead_of_silent_replacement_w
     assert binding.active_thread_id == "thr_stale"
     assert binding.active_turn_id is None
     assert binding.active_turn_status is None
+    assert binding.last_seen_thread_status == "stale"
     assert store.get_thread("thr_stale").status == "stale"
 
 
@@ -879,7 +947,7 @@ async def test_start_turn_preserves_transport_timeout_without_silent_replacement
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -894,7 +962,7 @@ async def test_start_turn_preserves_transport_timeout_without_silent_replacement
             "text": "Please inspect the repo",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -922,7 +990,7 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
         {
             "thread_id": "thr_existing",
             "cwd": "D:/repo/app",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -932,6 +1000,7 @@ async def test_start_turn_surfaces_stale_binding_when_resume_fails_before_restar
     ]
     assert client.thread_starts == []
     assert client.turn_starts == []
+    assert store.get_binding("demo", "conv-1").last_seen_thread_status == "stale"
     assert store.get_thread("thr_existing").status == "stale"
 
 
@@ -940,7 +1009,7 @@ async def test_start_turn_after_restart_continues_attached_native_thread(tmp_pat
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     client = FakeClient()
-    client.resume_results["thr_external"] = {
+    client.read_results["thr_external"] = {
         "id": "thr_external",
         "cwd": "D:/repo/external",
         "status": {"type": "idle"},
@@ -970,7 +1039,7 @@ async def test_start_turn_after_restart_continues_attached_native_thread(tmp_pat
         {
             "thread_id": "thr_external",
             "cwd": "D:/repo/external",
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "model": None,
@@ -985,7 +1054,7 @@ async def test_start_turn_after_restart_continues_attached_native_thread(tmp_pat
             "text": "Continue on the same native thread",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -1060,7 +1129,7 @@ async def test_start_turn_falls_back_to_interrupt_and_new_turn_when_steer_fails(
             "text": "Actually focus on failing tests first",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,
@@ -1157,7 +1226,7 @@ async def test_start_turn_recovers_when_steer_is_rejected_and_interrupt_also_fai
             "text": "Actually focus on failing tests first",
             "cwd": None,
             "model": None,
-            "approval_policy": None,
+            "approval_policy": "never",
             "sandbox_policy": None,
             "approvals_reviewer": None,
             "effort": None,

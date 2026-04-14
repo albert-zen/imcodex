@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import httpx
+import logging
 
 from ..models import OutboundMessage
+
+logger = logging.getLogger(__name__)
 
 
 class WebhookOutboundSink:
@@ -11,6 +14,12 @@ class WebhookOutboundSink:
         self.client = client or httpx.AsyncClient()
 
     async def send_message(self, message: OutboundMessage) -> None:
+        logger.info(
+            "Sending webhook outbound message_type=%s channel_id=%s conversation_id=%s",
+            message.message_type,
+            message.channel_id,
+            message.conversation_id,
+        )
         await self.client.post(
             self.outbound_url,
             json={
@@ -37,5 +46,17 @@ class MultiplexOutboundSink:
     async def send_message(self, message: OutboundMessage) -> None:
         sink = self.channel_sinks.get(message.channel_id) or self.default_sink
         if sink is None:
+            logger.info(
+                "Dropping outbound message without sink message_type=%s channel_id=%s conversation_id=%s",
+                message.message_type,
+                message.channel_id,
+                message.conversation_id,
+            )
             return
+        logger.info(
+            "Dispatching outbound message to sink message_type=%s channel_id=%s conversation_id=%s",
+            message.message_type,
+            message.channel_id,
+            message.conversation_id,
+        )
         await sink.send_message(message)

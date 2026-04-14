@@ -149,7 +149,7 @@ async def test_mock_e2e_qq_dispatch_reaches_final_reply() -> None:
     assert any('"method": "turn/start"' in item for item in codex_ws.sent)
     assert len(outbound_requests) == 2
     contents = [payload["content"] for _, payload in outbound_requests]
-    assert "Working on it." in contents
+    assert "[System] Accepted. Processing started." in contents
     assert any("Hello from Codex over QQ" in content for content in contents)
     assert [payload.get("msg_id") for _, payload in outbound_requests] == ["msg-1", "msg-1"]
 
@@ -245,7 +245,7 @@ async def test_mock_e2e_qq_contract_emits_ack_progress_then_final() -> None:
 
     contents = [payload["content"] for _, payload in outbound_requests]
     assert len(contents) == 3
-    assert "Working on it." in contents
+    assert "[System] Accepted. Processing started." in contents
     assert "Checking the repo structure." in contents
     assert "Hello from Codex over QQ" in contents
 

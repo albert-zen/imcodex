@@ -60,10 +60,6 @@ def test_router_thread_switch_and_status() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
     store.record_thread("thr_2", cwd=r"D:\work\alpha", preview="")
-    store.note_thread_user_message(
-        "thr_2",
-        "please inspect why the Windows working directory resets after restart",
-    )
     router = CommandRouter(store)
     store.set_selected_cwd("qq", "conv-1", alpha.cwd)
 
@@ -72,20 +68,13 @@ def test_router_thread_switch_and_status() -> None:
     assert threads.include_all is False
 
     response = router.handle("qq", "conv-1", "/thread use thr_2")
-    assert response.action == "thread.use"
-    assert "please inspect why the Windows working directory resets..." in response.text
-    assert response.text.index("please inspect why the Windows working directory resets...") < response.text.index("thr_2")
-    assert store.get_binding("qq", "conv-1").active_thread_id == "thr_2"
+    assert response.action == "thread.attach"
+    assert "Attaching thread thr_2" in response.text
+    assert store.get_binding("qq", "conv-1").active_thread_id is None
 
     status = router.handle("qq", "conv-1", "/status")
-    lines = status.text.splitlines()
-    assert lines[0] == f"CWD: {alpha.cwd}"
-    assert "Thread: please inspect why the Windows working directory resets..." in status.text
-    assert "Thread ID: thr_2" in status.text
-    assert "Permission Profile: review" in status.text
-    assert "Visibility: standard" in status.text
-    assert "Commentary: shown" in status.text
-    assert "Tool Calls: hidden" in status.text
+    assert status.action == "status.query"
+    assert status.text == ""
 
 
 def test_router_uses_selected_cwd_when_no_active_thread_exists() -> None:
@@ -100,12 +89,12 @@ def test_router_uses_selected_cwd_when_no_active_thread_exists() -> None:
 
     assert threads.action == "threads.query"
     assert threads.include_all is False
-    assert f"CWD: {thread.cwd}" in status.text
+    assert status.action == "status.query"
     assert new_response.action == "thread.new"
     assert new_response.text == f"Starting a thread in {thread.cwd}."
 
 
-def test_router_thread_attach_uses_selected_working_directory() -> None:
+def test_router_thread_attach_is_cwd_agnostic() -> None:
     store = ConversationStore(clock=lambda: 100.0)
     alpha = store.record_thread("thr_1", cwd=r"D:\work\alpha", preview="seed preview")
     router = CommandRouter(store)
@@ -115,7 +104,7 @@ def test_router_thread_attach_uses_selected_working_directory() -> None:
 
     assert response.action == "thread.attach"
     assert response.thread_id == "thr_external"
-    assert f"CWD {alpha.cwd}" in response.text
+    assert response.text == "Attaching thread thr_external."
 
 
 def test_router_thread_attach_does_not_require_preselected_working_directory() -> None:
@@ -302,7 +291,7 @@ def test_router_lists_requests_and_doctor_output() -> None:
     assert "Codex binary: codex" in doctor.text
     assert "App Server: ws://127.0.0.1:8765" in doctor.text
     assert "PID: 4321" in doctor.text
-    assert "Permission Profile: review" in doctor.text
+    assert "Permission Profile: autonomous" in doctor.text
     assert "Model: gpt-5.4" in doctor.text
     assert "Visibility: standard" in doctor.text
 
@@ -378,13 +367,8 @@ def test_status_tolerates_missing_active_thread_record() -> None:
 
     status = router.handle("qq", "conv-1", "/status")
 
-    assert "CWD: D:\\work\\alpha" in status.text
-    assert "Thread: Recovered native thread" in status.text
-    assert "Thread ID: thr_missing" in status.text
-    assert "Thread Path: D:\\work\\alpha\\.codex\\threads\\thr_missing" in status.text
-    assert "Thread Status: awaiting user input" in status.text
-    assert "Model: gpt-5.4" in status.text
-    assert "Permission Profile: review" in status.text
+    assert status.action == "status.query"
+    assert status.text == ""
 
 
 def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_exists() -> None:
@@ -398,10 +382,8 @@ def test_status_does_not_leak_last_seen_thread_identity_when_no_active_thread_ex
 
     status = router.handle("qq", "conv-1", "/status")
 
-    assert "Thread: (none)" in status.text
-    assert "Thread ID: (none)" in status.text
-    assert "Thread Path: (none)" in status.text
-    assert "Thread Status: (none)" in status.text
+    assert status.action == "status.query"
+    assert status.text == ""
 
 
 def test_thread_read_falls_back_to_last_seen_native_identity_when_thread_cache_is_missing() -> None:

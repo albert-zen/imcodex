@@ -17,6 +17,7 @@ from .bridge import (
 )
 from .channels import MultiplexOutboundSink, QQChannelAdapter, WebhookOutboundSink
 from .config import Settings
+from .logging_utils import configure_logging
 from .runtime import AppRuntime
 from .store import ConversationStore
 
@@ -27,6 +28,7 @@ async def open_blocking_websocket(url: str):
 
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
+    configure_logging(settings.log_level)
     store = ConversationStore(
         clock=time.time,
         state_path=settings.data_dir / "state.json",

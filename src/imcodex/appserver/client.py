@@ -4,14 +4,19 @@ import asyncio
 import contextlib
 import inspect
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+from ..logging_utils import summarize_text
 
 
 JsonDict = dict[str, Any]
 WebSocketFactory = Callable[[str], Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
+
+logger = logging.getLogger(__name__)
 
 
 class AppServerError(RuntimeError):
@@ -45,6 +50,7 @@ class AppServerClient:
     async def connect(self) -> None:
         if self._ws is not None:
             return
+        logger.info("Connecting to app-server transport url=%s", self._transport_url)
         ws = self._websocket_factory(self._transport_url)
         if isinstance(ws, Awaitable):
             ws = await ws
@@ -52,6 +58,7 @@ class AppServerClient:
         self._listener_task = asyncio.create_task(self._receive_loop())
 
     async def close(self) -> None:
+        logger.info("Closing app-server transport")
         if self._listener_task is not None:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -73,6 +80,7 @@ class AppServerClient:
 
     async def initialize(self) -> JsonDict:
         await self._ensure_connected()
+        logger.info("Initializing app-server client")
         result = await self._request(
             "initialize",
             {"clientInfo": self._client_info},
@@ -170,6 +178,11 @@ class AppServerClient:
         request = self._pending_requests.pop(ticket_id, None)
         if request is None:
             raise AppServerError(f"unknown pending request: {ticket_id}")
+        logger.info(
+            "Sending server-request reply ticket_id=%s method=%s",
+            ticket_id,
+            request.get("method"),
+        )
         payload = {
             "id": request["id"],
             "result": decision_or_answers,
@@ -202,6 +215,12 @@ class AppServerClient:
         self._next_request_id += 1
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
         self._pending_futures[request_id] = future
+        logger.info(
+            "Sending app-server request id=%s method=%s params=%s",
+            request_id,
+            method,
+            summarize_text(json.dumps(params, ensure_ascii=True)),
+        )
         await self._send_json({"id": request_id, "method": method, "params": params})
         try:
             response = await asyncio.wait_for(future, timeout=self._request_timeout_s)
@@ -219,6 +238,7 @@ class AppServerClient:
             error = response["error"]
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise AppServerError(message or f"{method} failed")
+        logger.info("Received app-server response id=%s method=%s", request_id, method)
         return response["result"]
 
     async def _notify(self, method: str, params: JsonDict) -> None:
@@ -262,15 +282,22 @@ class AppServerClient:
 
     async def _dispatch(self, message: JsonDict) -> None:
         if "id" in message and ("result" in message or "error" in message):
+            logger.info("Dispatching app-server response id=%s", message.get("id"))
             request_id = message["id"]
             future = self._pending_futures.get(request_id)
             if future is not None and not future.done():
                 future.set_result(message)
             return
         if "id" in message and "method" in message:
+            logger.info(
+                "Dispatching app-server server request id=%s method=%s",
+                message.get("id"),
+                message.get("method"),
+            )
             await self._capture_server_request(message)
             return
         if "method" in message:
+            logger.info("Dispatching app-server notification method=%s", message.get("method"))
             if message["method"] == "item/agentMessage/delta":
                 self._record_agent_delta(message)
             if message["method"] == "item/completed":
@@ -288,6 +315,11 @@ class AppServerClient:
 
     async def _capture_server_request(self, message: JsonDict) -> None:
         ticket_id = str(message["id"])
+        logger.info(
+            "Captured native server request id=%s method=%s",
+            ticket_id,
+            message.get("method"),
+        )
         self._pending_requests[ticket_id] = {
             "id": message["id"],
             "method": message["method"],
@@ -308,6 +340,13 @@ class AppServerClient:
 
     def _record_agent_delta(self, message: JsonDict) -> None:
         params = message.get("params", {})
+        logger.debug(
+            "Captured agent delta thread_id=%s turn_id=%s item_id=%s delta=%s",
+            params.get("threadId", ""),
+            params.get("turnId", ""),
+            params.get("itemId", ""),
+            summarize_text(str(params.get("delta", ""))),
+        )
         key = (
             str(params.get("threadId", "")),
             str(params.get("turnId", "")),
@@ -318,6 +357,14 @@ class AppServerClient:
     def _record_completed_item(self, message: JsonDict) -> None:
         params = message.get("params", {})
         item = params.get("item") or {}
+        logger.info(
+            "Captured completed item thread_id=%s turn_id=%s item_type=%s phase=%s text=%s",
+            params.get("threadId", ""),
+            params.get("turnId", ""),
+            item.get("type"),
+            item.get("phase"),
+            summarize_text(str(item.get("text", ""))),
+        )
         if item.get("type") == "agentMessage":
             text = item.get("text", "")
             key = (

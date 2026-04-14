@@ -48,7 +48,7 @@ IMCODEX_QQ_ENABLED=1
 IMCODEX_QQ_APP_ID=...
 IMCODEX_QQ_CLIENT_SECRET=...
 IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com
-IMCODEX_DEFAULT_PERMISSION_PROFILE=review
+IMCODEX_DEFAULT_PERMISSION_PROFILE=autonomous
 ```
 
 ## What Must Already Work On The Target Machine

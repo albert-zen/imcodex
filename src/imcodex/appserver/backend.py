@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 
 from .client import AppServerError
+from ..logging_utils import summarize_text
 from ..store import ConversationStore
+
+logger = logging.getLogger(__name__)
 
 
 class StaleThreadBindingError(RuntimeError):
@@ -44,15 +48,30 @@ _PERMISSION_PROFILES: dict[str, NativePermissionProfile] = {
 
 
 class CodexBackend:
-    def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        client,
+        store: ConversationStore,
+        service_name: str,
+        session_registry=None,
+    ) -> None:
         self.client = client
         self.store = store
         self.service_name = service_name
+        self.session_registry = session_registry
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.active_thread_id:
             cwd = self._resume_cwd(binding)
+            logger.info(
+                "Resuming native thread channel_id=%s conversation_id=%s thread_id=%s cwd=%s",
+                channel_id,
+                conversation_id,
+                binding.active_thread_id,
+                cwd,
+            )
             try:
                 result = await self.client.resume_thread(
                     thread_id=binding.active_thread_id,
@@ -61,16 +80,17 @@ class CodexBackend:
             except AppServerError as exc:
                 if not self._should_mark_thread_stale(exc):
                     raise
-                self.store.note_thread_status(binding.active_thread_id, status="stale")
+                self.store.note_thread_status(
+                    binding.active_thread_id,
+                    status="stale",
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                )
                 raise StaleThreadBindingError(binding.active_thread_id) from exc
             else:
                 payload = self._normalize_thread_payload(result["thread"])
                 thread_id = str(payload["id"] or "")
-                resolved_cwd = self._require_bound_cwd(
-                    payload_cwd=payload["cwd"],
-                    fallback_cwd=cwd,
-                    thread_id=thread_id,
-                )
+                resolved_cwd = payload["cwd"] or cwd
                 self._bind_thread_result(
                     channel_id=channel_id,
                     conversation_id=conversation_id,
@@ -83,6 +103,12 @@ class CodexBackend:
                 )
                 return thread_id
         cwd = self._start_cwd(binding)
+        logger.info(
+            "Starting native thread channel_id=%s conversation_id=%s cwd=%s",
+            channel_id,
+            conversation_id,
+            cwd,
+        )
         result = await self.client.start_thread(
             **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model)
         )
@@ -110,30 +136,27 @@ class CodexBackend:
         return await self.ensure_thread(channel_id, conversation_id)
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
-        binding = self.store.get_binding(channel_id, conversation_id)
-        cwd = self._resume_cwd(binding)
-        result = await self.client.resume_thread(
-            thread_id=thread_id,
-            **self._thread_session_params(cwd, binding.permission_profile, binding.selected_model),
+        logger.info(
+            "Attaching native thread channel_id=%s conversation_id=%s requested_thread_id=%s",
+            channel_id,
+            conversation_id,
+            thread_id,
         )
-        payload = self._normalize_thread_payload(result["thread"])
-        resolved_thread_id = str(payload["id"] or "")
-        resolved_cwd = self._require_bound_cwd(
-            payload_cwd=payload["cwd"],
-            fallback_cwd=cwd,
-            thread_id=resolved_thread_id,
-        )
+        snapshot = await self.read_thread(channel_id, conversation_id, thread_id)
+        if snapshot is None:
+            raise AppServerError(f"thread {thread_id} is not available in Codex")
         self._bind_thread_result(
             channel_id=channel_id,
             conversation_id=conversation_id,
-            thread_id=resolved_thread_id,
-            cwd=resolved_cwd,
-            preview=str(payload["preview"] or ""),
-            status=str(payload["status"] or "idle"),
-            name=payload.get("name"),
-            path=payload.get("path"),
+            thread_id=snapshot.thread_id,
+            cwd=snapshot.cwd or None,
+            preview=snapshot.preview,
+            status=snapshot.status or "idle",
+            name=snapshot.name,
+            path=snapshot.path,
+            merge_existing=False,
         )
-        return resolved_thread_id
+        return snapshot.thread_id
 
     async def list_threads(
         self,
@@ -144,15 +167,23 @@ class CodexBackend:
     ) -> list[NativeThreadSnapshot]:
         binding = self.store.get_binding(channel_id, conversation_id)
         params: dict[str, str] = {}
-        if binding.selected_cwd and not include_all:
-            params["cwd"] = binding.selected_cwd
+        session_cwd = self._session_cwd(binding)
+        if session_cwd and not include_all:
+            params["cwd"] = session_cwd
+        logger.info(
+            "Listing native threads channel_id=%s conversation_id=%s include_all=%s cwd=%s",
+            channel_id,
+            conversation_id,
+            include_all,
+            params.get("cwd"),
+        )
         result = await self.client.list_threads(**params)
         snapshots = [
             self._remember_native_thread(self._normalize_thread_payload(item))
             for item in result.get("threads", [])
         ]
-        if binding.selected_cwd and not include_all:
-            normalized = _normalize_cwd(binding.selected_cwd)
+        if session_cwd and not include_all:
+            normalized = _normalize_cwd(session_cwd)
             return [
                 snapshot
                 for snapshot in snapshots
@@ -167,6 +198,7 @@ class CodexBackend:
         thread_id: str,
     ) -> NativeThreadSnapshot | None:
         del channel_id, conversation_id
+        logger.info("Reading native thread thread_id=%s", thread_id)
         result = await self.client.read_thread(thread_id)
         payload = result.get("thread")
         if not isinstance(payload, dict):
@@ -176,6 +208,14 @@ class CodexBackend:
 
     async def start_turn(self, channel_id: str, conversation_id: str, text: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
+        logger.info(
+            "Starting turn channel_id=%s conversation_id=%s active_thread_id=%s active_turn_id=%s text=%s",
+            channel_id,
+            conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+            summarize_text(text),
+        )
         if (
             binding.active_thread_id is not None
             and binding.active_turn_id is not None
@@ -220,7 +260,12 @@ class CodexBackend:
             if not had_bound_thread:
                 raise
             if self._should_surface_stale_bound_thread_error(exc):
-                self.store.note_thread_status(thread_id, status="stale")
+                self.store.note_thread_status(
+                    thread_id,
+                    status="stale",
+                    channel_id=channel_id,
+                    conversation_id=conversation_id,
+                )
                 raise StaleThreadBindingError(thread_id) from exc
             raise
         turn_id = result["turn"]["id"]
@@ -256,6 +301,13 @@ class CodexBackend:
         binding = self.store.get_binding(channel_id, conversation_id)
         if not binding.active_thread_id or not binding.active_turn_id:
             return
+        logger.info(
+            "Interrupting active turn channel_id=%s conversation_id=%s thread_id=%s turn_id=%s",
+            channel_id,
+            conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+        )
         self.store.clear_pending_requests_for_turn(
             channel_id=channel_id,
             conversation_id=conversation_id,
@@ -279,6 +331,13 @@ class CodexBackend:
         )
         if request is None:
             raise KeyError(ticket_id)
+        logger.info(
+            "Replying to native server request channel_id=%s conversation_id=%s ticket_id=%s native_request_id=%s",
+            channel_id,
+            conversation_id,
+            ticket_id,
+            request.request_id,
+        )
         client_ticket_id = request.request_id or ticket_id
         await self.client.reply_to_server_request(client_ticket_id, decision_or_answers)
         self.store.mark_pending_request_submitted(
@@ -303,6 +362,13 @@ class CodexBackend:
     async def _steer_active_turn(self, *, thread_id: str, turn_id: str, text: str) -> None:
         for attempt in range(2):
             try:
+                logger.info(
+                    "Steering active turn thread_id=%s turn_id=%s attempt=%s text=%s",
+                    thread_id,
+                    turn_id,
+                    attempt + 1,
+                    summarize_text(text),
+                )
                 await self.client.steer_turn(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -357,14 +423,16 @@ class CodexBackend:
         return _PERMISSION_PROFILES.get(permission_profile, _PERMISSION_PROFILES["review"])
 
     def _resume_cwd(self, binding) -> str | None:
-        if binding.selected_cwd is not None:
-            return binding.selected_cwd
+        return self._session_cwd(binding)
+
+    def _session_cwd(self, binding) -> str | None:
         if binding.active_thread_id is not None:
             try:
-                return self.store.get_thread(binding.active_thread_id).cwd
+                thread = self.store.get_thread(binding.active_thread_id)
             except KeyError:
-                return None
-        return None
+                return binding.selected_cwd
+            return thread.cwd or binding.selected_cwd
+        return binding.selected_cwd
 
     def _start_cwd(self, binding) -> str:
         cwd = self._resume_cwd(binding)
@@ -390,21 +458,41 @@ class CodexBackend:
         channel_id: str,
         conversation_id: str,
         thread_id: str,
-        cwd: str,
+        cwd: str | None,
         preview: str,
         status: str,
         name: str | None,
         path: str | None,
+        merge_existing: bool = True,
     ) -> None:
-        self.store.record_thread(
-            thread_id=thread_id,
-            cwd=cwd,
-            preview=preview,
-            status=status,
-            name=name,
-            path=path,
+        if cwd:
+            self.store.record_thread(
+                thread_id=thread_id,
+                cwd=cwd,
+                preview=preview,
+                status=status,
+                name=name,
+                path=path,
+                merge_existing=merge_existing,
+            )
+        if self.session_registry is not None:
+            self.session_registry.bind_thread(channel_id, conversation_id, thread_id)
+        else:
+            self.store.set_active_thread(channel_id, conversation_id, thread_id)
+        binding = self.store.get_binding(channel_id, conversation_id)
+        thread = self.store._threads.get(thread_id)
+        binding.last_seen_thread_name = (
+            name
+            or (thread.name if thread is not None else None)
+            or (preview or None)
+            or (thread.preview if thread is not None else None)
         )
-        self.store.set_active_thread(channel_id, conversation_id, thread_id)
+        binding.last_seen_thread_path = (
+            path
+            or (thread.path if thread is not None else None)
+            or cwd
+        )
+        binding.last_seen_thread_status = status or (thread.status if thread is not None else None)
 
     def _normalize_thread_payload(self, payload: dict) -> dict[str, str | None]:
         status = payload.get("status")
@@ -423,21 +511,15 @@ class CodexBackend:
 
     def _remember_native_thread(self, payload: dict[str, str | None]) -> NativeThreadSnapshot:
         thread_id = str(payload["id"] or "")
-        existing = None
-        if thread_id:
-            try:
-                existing = self.store.get_thread(thread_id)
-            except KeyError:
-                existing = None
-        resolved_cwd = str(payload["cwd"] or (existing.cwd if existing is not None else ""))
+        resolved_cwd = str(payload["cwd"] or "")
         if not resolved_cwd:
             return NativeThreadSnapshot(
                 thread_id=thread_id,
                 cwd="",
-                preview=str(payload["preview"] or (existing.preview if existing is not None else "")),
-                status=str(payload["status"] or (existing.status if existing is not None else "idle")),
-                name=payload.get("name") if payload.get("name") is not None else (existing.name if existing is not None else None),
-                path=payload.get("path") if payload.get("path") is not None else (existing.path if existing is not None else None),
+                preview=str(payload["preview"] or ""),
+                status=str(payload["status"] or "idle"),
+                name=payload.get("name"),
+                path=payload.get("path"),
             )
         thread = self.store.record_thread(
             thread_id=thread_id,
@@ -446,6 +528,7 @@ class CodexBackend:
             status=str(payload["status"] or "idle"),
             name=payload.get("name"),
             path=payload.get("path"),
+            merge_existing=False,
         )
         return NativeThreadSnapshot(
             thread_id=thread.thread_id,

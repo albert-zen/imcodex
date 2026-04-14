@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
-from ..appserver import CodexBackend, StaleThreadBindingError
+from ..appserver import AppServerError, CodexBackend, StaleThreadBindingError
+from ..logging_utils import summarize_text
 from ..models import InboundMessage, OutboundMessage
 from ..store import ConversationStore
 from .commands import CommandRouter
@@ -12,6 +14,11 @@ from .request_registry import RequestRegistry
 from .session_registry import SessionRegistry
 from .thread_directory import ThreadDirectory
 from .turn_state import TurnStateMachine
+
+logger = logging.getLogger(__name__)
+
+_SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "command_result", "error"})
+_SYSTEM_PREFIX = "[System] "
 
 
 class BridgeService:
@@ -45,18 +52,35 @@ class BridgeService:
         self.projector.request_registry = self.request_registry
         self.projector.turn_state = self.turn_state
         self.projector.session_registry = self.session_registry
+        if hasattr(self.backend, "session_registry"):
+            self.backend.session_registry = self.session_registry
         if projector_visibility is not None:
             projector_visibility.session_registry = self.session_registry
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
+        logger.info(
+            "Inbound message received channel_id=%s conversation_id=%s message_id=%s text=%s",
+            message.channel_id,
+            message.conversation_id,
+            message.message_id,
+            summarize_text(message.text),
+        )
         if message.text.startswith("/"):
             return await self._handle_command(message)
         return await self._handle_text(message)
 
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
+        logger.info(
+            "Routing command channel_id=%s conversation_id=%s command=%s",
+            message.channel_id,
+            message.conversation_id,
+            summarize_text(message.text),
+        )
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
         if response.action == "threads.query":
             return await self._handle_threads_query(message, include_all=response.include_all)
+        if response.action == "status.query":
+            return await self._handle_status_query(message)
         if response.action == "thread.read.query":
             return await self._handle_thread_read_query(message, response.thread_id)
         if response.action == "thread.new.missing_project":
@@ -64,10 +88,12 @@ class BridgeService:
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             self.session_registry.sync(message.channel_id, message.conversation_id)
-            label = self._thread_label(thread_id)
-            if label == "Untitled thread":
-                self.store.mark_pending_first_thread_label(message.channel_id, message.conversation_id, thread_id)
-            return [self._message(message, "status", f"Started thread {label} (id: {thread_id}).")]
+            label = self._native_thread_display(thread_id)
+            if label is None:
+                text = f"Started thread (id: {thread_id})."
+            else:
+                text = f"Started thread {label} (id: {thread_id})."
+            return [self._message(message, "status", text)]
         if response.action == "thread.attach":
             try:
                 thread_id = await self.backend.attach_thread(
@@ -78,12 +104,17 @@ class BridgeService:
             except Exception as exc:
                 text = (
                     f"Thread {response.thread_id} could not be attached: {exc}. "
-                    "Try /cwd <path> first, then retry /thread attach <thread-id>."
+                    "Use /thread read <thread-id> or /threads to verify it, then retry."
                 )
                 return [self._message(message, "status", text)]
             self.session_registry.sync(message.channel_id, message.conversation_id)
-            label = self._thread_label(thread_id)
-            return [self._message(message, "status", f"Attached to thread {label} (id: {thread_id}).")]
+            binding = self.store.get_binding(message.channel_id, message.conversation_id)
+            label = self._native_thread_display(thread_id) or binding.last_seen_thread_name
+            if label is None:
+                text = f"Attached to thread id {thread_id}."
+            else:
+                text = f"Attached to thread {label} (id: {thread_id})."
+            return [self._message(message, "status", text)]
         if response.action == "turn.stop":
             await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
         elif response.action.startswith("approval.") or response.action == "request.answer":
@@ -119,13 +150,18 @@ class BridgeService:
                 if response.missing_ticket_ids:
                     parts.append(f"Unknown tickets: {', '.join(response.missing_ticket_ids)}.")
                 response.text = " ".join(parts)
-        elif response.action in {"project.use", "project.cwd", "thread.use", "recover"}:
+        elif response.action in {"project.use", "project.cwd", "recover"}:
             self.session_registry.sync(message.channel_id, message.conversation_id)
         return [self._message(message, self._command_message_type(response.action), response.text, response.ticket_id)]
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
-        selected_cwd = self._select_cwd(message.channel_id, message.conversation_id)
-        if selected_cwd is None:
+        logger.info(
+            "Routing plain text channel_id=%s conversation_id=%s",
+            message.channel_id,
+            message.conversation_id,
+        )
+        binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.selected_cwd is None and binding.active_thread_id is None:
             return [
                 self._message(
                     message,
@@ -133,7 +169,6 @@ class BridgeService:
                     "Choose a CWD first with /cwd <path>.",
                 )
             ]
-        prior_thread_id = self.store.get_binding(message.channel_id, message.conversation_id).active_thread_id
         try:
             await self.backend.start_turn(message.channel_id, message.conversation_id, message.text)
         except StaleThreadBindingError as exc:
@@ -147,47 +182,51 @@ class BridgeService:
         if binding.active_thread_id is not None and binding.active_turn_id is not None:
             self.turn_state.start(binding.active_thread_id, binding.active_turn_id)
             self.turn_state.mark_in_progress(binding.active_thread_id, binding.active_turn_id)
-        if binding.active_thread_id is not None and (
-            binding.active_thread_id != prior_thread_id
-            or self.store.consume_pending_first_thread_label(
-                message.channel_id,
-                message.conversation_id,
-                binding.active_thread_id,
-            )
-        ):
-            self.store.note_thread_user_message(binding.active_thread_id, message.text)
-        return [self._message(message, "accepted", "Working on it.")]
+        ack = self._message(message, "accepted", "Accepted. Processing started.")
+        logger.info(
+            "Accepted inbound message channel_id=%s conversation_id=%s thread_id=%s turn_id=%s",
+            message.channel_id,
+            message.conversation_id,
+            binding.active_thread_id,
+            binding.active_turn_id,
+        )
+        return [ack]
 
     async def handle_notification(self, notification: dict[str, Any]) -> list[OutboundMessage]:
+        logger.info("Handling notification method=%s", notification.get("method"))
         result = self.projector.project_notification(notification, self.store)
         if result is None:
             return []
         messages = [result]
         if self.outbound_sink is not None:
             for outbound in messages:
+                logger.info(
+                    "Pushing notification outbound message_type=%s channel_id=%s conversation_id=%s text=%s",
+                    outbound.message_type,
+                    outbound.channel_id,
+                    outbound.conversation_id,
+                    summarize_text(outbound.text),
+                )
                 await self.outbound_sink.send_message(outbound)
         return messages
 
     async def handle_server_request(self, request: dict[str, Any]) -> list[OutboundMessage]:
+        logger.info("Handling server request method=%s id=%s", request.get("method"), request.get("id"))
         result = self.projector.project_notification(request, self.store)
         if result is None:
             return []
         messages = [result]
         if self.outbound_sink is not None:
             for outbound in messages:
+                logger.info(
+                    "Pushing server-request outbound message_type=%s channel_id=%s conversation_id=%s text=%s",
+                    outbound.message_type,
+                    outbound.channel_id,
+                    outbound.conversation_id,
+                    summarize_text(outbound.text),
+                )
                 await self.outbound_sink.send_message(outbound)
         return messages
-
-    def _select_cwd(self, channel_id: str, conversation_id: str) -> str | None:
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.selected_cwd is not None:
-            return binding.selected_cwd
-        if binding.active_thread_id is not None:
-            try:
-                return self.store.get_thread(binding.active_thread_id).cwd
-            except KeyError:
-                return None
-        return None
 
     def _message(
         self,
@@ -200,20 +239,31 @@ class BridgeService:
             channel_id=inbound.channel_id,
             conversation_id=inbound.conversation_id,
             message_type=message_type,
-            text=text,
+            text=self._decorate_text(message_type, text),
             ticket_id=ticket_id,
         )
 
-    def _thread_label(self, thread_id: str) -> str:
+    def _decorate_text(self, message_type: str, text: str) -> str:
+        if message_type not in _SYSTEM_MESSAGE_TYPES:
+            return text
+        if text.startswith(_SYSTEM_PREFIX):
+            return text
+        return f"{_SYSTEM_PREFIX}{text}"
+
+    def _native_thread_display(self, thread_id: str) -> str | None:
         try:
-            return self.store.thread_label(thread_id)
+            thread = self.store.get_thread(thread_id)
         except KeyError:
-            return "Untitled thread"
+            return None
+        if thread.name and thread.name.strip():
+            return thread.name.strip()
+        if thread.preview and thread.preview.strip():
+            return thread.preview.strip()
+        return None
 
     def _command_message_type(self, action: str) -> str:
         if action.startswith("settings.") or action in {
             "project.cwd",
-            "thread.use",
             "recover",
         }:
             return "status"
@@ -240,13 +290,19 @@ class BridgeService:
                 "Use /status, /thread read, or try /threads again in a moment."
             )
             return [self._message(message, "status", text)]
+        if not snapshots:
+            if include_all:
+                text = "Threads across CWDs:\n(none)"
+            else:
+                text = f"Threads in CWD {binding.selected_cwd}:\n(none)"
+            return [self._message(message, "command_result", text)]
         if include_all:
             lines = ["Threads across CWDs:"]
         else:
             lines = [f"Threads in CWD {binding.selected_cwd}:"]
         for snapshot in snapshots:
             marker = "*" if snapshot.thread_id == binding.active_thread_id else "-"
-            label = snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)
+            label = snapshot.name or snapshot.preview or snapshot.thread_id
             parts = [
                 f"id: {snapshot.thread_id}",
                 f"status: {self._humanize_status(snapshot.status or 'idle')}",
@@ -254,6 +310,53 @@ class BridgeService:
             if include_all or binding.selected_cwd is None:
                 parts.append(f"cwd: {snapshot.cwd}")
             lines.append(f"{marker} {label} ({', '.join(parts)})")
+        return [self._message(message, "command_result", "\n".join(lines))]
+
+    async def _handle_status_query(
+        self,
+        message: InboundMessage,
+    ) -> list[OutboundMessage]:
+        binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.active_thread_id is None:
+            lines = [
+                f"CWD: {binding.selected_cwd or '(none)'}",
+                "Thread: (none)",
+                "Thread ID: (none)",
+                "Thread Path: (none)",
+                "Thread Status: (none)",
+                f"Turn: {binding.active_turn_id or '(none)'}",
+                f"Turn Status: {self._humanize_status(binding.active_turn_status) if binding.active_turn_status else 'idle'}",
+                f"Tickets: {len(binding.pending_request_ids)} pending",
+            ]
+            return [self._message(message, "command_result", "\n".join(lines))]
+        try:
+            snapshot = await self.backend.read_thread(
+                message.channel_id,
+                message.conversation_id,
+                binding.active_thread_id,
+            )
+        except Exception as exc:
+            text = self._thread_query_failure_text(
+                thread_id=binding.active_thread_id,
+                exc=exc,
+            )
+            return [self._message(message, "status", text)]
+        if snapshot is None:
+            text = (
+                f"Current thread {binding.active_thread_id} is no longer available in Codex. "
+                "Use /recover, /new, or /thread attach <thread-id>."
+            )
+            return [self._message(message, "status", text)]
+        lines = [
+            f"CWD: {snapshot.cwd or self._bound_thread_cwd(binding) or '(unknown)'}",
+            f"Thread: {snapshot.name or snapshot.preview or snapshot.thread_id}",
+            f"Thread ID: {snapshot.thread_id}",
+            f"Thread Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
+            f"Thread Status: {self._humanize_status(snapshot.status or '(unknown)')}",
+            f"Turn: {binding.active_turn_id or '(none)'}",
+            f"Turn Status: {self._humanize_status(binding.active_turn_status) if binding.active_turn_status else 'idle'}",
+            f"Tickets: {len(binding.pending_request_ids)} pending",
+        ]
         return [self._message(message, "command_result", "\n".join(lines))]
 
     async def _handle_thread_read_query(
@@ -269,17 +372,18 @@ class BridgeService:
                 message.conversation_id,
                 thread_id,
             )
-        except Exception:
+        except Exception as exc:
+            text = self._thread_query_failure_text(thread_id=thread_id, exc=exc)
+            return [self._message(message, "status", text)]
+        if snapshot is None:
             text = (
-                f"Current thread {thread_id} could not be validated. "
+                f"Current thread {thread_id} is no longer available in Codex. "
                 "Use /recover, /new, or /thread attach <thread-id>."
             )
             return [self._message(message, "status", text)]
-        if snapshot is None:
-            return [self._message(message, "command_result", "No active thread.")]
         text = "\n".join(
             [
-                f"Thread: {snapshot.name or snapshot.preview or self._thread_label(snapshot.thread_id)}",
+                f"Thread: {snapshot.name or snapshot.preview or snapshot.thread_id}",
                 f"Thread id: {snapshot.thread_id}",
                 f"CWD: {snapshot.cwd or '(unknown)'}",
                 f"Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
@@ -287,6 +391,30 @@ class BridgeService:
             ]
         )
         return [self._message(message, "command_result", text)]
+
+    def _thread_query_failure_text(self, *, thread_id: str, exc: Exception) -> str:
+        message = str(exc).lower()
+        if isinstance(exc, AppServerError) and any(
+            marker in message
+            for marker in ("invalid request", "not found", "unknown thread", "no such thread")
+        ):
+            return (
+                f"Current thread {thread_id} is no longer available in Codex. "
+                "Use /recover, /new, or /thread attach <thread-id>."
+            )
+        return (
+            f"Current thread {thread_id} could not be queried from Codex right now: {exc}. "
+            "Try again in a moment."
+        )
+
+    def _bound_thread_cwd(self, binding) -> str | None:
+        if binding.active_thread_id is None:
+            return binding.selected_cwd
+        try:
+            thread = self.store.get_thread(binding.active_thread_id)
+        except KeyError:
+            return None
+        return thread.cwd or None
 
     def _humanize_status(self, status: str) -> str:
         spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", status)
