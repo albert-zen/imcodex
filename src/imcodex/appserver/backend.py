@@ -105,6 +105,49 @@ class CodexBackend:
             return None
         return self._remember_snapshot(payload)
 
+    async def list_models(self) -> dict:
+        return await self.client.list_models()
+
+    async def read_config(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        include_layers: bool = False,
+    ) -> dict:
+        cwd = self.store.current_cwd(channel_id, conversation_id)
+        return await self.client.read_config(include_layers=include_layers, cwd=cwd)
+
+    async def write_config_value(
+        self,
+        *,
+        key_path: str,
+        value: object,
+        merge_strategy: str = "replace",
+    ) -> dict:
+        return await self.client.write_config_value(
+            key_path=key_path,
+            value=value,
+            merge_strategy=merge_strategy,
+        )
+
+    async def batch_write_config(
+        self,
+        *,
+        edits: list[dict],
+        reload_user_config: bool = False,
+    ) -> dict:
+        return await self.client.batch_write_config(
+            edits=edits,
+            reload_user_config=reload_user_config,
+        )
+
+    async def set_default_model(self, model: str | None) -> dict:
+        return await self.write_config_value(key_path="model", value=model, merge_strategy="replace")
+
+    async def call_native(self, method: str, params: dict | None = None) -> dict:
+        return await self.client.call(method, params)
+
     async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
@@ -119,8 +162,7 @@ class CodexBackend:
                 else:
                     return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
         thread_id = await self.ensure_thread(channel_id, conversation_id)
-        model_override = self.store.pop_next_model_override(channel_id, conversation_id)
-        result = await self.client.start_turn(thread_id=thread_id, text=text, model=model_override, summary="concise")
+        result = await self.client.start_turn(thread_id=thread_id, text=text, summary="concise")
         turn = result.get("turn") or {}
         turn_id = str(turn.get("id") or "")
         status = str(turn.get("status") or "inProgress")
@@ -150,6 +192,21 @@ class CodexBackend:
 
     async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
         await self.client.reply_to_server_request(request_id, decision_or_answers)
+
+    async def reply_error_to_server_request(
+        self,
+        request_id: str,
+        *,
+        code: int,
+        message: str,
+        data: object | None = None,
+    ) -> None:
+        await self.client.reply_error_to_server_request(
+            request_id,
+            code=code,
+            message=message,
+            data=data,
+        )
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = payload.get("status")

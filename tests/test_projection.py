@@ -229,6 +229,39 @@ def test_protocol_mapping_prefers_native_request_id() -> None:
     assert event.request_id == "native-request-abcdef"
 
 
+def test_protocol_mapping_preserves_item_id_for_agent_delta() -> None:
+    event = normalize_appserver_message(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "itemId": "item_123",
+                "delta": "partial",
+            },
+        }
+    )
+
+    assert event.item_id == "item_123"
+    assert event.category == "item"
+
+
+def test_protocol_mapping_classifies_system_notifications_without_dropping_them() -> None:
+    event = normalize_appserver_message(
+        {
+            "method": "model/rerouted",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "message": "Model upgraded automatically.",
+            },
+        }
+    )
+
+    assert event.kind == "model_rerouted"
+    assert event.category == "system"
+
+
 def test_projector_preserves_changed_files_in_failed_turn_result() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")

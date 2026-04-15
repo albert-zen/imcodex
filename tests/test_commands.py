@@ -63,3 +63,38 @@ def test_approve_prefix_must_be_unique() -> None:
 
     assert response.action == "approval.accept.missing"
     assert "Ambiguous" in response.text
+
+
+def test_help_lists_phase_one_commands_and_only_light_native_entry() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/help")
+
+    assert response.action == "help"
+    assert "Thread" in response.text
+    assert "/config read [key]" in response.text
+    assert "/show commentary|toolcalls|system" in response.text
+    assert "/native help" in response.text
+    assert "/thread fork" not in response.text
+
+
+def test_show_system_updates_bridge_visibility_only() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/show system")
+
+    assert response.action == "settings.visibility"
+    assert store.get_binding("qq", "conv-1").show_system is True
+
+
+def test_native_help_exposes_advanced_escape_hatch_commands() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/native help")
+
+    assert response.action == "native.help"
+    assert "/native call <method> <json>" in response.text
+    assert "/native requests" in response.text

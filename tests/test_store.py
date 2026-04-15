@@ -102,3 +102,18 @@ def test_visibility_preferences_persist_without_thread_or_cwd(tmp_path) -> None:
     assert binding.visibility_profile == "minimal"
     assert binding.show_commentary is False
     assert binding.show_toolcalls is False
+    assert binding.show_system is False
+
+
+def test_verbose_visibility_profile_enables_all_im_toggles(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+
+    store.set_visibility_profile("qq", "conv-1", "verbose")
+
+    reloaded = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    binding = reloaded.get_binding("qq", "conv-1")
+    assert binding.visibility_profile == "verbose"
+    assert binding.show_commentary is True
+    assert binding.show_toolcalls is True
+    assert binding.show_system is True

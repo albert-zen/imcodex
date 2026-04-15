@@ -12,3 +12,5 @@ Use these files as the source of truth for the current implementation:
   Current webhook / IM-visible message classes and request identity semantics.
 - [Deployment](./deployment.md)
   Current runtime and environment configuration.
+- [Command Roadmap](./command-roadmap.md)
+  Current `/help` surface, command phases, and native-vs-bridge command boundaries.

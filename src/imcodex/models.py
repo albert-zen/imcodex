@@ -13,6 +13,7 @@ class ConversationBinding:
     visibility_profile: str = "standard"
     show_commentary: bool = True
     show_toolcalls: bool = False
+    show_system: bool = False
     reply_context: dict[str, Any] = field(default_factory=dict)
 
 

@@ -52,6 +52,25 @@ class MessageProjector:
             if name:
                 store.update_thread_snapshot(event.thread_id, name=name)
             return None
+        if event.kind in {
+            "thread_status_changed",
+            "thread_compacted",
+            "model_rerouted",
+            "config_warning",
+            "deprecation_notice",
+        }:
+            if not self._show_system(event.thread_id, store):
+                return None
+            return self._attach_to_thread(
+                event.thread_id,
+                store,
+                OutboundMessage(
+                    channel_id="",
+                    conversation_id="",
+                    message_type="status",
+                    text=self._render_system_event(event),
+                ),
+            )
         if event.kind == "plan_updated":
             if not self._show_commentary(event.thread_id, store):
                 return None
@@ -202,6 +221,10 @@ class MessageProjector:
         binding = store.find_binding_by_thread_id(thread_id)
         return False if binding is None else binding.show_toolcalls
 
+    def _show_system(self, thread_id: str, store) -> bool:
+        binding = store.find_binding_by_thread_id(thread_id)
+        return False if binding is None else binding.show_system
+
     def _is_stale_turn(self, thread_id: str, turn_id: str, store) -> bool:
         if not thread_id or not turn_id:
             return False
@@ -232,3 +255,23 @@ class MessageProjector:
             lines.append("Files:")
             lines.extend(f"- {path}" for path in files)
         return "\n".join(lines)
+
+    def _render_system_event(self, event) -> str:
+        if event.kind == "thread_status_changed":
+            status = event.payload.get("status")
+            if isinstance(status, dict):
+                status = status.get("type") or status.get("status")
+            return f"Thread status changed: {status or 'updated'}."
+        if event.kind == "thread_compacted":
+            summary = str(event.payload.get("summary") or "").strip()
+            return "Thread compacted." if not summary else f"Thread compacted. {summary}"
+        if event.kind == "model_rerouted":
+            message = str(event.payload.get("message") or "").strip()
+            return "Model rerouted." if not message else message
+        if event.kind == "config_warning":
+            message = str(event.payload.get("message") or "").strip()
+            return "Config warning." if not message else message
+        if event.kind == "deprecation_notice":
+            message = str(event.payload.get("message") or "").strip()
+            return "Deprecation notice." if not message else message
+        return event.method

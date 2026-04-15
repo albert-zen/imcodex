@@ -177,12 +177,15 @@ class ConversationStore:
         if profile == "minimal":
             binding.show_commentary = False
             binding.show_toolcalls = False
+            binding.show_system = False
         elif profile == "verbose":
             binding.show_commentary = True
             binding.show_toolcalls = True
+            binding.show_system = True
         else:
             binding.show_commentary = True
             binding.show_toolcalls = False
+            binding.show_system = False
         self._save()
         return binding
 
@@ -207,6 +210,18 @@ class ConversationStore:
     ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.show_toolcalls = enabled
+        self._save()
+        return binding
+
+    def set_system_visibility(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        enabled: bool,
+    ) -> ConversationBinding:
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.show_system = enabled
         self._save()
         return binding
 
@@ -316,6 +331,7 @@ class ConversationStore:
                     "visibility_profile": binding.visibility_profile,
                     "show_commentary": binding.show_commentary,
                     "show_toolcalls": binding.show_toolcalls,
+                    "show_system": binding.show_system,
                     "reply_context": binding.reply_context,
                 }
                 for binding in self._bindings.values()
@@ -324,6 +340,7 @@ class ConversationStore:
                 or binding.visibility_profile != "standard"
                 or binding.show_commentary is not True
                 or binding.show_toolcalls is not False
+                or binding.show_system is not False
                 or binding.reply_context
             ],
             "pending_requests": [
@@ -361,6 +378,7 @@ class ConversationStore:
                 visibility_profile=str(item.get("visibility_profile") or "standard"),
                 show_commentary=bool(item.get("show_commentary", True)),
                 show_toolcalls=bool(item.get("show_toolcalls", False)),
+                show_system=bool(item.get("show_system", False)),
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding

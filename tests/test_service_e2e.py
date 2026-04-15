@@ -525,63 +525,167 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
 
 
 @pytest.mark.asyncio
-async def test_model_override_survives_steer_and_applies_to_next_started_turn() -> None:
+async def test_model_command_writes_native_default_model_config() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "turn/steer": [{"id": 2, "result": {"turnId": "turn_1"}}],
-            "thread/resume": [
+            "config/value/write": [
                 {
-                    "id": 3,
+                    "id": 2,
                     "result": {
-                        "thread": {
-                            "id": "thr_1",
-                            "cwd": r"D:\work\alpha",
-                            "preview": "seed",
-                            "status": "idle",
-                        }
+                        "status": "updated",
+                        "version": "v1",
+                        "filePath": r"D:\Users\me\.codex\config.toml",
+                        "overriddenMetadata": None,
                     },
                 }
             ],
-            "turn/start": [{"id": 4, "result": {"turn": {"id": "turn_2", "status": "inProgress"}}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
-    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
-    store.bind_thread("qq", "conv-1", "thr_1")
-    store.note_active_turn("thr_1", "turn_1", "inProgress")
-    store.set_next_model_override("qq", "conv-1", "gpt-5.4")
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
-    first = await service.handle_inbound(
+    messages = await service.handle_inbound(
         InboundMessage(
             channel_id="qq",
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="keep going",
+            text="/model gpt-5.4",
         )
     )
-    store.clear_active_turn("thr_1")
-    second = await service.handle_inbound(
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    assert payloads == [{"keyPath": "model", "value": "gpt-5.4", "mergeStrategy": "replace"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_models_command_reads_native_model_catalog() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "model/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.4",
+                                "model": "gpt-5.4",
+                                "displayName": "GPT-5.4",
+                                "description": "Default model",
+                                "hidden": False,
+                                "supportedReasoningEfforts": [],
+                                "defaultReasoningEffort": "medium",
+                                "inputModalities": ["text"],
+                                "supportsPersonality": True,
+                                "isDefault": True,
+                                "upgrade": None,
+                                "upgradeInfo": None,
+                                "availabilityNux": None,
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
         InboundMessage(
             channel_id="qq",
             conversation_id="conv-1",
             user_id="u1",
-            message_id="m2",
-            text="now start the next turn",
+            message_id="m1",
+            text="/models",
         )
     )
 
-    assert first[0].message_type == "accepted"
-    assert second[0].message_type == "accepted"
-    turn_start_payloads = [
-        payload["params"]
-        for payload in process.inputs
-        if payload.get("method") == "turn/start"
-    ]
-    assert turn_start_payloads[-1]["model"] == "gpt-5.4"
+    assert messages[0].message_type == "command_result"
+    assert "GPT-5.4" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_model_default_clears_native_default_model_config() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/value/write": [
+                {
+                    "id": 2,
+                    "result": {
+                        "status": "updated",
+                        "version": "v2",
+                        "filePath": r"D:\Users\me\.codex\config.toml",
+                        "overriddenMetadata": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/model default",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    assert payloads == [{"keyPath": "model", "value": None, "mergeStrategy": "replace"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_config_write_command_sends_native_json_value_write() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/value/write": [
+                {
+                    "id": 2,
+                    "result": {
+                        "status": "updated",
+                        "version": "v3",
+                        "filePath": r"D:\Users\me\.codex\config.toml",
+                        "overriddenMetadata": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text='/config write model_reasoning_effort "high"',
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    assert payloads == [{"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"}]
     await client.close()
 
 

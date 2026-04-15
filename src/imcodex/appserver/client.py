@@ -126,6 +126,9 @@ class AppServerClient:
         self.initialized = True
         return result
 
+    async def call(self, method: str, params: JsonDict | None = None) -> JsonDict:
+        return await self._request(method, dict(params or {}))
+
     async def start_thread(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
         payload = dict(params or {})
         payload.update(kwargs)
@@ -141,8 +144,49 @@ class AppServerClient:
         payload.update(kwargs)
         return await self._request("thread/list", payload)
 
+    async def list_models(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
+        payload = dict(params or {})
+        payload.update(kwargs)
+        return await self._request("model/list", payload)
+
     async def read_thread(self, thread_id: str) -> JsonDict:
         return await self._request("thread/read", {"threadId": thread_id})
+
+    async def read_config(self, *, include_layers: bool = False, cwd: str | None = None) -> JsonDict:
+        payload: JsonDict = {"includeLayers": include_layers}
+        if cwd is not None:
+            payload["cwd"] = cwd
+        return await self._request("config/read", payload)
+
+    async def write_config_value(
+        self,
+        *,
+        key_path: str,
+        value: Any,
+        merge_strategy: str = "replace",
+    ) -> JsonDict:
+        return await self._request(
+            "config/value/write",
+            {
+                "keyPath": key_path,
+                "value": value,
+                "mergeStrategy": merge_strategy,
+            },
+        )
+
+    async def batch_write_config(
+        self,
+        *,
+        edits: list[JsonDict],
+        reload_user_config: bool = False,
+    ) -> JsonDict:
+        return await self._request(
+            "config/batchWrite",
+            {
+                "edits": edits,
+                "reloadUserConfig": reload_user_config,
+            },
+        )
 
     async def start_turn(self, thread_id: str, text: str, **kwargs: Any) -> JsonDict:
         payload = {"threadId": thread_id, "input": [{"type": "text", "text": text}]}
@@ -173,6 +217,27 @@ class AppServerClient:
         for key in self._pending_request_keys(pending):
             self._pending_server_requests.pop(key, None)
         payload = {"id": pending["id"], "result": result}
+        await self._send_json(payload)
+        return payload
+
+    async def reply_error_to_server_request(
+        self,
+        request_id: str,
+        *,
+        code: int,
+        message: str,
+        data: Any | None = None,
+    ) -> JsonDict:
+        await self._ensure_connected()
+        pending = self._pending_server_requests.get(request_id)
+        if pending is None:
+            raise AppServerError(f"unknown pending request: {request_id}")
+        for key in self._pending_request_keys(pending):
+            self._pending_server_requests.pop(key, None)
+        error: JsonDict = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        payload = {"id": pending["id"], "error": error}
         await self._send_json(payload)
         return payload
 

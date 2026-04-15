@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from ..appserver import AppServerError, StaleThreadBindingError
 from ..models import InboundMessage, OutboundMessage
 
@@ -69,6 +71,30 @@ class BridgeService:
                 )
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", text)]
+        if response.action == "models.list":
+            result = await self.backend.list_models()
+            return [self._message(message, "command_result", self._render_models(result))]
+        if response.action == "config.read":
+            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            key_path = None if response.payload is None else response.payload.get("key_path")
+            return [self._message(message, "command_result", self._render_config(result, key_path))]
+        if response.action == "config.write":
+            payload = response.payload or {}
+            await self.backend.write_config_value(
+                key_path=str(payload.get("key_path") or ""),
+                value=payload.get("value"),
+            )
+            return [self._message(message, "status", response.text)]
+        if response.action == "config.batch":
+            payload = response.payload or {}
+            await self.backend.batch_write_config(
+                edits=list(payload.get("edits") or []),
+                reload_user_config=bool(payload.get("reload_user_config", False)),
+            )
+            return [self._message(message, "status", response.text)]
+        if response.action == "settings.model":
+            await self.backend.set_default_model(None if response.payload is None else response.payload.get("model"))
+            return [self._message(message, "status", response.text)]
         if response.action == "thread.read.query":
             return [self._message(message, "command_result", await self._render_thread(message, response.thread_id))]
         if response.action == "thread.new":
@@ -98,6 +124,29 @@ class BridgeService:
             payload = {"answers": {key: {"answers": value} for key, value in (response.answers or {}).items()}}
             try:
                 await self.backend.reply_to_server_request(response.request_id or "", payload)
+            except (AppServerError, KeyError) as exc:
+                return self._request_reply_failure(message, response.request_id, response.action, exc)
+        elif response.action == "native.call":
+            payload = response.payload or {}
+            result = await self.backend.call_native(
+                str(payload.get("method") or ""),
+                payload.get("params") if isinstance(payload.get("params"), dict) else {},
+            )
+            return [self._message(message, "command_result", self._render_json(result))]
+        elif response.action == "native.respond":
+            try:
+                await self.backend.reply_to_server_request(response.request_id or "", response.payload or {})
+            except (AppServerError, KeyError) as exc:
+                return self._request_reply_failure(message, response.request_id, response.action, exc)
+        elif response.action == "native.error":
+            payload = response.payload or {}
+            try:
+                await self.backend.reply_error_to_server_request(
+                    response.request_id or "",
+                    code=int(payload.get("code") or 0),
+                    message=str(payload.get("message") or ""),
+                    data=payload.get("data"),
+                )
             except (AppServerError, KeyError) as exc:
                 return self._request_reply_failure(message, response.request_id, response.action, exc)
         message_type = self._command_message_type(response.action)
@@ -216,6 +265,10 @@ class BridgeService:
             "settings.view",
             "settings.visibility",
             "settings.model",
+            "config.write",
+            "config.batch",
+            "native.respond",
+            "native.error",
         }:
             return "status"
         if action.endswith(".invalid") or action.endswith(".missing") or ".missing" in action or action == "unknown":
@@ -223,6 +276,36 @@ class BridgeService:
         if action in {"thread.read.none", "turn.stop.none"}:
             return "command_result"
         return "command_result"
+
+    def _render_models(self, payload: dict) -> str:
+        items = payload.get("data")
+        if not isinstance(items, list) or not items:
+            return "Models:\n(none)"
+        lines = ["Models:"]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("displayName") or item.get("model") or item.get("id") or "unknown")
+            suffix = " (default)" if item.get("isDefault") else ""
+            lines.append(f"- {label}{suffix}")
+        return "\n".join(lines)
+
+    def _render_config(self, payload: dict, key_path: object | None) -> str:
+        config = payload.get("config")
+        if key_path is not None and isinstance(config, dict):
+            return self._render_json(self._lookup_config_value(config, str(key_path)))
+        return self._render_json(config if config is not None else payload)
+
+    def _lookup_config_value(self, payload: dict, key_path: str) -> object:
+        current: object = payload
+        for part in key_path.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
+
+    def _render_json(self, payload: object) -> str:
+        return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
 
     def _request_reply_failure(
         self,
