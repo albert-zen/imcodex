@@ -11,9 +11,64 @@ from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervis
 class FakeStdout:
     def __init__(self) -> None:
         self.lines: asyncio.Queue[bytes] = asyncio.Queue()
+        self._buffer = bytearray()
+        self._eof = False
+
+    async def _fill_buffer(self) -> bool:
+        if self._eof:
+            return False
+        chunk = await self.lines.get()
+        if not chunk:
+            self._eof = True
+            return False
+        self._buffer.extend(chunk)
+        return True
 
     async def readline(self) -> bytes:
-        return await self.lines.get()
+        while b"\n" not in self._buffer:
+            if not await self._fill_buffer():
+                if not self._buffer:
+                    return b""
+                data = bytes(self._buffer)
+                self._buffer.clear()
+                return data
+        line, _, rest = self._buffer.partition(b"\n")
+        self._buffer = bytearray(rest)
+        return bytes(line) + b"\n"
+
+    async def read(self, n: int = -1) -> bytes:
+        while not self._buffer:
+            if not await self._fill_buffer():
+                return b""
+        if n < 0 or n >= len(self._buffer):
+            data = bytes(self._buffer)
+            self._buffer.clear()
+            return data
+        data = bytes(self._buffer[:n])
+        del self._buffer[:n]
+        return data
+
+
+class LimitFailingStdout(FakeStdout):
+    def __init__(self, *, limit: int) -> None:
+        super().__init__()
+        self.limit = limit
+
+    async def readline(self) -> bytes:
+        while b"\n" not in self._buffer:
+            if len(self._buffer) > self.limit:
+                raise ValueError("Separator is not found, and chunk exceed the limit")
+            if not await self._fill_buffer():
+                if not self._buffer:
+                    return b""
+                data = bytes(self._buffer)
+                self._buffer.clear()
+                return data
+        line, _, rest = self._buffer.partition(b"\n")
+        self._buffer = bytearray(rest)
+        if len(line) > self.limit:
+            raise ValueError("Separator is not found, and chunk exceed the limit")
+        return bytes(line) + b"\n"
 
 
 class FakeStdin:
@@ -71,6 +126,13 @@ class ScriptedProcess:
         if "id" in request:
             response["id"] = request["id"]
         return response
+
+
+class LimitFailingProcess(ScriptedProcess):
+    def __init__(self, scripts: dict[str, list[dict]], *, line_limit: int) -> None:
+        super().__init__(scripts)
+        self.stdout = LimitFailingStdout(limit=line_limit)
+        self.stdin = FakeStdin(self)
 
 
 class ScriptedWebSocket:
@@ -316,6 +378,43 @@ async def test_stdio_client_fails_inflight_request_immediately_when_pipe_closes(
 
     with pytest.raises(AppServerError, match="connection closed"):
         await pending
+
+
+@pytest.mark.asyncio
+async def test_stdio_client_handles_oversized_jsonl_messages_without_readline_limits() -> None:
+    huge_preview = "x" * (2 * 1024 * 1024)
+    process = LimitFailingProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_big",
+                            "cwd": "D:/repo/app",
+                            "preview": huge_preview,
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+        },
+        line_limit=1024,
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.resume_thread(thread_id="thr_big", service_name="imcodex", personality="friendly")
+
+    assert result["thread"]["id"] == "thr_big"
+    assert result["thread"]["preview"] == huge_preview
 
 
 @pytest.mark.asyncio

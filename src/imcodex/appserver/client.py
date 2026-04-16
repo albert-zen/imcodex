@@ -32,6 +32,7 @@ class StdioAppServerTransport:
         self._process = process
         self._stdin = getattr(process, "stdin", None)
         self._stdout = getattr(process, "stdout", None)
+        self._buffer = bytearray()
         if self._stdin is None or self._stdout is None:
             raise AppServerError("stdio app-server process missing stdin/stdout pipes")
 
@@ -45,10 +46,24 @@ class StdioAppServerTransport:
                 await result
 
     async def receive_json(self) -> JsonDict:
-        raw = await self._stdout.readline()
-        if not raw:
-            raise AppServerError("app-server connection closed")
-        return json.loads(raw.decode("utf-8"))
+        while True:
+            newline_index = self._buffer.find(b"\n")
+            if newline_index >= 0:
+                raw = bytes(self._buffer[:newline_index])
+                del self._buffer[: newline_index + 1]
+                if not raw.strip():
+                    continue
+                return json.loads(raw.decode("utf-8"))
+            chunk = await self._read_chunk()
+            if not chunk:
+                if not self._buffer:
+                    raise AppServerError("app-server connection closed")
+                raw = bytes(self._buffer)
+                self._buffer.clear()
+                if not raw.strip():
+                    raise AppServerError("app-server connection closed")
+                return json.loads(raw.decode("utf-8"))
+            self._buffer.extend(chunk)
 
     async def close(self) -> None:
         close = getattr(self._stdin, "close", None)
@@ -57,6 +72,16 @@ class StdioAppServerTransport:
 
     def is_closed(self) -> bool:
         return getattr(self._process, "returncode", None) is not None
+
+    async def _read_chunk(self) -> bytes:
+        read = getattr(self._stdout, "read", None)
+        if callable(read):
+            chunk = read(65536)
+            if inspect.isawaitable(chunk):
+                chunk = await chunk
+            return chunk
+        raw = await self._stdout.readline()
+        return raw
 
 
 class WebSocketAppServerTransport:
