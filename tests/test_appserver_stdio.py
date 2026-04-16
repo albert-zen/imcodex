@@ -418,6 +418,61 @@ async def test_stdio_client_handles_oversized_jsonl_messages_without_readline_li
 
 
 @pytest.mark.asyncio
+async def test_resume_thread_trims_history_to_recent_turns() -> None:
+    turns = [
+        {
+            "id": f"turn_{index}",
+            "items": [
+                {
+                    "type": "userMessage",
+                    "id": f"item_{index}",
+                    "content": [{"type": "text", "text": f"message {index} " + ("x" * 2048)}],
+                }
+            ],
+            "status": "completed",
+        }
+        for index in range(8)
+    ]
+    process = LimitFailingProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_recent",
+                            "cwd": "D:/repo/app",
+                            "preview": "seed",
+                            "status": "idle",
+                            "turns": turns,
+                        }
+                    },
+                }
+            ],
+        },
+        line_limit=1024,
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.resume_thread(thread_id="thr_recent", service_name="imcodex", personality="friendly")
+
+    assert [turn["id"] for turn in result["thread"]["turns"]] == [
+        "turn_4",
+        "turn_5",
+        "turn_6",
+        "turn_7",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_default_spawn_does_not_pipe_stderr(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

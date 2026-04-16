@@ -11,6 +11,8 @@ from typing import Any, Protocol
 JsonDict = dict[str, Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
+_TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
+_MAX_RECENT_THREAD_TURNS = 4
 
 
 class AppServerError(RuntimeError):
@@ -313,7 +315,7 @@ class AppServerClient:
             error = response["error"]
             message = error.get("message") if isinstance(error, dict) else str(error)
             raise AppServerError(message or f"{method} failed")
-        return response["result"]
+        return self._normalize_result(method, response["result"])
 
     async def _notify(self, method: str, params: JsonDict) -> None:
         await self._send_json({"method": method, "params": params})
@@ -407,3 +409,17 @@ class AppServerClient:
                 keys.add(str(native_request_id))
         keys.discard("")
         return keys
+
+    def _normalize_result(self, method: str, result: JsonDict) -> JsonDict:
+        if method in _TRIMMED_THREAD_METHODS:
+            self._trim_thread_history(result)
+        return result
+
+    def _trim_thread_history(self, result: JsonDict) -> None:
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            return
+        turns = thread.get("turns")
+        if not isinstance(turns, list) or len(turns) <= _MAX_RECENT_THREAD_TURNS:
+            return
+        thread["turns"] = turns[-_MAX_RECENT_THREAD_TURNS:]
