@@ -12,6 +12,7 @@ import websockets
 
 SpawnProcess = Callable[..., Awaitable[Any] | Any]
 ConnectWebSocket = Callable[..., Awaitable[Any] | Any]
+STDIO_STREAM_LIMIT = 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -81,6 +82,7 @@ class AppServerSupervisor:
             *resolved,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
+            limit=STDIO_STREAM_LIMIT,
         )
 
     def _resolve_command_for_spawn(self, command: tuple[str, ...]) -> tuple[str, ...]:

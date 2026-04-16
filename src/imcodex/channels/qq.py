@@ -15,6 +15,7 @@ from ..models import InboundMessage, OutboundMessage
 
 
 logger = logging.getLogger(__name__)
+GENERIC_USER_ERROR_TEXT = "Request failed while talking to Codex. Please try again."
 
 DEFAULT_API_BASE = "https://api.sgroup.qq.com"
 SANDBOX_API_BASE = "https://sandbox.api.sgroup.qq.com"
@@ -144,7 +145,7 @@ class QQChannelAdapter:
                     channel_id="qq",
                     conversation_id=inbound.conversation_id,
                     message_type="error",
-                    text=f"Request failed: {exc}",
+                    text=GENERIC_USER_ERROR_TEXT,
                     metadata={"reply_to_message_id": inbound.message_id},
                 )
             )

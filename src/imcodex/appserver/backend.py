@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 
 from ..models import NativeThreadSnapshot
@@ -14,6 +16,10 @@ class StaleThreadBindingError(RuntimeError):
     def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
         super().__init__(f"thread binding is stale: {thread_id}")
+
+
+class ThreadSelectionError(RuntimeError):
+    pass
 
 
 @dataclass(slots=True)
@@ -66,6 +72,37 @@ class CodexBackend:
             raise AppServerError(f"thread {thread_id} is not available in Codex")
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         return snapshot.thread_id
+
+    async def resolve_thread_selector(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        selector: str,
+        *,
+        include_all: bool = False,
+    ) -> NativeThreadSnapshot:
+        normalized_selector = self._normalize_selector(selector)
+        if not normalized_selector:
+            raise ThreadSelectionError("Enter a thread name, preview, or ID.")
+        threads = await self.list_threads(channel_id, conversation_id, include_all=include_all)
+        ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
+        for index, snapshot in enumerate(threads):
+            score = self._thread_match_score(snapshot, selector)
+            if score is not None:
+                ranked.append((score, index, snapshot))
+        if not ranked:
+            raise ThreadSelectionError(f"No thread matches '{selector}'. Try /threads {selector}.")
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        best_score = ranked[0][0]
+        best_matches = [snapshot for score, _, snapshot in ranked if score == best_score]
+        if len(best_matches) > 1:
+            labels = ", ".join(self._thread_short_label(snapshot) for snapshot in best_matches[:3])
+            if len(best_matches) > 3:
+                labels += ", ..."
+            raise ThreadSelectionError(
+                f"'{selector}' matches multiple threads: {labels}. Try /threads {selector}."
+            )
+        return best_matches[0]
 
     async def list_threads(
         self,
@@ -161,7 +198,15 @@ class CodexBackend:
                     self.store.clear_active_turn(binding.thread_id)
                 else:
                     return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
+            try:
+                return await self._start_turn(binding.thread_id, text)
+            except AppServerError as exc:
+                if not self._requires_thread_resume(exc):
+                    raise
         thread_id = await self.ensure_thread(channel_id, conversation_id)
+        return await self._start_turn(thread_id, text)
+
+    async def _start_turn(self, thread_id: str, text: str) -> TurnSubmission:
         result = await self.client.start_turn(thread_id=thread_id, text=text, summary="concise")
         turn = result.get("turn") or {}
         turn_id = str(turn.get("id") or "")
@@ -212,14 +257,28 @@ class CodexBackend:
         status = payload.get("status")
         if isinstance(status, dict):
             status = status.get("type") or status.get("status")
+        thread_id = str(payload.get("id") or payload.get("threadId") or "")
+        previous = self.store.get_thread_snapshot(thread_id)
         snapshot = NativeThreadSnapshot(
-            thread_id=str(payload.get("id") or payload.get("threadId") or ""),
-            cwd=str(payload.get("cwd") or ""),
-            preview=str(payload.get("preview") or ""),
-            status=str(status or "idle"),
-            name=str(payload["name"]) if payload.get("name") is not None else None,
-            path=str(payload["path"]) if payload.get("path") is not None else None,
-            source=str(payload["source"]) if payload.get("source") is not None else None,
+            thread_id=thread_id,
+            cwd=str(payload.get("cwd") or (previous.cwd if previous is not None else "") or ""),
+            preview=str(payload.get("preview") or (previous.preview if previous is not None else "") or ""),
+            status=str(status or (previous.status if previous is not None else "idle") or "idle"),
+            name=(
+                str(payload["name"])
+                if payload.get("name") is not None
+                else (previous.name if previous is not None else None)
+            ),
+            path=(
+                str(payload["path"])
+                if payload.get("path") is not None
+                else (previous.path if previous is not None else None)
+            ),
+            source=(
+                str(payload["source"])
+                if payload.get("source") is not None
+                else (previous.source if previous is not None else None)
+            ),
         )
         self.store.note_thread_snapshot(snapshot)
         return snapshot
@@ -249,9 +308,79 @@ class CodexBackend:
                 return [item for item in items if isinstance(item, dict)]
         return []
 
+    def _thread_match_score(self, snapshot: NativeThreadSnapshot, selector: str) -> int | None:
+        selector_norm = self._normalize_selector(selector)
+        if not selector_norm:
+            return None
+        thread_id = snapshot.thread_id.strip()
+        if selector.strip() == thread_id:
+            return 0
+        best: int | None = None
+        for label in self._thread_selector_labels(snapshot):
+            normalized = self._normalize_selector(label)
+            if not normalized:
+                continue
+            if normalized == selector_norm:
+                return 1
+            if normalized.startswith(selector_norm):
+                best = self._min_score(best, 2)
+                continue
+            if any(token.startswith(selector_norm) for token in normalized.split()):
+                best = self._min_score(best, 3)
+                continue
+            if selector_norm in normalized:
+                best = self._min_score(best, 4)
+        thread_id_norm = self._normalize_selector(thread_id)
+        if thread_id_norm.startswith(selector_norm):
+            best = self._min_score(best, 5)
+        if selector_norm in thread_id_norm:
+            best = self._min_score(best, 6)
+        return best
+
+    def _thread_selector_labels(self, snapshot: NativeThreadSnapshot) -> list[str]:
+        labels = [snapshot.name or "", snapshot.preview or ""]
+        location = snapshot.path or snapshot.cwd
+        if location:
+            labels.append(os.path.basename(location.rstrip("/\\")))
+            labels.append(location)
+        return labels
+
+    def _thread_short_label(self, snapshot: NativeThreadSnapshot) -> str:
+        label = snapshot.name or snapshot.preview or os.path.basename((snapshot.path or snapshot.cwd).rstrip("/\\")) or snapshot.thread_id
+        return label.strip() or snapshot.thread_id
+
+    def _normalize_selector(self, value: str) -> str:
+        lowered = value.strip().lower()
+        lowered = lowered.replace("_", " ").replace("-", " ")
+        lowered = re.sub(r"\s+", " ", lowered)
+        return lowered
+
+    def _min_score(self, current: int | None, candidate: int) -> int:
+        return candidate if current is None else min(current, candidate)
+
     def _is_stale_thread_error(self, error: AppServerError) -> bool:
         message = str(error).lower()
-        return any(marker in message for marker in ("invalid request", "not found", "unknown thread", "no such thread"))
+        return any(
+            marker in message
+            for marker in (
+                "invalid request",
+                "not found",
+                "unknown thread",
+                "no such thread",
+                "no rollout found",
+            )
+        )
+
+    def _requires_thread_resume(self, error: AppServerError) -> bool:
+        message = str(error).lower()
+        return self._is_stale_thread_error(error) or any(
+            marker in message
+            for marker in (
+                "not loaded",
+                "must resume",
+                "thread closed",
+            )
+        )
 
     def _is_stale_turn_error(self, error: AppServerError) -> bool:
         message = str(error).lower()

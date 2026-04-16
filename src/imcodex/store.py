@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
-from .models import ConversationBinding, NativeThreadSnapshot, PendingNativeRequestRoute
+from .models import ConversationBinding, NativeThreadSnapshot, PendingNativeRequestRoute, ThreadBrowserContext
 
 
 Clock = Callable[[], float]
@@ -21,6 +21,7 @@ class ConversationStore:
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
+        self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
         self._suppressed_turns: set[tuple[str, str]] = set()
         self._next_model_overrides: dict[tuple[str, str], str | None] = {}
@@ -130,6 +131,48 @@ class ConversationStore:
             if snapshot and snapshot.cwd:
                 return snapshot.cwd
         return binding.bootstrap_cwd
+
+    def set_thread_browser_context(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        thread_ids: list[str],
+        page: int,
+        total: int,
+        query: str | None,
+        include_all: bool,
+        ttl_s: float = 900.0,
+    ) -> ThreadBrowserContext:
+        context = ThreadBrowserContext(
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+            thread_ids=list(thread_ids),
+            page=page,
+            total=total,
+            query=query,
+            include_all=include_all,
+            expires_at=self.clock() + ttl_s,
+        )
+        self._thread_browser_contexts[(channel_id, conversation_id)] = context
+        return context
+
+    def get_thread_browser_context(
+        self,
+        channel_id: str,
+        conversation_id: str,
+    ) -> ThreadBrowserContext | None:
+        key = (channel_id, conversation_id)
+        context = self._thread_browser_contexts.get(key)
+        if context is None:
+            return None
+        if context.expires_at <= self.clock():
+            self._thread_browser_contexts.pop(key, None)
+            return None
+        return context
+
+    def clear_thread_browser_context(self, channel_id: str, conversation_id: str) -> None:
+        self._thread_browser_contexts.pop((channel_id, conversation_id), None)
 
     def note_active_turn(self, thread_id: str, turn_id: str, status: str) -> None:
         self._active_turns[thread_id] = (turn_id, status)

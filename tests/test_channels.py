@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from imcodex.channels import QQChannelAdapter, create_app
@@ -57,3 +58,37 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
     assert inbound is not None
     assert inbound.conversation_id == "group:group-1"
     assert inbound.text == "inspect repo"
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_hides_raw_exception_details_from_user() -> None:
+    class FailingService:
+        async def handle_inbound(self, message):
+            raise RuntimeError("<html>" + ("x" * 500))
+
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        service=FailingService(),
+    )
+    sent: list[OutboundMessage] = []
+
+    async def capture(message: OutboundMessage) -> None:
+        sent.append(message)
+
+    adapter.send_message = capture  # type: ignore[method-assign]
+
+    await adapter.handle_dispatch_event(
+        "C2C_MESSAGE_CREATE",
+        {
+            "id": "msg-1",
+            "content": "hello",
+            "author": {"user_openid": "user-1"},
+        },
+    )
+
+    assert sent
+    assert sent[0].message_type == "error"
+    assert "Please try again." in sent[0].text
+    assert "<html>" not in sent[0].text

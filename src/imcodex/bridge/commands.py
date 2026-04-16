@@ -4,8 +4,25 @@ import json
 import os
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..store import ConversationStore
+
+
+_PERMISSION_PRESETS = {
+    "default": [
+        {"key_path": "approval_policy", "value": "on-request", "merge_strategy": "replace"},
+        {"key_path": "sandbox_mode", "value": "workspace-write", "merge_strategy": "replace"},
+    ],
+    "read-only": [
+        {"key_path": "approval_policy", "value": "on-request", "merge_strategy": "replace"},
+        {"key_path": "sandbox_mode", "value": "read-only", "merge_strategy": "replace"},
+    ],
+    "full-access": [
+        {"key_path": "approval_policy", "value": "never", "merge_strategy": "replace"},
+        {"key_path": "sandbox_mode", "value": "danger-full-access", "merge_strategy": "replace"},
+    ],
+}
 
 
 @dataclass(slots=True)
@@ -40,8 +57,9 @@ def parse_command(text: str) -> ParsedCommand:
 
 
 class CommandRouter:
-    def __init__(self, store: ConversationStore) -> None:
+    def __init__(self, store: ConversationStore, playground_path: str | Path | None = None) -> None:
         self.store = store
+        self.playground_path = Path(playground_path) if playground_path is not None else self._default_playground_path()
 
     def handle(self, channel_id: str, conversation_id: str, text: str) -> CommandResponse:
         command = parse_command(text)
@@ -51,8 +69,20 @@ class CommandRouter:
         return handler(channel_id, conversation_id, command)
 
     def _handle_cwd(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        if not command.args:
+            current = self.store.current_cwd(channel_id, conversation_id)
+            if current is None:
+                text = "No CWD selected. Use /cwd <path> or /cwd playground."
+            else:
+                text = f"Current CWD: {current}"
+            return CommandResponse(action="project.cwd.read", text=text)
         if len(command.args) != 1:
             return CommandResponse(action="project.cwd.invalid", text="Usage: /cwd <path>")
+        if command.args[0].lower() == "playground":
+            resolved = self.playground_path
+            resolved.mkdir(parents=True, exist_ok=True)
+            self.store.set_bootstrap_cwd(channel_id, conversation_id, str(resolved))
+            return CommandResponse(action="project.cwd", text=f"CWD set to {resolved}.")
         resolved = os.path.abspath(os.path.expanduser(command.args[0]))
         if not os.path.isdir(resolved):
             return CommandResponse(action="project.cwd.missing", text=f"Directory not found: {resolved}")
@@ -60,11 +90,97 @@ class CommandRouter:
         return CommandResponse(action="project.cwd", text=f"CWD set to {resolved}.")
 
     def _handle_threads(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        include_all = "--all" in command.args
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.bootstrap_cwd is None and binding.thread_id is None and not include_all:
-            return CommandResponse(action="threads.missing_project", text="Choose a CWD first with /cwd <path>.")
-        return CommandResponse(action="threads.query", text="", include_all=include_all)
+        include_all = False
+        page = 1
+        query_parts: list[str] = []
+        index = 0
+        while index < len(command.args):
+            arg = command.args[index]
+            if arg == "--all":
+                include_all = True
+                index += 1
+                continue
+            if arg == "--page":
+                if index + 1 >= len(command.args):
+                    return CommandResponse(
+                        action="threads.invalid",
+                        text="Usage: /threads [query] [--page N] [--all]",
+                    )
+                try:
+                    page = int(command.args[index + 1])
+                except ValueError:
+                    return CommandResponse(
+                        action="threads.invalid",
+                        text="Usage: /threads [query] [--page N] [--all]",
+                    )
+                index += 2
+                continue
+            if arg.startswith("--page="):
+                try:
+                    page = int(arg.partition("=")[2])
+                except ValueError:
+                    return CommandResponse(
+                        action="threads.invalid",
+                        text="Usage: /threads [query] [--page N] [--all]",
+                    )
+                index += 1
+                continue
+            query_parts.append(arg)
+            index += 1
+        if page < 1:
+            return CommandResponse(action="threads.invalid", text="Page number must be 1 or greater.")
+        query = " ".join(part for part in query_parts if part).strip() or None
+        return CommandResponse(
+            action="threads.query",
+            text="",
+            include_all=include_all,
+            payload={"page": page, "query": query},
+        )
+
+    def _handle_next(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del command
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if context is None:
+            return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
+        return CommandResponse(
+            action="threads.query",
+            text="",
+            include_all=context.include_all,
+            payload={"page": context.page + 1, "query": context.query},
+        )
+
+    def _handle_prev(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del command
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if context is None:
+            return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
+        return CommandResponse(
+            action="threads.query",
+            text="",
+            include_all=context.include_all,
+            payload={"page": max(1, context.page - 1), "query": context.query},
+        )
+
+    def _handle_pick(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if context is None:
+            return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
+        if len(command.args) != 1:
+            return CommandResponse(action="thread.pick.invalid", text="Usage: /pick <n>")
+        try:
+            index = int(command.args[0])
+        except ValueError:
+            return CommandResponse(action="thread.pick.invalid", text="Usage: /pick <n>")
+        if index < 1 or index > len(context.thread_ids):
+            return CommandResponse(action="thread.pick.invalid", text="Pick a number from the current page.")
+        return CommandResponse(action="thread.pick", text="", payload={"index": index - 1})
+
+    def _handle_exit(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del command
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if context is None:
+            return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
+        return CommandResponse(action="threads.exit", text="Closed thread list.")
 
     def _handle_thread(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -72,11 +188,21 @@ class CommandRouter:
             if binding.thread_id is None:
                 return CommandResponse(action="thread.read.none", text="No active thread.")
             return CommandResponse(action="thread.read.query", text="", thread_id=binding.thread_id)
-        if len(command.args) == 2 and command.args[0] == "attach":
-            return CommandResponse(action="thread.attach", text=f"Attaching thread {command.args[1]}.", thread_id=command.args[1])
+        if command.args and command.args[0] == "attach":
+            selector = command.raw_args_text[len("attach") :].strip()
+            if not selector:
+                return CommandResponse(
+                    action="thread.invalid",
+                    text="Usage: /thread attach <thread-id-or-name> or /thread read",
+                )
+            return CommandResponse(
+                action="thread.attach",
+                text="",
+                payload={"selector": selector},
+            )
         return CommandResponse(
             action="thread.invalid",
-            text="Usage: /thread attach <thread-id> or /thread read",
+            text="Usage: /thread attach <thread-id-or-name> or /thread read",
         )
 
     def _handle_new(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -158,8 +284,10 @@ class CommandRouter:
 
     def _handle_model(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="models.list", text="")
         if len(command.args) != 1:
-            return CommandResponse(action="settings.model.invalid", text="Usage: /model <name|default>")
+            return CommandResponse(action="settings.model.invalid", text="Usage: /model [model-id]")
         if command.args[0] == "default":
             return CommandResponse(
                 action="settings.model",
@@ -175,6 +303,25 @@ class CommandRouter:
     def _handle_models(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id, command
         return CommandResponse(action="models.list", text="")
+
+    def _handle_permission(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="settings.permission.read", text="")
+        if len(command.args) != 1:
+            return CommandResponse(action="settings.permission.invalid", text="Usage: /permission [mode]")
+        mode = command.args[0].lower()
+        edits = _PERMISSION_PRESETS.get(mode)
+        if edits is None:
+            return CommandResponse(
+                action="settings.permission.invalid",
+                text="Usage: /permission [default|read-only|full-access]",
+            )
+        return CommandResponse(
+            action="settings.permission.write",
+            text=f"Permission mode set to {mode}.",
+            payload={"mode": mode, "edits": edits},
+        )
 
     def _handle_config(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id
@@ -325,38 +472,32 @@ class CommandRouter:
             action="help",
             text="\n".join(
                 [
-                    "IMCodex Commands",
+                    "Core Commands",
                     "",
-                    "Thread",
                     "/cwd <path>",
-                    "/status",
-                    "/new",
-                    "/stop",
+                    "Set the current working directory.",
+                    "Use /cwd to view it, or /cwd playground to use a default folder.",
+                    "",
                     "/threads",
-                    "/thread attach <thread-id>",
-                    "/thread read",
+                    "Browse and switch threads.",
+                    "After opening the list, use /next, /prev, /pick <n>, or /exit.",
                     "",
-                    "Model & Config",
-                    "/model <name|default>",
-                    "/models",
-                    "/config read [key]",
-                    "/config write <key> <json-value>",
-                    "/config batch <json>",
+                    "/new",
+                    "Start a new thread in the current CWD.",
                     "",
-                    "Requests",
-                    "/requests",
-                    "/approve [request-id-or-prefix]",
-                    "/deny [request-id-or-prefix]",
-                    "/cancel [request-id-or-prefix]",
-                    "/answer [request-id-or-prefix] key=value ...",
+                    "/status",
+                    "Show the current CWD, thread, run state, model, permissions, and bridge visibility.",
                     "",
-                    "View",
-                    "/view minimal|standard|verbose",
-                    "/show commentary|toolcalls|system",
-                    "/hide commentary|toolcalls|system",
+                    "/stop",
+                    "Stop the current running task.",
                     "",
-                    "Advanced",
-                    "/native help",
+                    "/model [model-id]",
+                    "Leave it empty to browse models, or switch directly.",
+                    "Examples: /model gpt-5.4, /model gpt-5.3-codex",
+                    "",
+                    "/permission [mode]",
+                    "Leave it empty to browse permission modes, or switch directly.",
+                    "Examples: /permission default, /permission full-access",
                 ]
             ),
         )
@@ -409,3 +550,11 @@ class CommandRouter:
             key, value = pair.split("=", 1)
             answers[key] = [part for part in value.split(",") if part]
         return answers
+
+    def _default_playground_path(self) -> Path:
+        desktop = Path.home() / "Desktop"
+        if desktop.exists():
+            return desktop / "Codex Playground"
+        if self.store.state_path is not None:
+            return self.store.state_path.parent / "Codex Playground"
+        return Path.cwd() / "Codex Playground"

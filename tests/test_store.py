@@ -117,3 +117,30 @@ def test_verbose_visibility_profile_enables_all_im_toggles(tmp_path) -> None:
     assert binding.show_commentary is True
     assert binding.show_toolcalls is True
     assert binding.show_system is True
+
+
+def test_thread_browser_context_is_runtime_only_and_expires(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    now = {"value": 100.0}
+    store = ConversationStore(clock=lambda: now["value"], state_path=state_path)
+
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1", "thr_2"],
+        page=1,
+        total=2,
+        query="alpha",
+        include_all=False,
+        ttl_s=30.0,
+    )
+
+    context = store.get_thread_browser_context("qq", "conv-1")
+    assert context is not None
+    assert context.thread_ids == ["thr_1", "thr_2"]
+
+    reloaded = ConversationStore(clock=lambda: now["value"], state_path=state_path)
+    assert reloaded.get_thread_browser_context("qq", "conv-1") is None
+
+    now["value"] = 131.0
+    assert store.get_thread_browser_context("qq", "conv-1") is None

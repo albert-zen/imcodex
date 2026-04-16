@@ -22,8 +22,8 @@ Thread
 /status
 /new
 /stop
-/threads
-/thread attach <thread-id>
+/threads [query] [--page N] [--all]
+/thread attach <thread-id-or-name>
 /thread read
 
 Model & Config
@@ -61,8 +61,8 @@ Advanced
 
 ### Thread Query And Binding
 
-- `/threads`
-- `/thread attach <thread-id>`
+- `/threads [query] [--page N] [--all]`
+- `/thread attach <thread-id-or-name>`
 - `/thread read`
 
 ### Model And Native Config

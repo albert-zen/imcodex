@@ -57,7 +57,7 @@ class ScriptedProcess:
         if method is None:
             return
         for message in self.scripts.get(method, []):
-            self.stdout.lines.put_nowait((json.dumps(message) + "\n").encode("utf-8"))
+            self.stdout.lines.put_nowait((json.dumps(self._prepare_scripted_message(payload, message)) + "\n").encode("utf-8"))
 
     def terminate(self) -> None:
         self.returncode = 0
@@ -66,6 +66,14 @@ class ScriptedProcess:
     async def wait(self) -> int:
         self.returncode = 0 if self.returncode is None else self.returncode
         return self.returncode
+
+    def _prepare_scripted_message(self, request: dict, scripted: dict) -> dict:
+        if "method" in scripted:
+            return dict(scripted)
+        response = dict(scripted)
+        if "id" in request:
+            response["id"] = request["id"]
+        return response
 
 
 class CapturingSink:
@@ -153,9 +161,32 @@ async def test_text_turn_flows_from_cwd_to_final_result() -> None:
     )
     await asyncio.sleep(0)
 
-    assert [message.message_type for message in messages] == ["accepted"]
+    assert messages == []
     assert sink.messages[-1].text == "Hello from Codex"
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_text_without_cwd_returns_friendly_onboarding_status() -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="hello there",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Before we start, I need a working folder." in messages[0].text
+    assert "/cwd playground" in messages[0].text
+    assert "/cwd <path>" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -163,6 +194,7 @@ async def test_stale_resume_clears_binding_and_returns_status_message() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "turn/start": [{"id": 2, "error": {"message": "no rollout found for thread id thr_stale"}}],
             "thread/resume": [{"id": 2, "error": {"message": "unknown thread"}}],
         }
     )
@@ -183,7 +215,7 @@ async def test_stale_resume_clears_binding_and_returns_status_message() -> None:
     )
 
     assert messages[0].message_type == "status"
-    assert "Use /new or /thread attach <thread-id>" in messages[0].text
+    assert "Use /threads to pick another thread or /new to start fresh." in messages[0].text
     assert store.get_binding("qq", "conv-1").thread_id is None
 
 
@@ -212,7 +244,7 @@ async def test_in_flight_turn_uses_native_steer() -> None:
         )
     )
 
-    assert messages[0].message_type == "accepted"
+    assert messages == []
     await client.close()
 
 
@@ -255,7 +287,7 @@ async def test_stale_in_flight_turn_falls_back_to_native_turn_start() -> None:
         )
     )
 
-    assert messages[0].message_type == "accepted"
+    assert messages == []
     assert store.get_active_turn("thr_1") == ("turn_2", "inProgress")
     methods = [payload.get("method") for payload in process.inputs if payload.get("method")]
     assert methods.count("turn/steer") == 1
@@ -393,6 +425,38 @@ async def test_status_command_returns_status_message_when_backend_read_fails() -
 
 
 @pytest.mark.asyncio
+async def test_status_command_hides_oversized_upstream_error_details() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [{"id": 2, "error": {"message": "<html>" + ("x" * 500)}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_thread_snapshot(
+        type("Snapshot", (), {"thread_id": "thr_1", "cwd": r"D:\work\alpha", "preview": "seed", "status": "idle", "name": None, "path": None})()
+    )
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "<html>" not in messages[0].text
+    assert "unexpected upstream error" in messages[0].text.lower()
+
+
+@pytest.mark.asyncio
 async def test_stop_swallows_stale_turn_race_and_clears_cached_turn() -> None:
     process = ScriptedProcess(
         {
@@ -468,9 +532,24 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/read": [
+            "thread/list": [
                 {
                     "id": 2,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_attached",
+                                "cwd": r"D:\work\attached",
+                                "preview": "Attached thread",
+                                "status": "idle",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "thread/read": [
+                {
+                    "id": 3,
                     "result": {
                         "thread": {
                             "id": "thr_attached",
@@ -483,7 +562,7 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
             ],
             "thread/start": [
                 {
-                    "id": 3,
+                    "id": 4,
                     "result": {
                         "thread": {
                             "id": "thr_new",
@@ -500,13 +579,22 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
     sink = CapturingSink()
     _client, service = _build_service(store, process, sink)
 
-    attach_messages = await service.handle_inbound(
+    list_messages = await service.handle_inbound(
         InboundMessage(
             channel_id="qq",
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/thread attach thr_attached",
+            text="/threads",
+        )
+    )
+    attach_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/pick 1",
         )
     )
     new_messages = await service.handle_inbound(
@@ -514,11 +602,12 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
             channel_id="qq",
             conversation_id="conv-1",
             user_id="u1",
-            message_id="m2",
+            message_id="m3",
             text="/new",
         )
     )
 
+    assert list_messages[0].message_type == "command_result"
     assert attach_messages[0].message_type == "status"
     assert new_messages[0].message_type == "status"
     assert "Started thread thr_new." in new_messages[0].text
@@ -604,11 +693,12 @@ async def test_models_command_reads_native_model_catalog() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/models",
+            text="/model",
         )
     )
 
     assert messages[0].message_type == "command_result"
+    assert "Current:" in messages[0].text
     assert "GPT-5.4" in messages[0].text
     await client.close()
 
@@ -751,10 +841,11 @@ async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_m
 
     assert messages[0].message_type == "command_result"
     lines = messages[0].text.splitlines()
-    assert lines[1].startswith("* Bound thread")
-    assert "source: appServer" in lines[1]
-    assert "source: vscode" in lines[2]
-    assert "source: cli" in lines[3]
+    assert lines[0] == "Threads (Page 1/1)"
+    assert lines[1].startswith("1. Bound thread")
+    assert "idle" in lines[1]
+    assert lines[2].startswith("2. Matching cwd thread")
+    assert lines[3].startswith("3. Other thread")
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
@@ -807,9 +898,21 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/read": [
+            "config/read": [
                 {
                     "id": 2,
+                    "result": {
+                        "config": {
+                            "model": "gpt-5.4",
+                            "approval_policy": "on-request",
+                            "sandbox_mode": "workspace-write",
+                        }
+                    },
+                }
+            ],
+            "thread/read": [
+                {
+                    "id": 3,
                     "result": {
                         "thread": {
                             "id": "thr_1",
@@ -822,7 +925,7 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
                     },
                 },
                 {
-                    "id": 3,
+                    "id": 4,
                     "result": {
                         "thread": {
                             "id": "thr_1",
@@ -862,7 +965,150 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
         )
     )
 
-    assert "App Server: spawned-stdio" in status_messages[0].text
-    assert "Thread Source: appServer" in status_messages[0].text
+    assert "Status" in status_messages[0].text
+    assert "CWD: D:\\work\\alpha" in status_messages[0].text
+    assert "Model: gpt-5.4" in status_messages[0].text
+    assert "Permissions: Default" in status_messages[0].text
+    assert "Bridge visibility: Standard" in status_messages[0].text
     assert "Source: appServer" in thread_messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_supports_query_filter_and_page_window() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "threads": [
+                            {"id": "thr_1", "cwd": r"D:\work\a", "preview": "Alpha project", "status": "idle", "source": "cli"},
+                            {"id": "thr_2", "cwd": r"D:\work\b", "preview": "Alpha notes", "status": "idle", "source": "cli"},
+                            {"id": "thr_3", "cwd": r"D:\work\c", "preview": "Alpha tests", "status": "idle", "source": "cli"},
+                            {"id": "thr_4", "cwd": r"D:\work\d", "preview": "Alpha docs", "status": "idle", "source": "cli"},
+                            {"id": "thr_5", "cwd": r"D:\work\e", "preview": "Alpha deploy", "status": "idle", "source": "cli"},
+                            {"id": "thr_6", "cwd": r"D:\work\f", "preview": "Alpha release", "status": "idle", "source": "cli"},
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\a")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads alpha --page 2",
+        )
+    )
+
+    lines = messages[0].text.splitlines()
+    assert lines[0] == "Threads (Page 2/2)"
+    assert lines[1].startswith("1. Alpha release")
+    assert "/prev" in lines[-1]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_next_without_thread_browser_context_prompts_user_to_open_threads_first() -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/next",
+        )
+    )
+
+    assert messages[0].message_type == "error"
+    assert "Use /threads first." in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_permission_command_writes_native_permission_preset() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/batchWrite": [{"id": 2, "result": {"status": "updated"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/permission full-access",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
+    assert payloads == [
+        {
+            "edits": [
+                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": "danger-full-access", "mergeStrategy": "replace"},
+            ],
+            "reloadUserConfig": False,
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_permission_without_arg_shows_permission_browser() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "config": {
+                            "approval_policy": "on-request",
+                            "sandbox_mode": "workspace-write",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/permission",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Permission Modes" in messages[0].text
+    assert "Current: Default" in messages[0].text
+    assert "/permission read-only" in messages[0].text
     await client.close()

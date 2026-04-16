@@ -54,7 +54,7 @@ class ScriptedProcess:
         if method is None:
             return
         for message in self.scripts.get(method, []):
-            self.stdout.lines.put_nowait((json.dumps(message) + "\n").encode("utf-8"))
+            self.stdout.lines.put_nowait((json.dumps(self._prepare_scripted_message(payload, message)) + "\n").encode("utf-8"))
 
     def terminate(self) -> None:
         self.returncode = 0
@@ -63,6 +63,14 @@ class ScriptedProcess:
     async def wait(self) -> int:
         self.returncode = 0 if self.returncode is None else self.returncode
         return self.returncode
+
+    def _prepare_scripted_message(self, request: dict, scripted: dict) -> dict:
+        if "method" in scripted:
+            return dict(scripted)
+        response = dict(scripted)
+        if "id" in request:
+            response["id"] = request["id"]
+        return response
 
 
 class ScriptedWebSocket:
@@ -81,13 +89,34 @@ class ScriptedWebSocket:
         if method is None:
             return
         for message in self.scripts.get(method, []):
-            await self.messages.put(json.dumps(message))
+            await self.messages.put(json.dumps(self._prepare_scripted_message(payload, message)))
 
     async def recv(self) -> str:
         return await self.messages.get()
 
     async def close(self) -> None:
         self.closed = True
+
+    def _prepare_scripted_message(self, request: dict, scripted: dict) -> dict:
+        if "method" in scripted:
+            return dict(scripted)
+        response = dict(scripted)
+        if "id" in request:
+            response["id"] = request["id"]
+        return response
+
+
+@pytest.mark.asyncio
+async def test_scripted_helpers_mirror_request_ids_for_responses() -> None:
+    process = ScriptedProcess({"thread/list": [{"id": 999, "result": {"threads": []}}]})
+    process.on_input(json.dumps({"id": 7, "method": "thread/list", "params": {}}))
+    echoed = json.loads((await process.stdout.readline()).decode("utf-8"))
+    assert echoed["id"] == 7
+
+    websocket = ScriptedWebSocket({"thread/list": [{"id": 999, "result": {"threads": []}}]})
+    await websocket.send(json.dumps({"id": 8, "method": "thread/list", "params": {}}))
+    echoed_ws = json.loads(await websocket.recv())
+    assert echoed_ws["id"] == 8
 
 
 @pytest.mark.asyncio
@@ -306,6 +335,23 @@ async def test_default_spawn_does_not_pipe_stderr(monkeypatch) -> None:
     assert captured["kwargs"]["stdin"] == asyncio.subprocess.PIPE
     assert captured["kwargs"]["stdout"] == asyncio.subprocess.PIPE
     assert "stderr" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_default_spawn_uses_larger_stream_limit(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    supervisor = AppServerSupervisor(codex_bin="codex")
+
+    await supervisor._default_spawn("codex", "app-server", "--listen", "stdio://")
+
+    assert captured["kwargs"]["limit"] >= 1024 * 1024
 
 
 @pytest.mark.asyncio

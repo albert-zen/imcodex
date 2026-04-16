@@ -42,6 +42,18 @@ class NativeThreadSnapshot:
 
 
 @dataclass(slots=True)
+class ThreadBrowserContext:
+    channel_id: str
+    conversation_id: str
+    thread_ids: list[str]
+    page: int
+    total: int
+    query: str | None = None
+    include_all: bool = False
+    expires_at: float = 0.0
+
+
+@dataclass(slots=True)
 class InboundMessage:
     channel_id: str
     conversation_id: str
