@@ -14,3 +14,5 @@ Use these files as the source of truth for the current implementation:
   Current runtime and environment configuration.
 - [Command Roadmap](./command-roadmap.md)
   Current `/help` surface, command phases, and native-vs-bridge command boundaries.
+- [Desktop Thread Replay Ordering Issue](./desktop-thread-replay-ordering.md)
+  Why old IM messages can appear near the bottom of a Desktop transcript after thread replay.
