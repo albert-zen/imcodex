@@ -19,6 +19,8 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     supervisor = AppServerSupervisor(
         codex_bin=settings.codex_bin,
         app_server_url=settings.app_server_url,
+        core_mode=settings.core_mode,
+        core_url=settings.core_url,
     )
     client = AppServerClient(
         supervisor=supervisor,
@@ -43,8 +45,27 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         log_level=settings.log_level,
         http_host=settings.http_host,
         http_port=settings.http_port,
-        app_server_url=settings.app_server_url,
+        app_server_url=settings.core_url or settings.app_server_url,
         cwd=Path.cwd(),
+    )
+    observability.write_launch_snapshot(
+        command=["python", "-m", "imcodex"],
+        cwd=Path.cwd(),
+        env={
+            "IMCODEX_DATA_DIR": str(settings.data_dir),
+            "IMCODEX_RUN_DIR": str(settings.run_dir),
+            "IMCODEX_HTTP_HOST": settings.http_host,
+            "IMCODEX_HTTP_PORT": str(settings.http_port),
+            "IMCODEX_CODEX_BIN": settings.codex_bin,
+            "IMCODEX_CORE_MODE": settings.core_mode,
+            "IMCODEX_CORE_URL": settings.core_url or "",
+            "IMCODEX_RESTART_EXECUTOR": settings.restart_executor or "",
+            "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
+            "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",
+            "IMCODEX_QQ_APP_ID": settings.qq_app_id,
+            "IMCODEX_QQ_CLIENT_SECRET": settings.qq_client_secret,
+            "IMCODEX_QQ_API_BASE": settings.qq_api_base,
+        },
     )
     return AppRuntime(
         client=client,

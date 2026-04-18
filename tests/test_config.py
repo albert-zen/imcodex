@@ -33,3 +33,17 @@ def test_settings_reads_optional_debug_api_flag_from_env(monkeypatch, tmp_path) 
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
 
     assert settings.debug_api_enabled is True
+
+
+def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")
+    monkeypatch.setenv("IMCODEX_CORE_URL", "ws://127.0.0.1:9001")
+    monkeypatch.setenv("IMCODEX_RESTART_EXECUTOR", "scripts/restart-imcodex.ps1")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.core_mode == "dedicated-ws"
+    assert settings.core_url == "ws://127.0.0.1:9001"
+    assert settings.restart_executor == "scripts/restart-imcodex.ps1"

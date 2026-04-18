@@ -50,6 +50,7 @@ class ObservabilityRuntime:
         self.paths: ObservabilityPaths | None = None
         self.event_writer: EventWriter | None = None
         self.health_writer: HealthWriter | None = None
+        self._pending_launch_snapshot: dict[str, Any] | None = None
 
     def start(self) -> None:
         started_at = self.clock()
@@ -80,6 +81,8 @@ class ObservabilityRuntime:
         )
         self.event_writer = EventWriter(paths=self.paths, context=self.context, clock=self.clock)
         self.health_writer = HealthWriter(paths=self.paths, context=self.context, clock=self.clock)
+        if self._pending_launch_snapshot is not None:
+            self._persist_launch_snapshot(self._pending_launch_snapshot)
         self._prune_archived_runs()
         set_active_runtime(self)
 
@@ -146,6 +149,26 @@ class ObservabilityRuntime:
         payload = json.dumps(self.context.to_dict(), ensure_ascii=True, indent=2)
         self.paths.instance_metadata_path.write_text(payload + "\n", encoding="utf-8")
         self.paths.current_metadata_path.write_text(payload + "\n", encoding="utf-8")
+
+    def write_launch_snapshot(self, *, command: list[str], cwd: Path, env: dict[str, str]) -> None:
+        payload = {
+            "command": command,
+            "cwd": str(cwd),
+            "env": env,
+            "pid": self.pid_provider(),
+            "port": self.http_port,
+        }
+        if self.paths is None:
+            self._pending_launch_snapshot = payload
+            return
+        self._persist_launch_snapshot(payload)
+
+    def _persist_launch_snapshot(self, payload: dict[str, Any]) -> None:
+        assert self.paths is not None
+        serialized = json.dumps(payload, ensure_ascii=True, indent=2)
+        self.paths.launch_path.write_text(serialized + "\n", encoding="utf-8")
+        self.paths.current_launch_path.write_text(serialized + "\n", encoding="utf-8")
+        self._pending_launch_snapshot = payload
 
     def _prune_archived_runs(self) -> None:
         assert self.paths is not None

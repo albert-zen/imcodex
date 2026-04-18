@@ -19,6 +19,8 @@ STDIO_STREAM_LIMIT = 1024 * 1024
 class AppServerSupervisor:
     codex_bin: str = "codex"
     app_server_url: str | None = None
+    core_mode: str = "auto"
+    core_url: str | None = None
     spawn_process: SpawnProcess | None = None
     websocket_factory: ConnectWebSocket | None = None
     shared_app_server_url: str = "ws://127.0.0.1:8765"
@@ -37,6 +39,8 @@ class AppServerSupervisor:
         return self._connection_mode
 
     async def connect_shared(self) -> Any | None:
+        if self.core_mode == "spawned-stdio":
+            return None
         connect = self.websocket_factory or websockets.connect
         for url in self._shared_candidates():
             try:
@@ -48,6 +52,10 @@ class AppServerSupervisor:
             self._connection_mode = "shared-ws"
             return connection
         return None
+
+    @property
+    def allow_spawn_fallback(self) -> bool:
+        return self.core_mode in {"spawned-stdio", "auto"}
 
     async def start(self) -> Any:
         if self._process is not None and getattr(self._process, "returncode", None) is None:
@@ -104,6 +112,12 @@ class AppServerSupervisor:
         return command
 
     def _shared_candidates(self) -> list[str]:
-        if self.app_server_url:
-            return [self.app_server_url]
-        return [self.shared_app_server_url]
+        if self.core_mode == "dedicated-ws":
+            return [self.core_url or self.app_server_url or self.shared_app_server_url]
+        if self.core_mode == "shared-ws":
+            return [self.app_server_url or self.core_url or self.shared_app_server_url]
+        if self.core_mode == "auto":
+            if self.core_url or self.app_server_url:
+                return [self.core_url or self.app_server_url or self.shared_app_server_url]
+            return [self.shared_app_server_url]
+        return []

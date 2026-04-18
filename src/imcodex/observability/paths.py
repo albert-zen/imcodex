@@ -18,6 +18,8 @@ class ObservabilityPaths:
     current_events_path: Path
     health_path: Path
     current_health_path: Path
+    launch_path: Path
+    current_launch_path: Path
 
     @classmethod
     def build(cls, run_root: Path, instance_id: str) -> "ObservabilityPaths":
@@ -37,4 +39,6 @@ class ObservabilityPaths:
             current_events_path=current_dir / "events.jsonl",
             health_path=instance_dir / "health.json",
             current_health_path=current_dir / "health.json",
+            launch_path=instance_dir / "launch.json",
+            current_launch_path=current_dir / "launch.json",
         )
