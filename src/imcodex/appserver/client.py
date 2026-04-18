@@ -7,6 +7,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from ..observability.runtime import emit_event, mark_appserver_health
+
 
 JsonDict = dict[str, Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
@@ -277,14 +279,31 @@ class AppServerClient:
         if self._transport is not None and self._transport.is_closed():
             await self._reset_connection()
         if self._transport is None:
+            emit_event(
+                component="appserver.client",
+                event="appserver.connect.started",
+                message="Connecting to app-server",
+            )
             websocket = await self._supervisor.connect_shared()
             if websocket is not None:
                 self._transport = WebSocketAppServerTransport(websocket)
                 self.connection_mode = "shared-ws"
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.connect.shared_ws_succeeded",
+                    message="Connected to shared websocket app-server",
+                )
+                mark_appserver_health(connected=True, mode="shared-ws")
             else:
                 process = await self._supervisor.start()
                 self._transport = StdioAppServerTransport(process)
                 self.connection_mode = "spawned-stdio"
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.connect.spawn_stdio_succeeded",
+                    message="Connected to spawned stdio app-server",
+                )
+                mark_appserver_health(connected=True, mode="spawned-stdio")
             self._listener_task = asyncio.create_task(self._receive_loop())
             self.initialized = False
 
@@ -389,6 +408,12 @@ class AppServerClient:
         self.initialized = False
         self.connection_mode = "disconnected"
         await self._supervisor.stop()
+        emit_event(
+            component="appserver.client",
+            event="appserver.connection.closed",
+            message="App-server connection closed",
+        )
+        mark_appserver_health(connected=False, mode="disconnected")
 
     def _normalize_thread_params(self, payload: JsonDict) -> JsonDict:
         mappings = {

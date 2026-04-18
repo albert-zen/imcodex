@@ -551,6 +551,46 @@ async def test_client_uses_explicit_websocket_app_server_before_spawning() -> No
 
 
 @pytest.mark.asyncio
+async def test_client_emits_observability_events_for_shared_websocket_connection(monkeypatch) -> None:
+    observed_events: list[dict] = []
+    observed_health: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    def capture_health(**payload) -> None:
+        observed_health.append(payload)
+
+    monkeypatch.setattr("imcodex.appserver.client.emit_event", capture_event)
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", capture_health)
+
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        app_server_url="ws://127.0.0.1:9999",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.list_threads()
+
+    assert [event["event"] for event in observed_events] == [
+        "appserver.connect.started",
+        "appserver.connect.shared_ws_succeeded",
+    ]
+    assert observed_health[-1] == {"connected": True, "mode": "shared-ws"}
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_client_probes_default_websocket_app_server_before_spawning() -> None:
     websocket = ScriptedWebSocket(
         {

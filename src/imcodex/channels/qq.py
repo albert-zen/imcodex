@@ -13,6 +13,7 @@ import websockets
 
 from .base import BaseChannelAdapter
 from ..models import InboundMessage, OutboundMessage
+from ..observability.runtime import emit_event, mark_channel_health
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,12 @@ class QQChannelAdapter(BaseChannelAdapter):
         while not self._stop_event.is_set():
             try:
                 logger.info("QQ adapter connecting via %s", self.api_base)
+                emit_event(
+                    component="channels.qq",
+                    event="qq.gateway.connecting",
+                    message="QQ adapter connecting to gateway",
+                    data={"api_base": self.api_base},
+                )
                 token = await self._get_access_token()
                 gateway = await self._get_gateway_url(token)
                 await self._run_session(gateway, token)
@@ -211,10 +218,23 @@ class QQChannelAdapter(BaseChannelAdapter):
                         if event_type == "READY":
                             self._session_id = data.get("session_id")
                             logger.info("QQ gateway ready session_id=%s", self._session_id)
+                            emit_event(
+                                component="channels.qq",
+                                event="qq.gateway.ready",
+                                message="QQ gateway ready",
+                                data={"session_id": self._session_id},
+                            )
+                            mark_channel_health("qq", connected=True, session_id=self._session_id)
                             self._ready_event.set()
                             continue
                         if event_type == "RESUMED":
                             logger.info("QQ gateway resumed")
+                            emit_event(
+                                component="channels.qq",
+                                event="qq.gateway.resumed",
+                                message="QQ gateway resumed",
+                            )
+                            mark_channel_health("qq", connected=True, session_id=self._session_id)
                             self._ready_event.set()
                             continue
                         if event_type in SUPPORTED_EVENTS:
