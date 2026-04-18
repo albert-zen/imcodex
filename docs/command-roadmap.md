@@ -34,7 +34,6 @@ Model & Config
 /config batch <json>
 
 Requests
-/requests
 /approve [request-id-or-prefix]
 /deny [request-id-or-prefix]
 /cancel [request-id-or-prefix]
@@ -75,7 +74,6 @@ Advanced
 
 ### Pending Request Round-Trip
 
-- `/requests`
 - `/approve`
 - `/deny`
 - `/cancel`
@@ -131,7 +129,6 @@ Phase-one documentation should treat these as advanced commands:
 - `/native call <method> <json>`
 - `/native respond <request-id-or-prefix> <json>`
 - `/native error <request-id-or-prefix> <code> <message> [data-json]`
-- `/native requests`
 - `/native events [filters...]`
 
 ## Delivery Order

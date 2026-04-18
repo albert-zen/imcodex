@@ -219,7 +219,6 @@ Primary commands:
 - `/thread read`
 - `/new`
 - `/stop`
-- `/requests`
 - `/approve [request-id-or-prefix]`
 - `/deny [request-id-or-prefix]`
 - `/cancel [request-id-or-prefix]`
@@ -265,8 +264,9 @@ If IM usability requires a compact handle, it may exist only as a presentation a
 
 Preferred interaction model:
 
-- if exactly one request is pending, `/approve` and `/deny` can omit an id
-- if multiple requests are pending, the user can target a native request id or a short prefix derived from it
+- `/approve`, `/deny`, and `/cancel` without an id act on all pending approvals in the current conversation
+- when multiple approvals are pending, the user may target a native request id or a short prefix derived from it
+- a normal text message while approvals are pending should cancel them before continuing with the new input
 
 ## Message Pump
 

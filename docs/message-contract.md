@@ -53,12 +53,14 @@ Important notes:
 Native Codex `requestId` is authoritative.
 
 - Outbound approval/question messages use `request_id`, not `ticket_id`
-- The bridge may show a short request handle for readability, but that handle
-  is not the source of truth
+- The bridge may show a short request-id prefix for readability, but that
+  prefix is not the source of truth
 - `/approve`, `/deny`, `/cancel`, and `/answer` target the native request id
   or a unique prefix
-- If exactly one matching pending request exists, `/approve`, `/deny`, or
-  `/cancel` may omit the id
+- `/approve`, `/deny`, and `/cancel` without an id act on all matching pending
+  approvals in the current conversation
+- A normal text message while approvals are pending cancels the current pending
+  approvals before continuing with the new user input
 
 ## 4. Slash Command Contract
 
@@ -78,7 +80,8 @@ Examples:
 - `/threads` -> `command_result`
 - `/new` -> `status`
 - `/thread attach <thread-id>` -> `status`
-- `/approve <request-id-or-prefix>` -> `command_result`
+- `/approve` -> `status`
+- `/approve <request-id-or-prefix>` -> `status`
 
 ## 5. Transport Expectations
 
