@@ -4,6 +4,7 @@ __pycache__/
 .imcodex/
 .imcodex-data/
 .imcodex-run/
+.codex/
 _codex_schema/
 codex-upstream/
 logs/
