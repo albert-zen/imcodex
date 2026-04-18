@@ -18,3 +18,9 @@ Use these files as the source of truth for the current implementation:
   Why old IM messages can appear near the bottom of a Desktop transcript after thread replay.
 - [Logging And Observability](./logging-observability.md)
   Per-instance runtime archives, structured event logs, and health snapshots.
+- [Debug Harness](./debug-harness.md)
+  Start isolated instances, send synthetic messages, inspect runtime state, and run built-in repro scenarios.
+- [Debug Finding: Restart Gap](./debug-restart-gap.md)
+  Evidence that stopping the bridge leaves a restart gap with no automatic recovery.
+- [Debug Finding: Approval Stall](./debug-approval-stall.md)
+  Evidence that stale approval routing can leave an active turn stuck in progress.
