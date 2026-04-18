@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..core_manager import DedicatedCoreManager
+from ..ops import BridgeRestartExecutor
 from .client import DebugHarnessClient
 from .inspect import DebugHarnessInspector
 from .manager import DebugInstanceManager
@@ -17,6 +19,8 @@ def run_debug_cli(
     *,
     stdout=None,
     manager: DebugInstanceManager | None = None,
+    core_manager: DedicatedCoreManager | None = None,
+    executor: BridgeRestartExecutor | None = None,
     client: DebugHarnessClient | None = None,
     inspector: DebugHarnessInspector | None = None,
     scenarios=None,
@@ -26,12 +30,21 @@ def run_debug_cli(
     args = parser.parse_args(argv)
     root = Path(args.lab_root)
     manager = manager or DebugInstanceManager(root=root, repo_root=Path.cwd())
+    core_manager = core_manager or DedicatedCoreManager(root=root / "core", repo_root=Path.cwd())
+    executor = executor or BridgeRestartExecutor()
     client = client or DebugHarnessClient()
     inspector = inspector or DebugHarnessInspector()
     scenarios = scenarios or scenario_module
 
     if args.command == "start":
-        manifest = manager.start(port=args.port, purpose=args.purpose, qq_enabled=args.qq, app_server_url=args.app_server_url)
+        manifest = manager.start(
+            port=args.port,
+            purpose=args.purpose,
+            qq_enabled=args.qq,
+            app_server_url=args.app_server_url,
+            core_mode=args.core_mode,
+            core_url=args.core_url,
+        )
         result: dict[str, Any] = {"manifest": manifest.to_dict()}
         if args.wait:
             result["health"] = manager.wait_until_healthy(manifest.run_id, timeout_s=args.timeout)
@@ -97,6 +110,30 @@ def run_debug_cli(
             )
             _write(stdout, result)
             return 0
+        if args.scenario_name == "bridge-restart-live":
+            result = scenarios.run_bridge_restart_live_scenario(
+                manager=manager,
+                core_manager=core_manager,
+                executor=executor,
+                client=client,
+                inspector=inspector,
+                bridge_port=args.port,
+                core_port=args.core_port,
+            )
+            _write(stdout, result)
+            return 0
+        if args.scenario_name == "approval-resume-live":
+            result = scenarios.run_approval_resume_live_scenario(
+                manager=manager,
+                core_manager=core_manager,
+                executor=executor,
+                client=client,
+                inspector=inspector,
+                bridge_port=args.port,
+                core_port=args.core_port,
+            )
+            _write(stdout, result)
+            return 0
         raise SystemExit(f"unsupported scenario: {args.scenario_name}")
     raise SystemExit(f"unsupported command: {args.command}")
 
@@ -111,6 +148,8 @@ def _build_parser() -> argparse.ArgumentParser:
     start.add_argument("--purpose")
     start.add_argument("--qq", action="store_true")
     start.add_argument("--app-server-url")
+    start.add_argument("--core-mode")
+    start.add_argument("--core-url")
     start.add_argument("--wait", action="store_true")
     start.add_argument("--timeout", type=float, default=30.0)
 
@@ -141,8 +180,18 @@ def _build_parser() -> argparse.ArgumentParser:
     events.add_argument("--filter-prefix")
 
     scenario = subparsers.add_parser("scenario")
-    scenario.add_argument("scenario_name", choices=["restart-gap", "approval-stall", "approval-live"])
+    scenario.add_argument(
+        "scenario_name",
+        choices=[
+            "restart-gap",
+            "approval-stall",
+            "approval-live",
+            "bridge-restart-live",
+            "approval-resume-live",
+        ],
+    )
     scenario.add_argument("--port", type=int, required=True)
+    scenario.add_argument("--core-port", type=int, default=8765)
     return parser
 
 

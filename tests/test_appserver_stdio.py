@@ -676,3 +676,33 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
     assert client.connection_mode == "spawned-stdio"
     assert client.initialized is True
     assert observed_health[-1] == {"connected": True, "mode": "spawned-stdio"}
+
+
+@pytest.mark.asyncio
+async def test_dedicated_ws_mode_does_not_fallback_to_spawned_stdio() -> None:
+    spawned = False
+
+    async def websocket_factory(_url: str):
+        raise OSError("connection refused")
+
+    async def unexpected_spawn(*args):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("dedicated core mode must not spawn stdio fallback")
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=websocket_factory,
+        spawn_process=unexpected_spawn,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    with pytest.raises(AppServerError, match="dedicated app-server"):
+        await client.list_threads()
+
+    assert spawned is False

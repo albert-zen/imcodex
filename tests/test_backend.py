@@ -101,10 +101,27 @@ class InterruptStaleClient:
     def __init__(self, message: str) -> None:
         self.message = message
         self.interrupt_calls: list[dict] = []
+        self.last_connection_mode = "spawned-stdio"
 
     async def interrupt_turn(self, thread_id: str, turn_id: str):
         self.interrupt_calls.append({"thread_id": thread_id, "turn_id": turn_id})
         raise AppServerError(self.message)
+
+
+class RehydrateClient:
+    def __init__(self) -> None:
+        self.resume_calls: list[dict] = []
+
+    async def resume_thread(self, **params):
+        self.resume_calls.append(params)
+        return {
+            "thread": {
+                "id": params["thread_id"],
+                "cwd": r"D:\desktop\imcodex",
+                "preview": "Recovered thread",
+                "status": "idle",
+            }
+        }
 
 
 @pytest.mark.asyncio
@@ -228,3 +245,21 @@ async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(messag
     assert interrupted is False
     assert store.get_active_turn("thr_old") is None
     assert client.interrupt_calls == [{"thread_id": "thr_old", "turn_id": "turn_1"}]
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    store.bind_thread_with_cwd("debug", "conv-2", "thr_2", r"D:\desktop\imcodex")
+    client = RehydrateClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.rehydrate_bound_threads()
+
+    assert client.resume_calls == [
+        {"thread_id": "thr_1", "service_name": "imcodex-test", "personality": "friendly"},
+        {"thread_id": "thr_2", "service_name": "imcodex-test", "personality": "friendly"},
+    ]
+    assert store.get_thread_snapshot("thr_1").preview == "Recovered thread"
+    assert store.get_thread_snapshot("thr_2").preview == "Recovered thread"

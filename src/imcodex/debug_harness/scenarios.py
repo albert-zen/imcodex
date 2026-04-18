@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from ..core_manager import DedicatedCoreManager
+from ..ops import BridgeRestartExecutor
 from .client import DebugHarnessClient
 from .inspect import DebugHarnessInspector
 from .manager import DebugInstanceManager
@@ -176,3 +180,159 @@ def run_approval_live_scenario(
         }
     finally:
         manager.stop(manifest.run_id)
+
+
+def run_bridge_restart_live_scenario(
+    *,
+    manager: DebugInstanceManager,
+    core_manager: DedicatedCoreManager,
+    executor: BridgeRestartExecutor,
+    client: DebugHarnessClient,
+    inspector: DebugHarnessInspector,
+    bridge_port: int = 8017,
+    core_port: int = 8765,
+) -> dict:
+    core_manifest = core_manager.start(port=core_port)
+    core_manager.wait_until_ready(port=core_port)
+    manifest = manager.start(
+        port=bridge_port,
+        purpose="bridge-restart-live",
+        qq_enabled=False,
+        app_server_url=None,
+        core_mode="dedicated-ws",
+        core_url=core_manifest.url,
+    )
+    manager.wait_until_healthy(manifest.run_id)
+    try:
+        client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-bridge-restart",
+            user_id="debug-user",
+            text=f"/cwd {manifest.cwd}",
+        )
+        client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-bridge-restart",
+            user_id="debug-user",
+            text="/new",
+        )
+        before_restart = client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-bridge-restart",
+            user_id="debug-user",
+            text="hello before restart",
+        )
+        launch_snapshot_path = Path(manifest.run_dir) / "current" / "launch.json"
+        restart = executor.restart(launch_snapshot_path, timeout_s=30.0)
+        after_restart_send = client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-bridge-restart",
+            user_id="debug-user",
+            text="hello after restart",
+        )
+        after_restart = inspector.wait_for_active_turn(
+            manifest,
+            "debug",
+            "conv-bridge-restart",
+            timeout_s=30.0,
+            interval_s=0.5,
+        )
+        return {
+            "core": core_manifest.to_dict(),
+            "manifest": manifest.to_dict(),
+            "before_restart": before_restart,
+            "restart": restart,
+            "after_restart_send": after_restart_send,
+            "after_restart": after_restart,
+        }
+    finally:
+        manager.stop(manifest.run_id)
+        core_manager.stop()
+
+
+def run_approval_resume_live_scenario(
+    *,
+    manager: DebugInstanceManager,
+    core_manager: DedicatedCoreManager,
+    executor: BridgeRestartExecutor,
+    client: DebugHarnessClient,
+    inspector: DebugHarnessInspector,
+    bridge_port: int = 8018,
+    core_port: int = 8765,
+) -> dict:
+    core_manifest = core_manager.start(port=core_port)
+    core_manager.wait_until_ready(port=core_port)
+    manifest = manager.start(
+        port=bridge_port,
+        purpose="approval-resume-live",
+        qq_enabled=False,
+        app_server_url=None,
+        core_mode="dedicated-ws",
+        core_url=core_manifest.url,
+    )
+    manager.wait_until_healthy(manifest.run_id)
+    try:
+        client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-approval-resume",
+            user_id="debug-user",
+            text=f"/cwd {manifest.cwd}",
+        )
+        client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-approval-resume",
+            user_id="debug-user",
+            text="/new",
+        )
+        prompt = (
+            "Run the PowerShell command `Get-Date` in the current workspace and tell me the result. "
+            "Use the available tools if needed."
+        )
+        initial_response = client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-approval-resume",
+            user_id="debug-user",
+            text=prompt,
+        )
+        pending = inspector.wait_for_pending_requests(
+            manifest,
+            "debug",
+            "conv-approval-resume",
+            timeout_s=60.0,
+            interval_s=0.5,
+        )
+        launch_snapshot_path = Path(manifest.run_dir) / "current" / "launch.json"
+        restart = executor.restart(launch_snapshot_path, timeout_s=30.0)
+        approve_response = client.send(
+            manifest=manifest,
+            channel_id="debug",
+            conversation_id="conv-approval-resume",
+            user_id="debug-user",
+            text="/approve",
+        )
+        after = inspector.wait_until_no_pending_requests(
+            manifest,
+            "debug",
+            "conv-approval-resume",
+            timeout_s=30.0,
+            interval_s=0.5,
+        )
+        return {
+            "core": core_manifest.to_dict(),
+            "manifest": manifest.to_dict(),
+            "initial_response": initial_response,
+            "pending": pending,
+            "restart": restart,
+            "approve_response": approve_response,
+            "after": after,
+        }
+    finally:
+        manager.stop(manifest.run_id)
+        core_manager.stop()

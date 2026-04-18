@@ -5,6 +5,7 @@ import json
 
 from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
 from ..models import InboundMessage, OutboundMessage
+from ..observability.runtime import emit_event
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
@@ -27,6 +28,7 @@ class BridgeService:
         self.command_router = command_router
         self.projector = projector
         self.outbound_sink = outbound_sink
+        self._rehydration_lock = asyncio.Lock()
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         if message.text.startswith("/"):
@@ -237,6 +239,8 @@ class BridgeService:
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
+        if self.backend.prefers_native_recovery():
+            return
         seen_turns: set[tuple[str, str]] = set()
         for route in routes:
             if not route.thread_id or not route.turn_id:
@@ -249,6 +253,18 @@ class BridgeService:
                 await self.backend.interrupt_turn(route.thread_id, route.turn_id)
             except AppServerError:
                 continue
+
+    async def handle_connection_ready(self, connection_epoch: int) -> None:
+        emit_event(
+            component="bridge",
+            event="bridge.connection.ready",
+            message="Bridge app-server connection is ready",
+            data={"connection_epoch": connection_epoch},
+        )
+        if not self.backend.prefers_native_recovery():
+            return
+        async with self._rehydration_lock:
+            await self.backend.rehydrate_bound_threads()
 
     async def _emit(self, message: OutboundMessage | None) -> list[OutboundMessage]:
         if message is None:

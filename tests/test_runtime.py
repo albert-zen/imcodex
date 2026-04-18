@@ -21,8 +21,11 @@ class _FakeClient:
     def add_server_request_handler(self, _handler) -> None:
         self.calls.append("client.add_server_request_handler")
 
-    async def connect(self) -> None:
-        self.calls.append("client.connect")
+    def add_connection_ready_handler(self, _handler) -> None:
+        self.calls.append("client.add_connection_ready_handler")
+
+    async def initialize(self) -> None:
+        self.calls.append("client.initialize")
 
     async def close(self) -> None:
         self.calls.append("client.close")
@@ -33,6 +36,9 @@ class _FakeService:
         return None
 
     async def handle_server_request(self, *_args, **_kwargs) -> None:
+        return None
+
+    async def handle_connection_ready(self, *_args, **_kwargs) -> None:
         return None
 
 
@@ -65,8 +71,8 @@ class _FakeObservability:
 
 
 class _FailingClient(_FakeClient):
-    async def connect(self) -> None:
-        self.calls.append("client.connect")
+    async def initialize(self) -> None:
+        self.calls.append("client.initialize")
         raise RuntimeError("boom")
 
 
@@ -88,7 +94,8 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
         "obs.event:bridge:bridge.starting",
         "client.add_notification_handler",
         "client.add_server_request_handler",
-        "client.connect",
+        "client.add_connection_ready_handler",
+        "client.initialize",
         "channel.start",
         "obs.health",
         "obs.event:bridge:bridge.started",
@@ -107,6 +114,9 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         run_dir=tmp_path / ".imcodex-run",
         codex_bin="codex",
         app_server_url=None,
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:8765",
+        restart_executor=None,
         debug_api_enabled=False,
         log_level="INFO",
         http_host="127.0.0.1",
@@ -124,6 +134,44 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.observability is not None
     assert runtime.observability.run_root == settings.run_dir
     assert runtime.observability.service_name == settings.service_name
+    assert runtime.client._supervisor.core_mode == "dedicated-ws"
+    assert runtime.client._supervisor.core_url == "ws://127.0.0.1:8765"
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / ".imcodex",
+        run_dir=tmp_path / ".imcodex-run",
+        codex_bin="codex",
+        app_server_url=None,
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:8765",
+        restart_executor="python -m imcodex ops restart",
+        debug_api_enabled=False,
+        log_level="INFO",
+        http_host="127.0.0.1",
+        http_port=8000,
+        outbound_url=None,
+        service_name="imcodex",
+        qq_enabled=False,
+        qq_app_id="",
+        qq_client_secret="",
+        qq_api_base="https://api.sgroup.qq.com",
+    )
+    runtime = build_runtime(settings)
+    runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
+    runtime.client.close = lambda: __import__("asyncio").sleep(0)
+
+    await runtime.start()
+    launch = json.loads(runtime.observability.paths.current_launch_path.read_text(encoding="utf-8"))
+    await runtime.stop()
+
+    assert launch["command"] == ["python", "-m", "imcodex"]
+    assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
+    assert launch["env"]["IMCODEX_CORE_MODE"] == "dedicated-ws"
+    assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
+    assert launch["port"] == 8000
 
 
 @pytest.mark.asyncio
@@ -188,7 +236,8 @@ async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup
         "obs.event:bridge:bridge.starting",
         "client.add_notification_handler",
         "client.add_server_request_handler",
-        "client.connect",
+        "client.add_connection_ready_handler",
+        "client.initialize",
         "obs.health",
         "obs.event:bridge:bridge.start_failed",
         "obs.stop",

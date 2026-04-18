@@ -14,13 +14,24 @@ class _StubManager:
         self.started: list[dict] = []
         self.stopped: list[str] = []
 
-    def start(self, *, port: int, purpose: str | None, qq_enabled: bool, app_server_url: str | None):
+    def start(
+        self,
+        *,
+        port: int,
+        purpose: str | None,
+        qq_enabled: bool,
+        app_server_url: str | None,
+        core_mode: str | None = None,
+        core_url: str | None = None,
+    ):
         self.started.append(
             {
                 "port": port,
                 "purpose": purpose,
                 "qq_enabled": qq_enabled,
                 "app_server_url": app_server_url,
+                "core_mode": core_mode,
+                "core_url": core_url,
             }
         )
         return self.manifest
@@ -82,6 +93,14 @@ class _StubScenarios:
         self.calls.append(("approval-live", payload))
         return {"scenario": "approval-live", "result": "ok"}
 
+    def run_bridge_restart_live_scenario(self, **payload):
+        self.calls.append(("bridge-restart-live", payload))
+        return {"scenario": "bridge-restart-live", "result": "ok"}
+
+    def run_approval_resume_live_scenario(self, **payload):
+        self.calls.append(("approval-resume-live", payload))
+        return {"scenario": "approval-resume-live", "result": "ok"}
+
 
 def _manifest() -> DebugRunManifest:
     return DebugRunManifest(
@@ -114,6 +133,36 @@ def test_cli_start_prints_manifest_and_health() -> None:
     assert exit_code == 0
     assert body["manifest"]["run_id"] == "debug-1"
     assert body["health"]["status"] == "healthy"
+
+
+def test_cli_start_passes_through_core_mode_and_url() -> None:
+    output = io.StringIO()
+    manifest = _manifest()
+    manager = _StubManager(manifest)
+
+    exit_code = run_debug_cli(
+        [
+            "--lab-root",
+            r"D:\desktop\imcodex-debug-lab",
+            "start",
+            "--port",
+            "8011",
+            "--core-mode",
+            "dedicated-ws",
+            "--core-url",
+            "ws://127.0.0.1:8876",
+        ],
+        stdout=output,
+        manager=manager,
+        client=_StubClient(),
+        inspector=_StubInspector(),
+    )
+
+    body = json.loads(output.getvalue())
+    assert exit_code == 0
+    assert body["manifest"]["run_id"] == "debug-1"
+    assert manager.started[0]["core_mode"] == "dedicated-ws"
+    assert manager.started[0]["core_url"] == "ws://127.0.0.1:8876"
 
 
 def test_cli_send_uses_thread_target_when_requested() -> None:
@@ -243,3 +292,71 @@ def test_cli_scenario_approval_live_wires_dependencies() -> None:
     assert scenarios.calls[0][1]["client"] is client
     assert scenarios.calls[0][1]["inspector"] is inspector
     assert scenarios.calls[0][1]["port"] == 8016
+
+
+def test_cli_scenario_bridge_restart_live_wires_dependencies() -> None:
+    output = io.StringIO()
+    manifest = _manifest()
+    manager = _StubManager(manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+    scenarios = _StubScenarios()
+
+    exit_code = run_debug_cli(
+        [
+            "--lab-root",
+            r"D:\desktop\imcodex-debug-lab",
+            "scenario",
+            "bridge-restart-live",
+            "--port",
+            "8017",
+            "--core-port",
+            "8765",
+        ],
+        stdout=output,
+        manager=manager,
+        client=client,
+        inspector=inspector,
+        scenarios=scenarios,
+    )
+
+    body = json.loads(output.getvalue())
+    assert exit_code == 0
+    assert body["scenario"] == "bridge-restart-live"
+    assert scenarios.calls[0][0] == "bridge-restart-live"
+    assert scenarios.calls[0][1]["bridge_port"] == 8017
+    assert scenarios.calls[0][1]["core_port"] == 8765
+
+
+def test_cli_scenario_approval_resume_live_wires_dependencies() -> None:
+    output = io.StringIO()
+    manifest = _manifest()
+    manager = _StubManager(manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+    scenarios = _StubScenarios()
+
+    exit_code = run_debug_cli(
+        [
+            "--lab-root",
+            r"D:\desktop\imcodex-debug-lab",
+            "scenario",
+            "approval-resume-live",
+            "--port",
+            "8018",
+            "--core-port",
+            "8765",
+        ],
+        stdout=output,
+        manager=manager,
+        client=client,
+        inspector=inspector,
+        scenarios=scenarios,
+    )
+
+    body = json.loads(output.getvalue())
+    assert exit_code == 0
+    assert body["scenario"] == "approval-resume-live"
+    assert scenarios.calls[0][0] == "approval-resume-live"
+    assert scenarios.calls[0][1]["bridge_port"] == 8018
+    assert scenarios.calls[0][1]["core_port"] == 8765

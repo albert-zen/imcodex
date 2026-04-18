@@ -22,7 +22,11 @@ class AppRuntime:
             reset_hook = getattr(self.client, "add_connection_reset_handler", None)
             if callable(reset_hook):
                 reset_hook(self.service.handle_connection_reset)
-            await self.client.connect()
+            ready_hook = getattr(self.client, "add_connection_ready_handler", None)
+            service_ready = getattr(self.service, "handle_connection_ready", None)
+            if callable(ready_hook) and callable(service_ready):
+                ready_hook(service_ready)
+            await self.client.initialize()
             for channel in self.managed_channels:
                 await channel.start()
         except Exception as exc:

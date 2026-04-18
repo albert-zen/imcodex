@@ -179,3 +179,32 @@ def test_default_launcher_detaches_child_stdio(monkeypatch) -> None:
     assert process.pid == 12345
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
+
+
+def test_start_wires_dedicated_core_env_when_requested(tmp_path: Path) -> None:
+    launched: dict[str, object] = {}
+
+    def launcher(*, command: list[str], cwd: Path, env: dict[str, str]):
+        launched["command"] = command
+        launched["cwd"] = cwd
+        launched["env"] = env
+        return _FakeProcess(pid=61234)
+
+    manager = DebugInstanceManager(
+        root=tmp_path / "lab",
+        repo_root=Path(r"D:\desktop\imcodex"),
+        launcher=launcher,
+        now=lambda: "2026-04-19T10:30:01+08:00",
+    )
+
+    manifest = manager.start(
+        port=8011,
+        purpose="restart-gap",
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:8765",
+    )
+
+    assert manifest.port == 8011
+    env = launched["env"]
+    assert env["IMCODEX_CORE_MODE"] == "dedicated-ws"
+    assert env["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"

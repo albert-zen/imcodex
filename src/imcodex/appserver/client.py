@@ -14,6 +14,7 @@ JsonDict = dict[str, Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
 ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
+ConnectionReadyHandler = Callable[[int], Awaitable[None] | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
 
@@ -134,7 +135,9 @@ class AppServerClient:
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
         self._connection_reset_handlers: list[ConnectionResetHandler] = []
+        self._connection_ready_handlers: list[ConnectionReadyHandler] = []
         self.connection_mode = "disconnected"
+        self.last_connection_mode = "disconnected"
         self.connection_epoch = 0
         self.initialized = False
 
@@ -153,11 +156,18 @@ class AppServerClient:
     def add_connection_reset_handler(self, handler: ConnectionResetHandler) -> None:
         self._connection_reset_handlers.append(handler)
 
+    def add_connection_ready_handler(self, handler: ConnectionReadyHandler) -> None:
+        self._connection_ready_handlers.append(handler)
+
     async def initialize(self) -> JsonDict:
         await self._ensure_connected()
         result = await self._request_without_initialize("initialize", {"clientInfo": self._client_info})
         await self._notify("initialized", {})
         self.initialized = True
+        for handler in list(self._connection_ready_handlers):
+            ready = handler(self.connection_epoch)
+            if inspect.isawaitable(ready):
+                await ready
         return result
 
     async def call(self, method: str, params: JsonDict | None = None) -> JsonDict:
@@ -291,6 +301,9 @@ class AppServerClient:
                 )
                 mark_appserver_health(connected=True, mode="shared-ws")
             else:
+                if not self._supervisor.allow_spawn_fallback:
+                    target = self._supervisor.core_url or self._supervisor.app_server_url or self._supervisor.shared_app_server_url
+                    raise AppServerError(f"dedicated app-server at `{target}` is unavailable")
                 process = await self._supervisor.start()
                 self._transport = StdioAppServerTransport(process)
                 self.connection_mode = "spawned-stdio"
@@ -390,6 +403,8 @@ class AppServerClient:
 
     async def _reset_connection(self, *, notify_handlers: bool = True) -> None:
         reset_epoch = self.connection_epoch
+        if self.connection_mode != "disconnected":
+            self.last_connection_mode = self.connection_mode
         listener_task = self._listener_task
         self._listener_task = None
         if listener_task is not None and listener_task is not asyncio.current_task():

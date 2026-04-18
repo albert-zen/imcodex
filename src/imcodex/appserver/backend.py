@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 
 from ..models import NativeThreadSnapshot
+from ..observability.runtime import emit_event
 from ..store import ConversationStore
 from .client import AppServerError
 
@@ -34,6 +35,9 @@ class CodexBackend:
         self.client = client
         self.store = store
         self.service_name = service_name
+
+    def prefers_native_recovery(self) -> bool:
+        return getattr(self.client, "last_connection_mode", "") == "shared-ws"
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.store.clear_thread_binding(channel_id, conversation_id)
@@ -237,6 +241,75 @@ class CodexBackend:
         self.store.clear_active_turn(thread_id)
         self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
+
+    async def rehydrate_bound_threads(self) -> None:
+        for binding in self.store.iter_bindings():
+            if not binding.thread_id:
+                continue
+            emit_event(
+                component="appserver.backend",
+                event="bridge.thread_rehydrate.started",
+                message="Rehydrating bound thread",
+                data={
+                    "channel_id": binding.channel_id,
+                    "conversation_id": binding.conversation_id,
+                    "thread_id": binding.thread_id,
+                },
+            )
+            try:
+                result = await self.client.resume_thread(
+                    thread_id=binding.thread_id,
+                    service_name=self.service_name,
+                    personality="friendly",
+                )
+            except AppServerError as exc:
+                emit_event(
+                    component="appserver.backend",
+                    event="bridge.thread_rehydrate.failed",
+                    level="WARNING",
+                    message=str(exc),
+                    data={
+                        "channel_id": binding.channel_id,
+                        "conversation_id": binding.conversation_id,
+                        "thread_id": binding.thread_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                if self._is_stale_thread_error(exc):
+                    self.store.clear_thread_binding(binding.channel_id, binding.conversation_id)
+                continue
+            payload = result.get("thread")
+            if not isinstance(payload, dict):
+                emit_event(
+                    component="appserver.backend",
+                    event="bridge.thread_rehydrate.empty",
+                    level="WARNING",
+                    message="Thread resume returned no thread payload",
+                    data={
+                        "channel_id": binding.channel_id,
+                        "conversation_id": binding.conversation_id,
+                        "thread_id": binding.thread_id,
+                    },
+                )
+                continue
+            snapshot = self._remember_snapshot(payload)
+            self.store.bind_thread_with_cwd(
+                binding.channel_id,
+                binding.conversation_id,
+                snapshot.thread_id,
+                snapshot.cwd,
+            )
+            emit_event(
+                component="appserver.backend",
+                event="bridge.thread_rehydrate.succeeded",
+                message="Rehydrated bound thread",
+                data={
+                    "channel_id": binding.channel_id,
+                    "conversation_id": binding.conversation_id,
+                    "thread_id": snapshot.thread_id,
+                    "cwd": snapshot.cwd,
+                },
+            )
 
     async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
         route = self.store.get_pending_request(request_id)

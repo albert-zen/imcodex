@@ -99,6 +99,8 @@ def _build_service(store: ConversationStore, process: ScriptedProcess, sink: Cap
     )
     client.add_notification_handler(service.handle_notification)
     client.add_server_request_handler(service.handle_server_request)
+    client.add_connection_reset_handler(service.handle_connection_reset)
+    client.add_connection_ready_handler(service.handle_connection_ready)
     return client, service
 
 
@@ -411,6 +413,71 @@ async def test_targeted_approve_keeps_other_pending_approvals_active() -> None:
 
 
 @pytest.mark.asyncio
+async def test_connection_ready_rehydrates_bound_thread_and_replays_native_approval() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 91,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "requestId": "native-request-abc",
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "command": "Get-Date",
+                        "cwd": r"D:\work\alpha",
+                        "availableDecisions": ["accept", "cancel"],
+                    },
+                },
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                        }
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    await client.initialize()
+
+    pending = store.list_pending_requests("qq", "conv-1", kind="approval")
+    assert [route.request_id for route in pending] == ["native-request-abc"]
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/approve",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Recorded accept for native-request-abc." in messages[0].text
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") == 91
+    ]
+    assert reply_payloads == [{"id": 91, "result": {"decision": "accept"}}]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_turn() -> None:
     process = ScriptedProcess(
         {
@@ -442,6 +509,37 @@ async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_tur
     assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
     interrupt_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/interrupt"]
     assert interrupt_payloads == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connection_reset_in_shared_ws_mode_evicts_projection_without_interrupting_turn() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    store.upsert_pending_request(
+        request_id="native-request-abcdef",
+        channel_id="qq",
+        conversation_id="conv-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        kind="approval",
+        request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    client.last_connection_mode = "shared-ws"
+
+    await service.handle_connection_reset(1)
+
+    assert store.get_active_turn("thr_1") == ("turn_1", "inProgress")
+    assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
+    interrupt_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/interrupt"]
+    assert interrupt_payloads == []
     await client.close()
 
 

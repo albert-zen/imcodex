@@ -39,6 +39,8 @@ class DebugInstanceManager:
         purpose: str | None = None,
         qq_enabled: bool = False,
         app_server_url: str | None = None,
+        core_mode: str | None = None,
+        core_url: str | None = None,
     ) -> DebugRunManifest:
         run_id = run_id or self._next_run_id()
         paths = DebugHarnessPaths.build(self.root, run_id)
@@ -56,6 +58,10 @@ class DebugInstanceManager:
         )
         if app_server_url is not None:
             env["IMCODEX_APP_SERVER_URL"] = app_server_url
+        if core_mode is not None:
+            env["IMCODEX_CORE_MODE"] = core_mode
+        if core_url is not None:
+            env["IMCODEX_CORE_URL"] = core_url
 
         process = self.launcher(command=["python", "-m", "imcodex"], cwd=self.repo_root, env=env)
         manifest = DebugRunManifest(

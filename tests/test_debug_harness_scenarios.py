@@ -5,23 +5,37 @@ from pathlib import Path
 from imcodex.debug_harness.models import DebugRunManifest
 from imcodex.debug_harness.scenarios import (
     run_approval_live_scenario,
+    run_approval_resume_live_scenario,
+    run_bridge_restart_live_scenario,
     run_approval_stall_scenario,
     run_restart_gap_scenario,
 )
+from imcodex.core_manager import DedicatedCoreManifest
 
 
 class _StubManager:
     def __init__(self, manifest: DebugRunManifest) -> None:
         self.manifest = manifest
         self.started = False
+        self.start_calls: list[dict[str, object]] = []
         self.stopped = False
         self.running = True
 
-    def start(self, *, port: int, purpose: str | None, qq_enabled: bool, app_server_url: str | None):
+    def start(
+        self,
+        *,
+        port: int,
+        purpose: str | None,
+        qq_enabled: bool,
+        app_server_url: str | None,
+        core_mode: str | None = None,
+        core_url: str | None = None,
+    ):
         assert port == self.manifest.port
         assert purpose == self.manifest.purpose
         assert qq_enabled is False
         assert app_server_url is None
+        self.start_calls.append({"core_mode": core_mode, "core_url": core_url})
         self.started = True
         return self.manifest
 
@@ -38,6 +52,34 @@ class _StubManager:
     def is_port_listening(self, port: int) -> bool:
         assert port == self.manifest.port
         return self.running
+
+
+class _StubCoreManager:
+    def __init__(self, manifest: DedicatedCoreManifest) -> None:
+        self.manifest = manifest
+        self.started: list[int] = []
+        self.stopped = False
+
+    def start(self, *, port: int) -> DedicatedCoreManifest:
+        self.started.append(port)
+        return self.manifest
+
+    def wait_until_ready(self, *, port: int, timeout_s: float = 30.0) -> None:
+        assert port == self.manifest.port
+        assert timeout_s > 0
+
+    def stop(self) -> DedicatedCoreManifest:
+        self.stopped = True
+        return self.manifest
+
+
+class _StubExecutor:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def restart(self, launch_snapshot_path, *, timeout_s: float = 30.0):
+        self.calls.append({"launch_snapshot_path": launch_snapshot_path, "timeout_s": timeout_s})
+        return {"pid": 60001, "port": 8017, "health": {"status": "healthy"}}
 
 
 class _StubClient:
@@ -221,3 +263,88 @@ def test_run_approval_live_scenario_waits_for_real_pending_requests() -> None:
         "send",
     ]
     assert client.calls[2][1]["text"].startswith("Run the PowerShell command")
+
+
+def test_run_bridge_restart_live_scenario_uses_dedicated_core_and_restart_executor() -> None:
+    manifest = DebugRunManifest(
+        run_id="debug-bridge-restart",
+        pid=51234,
+        port=8017,
+        purpose="bridge-restart-live",
+        cwd=str(Path(r"D:\desktop\imcodex-debug-lab\cwd\debug-bridge-restart")),
+        data_dir=str(Path(r"D:\desktop\imcodex-debug-lab\data\debug-bridge-restart")),
+        run_dir=str(Path(r"D:\desktop\imcodex-debug-lab\run\debug-bridge-restart")),
+        started_at="2026-04-19T10:30:01+08:00",
+        status="running",
+    )
+    core_manifest = DedicatedCoreManifest(
+        pid=42001,
+        port=8765,
+        url="ws://127.0.0.1:8765",
+        started_at="2026-04-19T10:29:00+08:00",
+        status="running",
+    )
+    manager = _StubManager(manifest)
+    core_manager = _StubCoreManager(core_manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+    executor = _StubExecutor()
+
+    result = run_bridge_restart_live_scenario(
+        manager=manager,
+        core_manager=core_manager,
+        executor=executor,
+        client=client,
+        inspector=inspector,
+        bridge_port=8017,
+        core_port=8765,
+    )
+
+    assert core_manager.started == [8765]
+    assert manager.start_calls[0]["core_mode"] == "dedicated-ws"
+    assert manager.start_calls[0]["core_url"] == "ws://127.0.0.1:8765"
+    assert executor.calls
+    assert result["restart"]["health"]["status"] == "healthy"
+    assert result["after_restart"]["active_turn"]["turn_id"] == "turn-debug"
+
+
+def test_run_approval_resume_live_scenario_restarts_bridge_and_then_approves() -> None:
+    manifest = DebugRunManifest(
+        run_id="debug-approval-resume",
+        pid=51234,
+        port=8018,
+        purpose="approval-resume-live",
+        cwd=str(Path(r"D:\desktop\imcodex-debug-lab\cwd\debug-approval-resume")),
+        data_dir=str(Path(r"D:\desktop\imcodex-debug-lab\data\debug-approval-resume")),
+        run_dir=str(Path(r"D:\desktop\imcodex-debug-lab\run\debug-approval-resume")),
+        started_at="2026-04-19T10:30:01+08:00",
+        status="running",
+    )
+    core_manifest = DedicatedCoreManifest(
+        pid=42001,
+        port=8765,
+        url="ws://127.0.0.1:8765",
+        started_at="2026-04-19T10:29:00+08:00",
+        status="running",
+    )
+    manager = _StubManager(manifest)
+    core_manager = _StubCoreManager(core_manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+    executor = _StubExecutor()
+
+    result = run_approval_resume_live_scenario(
+        manager=manager,
+        core_manager=core_manager,
+        executor=executor,
+        client=client,
+        inspector=inspector,
+        bridge_port=8018,
+        core_port=8765,
+    )
+
+    assert core_manager.started == [8765]
+    assert manager.start_calls[0]["core_mode"] == "dedicated-ws"
+    assert result["pending"]["pending_requests"][0]["request_id"] == "native-request-live"
+    assert result["restart"]["health"]["status"] == "healthy"
+    assert result["approve_response"]["messages"][0]["text"] == "/approve"
