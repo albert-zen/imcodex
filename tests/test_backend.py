@@ -97,6 +97,16 @@ class ResumeFallbackClient:
         }
 
 
+class InterruptStaleClient:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.interrupt_calls: list[dict] = []
+
+    async def interrupt_turn(self, thread_id: str, turn_id: str):
+        self.interrupt_calls.append({"thread_id": thread_id, "turn_id": turn_id})
+        raise AppServerError(self.message)
+
+
 @pytest.mark.asyncio
 async def test_list_threads_accepts_data_key_and_prioritizes_preferred_cwd() -> None:
     store = ConversationStore(clock=lambda: 1.0)
@@ -202,3 +212,19 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
         {"thread_id": "thr_old", "text": "continue", "summary": "concise"},
         {"thread_id": "thr_old", "text": "continue", "summary": "concise"},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["unknown thread", "no rollout found for thread id thr_old"])
+async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(message: str) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_old")
+    store.note_active_turn("thr_old", "turn_1", "inProgress")
+    client = InterruptStaleClient(message)
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    interrupted = await backend.interrupt_turn("thr_old", "turn_1")
+
+    assert interrupted is False
+    assert store.get_active_turn("thr_old") is None
+    assert client.interrupt_calls == [{"thread_id": "thr_old", "turn_id": "turn_1"}]

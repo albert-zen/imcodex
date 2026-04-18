@@ -367,6 +367,50 @@ async def test_batch_approve_replies_to_all_pending_requests() -> None:
 
 
 @pytest.mark.asyncio
+async def test_targeted_approve_keeps_other_pending_approvals_active() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    for transport_id, suffix in ((91, "abc"), (92, "def")):
+        store.upsert_pending_request(
+            request_id=f"native-request-{suffix}",
+            channel_id="qq",
+            conversation_id="conv-1",
+            thread_id="thr_1",
+            turn_id="turn_1",
+            kind="approval",
+            request_method="item/commandExecution/requestApproval",
+            transport_request_id=transport_id,
+            connection_epoch=1,
+        )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/approve native-request-abc",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Recorded accept for native-request-abc." in messages[0].text
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") in {91, 92}
+    ]
+    assert reply_payloads == [
+        {"id": 91, "result": {"decision": "accept"}},
+    ]
+    remaining = [route.request_id for route in store.list_pending_requests("qq", "conv-1")]
+    assert remaining == ["native-request-def"]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_turn() -> None:
     process = ScriptedProcess(
         {
@@ -398,6 +442,37 @@ async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_tur
     assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
     interrupt_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/interrupt"]
     assert interrupt_payloads == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stop_command_cleans_up_stale_active_turn_when_native_turn_is_unknown() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "turn/interrupt": [{"id": 2, "error": {"message": "unknown thread"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/stop",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert messages[0].text == "No active turn to stop."
+    assert store.get_active_turn("thr_1") is None
     await client.close()
 
 

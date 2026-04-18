@@ -1,159 +1,140 @@
 # Debug Finding: Approval Stall
 
-## Scenario
+## Summary
+
+The original user-facing pain was:
+
+- Codex asked for approval
+- IMCodex lost the ability to reply to that approval after a reset
+- the turn stayed stuck
+- the user had to `/stop` before they could continue
+
+Using the debug harness, we now reproduced the issue on a real end-to-end path and closed the main failure mode.
+
+## Live Reproduction
 
 Executed with:
 
 ```powershell
-python -m imcodex debug --lab-root D:\desktop\imcodex-debug-lab scenario approval-stall --port 8022
+python -m imcodex debug scenario approval-live --port 8041
 ```
 
-Artifacts:
+The scenario does all of the following against an isolated instance:
 
-- `run_id`: `debug-20260419-020855-007866`
-- `instance_id`: `20260418-180855-p52000`
-- `run_dir`: `D:\desktop\imcodex-debug-lab\run\debug-20260419-020855-007866`
+1. `/cwd <debug-cwd>`
+2. `/new`
+3. send a normal-language prompt that asks Codex to run `Get-Date`
+4. wait for a real native approval request
+5. force a client reset
+6. send `/approve`
+7. send a normal follow-up message
 
-## Scenario Setup
+## What We Observed
 
-The harness injects four pieces of state:
+Before reset:
 
-- a conversation binding to `thread_id = thr-debug`
-- an active turn: `turn-debug`
-- a store-side pending approval request:
-  - `request_id = native-request-abcdef`
-  - `kind = approval`
+- a real native approval request appeared
+- the request was projected into the conversation as:
   - `request_method = item/commandExecution/requestApproval`
-- a client-side pending request entry:
-  - `_pending_server_requests["native-request-abcdef"] = {"id": 99}`
+  - `transport_request_id = 0`
+  - `connection_epoch = 1`
+- the real turn was:
+  - `status = inProgress`
 
-Then the harness forces a client reset before sending:
+After reset, before the fix:
 
-```text
-/approve native-request-abcdef
-```
+- the approval projection was evicted
+- `/approve` returned:
+  - `[System] Unknown approval request.`
+- but the active turn could remain `inProgress`
+- sometimes even `/stop` could fail because the new stdio app-server no longer knew the old turn
 
-This gives a controlled reproduction of the exact condition we care about:
+That meant the stale approval itself was no longer visible, but the turn cleanup path was still incomplete.
 
-- `ConversationStore` still believes the request is pending
-- `AppServerClient` has forgotten it after reset
+## Root Cause
 
-## Observed Result
+The main remaining problem was not the approval projection itself. It was turn cleanup after reset.
 
-Before forced reset:
+When the stdio app-server connection resets:
 
-- `pending_requests` contained `native-request-abcdef`
-- `active_turn.turn_id = turn-debug`
-- `active_turn.status = inProgress`
-- runtime reported:
-  - `pending_server_request_ids = ["native-request-abcdef"]`
+1. IMCodex invalidates approval projections for the old `connection_epoch`
+2. IMCodex tries to interrupt the affected turn
+3. the reset often reconnects to a **new** spawned stdio app-server
+4. that new app-server may return errors like:
+   - `unknown thread`
+   - `no rollout found for thread id ...`
 
-After forced client reset:
+Previously, IMCodex did **not** treat those errors as stale-turn cleanup signals.
 
-- runtime reported:
-  - `connection_mode = disconnected`
-  - `pending_server_request_ids = []`
-- store still reported:
-  - `pending_requests` contained `native-request-abcdef`
-  - `active_turn.turn_id = turn-debug`
+So the result was:
 
-Bridge response was:
+- approval projection gone
+- active turn still present locally
+- conversation looked stuck until `/stop`
 
-- `[System] Request native-request-abcdef is out of sync with Codex and the active turn could not be stopped automatically. Try /stop.`
+## Fix
 
-After approval attempt:
+The backend now treats stale thread errors during `turn/interrupt` the same way it already treated stale turn errors:
 
-- `pending_requests` still contained `native-request-abcdef`
-- `active_turn.turn_id = turn-debug`
-- `active_turn.status = inProgress`
-- runtime later reconnected, but there was still no evidence that the original turn had advanced or completed
+- `unknown thread`
+- `no rollout found for thread id ...`
+
+These are now interpreted as:
+
+- the old turn is no longer interruptible remotely
+- local active-turn state should be cleared
+- local pending requests for that turn should be removed
+
+This means reset cleanup can complete even when reconnecting to a fresh stdio app-server instance.
+
+## Verified Result
+
+After the fix, the same live scenario now behaves like this:
+
+After reset:
+
+- stale approval projection is removed
+- `/approve` returns:
+  - `[System] Unknown approval request.`
+- `active_turn = null`
+- `pending_requests = []`
+
+Then a normal follow-up message:
+
+- does **not** require `/stop`
+- starts a new turn normally
+- proves the conversation is no longer wedged
+
+That is the key behavioral change:
+
+- reset no longer leaves the conversation trapped behind a stale paused turn
+
+## Related Observability Fix
+
+The same live scenario also exposed a logging/health inconsistency:
+
+- reset handlers could reconnect to a new app-server
+- but `_reset_connection()` still marked health as `disconnected` at the end
+
+That is now fixed as well, so harness output no longer reports a false disconnected state after successful recovery.
+
+## Remaining Semantics
+
+The current behavior after reset is intentionally conservative:
+
+- the stale approval request is treated as no longer actionable
+- `/approve` does not attempt to resurrect it
+- the user can continue with a new message immediately
+
+For IM, this is preferable to leaving a hidden stale turn that still requires `/stop`.
 
 ## Conclusion
 
-This reproduces the specific bridge/native mismatch we care about:
+The original approval-stall case is now handled end to end:
 
-- `ConversationStore` still holds the pending route and active turn
-- `AppServerClient._pending_server_requests` is wiped on `_reset_connection()`
-- `/approve` then goes through the desync recovery path because the client no longer recognizes the request id
-- the bridge can only auto-recover if it can successfully interrupt that active turn
-- when that interrupt path does not complete, the system falls back to an explicit `/stop` recommendation
+- a real approval request can be produced
+- a reset can invalidate the request
+- IMCodex no longer leaves the turn stuck afterward
+- a new message can continue the conversation without manual `/stop`
 
-This narrows the root cause substantially:
-
-1. bridge-local request state and app-server client request state diverge across connection reset
-2. the store has no reconciliation hook when `_reset_connection()` clears client pending requests
-3. `serverRequest/resolved` is the canonical cleanup signal in the native protocol, but reset can destroy client memory before that signal is observed locally
-4. once that happens, `/approve` is no longer a normal reply path; it is a desync recovery path
-
-## Real Thread Confirmation
-
-The same pattern was reproduced on a real native thread:
-
-1. start an isolated debug run
-2. use `/cwd ...` and `/new` to create a real thread
-3. inject:
-   - `active_turn = turn-real`
-   - store pending route `native-request-real`
-   - client pending entry `native-request-real`
-4. force client reset
-5. run `/approve native-request-real`
-
-Observed result:
-
-- the response was again:
-  - `[System] Request native-request-real is out of sync with Codex and the active turn could not be stopped automatically. Try /stop.`
-- the conversation still showed:
-  - `active_turn = turn-real`
-  - `pending_requests` still present
-- event log showed:
-  - `appserver.connection.closed`
-  - followed by reconnect events
-
-This means the harness result is not just synthetic; the same failure mode survives when the thread itself is real and comes from native Codex.
-
-## Why This Matters
-
-This matches the real user-facing symptom:
-
-- a ticket can still look actionable in IM
-- but by the time the user approves, the bridge and native client may already disagree about whether that request still exists
-- the turn can remain stalled afterward
-- `/stop` may still be required to recover
-
-## Current Status After Mitigation
-
-The bridge no longer blindly treats `unknown pending request` as a confirmed expiry when the same turn is still active locally.
-
-Current behavior:
-
-- if the request route is stale **and** the same turn is still active
-- the bridge first tries to interrupt that active turn automatically
-- if interruption succeeds, the user gets a recovery status instead of a silent stall
-- if interruption cannot be completed automatically, the user gets an explicit out-of-sync message and `/stop` guidance
-
-This means the worst behavior has been narrowed from:
-
-- drop route
-- keep turn stuck
-- force the user to infer what happened
-
-to:
-
-- detect desync
-- try automatic recovery
-- fail loudly with specific guidance if recovery is not possible
-
-That mitigation is useful, but the harness now shows it is not the full fix.
-
-## Follow-Up Work
-
-Recommended next steps:
-
-1. Add explicit reconciliation between `AppServerClient._reset_connection()` and bridge-side pending routes.
-2. Record request lifecycle events around:
-   - route created
-   - client pending created
-   - client reset
-   - route reconciled or evicted
-3. Distinguish "locally forgotten after reset" from "truly resolved by native Codex".
-4. Reduce or eliminate cases where `/stop` is still needed after automatic recovery fails.
+This does **not** make the stale approval itself recoverable after reset, but it does eliminate the stuck-turn failure mode that made the flow unusable.

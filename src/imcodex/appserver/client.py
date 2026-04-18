@@ -410,12 +410,14 @@ class AppServerClient:
                 result = handler(reset_epoch)
                 if inspect.isawaitable(result):
                     await result
-        emit_event(
-            component="appserver.client",
-            event="appserver.connection.closed",
-            message="App-server connection closed",
-        )
-        mark_appserver_health(connected=False, mode="disconnected")
+        if self._transport is None:
+            self.connection_mode = "disconnected"
+            emit_event(
+                component="appserver.client",
+                event="appserver.connection.closed",
+                message="App-server connection closed",
+            )
+            mark_appserver_health(connected=False, mode="disconnected")
 
     def _normalize_thread_params(self, payload: JsonDict) -> JsonDict:
         mappings = {

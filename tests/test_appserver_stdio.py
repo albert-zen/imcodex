@@ -636,3 +636,43 @@ async def test_client_falls_back_to_stdio_when_websocket_connection_fails() -> N
     assert client.connection_mode == "spawned-stdio"
     assert process.sent[0]["method"] == "initialize"
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_connection_preserves_reconnected_transport_state(monkeypatch) -> None:
+    observed_health: list[dict] = []
+
+    def capture_health(**payload) -> None:
+        observed_health.append(payload)
+
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", capture_health)
+
+    first = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    second = ScriptedProcess(
+        {
+            "initialize": [{"id": 2, "result": {"ok": True}}],
+            "thread/list": [{"id": 3, "result": {"threads": []}}],
+        }
+    )
+    processes = iter([first, second])
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        spawn_process=lambda *args: next(processes),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.connect()
+
+    async def reconnect_on_reset(epoch: int) -> None:
+        assert epoch == 1
+        await client.list_threads()
+
+    client.add_connection_reset_handler(reconnect_on_reset)
+    await client._reset_connection()
+
+    assert client.connection_mode == "spawned-stdio"
+    assert client.initialized is True
+    assert observed_health[-1] == {"connected": True, "mode": "spawned-stdio"}
