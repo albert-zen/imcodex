@@ -152,6 +152,18 @@ Used to debug:
 - reset cleanup for real paused turns
 - whether the conversation can continue without `/stop`
 
+### Native reconnect probe
+
+For the dedicated-core architecture, we also used the harness and a direct probe client to verify a subtle but important runtime fact:
+
+- same-connection `thread/resume` can replay a pending approval
+- after a real websocket disconnect, a brand-new client reconnecting to the same core does not currently get that approval replayed back in the runtime binary we are using
+
+That finding matters because it means:
+
+- dedicated core still improves lifecycle separation
+- but bridge fallback cleanup for lost approvals cannot be deleted completely yet
+
 ## Notes
 
 - The harness is intentionally external. It observes and drives the target instance; it does not require the target instance to orchestrate itself.

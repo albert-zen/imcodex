@@ -9,7 +9,11 @@ The original user-facing pain was:
 - the turn stayed stuck
 - the user had to `/stop` before they could continue
 
-Using the debug harness, we now reproduced the issue on a real end-to-end path and closed the main failure mode.
+Using the debug harness, we reproduced the issue on a real end-to-end path and then kept digging until we could separate three different behaviors:
+
+1. old bridge-local approval mapping drift
+2. native approval replay on the same live connection
+3. native approval replay after a real websocket disconnect and reconnect
 
 ## Live Reproduction
 
@@ -36,10 +40,9 @@ Before reset:
 - a real native approval request appeared
 - the request was projected into the conversation as:
   - `request_method = item/commandExecution/requestApproval`
-  - `transport_request_id = 0`
+  - `transport_request_id = <n>`
   - `connection_epoch = 1`
-- the real turn was:
-  - `status = inProgress`
+- the real turn was `inProgress`
 
 After reset, before the fix:
 
@@ -53,28 +56,33 @@ That meant the stale approval itself was no longer visible, but the turn cleanup
 
 ## Root Cause
 
-The main remaining problem was not the approval projection itself. It was turn cleanup after reset.
+The first root cause was bridge-local:
 
-When the stdio app-server connection resets:
+- the bridge used to depend on a client-side pending-request map
+- reset could clear that local map while native still thought a request existed
+- IM commands could no longer target the native request reliably
 
-1. IMCodex invalidates approval projections for the old `connection_epoch`
-2. IMCodex tries to interrupt the affected turn
-3. the reset often reconnects to a **new** spawned stdio app-server
-4. that new app-server may return errors like:
-   - `unknown thread`
-   - `no rollout found for thread id ...`
+That problem was fixed by moving approval routing to native request projections.
 
-Previously, IMCodex did **not** treat those errors as stale-turn cleanup signals.
+The second root cause is native/runtime-specific:
 
-So the result was:
+- on the actual `codex.exe` binary we are running, a pending approval **does** replay on `thread/resume` within the same connection
+- but after a real websocket disconnect, a brand-new client reconnecting to the same dedicated core does **not** receive that approval back via `thread/resume`
 
-- approval projection gone
-- active turn still present locally
-- conversation looked stuck until `/stop`
+So even in the new dedicated-core architecture, the bridge cannot assume:
+
+- "disconnect + reconnect + thread/resume" will always replay the approval
+
+That assumption is true in upstream code/tests, but it is not currently true in the runtime binary we actually probed.
 
 ## Fix
 
-The backend now treats stale thread errors during `turn/interrupt` the same way it already treated stale turn errors:
+The bridge now does two things:
+
+1. it keeps approval routing thin and native-first
+2. it still performs fallback turn cleanup when approval replay is lost after reset
+
+The backend treats stale thread errors during `turn/interrupt` the same way it already treated stale turn errors:
 
 - `unknown thread`
 - `no rollout found for thread id ...`
@@ -85,19 +93,22 @@ These are now interpreted as:
 - local active-turn state should be cleared
 - local pending requests for that turn should be removed
 
-This means reset cleanup can complete even when reconnecting to a fresh stdio app-server instance.
+This means reset cleanup can complete even when reconnecting to:
+
+- a fresh stdio app-server instance
+- or a dedicated websocket core that no longer replays the approval to the new bridge connection
 
 ## Verified Result
 
-After the fix, the same live scenario now behaves like this:
+After the fix, the same live scenario behaves like this:
 
 After reset:
 
 - stale approval projection is removed
-- `/approve` returns:
+- `/approve` may return:
   - `[System] Unknown approval request.`
-- `active_turn = null`
-- `pending_requests = []`
+- the conversation is no longer permanently wedged
+- the next reconnect / follow-up message can clear the stale turn without requiring manual `/stop`
 
 Then a normal follow-up message:
 
@@ -108,6 +119,15 @@ Then a normal follow-up message:
 That is the key behavioral change:
 
 - reset no longer leaves the conversation trapped behind a stale paused turn
+
+## Native Probe Finding
+
+Using a direct client probe against the dedicated websocket core, we verified:
+
+- same-connection `thread/resume` can replay a pending approval
+- disconnect + brand-new client + `thread/resume` does **not** replay it in the currently running native binary
+
+That means the bridge must keep a fallback cleanup path even after the dedicated-core refactor.
 
 ## Related Observability Fix
 
@@ -123,7 +143,7 @@ That is now fixed as well, so harness output no longer reports a false disconnec
 The current behavior after reset is intentionally conservative:
 
 - the stale approval request is treated as no longer actionable
-- `/approve` does not attempt to resurrect it
+- `/approve` does not try to fake-resurrect it
 - the user can continue with a new message immediately
 
 For IM, this is preferable to leaving a hidden stale turn that still requires `/stop`.
@@ -137,4 +157,4 @@ The original approval-stall case is now handled end to end:
 - IMCodex no longer leaves the turn stuck afterward
 - a new message can continue the conversation without manual `/stop`
 
-This does **not** make the stale approval itself recoverable after reset, but it does eliminate the stuck-turn failure mode that made the flow unusable.
+This does **not** make the stale approval itself recoverable after reset in every reconnect path, but it does eliminate the stuck-turn failure mode that made the flow unusable.

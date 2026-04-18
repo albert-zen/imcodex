@@ -12,6 +12,10 @@ Use these files as the source of truth for the current implementation:
   Current webhook / IM-visible message classes and request identity semantics.
 - [Deployment](./deployment.md)
   Current runtime and environment configuration.
+- [Dedicated Core Architecture](./dedicated-core-architecture.md)
+  Why bridge and native core are being split, and what that buys us.
+- [Restart Executor](./restart-executor.md)
+  External bridge restart flow for hot reloads without self-stop dead-ends.
 - [Command Roadmap](./command-roadmap.md)
   Current `/help` surface, command phases, and native-vs-bridge command boundaries.
 - [Desktop Thread Replay Ordering Issue](./desktop-thread-replay-ordering.md)

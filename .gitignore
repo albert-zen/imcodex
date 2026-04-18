@@ -4,6 +4,8 @@ __pycache__/
 .imcodex/
 .imcodex-data/
 .imcodex-run/
+.imcodex-run-sim/
+.imcodex-core-*/
 .codex/
 _codex_schema/
 codex-upstream/

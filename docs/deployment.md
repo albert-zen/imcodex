@@ -1,10 +1,11 @@
 # Deployment
 
 This project is currently deployed from source and integrates with native
-Codex `app-server` in two modes:
+Codex `app-server` in multiple modes:
 
-- preferred: connect to an existing shared websocket app-server
-- fallback: spawn a local `codex app-server --listen stdio://`
+- preferred architecture: connect to a dedicated long-lived websocket core
+- compatible/shared mode: connect to an already-running websocket app-server
+- fallback/debug mode: spawn a local `codex app-server --listen stdio://`
 
 ## Requirements
 
@@ -21,6 +22,9 @@ git clone https://github.com/albert-zen/imcodex.git
 cd imcodex
 Copy-Item .env.example .env
 pip install -e .
+python -m imcodex core start --port 8765
+$env:IMCODEX_CORE_MODE = "dedicated-ws"
+$env:IMCODEX_CORE_URL = "ws://127.0.0.1:8765"
 python -m imcodex
 ```
 
@@ -40,8 +44,8 @@ IMCODEX_DATA_DIR=D:\services\imcodex\.imcodex-data
 IMCODEX_HTTP_HOST=0.0.0.0
 IMCODEX_HTTP_PORT=8000
 IMCODEX_CODEX_BIN=codex
-# Optional: reuse an already running shared Codex app-server instead of spawning a private stdio one
-# IMCODEX_APP_SERVER_URL=ws://127.0.0.1:8765
+IMCODEX_CORE_MODE=dedicated-ws
+IMCODEX_CORE_URL=ws://127.0.0.1:8765
 IMCODEX_SERVICE_NAME=imcodex
 ```
 
@@ -69,7 +73,12 @@ IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com
 - The bridge stores only minimal IM-specific state in `IMCODEX_DATA_DIR`.
 - Native Codex remains the source of truth for thread, turn, request, model,
   and permission state.
-- `IMCODEX_APP_SERVER_URL` is optional. When unset, the bridge probes the
-  default local shared websocket address and then falls back to a private
-  `stdio` app-server if no shared listener is available.
+- `dedicated-ws` is now the recommended topology for serious local use.
+- `spawned-stdio` still exists, but should be treated as fallback/debug-only.
+- The bridge can also be restarted externally with:
+
+```powershell
+python -m imcodex ops restart --launch-snapshot <path>
+```
+
 - `doctor.ps1` is intended for preflight checks, not deep monitoring.
