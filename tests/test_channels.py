@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from imcodex.channels import QQChannelAdapter, create_app
-from imcodex.models import OutboundMessage
+from imcodex.models import InboundMessage, OutboundMessage
 
 
 class StubService:
@@ -42,7 +42,7 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
         enabled=True,
         app_id="app",
         client_secret="secret",
-        service=object(),
+        middleware=object(),
     )
 
     inbound = adapter.parse_inbound_event(
@@ -61,16 +61,29 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qq_adapter_hides_raw_exception_details_from_user() -> None:
-    class FailingService:
-        async def handle_inbound(self, message):
-            raise RuntimeError("<html>" + ("x" * 500))
+async def test_qq_adapter_delegates_standardized_inbound_message_to_middleware() -> None:
+    class CapturingMiddleware:
+        def __init__(self) -> None:
+            self.seen: list[InboundMessage] = []
 
+        async def handle_inbound(self, adapter, inbound, *, reply_to_message_id=None):
+            self.seen.append(inbound)
+            await adapter.send_message(
+                OutboundMessage(
+                    channel_id="qq",
+                    conversation_id=inbound.conversation_id,
+                    message_type="turn_result",
+                    text="Accepted",
+                    metadata={"reply_to_message_id": reply_to_message_id} if reply_to_message_id else {},
+                )
+            )
+
+    middleware = CapturingMiddleware()
     adapter = QQChannelAdapter(
         enabled=True,
         app_id="app",
         client_secret="secret",
-        service=FailingService(),
+        middleware=middleware,
     )
     sent: list[OutboundMessage] = []
 
@@ -89,6 +102,7 @@ async def test_qq_adapter_hides_raw_exception_details_from_user() -> None:
     )
 
     assert sent
-    assert sent[0].message_type == "error"
-    assert "Please try again." in sent[0].text
-    assert "<html>" not in sent[0].text
+    assert middleware.seen
+    assert middleware.seen[0].text == "hello"
+    assert sent[0].message_type == "turn_result"
+    assert sent[0].metadata["reply_to_message_id"] == "msg-1"

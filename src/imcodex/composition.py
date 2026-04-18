@@ -4,7 +4,8 @@ import time
 
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .bridge import BridgeService, CommandRouter, MessageProjector
-from .channels import MultiplexOutboundSink, QQChannelAdapter, WebhookOutboundSink
+from .channels import MultiplexOutboundSink, UnifiedChannelMiddleware, WebhookOutboundSink
+from .channels.registry import build_enabled_channel_adapters
 from .config import Settings
 from .logging_utils import configure_logging
 from .runtime import AppRuntime
@@ -30,19 +31,10 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         projector=MessageProjector(),
         outbound_sink=None,
     )
+    channel_middleware = UnifiedChannelMiddleware(service=service)
     default_outbound_sink = WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
-    managed_channels = []
-    channel_sinks = {}
-    if settings.qq_enabled:
-        qq_adapter = QQChannelAdapter(
-            enabled=True,
-            app_id=settings.qq_app_id,
-            client_secret=settings.qq_client_secret,
-            service=service,
-            api_base=settings.qq_api_base,
-        )
-        managed_channels.append(qq_adapter)
-        channel_sinks["qq"] = qq_adapter
+    managed_channels = build_enabled_channel_adapters(settings=settings, middleware=channel_middleware)
+    channel_sinks = {channel.channel_id: channel for channel in managed_channels}
     if channel_sinks or default_outbound_sink is not None:
         service.outbound_sink = MultiplexOutboundSink(channel_sinks=channel_sinks, default_sink=default_outbound_sink)
     return AppRuntime(client=client, service=service, managed_channels=managed_channels)

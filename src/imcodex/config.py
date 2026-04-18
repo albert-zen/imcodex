@@ -44,6 +44,16 @@ class Settings:
     qq_client_secret: str
     qq_api_base: str
 
+    def channel_configs(self) -> dict[str, dict[str, object]]:
+        return {
+            "qq": {
+                "enabled": self.qq_enabled,
+                "app_id": self.qq_app_id,
+                "client_secret": self.qq_client_secret,
+                "api_base": self.qq_api_base,
+            }
+        }
+
     @classmethod
     def from_env(cls) -> "Settings":
         dotenv = _read_dotenv(Path(".env"))

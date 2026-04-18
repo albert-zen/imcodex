@@ -11,11 +11,11 @@ from typing import Any
 import httpx
 import websockets
 
+from .base import BaseChannelAdapter
 from ..models import InboundMessage, OutboundMessage
 
 
 logger = logging.getLogger(__name__)
-GENERIC_USER_ERROR_TEXT = "Request failed while talking to Codex. Please try again."
 
 DEFAULT_API_BASE = "https://api.sgroup.qq.com"
 SANDBOX_API_BASE = "https://sandbox.api.sgroup.qq.com"
@@ -38,14 +38,16 @@ SUPPORTED_EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}
 MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
 
 
-class QQChannelAdapter:
+class QQChannelAdapter(BaseChannelAdapter):
+    channel_id = "qq"
+
     def __init__(
         self,
         *,
         enabled: bool,
         app_id: str,
         client_secret: str,
-        service,
+        middleware,
         api_base: str = DEFAULT_API_BASE,
         token_url: str = TOKEN_URL,
         http_client: httpx.AsyncClient | None = None,
@@ -54,10 +56,10 @@ class QQChannelAdapter:
         clock=time.time,
         startup_timeout_s: float = 15.0,
     ) -> None:
+        super().__init__(middleware=middleware)
         self.enabled = enabled
         self.app_id = app_id
         self.client_secret = client_secret
-        self.service = service
         self.api_base = api_base.rstrip("/")
         self.token_url = token_url
         self.http_client = http_client or httpx.AsyncClient()
@@ -74,6 +76,16 @@ class QQChannelAdapter:
         self._access_token_expires_at = 0.0
         self._session_id: str | None = None
         self._last_seq: int | None = None
+
+    @classmethod
+    def from_config(cls, *, config: dict[str, object], middleware):
+        return cls(
+            enabled=bool(config.get("enabled")),
+            app_id=str(config.get("app_id") or ""),
+            client_secret=str(config.get("client_secret") or ""),
+            middleware=middleware,
+            api_base=str(config.get("api_base") or DEFAULT_API_BASE),
+        )
 
     async def start(self) -> None:
         if not self.enabled:
@@ -130,25 +142,7 @@ class QQChannelAdapter:
         inbound = self.parse_inbound_event(event_type, payload)
         if inbound is None:
             return
-        self._note_inbound_message(inbound.conversation_id, inbound.message_id)
-        try:
-            outbound = await self.service.handle_inbound(inbound)
-            for message in outbound:
-                if message.channel_id != "qq":
-                    continue
-                message.metadata.setdefault("reply_to_message_id", inbound.message_id)
-                await self.send_message(message)
-        except Exception as exc:
-            logger.exception("QQ inbound handling failed")
-            await self.send_message(
-                OutboundMessage(
-                    channel_id="qq",
-                    conversation_id=inbound.conversation_id,
-                    message_type="error",
-                    text=GENERIC_USER_ERROR_TEXT,
-                    metadata={"reply_to_message_id": inbound.message_id},
-                )
-            )
+        await self.dispatch_inbound(inbound, reply_to_message_id=inbound.message_id)
 
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != "qq" or not message.text.strip():
@@ -345,16 +339,9 @@ class QQChannelAdapter:
         self._msg_seq[conversation_id] += 1
         return self._msg_seq[conversation_id]
 
-    def _note_inbound_message(self, conversation_id: str, message_id: str) -> None:
-        store = getattr(self.service, "store", None)
-        if store is None:
-            return
-        note = getattr(store, "note_inbound_message", None)
-        if callable(note):
-            note("qq", conversation_id, message_id)
-
     def _reply_to_message_id(self, conversation_id: str) -> str | None:
-        store = getattr(self.service, "store", None)
+        store = getattr(self.middleware, "service", None)
+        store = getattr(store, "store", None)
         if store is None:
             return None
         get_binding = getattr(store, "get_binding", None)
