@@ -139,6 +139,8 @@ class BridgeService:
                 return [self._message(message, "status", f"Thread could not be attached: {self._safe_appserver_error(exc)}.")]
             snapshot = self.store.get_thread_snapshot(attached_id)
             label = self._thread_label(snapshot) if snapshot is not None else attached_id
+            if snapshot is not None and snapshot.cwd:
+                return [self._message(message, "status", f"Switched to {label}.\nCWD: {snapshot.cwd}")]
             return [self._message(message, "status", f"Switched to {label}.")]
         if response.action == "threads.exit":
             self.store.clear_thread_browser_context(message.channel_id, message.conversation_id)
@@ -156,6 +158,8 @@ class BridgeService:
                 return [self._message(message, "error", str(exc))]
             except Exception as exc:
                 return [self._message(message, "status", f"Thread could not be attached: {self._safe_exception_text(exc)}.")]
+            if snapshot.cwd:
+                return [self._message(message, "status", f"Attached to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}")]
             return [self._message(message, "status", f"Attached to {self._thread_label(snapshot)}.")]
         if response.action == "turn.stop":
             interrupted = await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)

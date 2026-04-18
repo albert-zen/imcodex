@@ -610,6 +610,8 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
     assert list_messages[0].message_type == "command_result"
     assert attach_messages[0].message_type == "status"
     assert new_messages[0].message_type == "status"
+    assert "Switched to Attached thread." in attach_messages[0].text
+    assert r"CWD: D:\work\attached" in attach_messages[0].text
     assert "Started thread thr_new." in new_messages[0].text
 
 
