@@ -16,3 +16,5 @@ Use these files as the source of truth for the current implementation:
   Current `/help` surface, command phases, and native-vs-bridge command boundaries.
 - [Desktop Thread Replay Ordering Issue](./desktop-thread-replay-ordering.md)
   Why old IM messages can appear near the bottom of a Desktop transcript after thread replay.
+- [Logging And Observability](./logging-observability.md)
+  Per-instance runtime archives, structured event logs, and health snapshots.
