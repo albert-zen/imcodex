@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .bridge import BridgeService, CommandRouter, MessageProjector
 from .channels import MultiplexOutboundSink, UnifiedChannelMiddleware, WebhookOutboundSink
 from .channels.registry import build_enabled_channel_adapters
 from .config import Settings
-from .logging_utils import configure_logging
+from .observability.runtime import ObservabilityRuntime
 from .runtime import AppRuntime
 from .store import ConversationStore
 
 
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
-    configure_logging(settings.log_level)
     store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
     supervisor = AppServerSupervisor(
         codex_bin=settings.codex_bin,
@@ -37,4 +37,18 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     channel_sinks = {channel.channel_id: channel for channel in managed_channels}
     if channel_sinks or default_outbound_sink is not None:
         service.outbound_sink = MultiplexOutboundSink(channel_sinks=channel_sinks, default_sink=default_outbound_sink)
-    return AppRuntime(client=client, service=service, managed_channels=managed_channels)
+    observability = ObservabilityRuntime(
+        run_root=settings.run_dir,
+        service_name=settings.service_name,
+        log_level=settings.log_level,
+        http_host=settings.http_host,
+        http_port=settings.http_port,
+        app_server_url=settings.app_server_url,
+        cwd=Path.cwd(),
+    )
+    return AppRuntime(
+        client=client,
+        service=service,
+        managed_channels=managed_channels,
+        observability=observability,
+    )
