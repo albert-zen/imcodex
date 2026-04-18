@@ -32,6 +32,7 @@ def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
 @dataclass(slots=True)
 class Settings:
     data_dir: Path
+    run_dir: Path
     codex_bin: str
     app_server_url: str | None
     log_level: str
@@ -59,6 +60,7 @@ class Settings:
         dotenv = _read_dotenv(Path(".env"))
         return cls(
             data_dir=Path(_env("IMCODEX_DATA_DIR", ".imcodex", dotenv)),
+            run_dir=Path(_env("IMCODEX_RUN_DIR", ".imcodex-run", dotenv)),
             codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
             app_server_url=_env("IMCODEX_APP_SERVER_URL", "", dotenv) or None,
             log_level=_env("IMCODEX_LOG_LEVEL", "INFO", dotenv),
