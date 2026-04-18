@@ -19,13 +19,14 @@ class MessageProjector:
                 return None
             route = store.upsert_pending_request(
                 request_id=event.request_id or "",
-                request_handle=(event.request_id or "")[:8] or None,
                 channel_id=binding.channel_id,
                 conversation_id=binding.conversation_id,
                 thread_id=event.thread_id or None,
                 turn_id=event.turn_id or None,
                 kind="question" if event.kind == "question_request" else "approval",
                 request_method=event.method,
+                transport_request_id=event.payload.get("_transport_request_id"),
+                connection_epoch=int(event.payload.get("_connection_epoch") or 0),
                 payload=event.payload,
             )
             return self._attach_route(
@@ -176,7 +177,7 @@ class MessageProjector:
         return message
 
     def _render_pending_request(self, route) -> OutboundMessage:
-        handle = route.request_handle or route.request_id[:8]
+        handle = route.request_id[:8]
         if route.kind == "question":
             questions = route.payload.get("questions") or []
             lines = [
@@ -209,7 +210,8 @@ class MessageProjector:
             lines.append(f"CWD: {cwd}")
         if path:
             lines.append(f"Path: {path}")
-        lines.append(f"Use /approve {route.request_id}, /deny {route.request_id}, or /cancel {route.request_id}")
+        lines.append("Use /approve to allow, /deny to reject, or send a new message to cancel and continue.")
+        lines.append(f"Target one request with /approve {handle}, /deny {handle}, or /cancel {handle}.")
         text = "\n".join(lines)
         return OutboundMessage(channel_id="", conversation_id="", message_type="approval_request", text=text, request_id=route.request_id)
 

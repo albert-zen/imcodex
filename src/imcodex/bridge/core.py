@@ -37,6 +37,21 @@ class BridgeService:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         if binding.bootstrap_cwd is None and binding.thread_id is None:
             return [self._message(message, "status", self._render_onboarding())]
+        pending_approvals = self.store.list_pending_requests(
+            message.channel_id,
+            message.conversation_id,
+            kind="approval",
+        )
+        if pending_approvals:
+            failure = await self._resolve_projected_requests(
+                inbound=message,
+                request_ids=[route.request_id for route in pending_approvals],
+                decision="cancel",
+                action="approval.cancel",
+                continue_on_failure=False,
+            )
+            if failure is not None:
+                return failure
         try:
             submission = await self.backend.submit_text(message.channel_id, message.conversation_id, message.text)
         except StaleThreadBindingError as exc:
@@ -171,10 +186,15 @@ class BridgeService:
                 "approval.deny": "decline",
                 "approval.cancel": "cancel",
             }[response.action]
-            try:
-                await self.backend.reply_to_server_request(response.request_id or "", {"decision": decision})
-            except (AppServerError, KeyError) as exc:
-                return await self._request_reply_failure(message, response.request_id, response.action, exc)
+            failure = await self._resolve_projected_requests(
+                inbound=message,
+                request_ids=response.request_ids or ([response.request_id] if response.request_id else []),
+                decision=decision,
+                action=response.action,
+                continue_on_failure=False,
+            )
+            if failure is not None:
+                return failure
         elif response.action == "request.answer":
             payload = {"answers": {key: {"answers": value} for key, value in (response.answers or {}).items()}}
             try:
@@ -214,6 +234,21 @@ class BridgeService:
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
         message = self.projector.project_notification(request, self.store)
         return await self._emit(message)
+
+    async def handle_connection_reset(self, connection_epoch: int) -> None:
+        routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
+        seen_turns: set[tuple[str, str]] = set()
+        for route in routes:
+            if not route.thread_id or not route.turn_id:
+                continue
+            key = (route.thread_id, route.turn_id)
+            if key in seen_turns:
+                continue
+            seen_turns.add(key)
+            try:
+                await self.backend.interrupt_turn(route.thread_id, route.turn_id)
+            except AppServerError:
+                continue
 
     async def _emit(self, message: OutboundMessage | None) -> list[OutboundMessage]:
         if message is None:
@@ -306,7 +341,7 @@ class BridgeService:
                 f"Model: {self._current_model_label(current_config)}",
                 f"Permissions: {self._permission_mode_label(current_config)}",
                 f"Bridge visibility: {self._bridge_visibility_label(binding)}",
-                f"Pending tickets: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id))}",
+                f"Pending approvals: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id, kind='approval'))}",
             ]
         )
 
@@ -360,6 +395,9 @@ class BridgeService:
             "native.respond",
             "native.error",
             "threads.exit",
+            "approval.accept",
+            "approval.deny",
+            "approval.cancel",
         }:
             return "status"
         if action.endswith(".invalid") or action.endswith(".missing") or ".missing" in action or action == "unknown":
@@ -497,6 +535,24 @@ class BridgeService:
                 request_id=request_id,
             )
         ]
+
+    async def _resolve_projected_requests(
+        self,
+        *,
+        inbound: InboundMessage,
+        request_ids: list[str],
+        decision: str,
+        action: str,
+        continue_on_failure: bool,
+    ) -> list[OutboundMessage] | None:
+        for request_id in request_ids:
+            try:
+                await self.backend.reply_to_server_request(request_id, {"decision": decision})
+            except (AppServerError, KeyError) as exc:
+                failure = await self._request_reply_failure(inbound, request_id, action, exc)
+                if not continue_on_failure:
+                    return failure
+        return None
 
     def _is_expired_server_request_error(self, error: AppServerError | KeyError) -> bool:
         if isinstance(error, KeyError):

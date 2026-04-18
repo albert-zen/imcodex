@@ -227,8 +227,10 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
     assert result["thread"]["id"] == "thr_1"
     assert captured_requests[0]["method"] == "item/tool/requestUserInput"
     assert captured_requests[0]["params"]["_request_id"] == "99"
+    assert captured_requests[0]["params"]["_transport_request_id"] == 99
+    assert captured_requests[0]["params"]["_connection_epoch"] == 1
 
-    await client.reply_to_server_request("99", {"answers": {"color": {"answers": ["blue"]}}})
+    await client.reply_to_transport_request(99, {"answers": {"color": {"answers": ["blue"]}}})
 
     assert process.sent[-1] == {
         "id": 99,
@@ -237,7 +239,7 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
 
 
 @pytest.mark.asyncio
-async def test_stdio_client_can_reply_using_native_request_id() -> None:
+async def test_stdio_client_replies_using_transport_request_id() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -277,7 +279,7 @@ async def test_stdio_client_can_reply_using_native_request_id() -> None:
 
     await client.start_thread(cwd="D:/repo/app")
     await asyncio.sleep(0)
-    await client.reply_to_server_request("native-request-abcdef", {"answers": {"color": {"answers": ["blue"]}}})
+    await client.reply_to_transport_request(99, {"answers": {"color": {"answers": ["blue"]}}})
 
     assert process.sent[-1] == {
         "id": 99,
@@ -314,25 +316,8 @@ async def test_stdio_client_respawns_after_process_eof() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stdio_client_discards_stale_pending_server_requests_after_respawn() -> None:
-    first = ScriptedProcess(
-        {
-            "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/start": [
-                {"id": 2, "result": {"thread": {"id": "thr_1", "cwd": "D:/repo/app", "preview": "seed", "status": "idle"}}},
-                {
-                    "id": 99,
-                    "method": "item/tool/requestUserInput",
-                    "params": {
-                        "requestId": "native-request-abcdef",
-                        "threadId": "thr_1",
-                        "turnId": "turn_1",
-                        "questions": [{"id": "color", "question": "Favorite color?"}],
-                    },
-                },
-            ],
-        }
-    )
+async def test_stdio_client_increments_connection_epoch_after_respawn() -> None:
+    first = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     second = ScriptedProcess(
         {
             "initialize": [{"id": 3, "result": {"ok": True}}],
@@ -349,14 +334,13 @@ async def test_stdio_client_discards_stale_pending_server_requests_after_respawn
         client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
     )
 
-    await client.start_thread(cwd="D:/repo/app")
-    await asyncio.sleep(0)
+    await client.connect()
+    assert client.connection_epoch == 1
     first.stdout.lines.put_nowait(b"")
     await asyncio.sleep(0)
     await client.list_threads()
 
-    with pytest.raises(AppServerError, match="unknown pending request: native-request-abcdef"):
-        await client.reply_to_server_request("native-request-abcdef", {"answers": {"color": {"answers": ["blue"]}}})
+    assert client.connection_epoch == 2
 
 
 @pytest.mark.asyncio

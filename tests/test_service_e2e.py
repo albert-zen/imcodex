@@ -323,19 +323,21 @@ async def test_threads_command_returns_status_message_when_backend_list_fails() 
 
 
 @pytest.mark.asyncio
-async def test_expired_request_reply_returns_status_and_clears_route() -> None:
+async def test_batch_approve_replies_to_all_pending_requests() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1.0)
-    store.upsert_pending_request(
-        request_id="native-request-abcdef",
-        request_handle="native-r",
-        channel_id="qq",
-        conversation_id="conv-1",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        kind="approval",
-        request_method="item/commandExecution/requestApproval",
-    )
+    for transport_id, suffix in ((91, "abc"), (92, "def")):
+        store.upsert_pending_request(
+            request_id=f"native-request-{suffix}",
+            channel_id="qq",
+            conversation_id="conv-1",
+            thread_id="thr_1",
+            turn_id="turn_1",
+            kind="approval",
+            request_method="item/commandExecution/requestApproval",
+            transport_request_id=transport_id,
+            connection_epoch=1,
+        )
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
@@ -345,18 +347,27 @@ async def test_expired_request_reply_returns_status_and_clears_route() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/approve native-request-abcdef",
+            text="/approve",
         )
     )
 
     assert messages[0].message_type == "status"
-    assert "is no longer pending" in messages[0].text
-    assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
+    assert "Recorded accept for 2 requests." in messages[0].text
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") in {91, 92}
+    ]
+    assert reply_payloads == [
+        {"id": 91, "result": {"decision": "accept"}},
+        {"id": 92, "result": {"decision": "accept"}},
+    ]
+    assert store.list_pending_requests("qq", "conv-1") == []
     await client.close()
 
 
 @pytest.mark.asyncio
-async def test_expired_request_reply_interrupts_stuck_turn_when_route_is_desynced() -> None:
+async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_turn() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -369,30 +380,20 @@ async def test_expired_request_reply_interrupts_stuck_turn_when_route_is_desynce
     store.note_active_turn("thr_1", "turn_1", "inProgress")
     store.upsert_pending_request(
         request_id="native-request-abcdef",
-        request_handle="native-r",
         channel_id="qq",
         conversation_id="conv-1",
         thread_id="thr_1",
         turn_id="turn_1",
         kind="approval",
         request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
     )
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
-    messages = await service.handle_inbound(
-        InboundMessage(
-            channel_id="qq",
-            conversation_id="conv-1",
-            user_id="u1",
-            message_id="m1",
-            text="/approve native-request-abcdef",
-        )
-    )
+    await service.handle_connection_reset(1)
 
-    assert messages[0].message_type == "status"
-    assert "out of sync with Codex" in messages[0].text
-    assert "stopped the active turn" in messages[0].text
     assert store.get_active_turn("thr_1") is None
     assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
     interrupt_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/interrupt"]
@@ -406,13 +407,14 @@ async def test_transient_request_reply_failure_keeps_route_for_retry() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.upsert_pending_request(
         request_id="native-request-abcdef",
-        request_handle="native-r",
         channel_id="qq",
         conversation_id="conv-1",
         thread_id="thr_1",
         turn_id="turn_1",
         kind="approval",
         request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
     )
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
@@ -435,6 +437,64 @@ async def test_transient_request_reply_failure_keeps_route_for_retry() -> None:
     assert messages[0].message_type == "status"
     assert "could not be sent to Codex right now" in messages[0].text
     assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is not None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_plain_text_cancels_all_pending_approvals_before_submitting_new_input() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "turn/start": [{"id": 2, "result": {"turn": {"id": "turn_2", "status": "inProgress"}}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    for transport_id, suffix in ((91, "abc"), (92, "def")):
+        store.upsert_pending_request(
+            request_id=f"native-request-{suffix}",
+            channel_id="qq",
+            conversation_id="conv-1",
+            thread_id="thr_1",
+            turn_id="turn_1",
+            kind="approval",
+            request_method="item/commandExecution/requestApproval",
+            transport_request_id=transport_id,
+            connection_epoch=1,
+        )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="skip that and continue",
+        )
+    )
+
+    assert messages == []
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") in {91, 92}
+    ]
+    assert reply_payloads == [
+        {"id": 91, "result": {"decision": "cancel"}},
+        {"id": 92, "result": {"decision": "cancel"}},
+    ]
+    turn_starts = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/start"]
+    assert turn_starts == [
+        {
+            "threadId": "thr_1",
+            "input": [{"type": "text", "text": "skip that and continue"}],
+            "summary": "concise",
+        }
+    ]
+    assert store.list_pending_requests("qq", "conv-1") == []
     await client.close()
 
 

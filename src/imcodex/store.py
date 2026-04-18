@@ -277,13 +277,15 @@ class ConversationStore:
         self,
         *,
         request_id: str,
-        request_handle: str | None,
+        request_handle: str | None = None,
         channel_id: str,
         conversation_id: str,
         thread_id: str | None,
         turn_id: str | None,
         kind: str,
         request_method: str | None,
+        transport_request_id: str | int | None = None,
+        connection_epoch: int = 0,
         payload: dict | None = None,
     ) -> PendingNativeRequestRoute:
         route = PendingNativeRequestRoute(
@@ -295,40 +297,54 @@ class ConversationStore:
             turn_id=turn_id,
             kind=kind,
             request_method=request_method,
+            transport_request_id=transport_request_id,
+            connection_epoch=connection_epoch,
             payload=dict(payload or {}),
         )
         self._pending_requests[request_id] = route
         self._save()
         return route
 
-    def list_pending_requests(self, channel_id: str, conversation_id: str) -> list[PendingNativeRequestRoute]:
-        return [
+    def list_pending_requests(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        kind: str | None = None,
+    ) -> list[PendingNativeRequestRoute]:
+        routes = [
             route
             for route in self._pending_requests.values()
             if route.channel_id == channel_id and route.conversation_id == conversation_id
         ]
+        if kind is not None:
+            routes = [route for route in routes if route.kind == kind]
+        return routes
 
-    def match_pending_request(
+    def get_pending_request(self, request_id: str) -> PendingNativeRequestRoute | None:
+        return self._pending_requests.get(request_id)
+
+    def select_pending_requests(
         self,
         channel_id: str,
         conversation_id: str,
         token: str | None = None,
         *,
         kind: str | None = None,
-    ) -> PendingNativeRequestRoute | None:
-        candidates = self.list_pending_requests(channel_id, conversation_id)
-        if kind is not None:
-            candidates = [route for route in candidates if route.kind == kind]
+    ) -> list[PendingNativeRequestRoute]:
+        candidates = self.list_pending_requests(channel_id, conversation_id, kind=kind)
         if not candidates:
-            return None
+            return []
         if token is None or not token.strip():
-            if len(candidates) == 1:
-                return candidates[0]
-            return None
+            return candidates
         token = token.strip()
-        for route in candidates:
-            if token == route.request_id or token == route.request_handle:
-                return route
+        exact = [
+            route
+            for route in candidates
+            if token == route.request_id or (route.request_handle is not None and token == route.request_handle)
+        ]
+        if exact:
+            return exact[:1]
         prefix_matches = [
             route
             for route in candidates
@@ -338,8 +354,28 @@ class ConversationStore:
         if len(prefix_matches) > 1:
             raise ValueError(f"Ambiguous request id prefix: {token}")
         if len(prefix_matches) == 1:
-            return prefix_matches[0]
-        return None
+            return prefix_matches
+        return []
+
+    def match_pending_request(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        token: str | None = None,
+        *,
+        kind: str | None = None,
+    ) -> PendingNativeRequestRoute | None:
+        candidates = self.select_pending_requests(
+            channel_id,
+            conversation_id,
+            token,
+            kind=kind,
+        )
+        if token is None or not str(token).strip():
+            if len(candidates) == 1:
+                return candidates[0]
+            return None
+        return candidates[0] if candidates else None
 
     def remove_pending_request(self, request_id: str) -> PendingNativeRequestRoute | None:
         route = self._pending_requests.pop(request_id, None)
@@ -358,6 +394,19 @@ class ConversationStore:
         for request_id in removed:
             self._pending_requests.pop(request_id, None)
         self._save()
+
+    def invalidate_pending_requests_for_connection(self, connection_epoch: int) -> list[PendingNativeRequestRoute]:
+        removed = [
+            route
+            for route in self._pending_requests.values()
+            if route.connection_epoch == connection_epoch
+        ]
+        if not removed:
+            return []
+        for route in removed:
+            self._pending_requests.pop(route.request_id, None)
+        self._save()
+        return removed
 
     def _save(self) -> None:
         if not self.state_path:
@@ -387,18 +436,7 @@ class ConversationStore:
                 or binding.reply_context
             ],
             "pending_requests": [
-                {
-                    "request_id": route.request_id,
-                    "request_handle": route.request_handle,
-                    "channel_id": route.channel_id,
-                    "conversation_id": route.conversation_id,
-                    "thread_id": route.thread_id,
-                    "turn_id": route.turn_id,
-                    "kind": route.kind,
-                    "request_method": route.request_method,
-                    "payload": route.payload,
-                }
-                for route in self._pending_requests.values()
+                
             ],
         }
         self.state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -425,18 +463,3 @@ class ConversationStore:
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
-        for item in payload.get("pending_requests", []):
-            if "request_id" not in item or "channel_id" not in item or "conversation_id" not in item:
-                continue
-            route = PendingNativeRequestRoute(
-                request_id=str(item["request_id"]),
-                request_handle=str(item["request_handle"]) if item.get("request_handle") is not None else None,
-                channel_id=str(item["channel_id"]),
-                conversation_id=str(item["conversation_id"]),
-                thread_id=str(item["thread_id"]) if item.get("thread_id") is not None else None,
-                turn_id=str(item["turn_id"]) if item.get("turn_id") is not None else None,
-                kind=str(item.get("kind") or "request"),
-                request_method=str(item["request_method"]) if item.get("request_method") is not None else None,
-                payload=dict(item.get("payload") or {}),
-            )
-            self._pending_requests[route.request_id] = route

@@ -27,8 +27,7 @@ def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert payload["version"] == 2
     assert payload["bindings"][0]["thread_id"] == "thr_1"
     assert "active_turn_id" not in payload["bindings"][0]
-    assert payload["pending_requests"][0]["request_id"] == "native-request-abcdef"
-    assert "summary" not in payload["pending_requests"][0]
+    assert payload["pending_requests"] == []
 
 
 def test_store_ignores_legacy_state_file_shape(tmp_path) -> None:

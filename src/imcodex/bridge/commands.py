@@ -38,6 +38,7 @@ class CommandResponse:
     text: str
     thread_id: str | None = None
     request_id: str | None = None
+    request_ids: list[str] | None = None
     answers: dict[str, list[str]] | None = None
     include_all: bool = False
     payload: dict | None = None
@@ -227,15 +228,8 @@ class CommandRouter:
         return CommandResponse(action="turn.stop", text=f"Stopping turn {active[0]}.")
 
     def _handle_requests(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        del command
-        requests = self.store.list_pending_requests(channel_id, conversation_id)
-        if not requests:
-            return CommandResponse(action="requests.list", text="No pending requests.")
-        lines = ["Pending requests:"]
-        for route in requests:
-            handle = route.request_handle or route.request_id[:8]
-            lines.append(f"- [{handle}] {route.kind}: {route.request_id}")
-        return CommandResponse(action="requests.list", text="\n".join(lines))
+        del channel_id, conversation_id, command
+        return CommandResponse(action="unknown", text="Unknown command: /requests")
 
     def _handle_approve(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         return self._handle_resolution(channel_id, conversation_id, command.args, "approval.accept", "accept")
@@ -386,14 +380,11 @@ class CommandRouter:
                         "/native call <method> <json>",
                         "/native respond <request-id-or-prefix> <json>",
                         "/native error <request-id-or-prefix> <code> <message> [data-json]",
-                        "/native requests",
                         "/native events [filters...]",
                     ]
                 ),
             )
         subcommand = command.args[0]
-        if subcommand == "requests":
-            return self._handle_requests(channel_id, conversation_id, command)
         if subcommand == "events":
             return CommandResponse(action="native.events", text="Native event journal is not available yet.")
         if subcommand == "call":
@@ -512,15 +503,21 @@ class CommandRouter:
     ) -> CommandResponse:
         token = args[0] if args else None
         try:
-            route = self.store.match_pending_request(channel_id, conversation_id, token, kind="approval")
+            routes = self.store.select_pending_requests(channel_id, conversation_id, token, kind="approval")
         except ValueError as exc:
             return CommandResponse(action=f"{action}.missing", text=str(exc))
-        if route is None:
+        if not routes:
             return CommandResponse(action=f"{action}.missing", text="Unknown approval request.")
+        request_ids = [route.request_id for route in routes]
+        if len(request_ids) == 1:
+            text = f"Recorded {decision} for {request_ids[0]}."
+        else:
+            text = f"Recorded {decision} for {len(request_ids)} requests."
         return CommandResponse(
             action=action,
-            text=f"Recorded {decision} for {route.request_id}.",
-            request_id=route.request_id,
+            text=text,
+            request_id=request_ids[0] if len(request_ids) == 1 else None,
+            request_ids=request_ids,
         )
 
     def _handle_visibility_toggle(

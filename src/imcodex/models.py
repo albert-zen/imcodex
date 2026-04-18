@@ -27,6 +27,8 @@ class PendingNativeRequestRoute:
     turn_id: str | None
     kind: str
     request_method: str | None
+    transport_request_id: str | int | None = None
+    connection_epoch: int = 0
     payload: dict[str, Any] = field(default_factory=dict)
 
 

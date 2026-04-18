@@ -13,6 +13,7 @@ from ..observability.runtime import emit_event, mark_appserver_health
 JsonDict = dict[str, Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
+ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
 
@@ -130,23 +131,27 @@ class AppServerClient:
         self._listener_task: asyncio.Task[None] | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
-        self._pending_server_requests: dict[str, JsonDict] = {}
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
+        self._connection_reset_handlers: list[ConnectionResetHandler] = []
         self.connection_mode = "disconnected"
+        self.connection_epoch = 0
         self.initialized = False
 
     async def connect(self) -> None:
         await self._ensure_connected()
 
     async def close(self) -> None:
-        await self._reset_connection()
+        await self._reset_connection(notify_handlers=False)
 
     def add_notification_handler(self, handler: NotificationHandler) -> None:
         self._notification_handlers.append(handler)
 
     def add_server_request_handler(self, handler: ServerRequestHandler) -> None:
         self._server_request_handlers.append(handler)
+
+    def add_connection_reset_handler(self, handler: ConnectionResetHandler) -> None:
+        self._connection_reset_handlers.append(handler)
 
     async def initialize(self) -> JsonDict:
         await self._ensure_connected()
@@ -238,35 +243,25 @@ class AppServerClient:
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
         return await self._request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
 
-    async def reply_to_server_request(self, request_id: str, result: JsonDict) -> JsonDict:
+    async def reply_to_transport_request(self, transport_request_id: str | int, result: JsonDict) -> JsonDict:
         await self._ensure_connected()
-        pending = self._pending_server_requests.get(request_id)
-        if pending is None:
-            raise AppServerError(f"unknown pending request: {request_id}")
-        for key in self._pending_request_keys(pending):
-            self._pending_server_requests.pop(key, None)
-        payload = {"id": pending["id"], "result": result}
+        payload = {"id": transport_request_id, "result": result}
         await self._send_json(payload)
         return payload
 
-    async def reply_error_to_server_request(
+    async def reply_error_to_transport_request(
         self,
-        request_id: str,
+        transport_request_id: str | int,
         *,
         code: int,
         message: str,
         data: Any | None = None,
     ) -> JsonDict:
         await self._ensure_connected()
-        pending = self._pending_server_requests.get(request_id)
-        if pending is None:
-            raise AppServerError(f"unknown pending request: {request_id}")
-        for key in self._pending_request_keys(pending):
-            self._pending_server_requests.pop(key, None)
         error: JsonDict = {"code": code, "message": message}
         if data is not None:
             error["data"] = data
-        payload = {"id": pending["id"], "error": error}
+        payload = {"id": transport_request_id, "error": error}
         await self._send_json(payload)
         return payload
 
@@ -288,6 +283,7 @@ class AppServerClient:
             if websocket is not None:
                 self._transport = WebSocketAppServerTransport(websocket)
                 self.connection_mode = "shared-ws"
+                self.connection_epoch += 1
                 emit_event(
                     component="appserver.client",
                     event="appserver.connect.shared_ws_succeeded",
@@ -298,6 +294,7 @@ class AppServerClient:
                 process = await self._supervisor.start()
                 self._transport = StdioAppServerTransport(process)
                 self.connection_mode = "spawned-stdio"
+                self.connection_epoch += 1
                 emit_event(
                     component="appserver.client",
                     event="appserver.connect.spawn_stdio_succeeded",
@@ -369,14 +366,14 @@ class AppServerClient:
             return
         if "id" in message and "method" in message:
             request_id = str(message["id"])
-            for key in self._pending_request_keys(message):
-                self._pending_server_requests[key] = message
             enriched = {
                 "id": message["id"],
                 "method": message["method"],
                 "params": {
                     **(message.get("params") or {}),
                     "_request_id": request_id,
+                    "_transport_request_id": message["id"],
+                    "_connection_epoch": self.connection_epoch,
                 },
             }
             for handler in list(self._server_request_handlers):
@@ -391,7 +388,8 @@ class AppServerClient:
                 if inspect.isawaitable(result):
                     await result
 
-    async def _reset_connection(self) -> None:
+    async def _reset_connection(self, *, notify_handlers: bool = True) -> None:
+        reset_epoch = self.connection_epoch
         listener_task = self._listener_task
         self._listener_task = None
         if listener_task is not None and listener_task is not asyncio.current_task():
@@ -404,10 +402,14 @@ class AppServerClient:
         if transport is not None:
             with contextlib.suppress(Exception):
                 await transport.close()
-        self._pending_server_requests.clear()
         self.initialized = False
         self.connection_mode = "disconnected"
         await self._supervisor.stop()
+        if notify_handlers and reset_epoch > 0:
+            for handler in list(self._connection_reset_handlers):
+                result = handler(reset_epoch)
+                if inspect.isawaitable(result):
+                    await result
         emit_event(
             component="appserver.client",
             event="appserver.connection.closed",
@@ -424,16 +426,6 @@ class AppServerClient:
             "service_name": "serviceName",
         }
         return {mappings.get(key, key): value for key, value in payload.items()}
-
-    def _pending_request_keys(self, message: JsonDict) -> set[str]:
-        keys = {str(message.get("id") or "")}
-        params = message.get("params")
-        if isinstance(params, dict):
-            native_request_id = params.get("requestId")
-            if native_request_id is not None:
-                keys.add(str(native_request_id))
-        keys.discard("")
-        return keys
 
     def _normalize_result(self, method: str, result: JsonDict) -> JsonDict:
         if method in _TRIMMED_THREAD_METHODS:

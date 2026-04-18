@@ -221,22 +221,29 @@ class CodexBackend:
         active = self.store.get_active_turn(binding.thread_id)
         if active is None:
             return False
+        return await self.interrupt_turn(binding.thread_id, active[0])
+
+    async def interrupt_turn(self, thread_id: str, turn_id: str) -> bool:
         try:
-            await self.client.interrupt_turn(binding.thread_id, active[0])
+            await self.client.interrupt_turn(thread_id, turn_id)
         except AppServerError as exc:
             if not self._is_stale_turn_error(exc):
                 raise
-            self.store.suppress_turn(binding.thread_id, active[0])
-            self.store.clear_active_turn(binding.thread_id)
-            self.store.remove_pending_requests_for_turn(binding.thread_id, active[0])
+            self.store.suppress_turn(thread_id, turn_id)
+            self.store.clear_active_turn(thread_id)
+            self.store.remove_pending_requests_for_turn(thread_id, turn_id)
             return False
-        self.store.suppress_turn(binding.thread_id, active[0])
-        self.store.clear_active_turn(binding.thread_id)
-        self.store.remove_pending_requests_for_turn(binding.thread_id, active[0])
+        self.store.suppress_turn(thread_id, turn_id)
+        self.store.clear_active_turn(thread_id)
+        self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
 
     async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
-        await self.client.reply_to_server_request(request_id, decision_or_answers)
+        route = self.store.get_pending_request(request_id)
+        if route is None or route.transport_request_id is None:
+            raise AppServerError(f"unknown pending request: {request_id}")
+        await self.client.reply_to_transport_request(route.transport_request_id, decision_or_answers)
+        self.store.remove_pending_request(request_id)
 
     async def reply_error_to_server_request(
         self,
@@ -246,12 +253,16 @@ class CodexBackend:
         message: str,
         data: object | None = None,
     ) -> None:
-        await self.client.reply_error_to_server_request(
-            request_id,
+        route = self.store.get_pending_request(request_id)
+        if route is None or route.transport_request_id is None:
+            raise AppServerError(f"unknown pending request: {request_id}")
+        await self.client.reply_error_to_transport_request(
+            route.transport_request_id,
             code=code,
             message=message,
             data=data,
         )
+        self.store.remove_pending_request(request_id)
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = payload.get("status")

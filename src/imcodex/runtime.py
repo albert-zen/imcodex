@@ -19,6 +19,9 @@ class AppRuntime:
         try:
             self.client.add_notification_handler(self.service.handle_notification)
             self.client.add_server_request_handler(self.service.handle_server_request)
+            reset_hook = getattr(self.client, "add_connection_reset_handler", None)
+            if callable(reset_hook):
+                reset_hook(self.service.handle_connection_reset)
             await self.client.connect()
             for channel in self.managed_channels:
                 await channel.start()

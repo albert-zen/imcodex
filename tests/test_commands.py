@@ -6,44 +6,68 @@ from imcodex.bridge import CommandRouter
 from imcodex.store import ConversationStore
 
 
-def test_requests_command_uses_native_request_identity() -> None:
+def test_requests_command_is_no_longer_supported() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.upsert_pending_request(
         request_id="native-request-abcdef",
-        request_handle="native-r",
         channel_id="qq",
         conversation_id="conv-1",
         thread_id="thr_1",
         turn_id="turn_1",
         kind="approval",
         request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
     )
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/requests")
 
-    assert response.action == "requests.list"
-    assert "native-request-abcdef" in response.text
+    assert response.action == "unknown"
+    assert "Unknown command" in response.text
 
 
 def test_approve_without_id_targets_single_pending_request() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.upsert_pending_request(
         request_id="native-request-abcdef",
-        request_handle="native-r",
         channel_id="qq",
         conversation_id="conv-1",
         thread_id="thr_1",
         turn_id="turn_1",
         kind="approval",
         request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
     )
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/approve")
 
     assert response.action == "approval.accept"
-    assert response.request_id == "native-request-abcdef"
+    assert response.request_ids == ["native-request-abcdef"]
+
+
+def test_approve_without_id_targets_all_pending_approvals() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    for index, suffix in enumerate(("abc", "def"), start=1):
+        store.upsert_pending_request(
+            request_id=f"native-request-{suffix}",
+            channel_id="qq",
+            conversation_id="conv-1",
+            thread_id="thr_1",
+            turn_id="turn_1",
+            kind="approval",
+            request_method="item/commandExecution/requestApproval",
+            transport_request_id=90 + index,
+            connection_epoch=1,
+        )
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/approve")
+
+    assert response.action == "approval.accept"
+    assert response.request_ids == ["native-request-abc", "native-request-def"]
 
 
 def test_approve_prefix_must_be_unique() -> None:
@@ -51,13 +75,14 @@ def test_approve_prefix_must_be_unique() -> None:
     for suffix in ("111", "222"):
         store.upsert_pending_request(
             request_id=f"native-request-{suffix}",
-            request_handle=f"native-{suffix}",
             channel_id="qq",
             conversation_id="conv-1",
             thread_id="thr_1",
             turn_id="turn_1",
             kind="approval",
             request_method="item/commandExecution/requestApproval",
+            transport_request_id=suffix,
+            connection_epoch=1,
         )
     router = CommandRouter(store)
 
@@ -212,4 +237,4 @@ def test_native_help_exposes_advanced_escape_hatch_commands() -> None:
 
     assert response.action == "native.help"
     assert "/native call <method> <json>" in response.text
-    assert "/native requests" in response.text
+    assert "/native requests" not in response.text
