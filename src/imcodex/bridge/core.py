@@ -174,13 +174,13 @@ class BridgeService:
             try:
                 await self.backend.reply_to_server_request(response.request_id or "", {"decision": decision})
             except (AppServerError, KeyError) as exc:
-                return self._request_reply_failure(message, response.request_id, response.action, exc)
+                return await self._request_reply_failure(message, response.request_id, response.action, exc)
         elif response.action == "request.answer":
             payload = {"answers": {key: {"answers": value} for key, value in (response.answers or {}).items()}}
             try:
                 await self.backend.reply_to_server_request(response.request_id or "", payload)
             except (AppServerError, KeyError) as exc:
-                return self._request_reply_failure(message, response.request_id, response.action, exc)
+                return await self._request_reply_failure(message, response.request_id, response.action, exc)
         elif response.action == "native.call":
             payload = response.payload or {}
             result = await self.backend.call_native(
@@ -192,7 +192,7 @@ class BridgeService:
             try:
                 await self.backend.reply_to_server_request(response.request_id or "", response.payload or {})
             except (AppServerError, KeyError) as exc:
-                return self._request_reply_failure(message, response.request_id, response.action, exc)
+                return await self._request_reply_failure(message, response.request_id, response.action, exc)
         elif response.action == "native.error":
             payload = response.payload or {}
             try:
@@ -443,7 +443,7 @@ class BridgeService:
     def _normalize_text(self, value: str) -> str:
         return " ".join(value.lower().replace("_", " ").replace("-", " ").split())
 
-    def _request_reply_failure(
+    async def _request_reply_failure(
         self,
         inbound: InboundMessage,
         request_id: str | None,
@@ -451,6 +451,34 @@ class BridgeService:
         error: AppServerError | KeyError,
     ) -> list[OutboundMessage]:
         if self._is_expired_server_request_error(error):
+            route = self.store.match_pending_request(
+                inbound.channel_id,
+                inbound.conversation_id,
+                request_id,
+            )
+            if route is not None and route.thread_id and route.turn_id:
+                active = self.store.get_active_turn(route.thread_id)
+                if active is not None and active[0] == route.turn_id:
+                    try:
+                        await self.backend.interrupt_active_turn(inbound.channel_id, inbound.conversation_id)
+                    except AppServerError:
+                        return [
+                            self._message(
+                                inbound,
+                                "status",
+                                f"Request {request_id} is out of sync with Codex and the active turn could not be stopped automatically. Try /stop.",
+                                request_id=request_id,
+                            )
+                        ]
+                    self.store.remove_pending_request(request_id or "")
+                    return [
+                        self._message(
+                            inbound,
+                            "status",
+                            f"Request {request_id} is out of sync with Codex. I stopped the active turn so you can continue.",
+                            request_id=request_id,
+                        )
+                    ]
             self.store.remove_pending_request(request_id or "")
             return [
                 self._message(

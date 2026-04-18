@@ -356,6 +356,51 @@ async def test_expired_request_reply_returns_status_and_clears_route() -> None:
 
 
 @pytest.mark.asyncio
+async def test_expired_request_reply_interrupts_stuck_turn_when_route_is_desynced() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "turn/interrupt": [{"id": 2, "result": {"ok": True}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    store.upsert_pending_request(
+        request_id="native-request-abcdef",
+        request_handle="native-r",
+        channel_id="qq",
+        conversation_id="conv-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        kind="approval",
+        request_method="item/commandExecution/requestApproval",
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/approve native-request-abcdef",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "out of sync with Codex" in messages[0].text
+    assert "stopped the active turn" in messages[0].text
+    assert store.get_active_turn("thr_1") is None
+    assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is None
+    interrupt_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/interrupt"]
+    assert interrupt_payloads == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_transient_request_reply_failure_keeps_route_for_retry() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1.0)
