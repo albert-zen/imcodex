@@ -107,6 +107,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         run_dir=tmp_path / ".imcodex-run",
         codex_bin="codex",
         app_server_url=None,
+        debug_api_enabled=False,
         log_level="INFO",
         http_host="127.0.0.1",
         http_port=8000,

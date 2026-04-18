@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from .channels import create_app
 from .composition import build_runtime
+from .debug_harness.api import install_debug_routes
 from .runtime import AppRuntime
 
 
@@ -23,5 +24,7 @@ def create_application(
             await runtime.stop()
 
     app = create_app(runtime.service)
+    if bool(getattr(settings, "debug_api_enabled", False)):
+        install_debug_routes(app, runtime)
     app.router.lifespan_context = lifespan
     return app

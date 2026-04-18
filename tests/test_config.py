@@ -23,3 +23,13 @@ def test_settings_reads_optional_run_dir_from_env(monkeypatch, tmp_path) -> None
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
 
     assert settings.run_dir == Path(".custom-run")
+
+
+def test_settings_reads_optional_debug_api_flag_from_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_DEBUG_API_ENABLED", "1")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.debug_api_enabled is True

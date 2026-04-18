@@ -35,6 +35,7 @@ class Settings:
     run_dir: Path
     codex_bin: str
     app_server_url: str | None
+    debug_api_enabled: bool
     log_level: str
     http_host: str
     http_port: int
@@ -63,6 +64,7 @@ class Settings:
             run_dir=Path(_env("IMCODEX_RUN_DIR", ".imcodex-run", dotenv)),
             codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
             app_server_url=_env("IMCODEX_APP_SERVER_URL", "", dotenv) or None,
+            debug_api_enabled=_env_bool("IMCODEX_DEBUG_API_ENABLED", False, dotenv),
             log_level=_env("IMCODEX_LOG_LEVEL", "INFO", dotenv),
             http_host=_env("IMCODEX_HTTP_HOST", "0.0.0.0", dotenv),
             http_port=int(_env("IMCODEX_HTTP_PORT", "8000", dotenv)),
