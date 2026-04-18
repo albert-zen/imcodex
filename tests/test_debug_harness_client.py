@@ -97,3 +97,31 @@ def test_client_can_inject_client_pending_request_and_force_reset() -> None:
     assert inject_payload == {"request_id": "native-request-abcdef", "jsonrpc_id": 99}
     assert reset_url == "http://127.0.0.1:8011/api/debug/force/client-reset"
     assert reset_payload == {}
+
+
+def test_client_can_inject_native_style_server_request() -> None:
+    http_client = _RecordingHttpClient()
+    client = DebugHarnessClient(http_client=http_client)
+
+    response = client.inject_server_request(
+        manifest=_manifest(),
+        jsonrpc_id=99,
+        method="item/commandExecution/requestApproval",
+        request_id="native-request-abcdef",
+        thread_id="thr-1",
+        turn_id="turn-1",
+        payload={"reason": "Need approval"},
+    )
+
+    assert response["messages"][0]["text"] == ""
+    assert len(http_client.calls) == 1
+    url, payload = http_client.calls[0]
+    assert url == "http://127.0.0.1:8011/api/debug/inject/server-request"
+    assert payload == {
+        "id": 99,
+        "method": "item/commandExecution/requestApproval",
+        "request_id": "native-request-abcdef",
+        "thread_id": "thr-1",
+        "turn_id": "turn-1",
+        "payload": {"reason": "Need approval"},
+    }

@@ -88,6 +88,15 @@ def run_debug_cli(
             )
             _write(stdout, result)
             return 0
+        if args.scenario_name == "approval-live":
+            result = scenarios.run_approval_live_scenario(
+                manager=manager,
+                client=client,
+                inspector=inspector,
+                port=args.port,
+            )
+            _write(stdout, result)
+            return 0
         raise SystemExit(f"unsupported scenario: {args.scenario_name}")
     raise SystemExit(f"unsupported command: {args.command}")
 
@@ -132,7 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
     events.add_argument("--filter-prefix")
 
     scenario = subparsers.add_parser("scenario")
-    scenario.add_argument("scenario_name", choices=["restart-gap", "approval-stall"])
+    scenario.add_argument("scenario_name", choices=["restart-gap", "approval-stall", "approval-live"])
     scenario.add_argument("--port", type=int, required=True)
     return parser
 

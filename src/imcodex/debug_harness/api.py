@@ -111,9 +111,30 @@ def install_debug_routes(app: FastAPI, runtime) -> None:
             turn_id=str(payload.get("turn_id") or "") or None,
             kind=str(payload.get("kind") or "approval"),
             request_method=str(payload.get("request_method") or "") or None,
+            transport_request_id=payload.get("transport_request_id"),
+            connection_epoch=int(payload.get("connection_epoch") or 0),
             payload=dict(payload.get("payload") or {}),
         )
         return {"ok": True, "request_id": route.request_id}
+
+    @app.post("/api/debug/inject/server-request")
+    async def inject_server_request(payload: dict[str, Any]) -> dict[str, Any]:
+        client = getattr(getattr(runtime, "service", None), "backend", None)
+        client = getattr(client, "client", None)
+        request = {
+            "id": payload.get("id"),
+            "method": str(payload.get("method") or ""),
+            "params": {
+                **dict(payload.get("payload") or {}),
+                "requestId": str(payload.get("request_id") or ""),
+                "threadId": str(payload.get("thread_id") or ""),
+                "turnId": str(payload.get("turn_id") or ""),
+                "_transport_request_id": payload.get("id"),
+                "_connection_epoch": int(getattr(client, "connection_epoch", 0) or 0),
+            },
+        }
+        await runtime.service.handle_server_request(request)
+        return {"ok": True, "request_id": request["params"]["requestId"]}
 
     @app.post("/api/debug/inject/client-pending-request")
     async def inject_client_pending_request(payload: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +197,8 @@ def _route_to_dict(route) -> dict[str, Any]:
         "turn_id": route.turn_id,
         "kind": route.kind,
         "request_method": route.request_method,
+        "transport_request_id": route.transport_request_id,
+        "connection_epoch": route.connection_epoch,
         "payload": route.payload,
     }
 

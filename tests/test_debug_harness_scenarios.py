@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from imcodex.debug_harness.models import DebugRunManifest
-from imcodex.debug_harness.scenarios import run_approval_stall_scenario, run_restart_gap_scenario
+from imcodex.debug_harness.scenarios import (
+    run_approval_live_scenario,
+    run_approval_stall_scenario,
+    run_restart_gap_scenario,
+)
 
 
 class _StubManager:
@@ -40,20 +44,12 @@ class _StubClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
 
-    def inject_binding(self, **payload):
-        self.calls.append(("binding", payload))
-        return {"ok": True}
-
     def inject_active_turn(self, **payload):
         self.calls.append(("active_turn", payload))
         return {"ok": True}
 
-    def inject_pending_request(self, **payload):
-        self.calls.append(("pending_request", payload))
-        return {"ok": True}
-
-    def inject_client_pending_request(self, **payload):
-        self.calls.append(("client_pending_request", payload))
+    def inject_server_request(self, **payload):
+        self.calls.append(("server_request", payload))
         return {"ok": True}
 
     def force_client_reset(self, **payload):
@@ -62,10 +58,15 @@ class _StubClient:
 
     def send(self, **payload):
         self.calls.append(("send", payload))
+        text = payload.get("text")
+        if text == "/approve native-request-abcdef":
+            response_text = "[System] Unknown approval request."
+        else:
+            response_text = text if isinstance(text, str) else ""
         return {
             "messages": [
                 {
-                    "text": "[System] Request native-request-abcdef is out of sync with Codex and the active turn could not be stopped automatically. Try /stop."
+                    "text": response_text
                 }
             ]
         }
@@ -80,21 +81,52 @@ class _StubInspector:
         self.conversation_calls += 1
         if self.conversation_calls == 1:
             return {
-                "binding": {"thread_id": "thr-debug"},
+                "binding": {"thread_id": "thr-real"},
+                "active_turn": None,
+                "pending_requests": [],
+            }
+        if self.conversation_calls == 2:
+            return {
+                "binding": {"thread_id": "thr-real"},
                 "active_turn": {"turn_id": "turn-debug", "status": "inProgress"},
                 "pending_requests": [{"request_id": "native-request-abcdef"}],
             }
+        if self.conversation_calls == 3:
+            return {
+                "binding": {"thread_id": "thr-real"},
+                "active_turn": None,
+                "pending_requests": [],
+            }
         return {
-            "binding": {"thread_id": "thr-debug"},
+            "binding": {"thread_id": "thr-real"},
             "active_turn": {"turn_id": "turn-debug", "status": "inProgress"},
-            "pending_requests": [{"request_id": "native-request-abcdef"}],
+            "pending_requests": [],
         }
 
     def inspect_runtime_state(self, manifest):
         self.runtime_calls += 1
-        if self.runtime_calls == 1:
-            return {"appserver": {"pending_server_request_ids": ["native-request-abcdef"]}}
         return {"appserver": {"pending_server_request_ids": []}}
+
+    def wait_for_pending_requests(self, manifest, channel_id: str, conversation_id: str, *, timeout_s: float, interval_s: float):
+        return {
+            "binding": {"thread_id": "thr-real"},
+            "active_turn": {"turn_id": "turn-real", "status": "inProgress"},
+            "pending_requests": [{"request_id": "native-request-live"}],
+        }
+
+    def wait_until_no_pending_requests(self, manifest, channel_id: str, conversation_id: str, *, timeout_s: float, interval_s: float):
+        return {
+            "binding": {"thread_id": "thr-real"},
+            "active_turn": None,
+            "pending_requests": [],
+        }
+
+    def wait_for_active_turn(self, manifest, channel_id: str, conversation_id: str, *, timeout_s: float, interval_s: float):
+        return {
+            "binding": {"thread_id": "thr-real"},
+            "active_turn": {"turn_id": "turn-debug", "status": "inProgress"},
+            "pending_requests": [],
+        }
 
 
 def test_run_approval_stall_scenario_captures_client_reset_desync() -> None:
@@ -119,18 +151,18 @@ def test_run_approval_stall_scenario_captures_client_reset_desync() -> None:
     assert manager.stopped is True
     assert (
         result["response"]["messages"][0]["text"]
-        == "[System] Request native-request-abcdef is out of sync with Codex and the active turn could not be stopped automatically. Try /stop."
+        == "[System] Unknown approval request."
     )
     assert result["before"]["pending_requests"][0]["request_id"] == "native-request-abcdef"
-    assert result["runtime_before_reset"]["appserver"]["pending_server_request_ids"] == ["native-request-abcdef"]
+    assert result["runtime_before_reset"]["appserver"]["pending_server_request_ids"] == []
     assert result["runtime_after_reset"]["appserver"]["pending_server_request_ids"] == []
-    assert result["after"]["pending_requests"][0]["request_id"] == "native-request-abcdef"
-    assert result["after"]["active_turn"]["turn_id"] == "turn-debug"
+    assert result["after"]["pending_requests"] == []
+    assert result["after"]["active_turn"] is None
     assert [call[0] for call in client.calls] == [
-        "binding",
+        "send",
+        "send",
         "active_turn",
-        "pending_request",
-        "client_pending_request",
+        "server_request",
         "force_client_reset",
         "send",
     ]
@@ -155,3 +187,37 @@ def test_run_restart_gap_scenario_reports_no_auto_restart_after_stop() -> None:
     assert result["before_stop"]["status"] == "healthy"
     assert result["after_stop"]["port_listening"] is False
     assert result["after_stop"]["auto_restarted"] is False
+
+
+def test_run_approval_live_scenario_waits_for_real_pending_requests() -> None:
+    manifest = DebugRunManifest(
+        run_id="debug-approval-live",
+        pid=51234,
+        port=8016,
+        purpose="approval-live",
+        cwd=str(Path(r"D:\desktop\imcodex-debug-lab\cwd\debug-approval-live")),
+        data_dir=str(Path(r"D:\desktop\imcodex-debug-lab\data\debug-approval-live")),
+        run_dir=str(Path(r"D:\desktop\imcodex-debug-lab\run\debug-approval-live")),
+        started_at="2026-04-19T10:30:01+08:00",
+        status="running",
+    )
+    manager = _StubManager(manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+
+    result = run_approval_live_scenario(manager=manager, client=client, inspector=inspector, port=8016)
+
+    assert manager.started is True
+    assert manager.stopped is True
+    assert result["pending"]["pending_requests"][0]["request_id"] == "native-request-live"
+    assert result["after"]["pending_requests"] == []
+    assert result["after_followup"]["active_turn"]["turn_id"] == "turn-debug"
+    assert [call[0] for call in client.calls] == [
+        "send",
+        "send",
+        "send",
+        "force_client_reset",
+        "send",
+        "send",
+    ]
+    assert client.calls[2][1]["text"].startswith("Run the PowerShell command")

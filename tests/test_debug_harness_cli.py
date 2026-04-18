@@ -78,6 +78,10 @@ class _StubScenarios:
         self.calls.append(("approval-stall", payload))
         return {"scenario": "approval-stall", "result": "ok"}
 
+    def run_approval_live_scenario(self, **payload):
+        self.calls.append(("approval-live", payload))
+        return {"scenario": "approval-live", "result": "ok"}
+
 
 def _manifest() -> DebugRunManifest:
     return DebugRunManifest(
@@ -205,3 +209,37 @@ def test_cli_scenario_approval_stall_wires_dependencies() -> None:
     assert scenarios.calls[0][1]["client"] is client
     assert scenarios.calls[0][1]["inspector"] is inspector
     assert scenarios.calls[0][1]["port"] == 8015
+
+
+def test_cli_scenario_approval_live_wires_dependencies() -> None:
+    output = io.StringIO()
+    manifest = _manifest()
+    manager = _StubManager(manifest)
+    client = _StubClient()
+    inspector = _StubInspector()
+    scenarios = _StubScenarios()
+
+    exit_code = run_debug_cli(
+        [
+            "--lab-root",
+            r"D:\desktop\imcodex-debug-lab",
+            "scenario",
+            "approval-live",
+            "--port",
+            "8016",
+        ],
+        stdout=output,
+        manager=manager,
+        client=client,
+        inspector=inspector,
+        scenarios=scenarios,
+    )
+
+    body = json.loads(output.getvalue())
+    assert exit_code == 0
+    assert body["scenario"] == "approval-live"
+    assert scenarios.calls[0][0] == "approval-live"
+    assert scenarios.calls[0][1]["manager"] is manager
+    assert scenarios.calls[0][1]["client"] is client
+    assert scenarios.calls[0][1]["inspector"] is inspector
+    assert scenarios.calls[0][1]["port"] == 8016

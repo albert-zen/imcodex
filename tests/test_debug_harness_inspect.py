@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
 
 from imcodex.debug_harness.inspect import DebugHarnessInspector
@@ -32,6 +33,28 @@ class _RecordingHttpClient:
         if "/api/debug/thread/" in url:
             return _Response(self.thread_body)
         return _Response(self.conversation_body)
+
+
+class _SequencedHttpClient:
+    def __init__(self, conversation_bodies: list[dict]) -> None:
+        self.conversation_bodies = deque(conversation_bodies)
+
+    def get(self, _url: str):
+        class _Response:
+            def __init__(self, body: dict) -> None:
+                self._body = body
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return self._body
+
+        if self.conversation_bodies:
+            body = self.conversation_bodies.popleft()
+        else:
+            body = {}
+        return _Response(body)
 
 
 def _manifest(tmp_path: Path) -> DebugRunManifest:
@@ -94,3 +117,72 @@ def test_inspector_fetches_live_runtime_and_conversation_state(tmp_path: Path) -
     assert runtime_state["appserver"]["connection_mode"] == "shared-ws"
     assert conversation_state["binding"]["thread_id"] == "thr-1"
     assert thread_state["thread_snapshot"]["thread_id"] == "thr-1"
+
+
+def test_inspector_waits_until_pending_requests_appear(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    inspector = DebugHarnessInspector(
+        http_client=_SequencedHttpClient(
+            [
+                {"pending_requests": []},
+                {"pending_requests": []},
+                {"pending_requests": [{"request_id": "native-request-abcdef"}]},
+            ]
+        )
+    )
+
+    result = inspector.wait_for_pending_requests(
+        manifest,
+        "debug",
+        "conv-1",
+        timeout_s=1.0,
+        interval_s=0.0,
+    )
+
+    assert result["pending_requests"][0]["request_id"] == "native-request-abcdef"
+
+
+def test_inspector_waits_until_pending_requests_clear(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    inspector = DebugHarnessInspector(
+        http_client=_SequencedHttpClient(
+            [
+                {"pending_requests": [{"request_id": "native-request-abcdef"}]},
+                {"pending_requests": [{"request_id": "native-request-abcdef"}]},
+                {"pending_requests": []},
+            ]
+        )
+    )
+
+    result = inspector.wait_until_no_pending_requests(
+        manifest,
+        "debug",
+        "conv-1",
+        timeout_s=1.0,
+        interval_s=0.0,
+    )
+
+    assert result["pending_requests"] == []
+
+
+def test_inspector_waits_until_active_turn_appears(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    inspector = DebugHarnessInspector(
+        http_client=_SequencedHttpClient(
+            [
+                {"active_turn": None},
+                {"active_turn": None},
+                {"active_turn": {"turn_id": "turn-123", "status": "inProgress"}},
+            ]
+        )
+    )
+
+    result = inspector.wait_for_active_turn(
+        manifest,
+        "debug",
+        "conv-1",
+        timeout_s=1.0,
+        interval_s=0.0,
+    )
+
+    assert result["active_turn"]["turn_id"] == "turn-123"

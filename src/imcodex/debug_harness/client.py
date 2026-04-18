@@ -120,6 +120,30 @@ class DebugHarnessClient:
             {"request_id": request_id, "jsonrpc_id": jsonrpc_id},
         )
 
+    def inject_server_request(
+        self,
+        *,
+        manifest: DebugRunManifest,
+        jsonrpc_id: int,
+        method: str,
+        request_id: str,
+        thread_id: str,
+        turn_id: str,
+        payload: dict,
+    ) -> dict:
+        return self._post_debug(
+            manifest,
+            "/api/debug/inject/server-request",
+            {
+                "id": jsonrpc_id,
+                "method": method,
+                "request_id": request_id,
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "payload": payload,
+            },
+        )
+
     def force_client_reset(
         self,
         *,

@@ -109,6 +109,7 @@ Run the built-in reproduction scenarios:
 ```powershell
 python -m imcodex debug scenario restart-gap --port 8016
 python -m imcodex debug scenario approval-stall --port 8022
+python -m imcodex debug scenario approval-live --port 8024
 ```
 
 ## Built-In Scenarios
@@ -125,20 +126,31 @@ Used to debug:
 
 ### `approval-stall`
 
-Creates an isolated instance, injects:
-
-- a bound conversation
-- an active turn
-- a store-side pending approval route
-- a client-side pending request entry
-
-Then it forces a client reset before sending `/approve <request_id>`.
+Creates an isolated instance, creates a real thread with `/cwd` and `/new`, then injects a native-shaped approval request through the real projection path before forcing a client reset.
 
 Used to debug:
 
-- stale pending request routes
+- request projection behavior across client reset
 - bridge/client request state mismatches after reset
-- turns that remain in progress after the client has forgotten a pending request
+- approval routes that become invalid before the user replies
+
+### `approval-live`
+
+Creates an isolated instance, then drives a normal-language prompt that causes native Codex to request approval for a real PowerShell command.
+
+The scenario then:
+
+- waits for the real approval request to appear
+- forces a client reset
+- sends `/approve`
+- verifies that the stale approval is gone
+- sends a normal follow-up message and waits for a new turn to start
+
+Used to debug:
+
+- approval behavior on a normal end-to-end path
+- reset cleanup for real paused turns
+- whether the conversation can continue without `/stop`
 
 ## Notes
 
