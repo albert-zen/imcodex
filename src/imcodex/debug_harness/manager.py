@@ -152,8 +152,14 @@ class DebugInstanceManager:
         return DebugRunManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
     def _generate_run_id(self) -> str:
-        timestamp = self.now().replace("-", "").replace(":", "").replace("+08:00", "")
-        timestamp = timestamp.replace("T", "-")[:15]
+        timestamp = self.now()
+        timestamp = timestamp.split("+", 1)[0]
+        timestamp = timestamp.replace("-", "").replace(":", "")
+        if "." in timestamp:
+            main, fractional = timestamp.split(".", 1)
+            timestamp = f"{main.replace('T', '-')}-{fractional}"
+        else:
+            timestamp = timestamp.replace("T", "-")
         return f"debug-{timestamp}"
 
     def _next_run_id(self) -> str:

@@ -52,14 +52,29 @@ class _StubClient:
         self.calls.append(("pending_request", payload))
         return {"ok": True}
 
+    def inject_client_pending_request(self, **payload):
+        self.calls.append(("client_pending_request", payload))
+        return {"ok": True}
+
+    def force_client_reset(self, **payload):
+        self.calls.append(("force_client_reset", payload))
+        return {"ok": True}
+
     def send(self, **payload):
         self.calls.append(("send", payload))
-        return {"messages": [{"text": "[System] Request native-request-abcdef is no longer pending."}]}
+        return {
+            "messages": [
+                {
+                    "text": "[System] Request native-request-abcdef is out of sync with Codex and the active turn could not be stopped automatically. Try /stop."
+                }
+            ]
+        }
 
 
 class _StubInspector:
     def __init__(self) -> None:
         self.conversation_calls = 0
+        self.runtime_calls = 0
 
     def inspect_conversation(self, manifest, channel_id: str, conversation_id: str):
         self.conversation_calls += 1
@@ -72,14 +87,17 @@ class _StubInspector:
         return {
             "binding": {"thread_id": "thr-debug"},
             "active_turn": {"turn_id": "turn-debug", "status": "inProgress"},
-            "pending_requests": [],
+            "pending_requests": [{"request_id": "native-request-abcdef"}],
         }
 
     def inspect_runtime_state(self, manifest):
+        self.runtime_calls += 1
+        if self.runtime_calls == 1:
+            return {"appserver": {"pending_server_request_ids": ["native-request-abcdef"]}}
         return {"appserver": {"pending_server_request_ids": []}}
 
 
-def test_run_approval_stall_scenario_captures_request_route_mismatch() -> None:
+def test_run_approval_stall_scenario_captures_client_reset_desync() -> None:
     manifest = DebugRunManifest(
         run_id="debug-approval",
         pid=51234,
@@ -99,11 +117,23 @@ def test_run_approval_stall_scenario_captures_request_route_mismatch() -> None:
 
     assert manager.started is True
     assert manager.stopped is True
-    assert result["response"]["messages"][0]["text"].endswith("is no longer pending.")
+    assert (
+        result["response"]["messages"][0]["text"]
+        == "[System] Request native-request-abcdef is out of sync with Codex and the active turn could not be stopped automatically. Try /stop."
+    )
     assert result["before"]["pending_requests"][0]["request_id"] == "native-request-abcdef"
-    assert result["after"]["pending_requests"] == []
+    assert result["runtime_before_reset"]["appserver"]["pending_server_request_ids"] == ["native-request-abcdef"]
+    assert result["runtime_after_reset"]["appserver"]["pending_server_request_ids"] == []
+    assert result["after"]["pending_requests"][0]["request_id"] == "native-request-abcdef"
     assert result["after"]["active_turn"]["turn_id"] == "turn-debug"
-    assert result["runtime"]["appserver"]["pending_server_request_ids"] == []
+    assert [call[0] for call in client.calls] == [
+        "binding",
+        "active_turn",
+        "pending_request",
+        "client_pending_request",
+        "force_client_reset",
+        "send",
+    ]
 
 
 def test_run_restart_gap_scenario_reports_no_auto_restart_after_stop() -> None:

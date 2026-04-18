@@ -107,6 +107,30 @@ class DebugHarnessClient:
             },
         )
 
+    def inject_client_pending_request(
+        self,
+        *,
+        manifest: DebugRunManifest,
+        request_id: str,
+        jsonrpc_id: int,
+    ) -> dict:
+        return self._post_debug(
+            manifest,
+            "/api/debug/inject/client-pending-request",
+            {"request_id": request_id, "jsonrpc_id": jsonrpc_id},
+        )
+
+    def force_client_reset(
+        self,
+        *,
+        manifest: DebugRunManifest,
+    ) -> dict:
+        return self._post_debug(
+            manifest,
+            "/api/debug/force/client-reset",
+            {},
+        )
+
     def _post_message(
         self,
         *,

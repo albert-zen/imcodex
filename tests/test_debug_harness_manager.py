@@ -139,6 +139,23 @@ def test_start_generates_unique_run_ids_when_timestamp_collides(tmp_path: Path) 
     assert second.run_id == "debug-20260419-103001-2"
 
 
+def test_start_preserves_subsecond_precision_in_generated_run_id(tmp_path: Path) -> None:
+    def launcher(*, command: list[str], cwd: Path, env: dict[str, str]):
+        del command, cwd, env
+        return _FakeProcess(pid=51234)
+
+    manager = DebugInstanceManager(
+        root=tmp_path / "lab",
+        repo_root=Path(r"D:\desktop\imcodex"),
+        launcher=launcher,
+        now=lambda: "2026-04-19T10:30:01.123456+08:00",
+    )
+
+    manifest = manager.start(port=8011)
+
+    assert manifest.run_id == "debug-20260419-103001-123456"
+
+
 def test_default_launcher_detaches_child_stdio(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

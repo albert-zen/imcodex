@@ -61,7 +61,15 @@ def run_approval_stall_scenario(
             request_method="item/commandExecution/requestApproval",
             payload={"reason": "Need approval"},
         )
+        client.inject_client_pending_request(
+            manifest=manifest,
+            request_id="native-request-abcdef",
+            jsonrpc_id=99,
+        )
         before = inspector.inspect_conversation(manifest, "debug", "conv-approval")
+        runtime_before_reset = inspector.inspect_runtime_state(manifest)
+        client.force_client_reset(manifest=manifest)
+        runtime_after_reset = inspector.inspect_runtime_state(manifest)
         response = client.send(
             manifest=manifest,
             channel_id="debug",
@@ -70,13 +78,13 @@ def run_approval_stall_scenario(
             text="/approve native-request-abcdef",
         )
         after = inspector.inspect_conversation(manifest, "debug", "conv-approval")
-        runtime = inspector.inspect_runtime_state(manifest)
         return {
             "manifest": manifest.to_dict(),
             "before": before,
+            "runtime_before_reset": runtime_before_reset,
+            "runtime_after_reset": runtime_after_reset,
             "response": response,
             "after": after,
-            "runtime": runtime,
         }
     finally:
         manager.stop(manifest.run_id)

@@ -16,6 +16,7 @@ class _StubClient:
         self.connection_mode = "shared-ws"
         self.initialized = True
         self._pending_server_requests = {"native-request-abcdef": {"id": 99}}
+        self.reset_calls = 0
 
     def add_notification_handler(self, _handler) -> None:
         return None
@@ -28,6 +29,10 @@ class _StubClient:
 
     async def close(self) -> None:
         return None
+
+    async def _reset_connection(self) -> None:
+        self.reset_calls += 1
+        self._pending_server_requests.clear()
 
 
 async def _noop_async() -> None:
@@ -149,3 +154,43 @@ def test_debug_api_can_inject_pending_request_and_active_turn(tmp_path: Path) ->
     assert request_response.status_code == 200
     assert inspect_response.json()["active_turn"]["turn_id"] == "turn-1"
     assert inspect_response.json()["pending_requests"][0]["request_id"] == "native-request-abcdef"
+
+
+def test_debug_api_can_inject_client_pending_request_and_force_reset(tmp_path: Path) -> None:
+    health_path = tmp_path / "health.json"
+    health_path.write_text(json.dumps({"instance_id": "inst-1", "status": "healthy"}), encoding="utf-8")
+    store = ConversationStore(clock=lambda: 1.0, state_path=tmp_path / "state.json")
+    client = _StubClient()
+    runtime = SimpleNamespace(
+        client=client,
+        service=SimpleNamespace(store=store, backend=SimpleNamespace(client=client)),
+        observability=SimpleNamespace(
+            context=SimpleNamespace(instance_id="inst-1"),
+            paths=SimpleNamespace(current_health_path=health_path),
+        ),
+        managed_channels=[],
+        start=_noop_async,
+        stop=_noop_async,
+    )
+    settings = SimpleNamespace(debug_api_enabled=True)
+
+    app = create_application(settings=settings, runtime=runtime)
+    test_client = TestClient(app)
+
+    inject_response = test_client.post(
+        "/api/debug/inject/client-pending-request",
+        json={"request_id": "native-request-extra", "jsonrpc_id": 123},
+    )
+    runtime_before = test_client.get("/api/debug/runtime")
+    reset_response = test_client.post("/api/debug/force/client-reset")
+    runtime_after = test_client.get("/api/debug/runtime")
+
+    assert inject_response.status_code == 200
+    assert runtime_before.json()["appserver"]["pending_server_request_ids"] == [
+        "native-request-abcdef",
+        "native-request-extra",
+    ]
+    assert reset_response.status_code == 200
+    assert reset_response.json()["ok"] is True
+    assert client.reset_calls == 1
+    assert runtime_after.json()["appserver"]["pending_server_request_ids"] == []

@@ -18,7 +18,7 @@ class _RecordingHttpClient:
                 return None
 
             def json(self) -> dict:
-                return {"messages": [{"text": json["text"]}]}
+                return {"messages": [{"text": json.get("text", "")}]}
 
         return _Response()
 
@@ -75,3 +75,25 @@ def test_send_to_thread_attaches_first_then_sends_message() -> None:
     _, message_payload = http_client.calls[1]
     assert attach_payload["text"] == "/thread attach 019d-thread"
     assert message_payload["text"] == "continue please"
+
+
+def test_client_can_inject_client_pending_request_and_force_reset() -> None:
+    http_client = _RecordingHttpClient()
+    client = DebugHarnessClient(http_client=http_client)
+
+    inject_response = client.inject_client_pending_request(
+        manifest=_manifest(),
+        request_id="native-request-abcdef",
+        jsonrpc_id=99,
+    )
+    reset_response = client.force_client_reset(manifest=_manifest())
+
+    assert inject_response["messages"][0]["text"] == ""
+    assert reset_response["messages"][0]["text"] == ""
+    assert len(http_client.calls) == 2
+    inject_url, inject_payload = http_client.calls[0]
+    reset_url, reset_payload = http_client.calls[1]
+    assert inject_url == "http://127.0.0.1:8011/api/debug/inject/client-pending-request"
+    assert inject_payload == {"request_id": "native-request-abcdef", "jsonrpc_id": 99}
+    assert reset_url == "http://127.0.0.1:8011/api/debug/force/client-reset"
+    assert reset_payload == {}

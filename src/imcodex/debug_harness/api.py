@@ -115,6 +115,30 @@ def install_debug_routes(app: FastAPI, runtime) -> None:
         )
         return {"ok": True, "request_id": route.request_id}
 
+    @app.post("/api/debug/inject/client-pending-request")
+    async def inject_client_pending_request(payload: dict[str, Any]) -> dict[str, Any]:
+        client = getattr(getattr(runtime, "service", None), "backend", None)
+        client = getattr(client, "client", None)
+        request_id = str(payload.get("request_id") or "")
+        jsonrpc_id = payload.get("jsonrpc_id")
+        if client is None or not request_id or jsonrpc_id is None:
+            return {"ok": False}
+        pending = getattr(client, "_pending_server_requests", None)
+        if not isinstance(pending, dict):
+            return {"ok": False}
+        pending[request_id] = {"id": jsonrpc_id}
+        return {"ok": True, "request_id": request_id}
+
+    @app.post("/api/debug/force/client-reset")
+    async def force_client_reset() -> dict[str, Any]:
+        client = getattr(getattr(runtime, "service", None), "backend", None)
+        client = getattr(client, "client", None)
+        reset = getattr(client, "_reset_connection", None)
+        if not callable(reset):
+            return {"ok": False}
+        await reset()
+        return {"ok": True}
+
 
 def _read_json(path: Path | None) -> dict[str, Any] | None:
     if path is None:
