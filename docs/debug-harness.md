@@ -28,6 +28,12 @@ The default lab root is:
 
 This keeps test threads separated from normal work threads. The harness writes `.imcodex-debug-session.json` into each debug CWD so native threads are easy to identify later.
 
+Run ids preserve sub-second precision, for example:
+
+- `debug-20260419-020855-007866`
+
+This avoids collisions when multiple isolated runs start within the same second.
+
 ## Commands
 
 ### Start
@@ -102,7 +108,7 @@ Run the built-in reproduction scenarios:
 
 ```powershell
 python -m imcodex debug scenario restart-gap --port 8016
-python -m imcodex debug scenario approval-stall --port 8017
+python -m imcodex debug scenario approval-stall --port 8022
 ```
 
 ## Built-In Scenarios
@@ -119,13 +125,20 @@ Used to debug:
 
 ### `approval-stall`
 
-Creates an isolated instance, injects a bound conversation, active turn, and pending approval route, then sends `/approve <request_id>`.
+Creates an isolated instance, injects:
+
+- a bound conversation
+- an active turn
+- a store-side pending approval route
+- a client-side pending request entry
+
+Then it forces a client reset before sending `/approve <request_id>`.
 
 Used to debug:
 
 - stale pending request routes
-- bridge/native request state mismatches
-- turns that remain in progress after bridge has dropped the request route
+- bridge/client request state mismatches after reset
+- turns that remain in progress after the client has forgotten a pending request
 
 ## Notes
 
