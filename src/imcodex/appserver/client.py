@@ -161,7 +161,25 @@ class AppServerClient:
 
     async def initialize(self) -> JsonDict:
         await self._ensure_connected()
-        result = await self._request_without_initialize("initialize", {"clientInfo": self._client_info})
+        result = await self._request_without_initialize(
+            "initialize",
+            {
+                "clientInfo": self._client_info,
+                "capabilities": {
+                    "optOutNotificationMethods": [
+                        "command/exec/outputDelta",
+                        "item/agentMessage/delta",
+                        "item/plan/delta",
+                        "item/commandExecution/outputDelta",
+                        "item/fileChange/outputDelta",
+                        "item/reasoning/summaryTextDelta",
+                        "item/reasoning/textDelta",
+                        "thread/realtime/transcript/delta",
+                        "thread/realtime/outputAudio/delta",
+                    ]
+                },
+            },
+        )
         await self._notify("initialized", {})
         self.initialized = True
         for handler in list(self._connection_ready_handlers):
