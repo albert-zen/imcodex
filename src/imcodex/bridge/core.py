@@ -5,6 +5,7 @@ import json
 
 from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
 from ..models import InboundMessage, OutboundMessage
+from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
 
 
@@ -31,9 +32,57 @@ class BridgeService:
         self._rehydration_lock = asyncio.Lock()
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
-        if message.text.startswith("/"):
-            return await self._handle_command(message)
-        return await self._handle_text(message)
+        trace_id = ensure_trace_id(message)
+        message_kind = "command" if message.text.startswith("/") else "text"
+        emit_event(
+            component="bridge",
+            event="bridge.inbound.started",
+            message="Bridge started handling inbound message",
+            trace_id=trace_id,
+            channel_id=message.channel_id,
+            conversation_id=message.conversation_id,
+            user_id=message.user_id,
+            message_id=message.message_id,
+            data={
+                "message_kind": message_kind,
+                "text_length": len(message.text),
+                "text_preview": text_preview(message.text),
+                "text_sha256": text_sha256(message.text),
+            },
+        )
+        try:
+            if message_kind == "command":
+                outbound = await self._handle_command(message)
+            else:
+                outbound = await self._handle_text(message)
+        except Exception as exc:
+            emit_event(
+                component="bridge",
+                event="bridge.inbound.failed",
+                level="ERROR",
+                message="Bridge failed while handling inbound message",
+                trace_id=trace_id,
+                channel_id=message.channel_id,
+                conversation_id=message.conversation_id,
+                message_id=message.message_id,
+                data={"error_type": type(exc).__name__},
+            )
+            raise
+        emit_event(
+            component="bridge",
+            event="bridge.inbound.completed",
+            message="Bridge finished handling inbound message",
+            trace_id=trace_id,
+            channel_id=message.channel_id,
+            conversation_id=message.conversation_id,
+            message_id=message.message_id,
+            data={
+                "message_kind": message_kind,
+                "outbound_count": len(outbound),
+                "outbound_message_types": [item.message_type for item in outbound],
+            },
+        )
+        return outbound
 
     async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
@@ -397,6 +446,7 @@ class BridgeService:
             message_type=message_type,
             text=text,
             request_id=request_id,
+            metadata={"trace_id": inbound.trace_id} if inbound.trace_id else {},
         )
 
     def _command_message_type(self, action: str) -> str:

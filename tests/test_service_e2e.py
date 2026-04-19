@@ -192,6 +192,42 @@ async def test_text_without_cwd_returns_friendly_onboarding_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_bridge_emits_started_and_completed_events_for_inbound_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    observed_events: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    monkeypatch.setattr("imcodex.bridge.core.emit_event", capture_event)
+
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m1",
+        text="hello there",
+    )
+
+    await service.handle_inbound(inbound)
+
+    assert inbound.trace_id is not None
+    assert [event["event"] for event in observed_events] == [
+        "bridge.inbound.started",
+        "bridge.inbound.completed",
+    ]
+    assert all(event["trace_id"] == inbound.trace_id for event in observed_events)
+    assert observed_events[0]["data"]["message_kind"] == "text"
+    assert observed_events[1]["data"]["outbound_count"] == 1
+    assert observed_events[1]["data"]["outbound_message_types"] == ["status"]
+
+
+@pytest.mark.asyncio
 async def test_stale_resume_clears_binding_and_returns_status_message() -> None:
     process = ScriptedProcess(
         {

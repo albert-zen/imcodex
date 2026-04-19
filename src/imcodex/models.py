@@ -64,6 +64,7 @@ class InboundMessage:
     text: str
     reply_to_message_id: str | None = None
     sent_at: str | None = None
+    trace_id: str | None = None
 
 
 @dataclass(slots=True)

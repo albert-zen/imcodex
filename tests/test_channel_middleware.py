@@ -63,6 +63,51 @@ async def test_channel_middleware_dispatches_to_service_and_sets_reply_metadata(
 
 
 @pytest.mark.asyncio
+async def test_channel_middleware_emits_correlated_message_trace_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    observed_events: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    monkeypatch.setattr("imcodex.channels.middleware.emit_event", capture_event)
+
+    service = StubService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="group:group-1",
+                message_type="turn_result",
+                text="Done",
+            )
+        ]
+    )
+    adapter = CapturingAdapter()
+    middleware = UnifiedChannelMiddleware(service=service)
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="group:group-1",
+        user_id="user-1",
+        message_id="msg-1",
+        text="inspect repo",
+    )
+
+    await middleware.handle_inbound(adapter, inbound, reply_to_message_id="msg-1")
+
+    assert inbound.trace_id is not None
+    assert adapter.sent[0].metadata["trace_id"] == inbound.trace_id
+    assert [event["event"] for event in observed_events] == [
+        "message.inbound.received",
+        "message.outbound.sending",
+        "message.outbound.sent",
+    ]
+    assert all(event["trace_id"] == inbound.trace_id for event in observed_events)
+    assert observed_events[0]["data"]["text_preview"] == "inspect repo"
+    assert observed_events[1]["data"]["text_preview"] == "Done"
+
+
+@pytest.mark.asyncio
 async def test_channel_middleware_hides_raw_exception_details_from_user() -> None:
     from imcodex.channels.middleware import GENERIC_USER_ERROR_TEXT, UnifiedChannelMiddleware
 
