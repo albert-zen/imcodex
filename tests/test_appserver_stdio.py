@@ -212,6 +212,7 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
     )
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -270,6 +271,7 @@ async def test_stdio_client_replies_using_transport_request_id() -> None:
     )
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -299,6 +301,7 @@ async def test_stdio_client_respawns_after_process_eof() -> None:
     processes = iter([first, second])
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: next(processes),
     )
     client = AppServerClient(
@@ -327,6 +330,7 @@ async def test_stdio_client_increments_connection_epoch_after_respawn() -> None:
     processes = iter([first, second])
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: next(processes),
     )
     client = AppServerClient(
@@ -348,6 +352,7 @@ async def test_stdio_client_fails_inflight_request_immediately_when_pipe_closes(
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -388,6 +393,7 @@ async def test_stdio_client_handles_oversized_jsonl_messages_without_readline_li
     )
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -439,6 +445,7 @@ async def test_resume_thread_trims_history_to_recent_turns() -> None:
     )
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -657,6 +664,7 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
     processes = iter([first, second])
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        core_mode="spawned-stdio",
         spawn_process=lambda *args: next(processes),
     )
     client = AppServerClient(

@@ -5,6 +5,7 @@ __pycache__/
 .imcodex-data/
 .imcodex-run/
 .imcodex-run-sim/
+.imcodex-core/
 .imcodex-core-*/
 .codex/
 _codex_schema/

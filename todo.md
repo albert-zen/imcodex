@@ -63,6 +63,31 @@ That means:
 
 ## Now: Remove The Last Legacy State And Routing Paths
 
+### 0. Message Delivery And Runtime Cleanup
+
+- Add a short-window inbound deduplication layer for IM delivery.
+- Deduplication should key off conversation plus content identity and a tight
+  time window, not only raw upstream `message_id`.
+- Keep raw upstream message identifiers in observability so duplicate-delivery
+  root causes can still be diagnosed later.
+- Add a native-first steer delivery mode:
+  - when a regular turn is in progress, ordinary user text should prefer native
+    `turn/steer`
+  - ordinary text should not implicitly interrupt a running turn
+  - `/stop` remains the explicit interrupt path
+- Keep approval handling separate from running-turn steer semantics:
+  - pending approvals still resolve through `/approve`, `/deny`, `/cancel`
+  - plain text during pending approvals should continue the explicit
+    approval-resolution behavior already chosen for IM
+- Finish collapsing user-visible runtime modes down to the dedicated-core
+  architecture:
+  - remove or hide `shared`, `auto`, and `spawned-stdio` from normal user
+    paths
+  - fix health/status wording so dedicated websocket core is reported
+    accurately
+- Add a single development command that starts both the dedicated core and the
+  bridge together, similar to a one-shot `dev` entrypoint.
+
 ### 1. Native Session Identity
 
 - Remove the remaining `project`-heavy fields from primary runtime paths.

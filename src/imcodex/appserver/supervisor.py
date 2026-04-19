@@ -13,6 +13,7 @@ import websockets
 SpawnProcess = Callable[..., Awaitable[Any] | Any]
 ConnectWebSocket = Callable[..., Awaitable[Any] | Any]
 STDIO_STREAM_LIMIT = 1024 * 1024
+WS_MAX_SIZE = 16 * 1024 * 1024
 
 
 @dataclass(slots=True)
@@ -41,7 +42,11 @@ class AppServerSupervisor:
     async def connect_shared(self) -> Any | None:
         if self.core_mode == "spawned-stdio":
             return None
-        connect = self.websocket_factory or websockets.connect
+
+        async def _default_connect(url: str) -> Any:
+            return await websockets.connect(url, max_size=WS_MAX_SIZE)
+
+        connect = self.websocket_factory or _default_connect
         for url in self._shared_candidates():
             try:
                 connection = connect(url)

@@ -85,7 +85,11 @@ class CapturingSink:
 
 
 def _build_service(store: ConversationStore, process: ScriptedProcess, sink: CapturingSink):
-    supervisor = AppServerSupervisor(codex_bin="codex", spawn_process=lambda *args: process)
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
     client = AppServerClient(
         supervisor=supervisor,
         client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
