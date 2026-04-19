@@ -195,6 +195,36 @@ Conclusion:
 - transport choice must be treated as an explicit engineering decision
 - if we keep websocket in our environment, we should treat it as a compatibility risk rather than assuming it is the canonical path
 
+### 4.4 Websocket backpressure is not theoretical
+
+During direct debugging of a real `imcodex` stall, we reproduced a concrete websocket backpressure failure:
+
+1. Codex emitted a high-volume stream of notifications during a turn.
+2. `imcodex` consumed them too slowly.
+3. App Server logged `disconnecting slow connection after outbound queue filled`.
+4. Subsequent outbound messages for that connection were dropped.
+5. The bridge was left with stale local turn state until the next user message triggered reconnect/recovery.
+
+Relevant upstream facts:
+
+- websocket outbound writes use bounded channels
+- websocket connections are disconnectable on full outbound queues
+- stdio transport has a different behavior and waits instead of disconnecting in the tested full-queue path
+- upstream queue capacity is currently `128`
+
+Primary local sources:
+
+- `D:\\desktop\\codex-upstream\\codex-rs\\app-server\\src\\transport\\mod.rs`
+- `D:\\desktop\\codex-upstream\\codex-rs\\app-server\\src\\transport\\websocket.rs`
+- `D:\\desktop\\codex-upstream\\codex-rs\\app-server\\README.md`
+
+Conclusion:
+
+- "consume everything then decide what to show" is still correct at the architecture level
+- but in websocket mode we must also care about native backpressure and notification volume
+- the bridge cannot afford a slow, synchronous read path
+- native opt-out of unnecessary high-volume notifications is part of a correct integration, not an optional optimization
+
 ## 5. Native Codex Operations We Need For The Product
 
 These are the native APIs that matter directly to the current product behavior.
@@ -563,6 +593,12 @@ Rewrite implication:
 - the bridge must safely consume all native outputs
 - visibility rules should only decide what users see, not what the runtime handles
 
+Important clarification:
+
+- "consume all native outputs" does not mean "request every possible high-volume notification and synchronously process it on the socket read path"
+- when Codex exposes native notification suppression such as `optOutNotificationMethods`, the bridge should use it to avoid receiving streams the default product does not need
+- native opt-out is preferable to bridge-local wasteful ingestion when the product intentionally hides that class of output by default
+
 ### 8.5 Unsupported requests must fail explicitly
 
 Why:
@@ -647,6 +683,8 @@ If our deployment keeps websocket, we should:
 
 - treat it as an explicit compatibility layer
 - make reconnect and cleanup behavior very deliberate
+- design for bounded-queue backpressure instead of assuming the bridge can always read fast enough
+- keep transport reads decoupled from projection and observability work
 
 ### 10.3 Full-access does not mean approvals can be ignored forever
 
@@ -689,6 +727,26 @@ This is a central rewrite lesson:
 
 - the bridge must separate "ingest everything" from "show selectively"
 
+### 10.6 Slow-consumer disconnects can look like mysterious pauses
+
+The reproduced websocket failure showed a different hang shape from approval deadlocks:
+
+- App Server disconnected the websocket client after outbound queue pressure
+- the bridge retained stale `active_turn` state
+- the next user message forced reconnect, rehydrate, failed steer, and fallback to a fresh turn
+
+From the user's perspective, this looks like:
+
+- Codex ran for a while
+- then silently paused
+- then "woke up" only after the next message
+
+Rewrite implication:
+
+- connection loss handling must be treated as part of conversation correctness
+- stale turn cleanup after reconnect is mandatory
+- observability and projection must not be allowed to make the bridge itself the slow consumer
+
 ## 11. Concrete Rewrite Checklist Derived From This Research
 
 Before or during implementation, we should be able to answer yes to all of these:
@@ -702,7 +760,10 @@ Before or during implementation, we should be able to answer yes to all of these
 - Does `/model` read native `model/list` and write native config?
 - Does `/permission` write native config rather than bridge-owned permission state?
 - Can we ingest all native item and lifecycle notifications even if we hide some of them?
+- Do we use native notification opt-out for high-volume streams the default product does not need?
+- Is the transport read path decoupled from slow logging and projection work?
 - Do unsupported native requests fail explicitly instead of hanging?
+- If websocket disconnects mid-turn, do we promptly reconcile stale local turn state?
 - Do we keep only minimal local helper state for IM UX and routing?
 
 ## 12. Source Index

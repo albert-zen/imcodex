@@ -222,6 +222,39 @@ Default display behavior:
 Hidden output is still part of the ingest-and-classify path.
 It is hidden by policy, not ignored by architecture.
 
+## Transport And Backpressure Rules
+
+Codex App Server transport behavior is a real system constraint, not an implementation detail we can ignore.
+
+Current upstream websocket transport uses bounded outbound queues.
+If the bridge becomes a slow consumer and the websocket writer queue fills, App Server may disconnect that websocket client instead of waiting forever.
+
+The rewrite MUST assume that:
+
+- websocket notification volume can exceed what a slow bridge consumer can safely absorb
+- a hidden message is still transport traffic unless the client opted out of it natively
+- stale local turn state after disconnect is a product bug, not just an observability bug
+
+The bridge and App Server adapter MUST therefore follow these rules:
+
+- the socket read path MUST be kept fast and MUST NOT block on slow downstream projection or logging work
+- protocol/event logging MUST NOT synchronously slow the transport read path under normal operation
+- high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
+- default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
+- reconnect and rehydrate logic MUST reconcile native thread state before trusting any previously cached local `active_turn`
+
+Candidate high-volume notification classes that SHOULD be reviewed for native opt-out in the default product profile include:
+
+- `item/commandExecution/outputDelta`
+- `item/reasoning/textDelta`
+- any other per-token or per-line delta stream not required by default UX
+
+If a disconnect still happens:
+
+- the bridge MUST promptly mark the connection as lost
+- the bridge MUST NOT leave a stale local turn shown as indefinitely `inProgress`
+- the next inbound user message MUST NOT be the first moment when stale turn state is corrected
+
 ## Failure Rules
 
 User-facing failures MUST be translated into concise product language.
