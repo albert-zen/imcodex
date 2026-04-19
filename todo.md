@@ -87,6 +87,14 @@ That means:
     accurately
 - Add a single development command that starts both the dedicated core and the
   bridge together, similar to a one-shot `dev` entrypoint.
+- Investigate and stabilize the "tool call appears to hang until the user sends
+  another message" failure mode observed in the local Codex runtime.
+- Clarify observability around context pressure / compaction so it is easier to
+  tell whether long silent turns are caused by tool execution instability or
+  background context compression.
+- Add IM-user controls for native reasoning effort / thinking intensity.
+- Make the current thinking intensity visible in IM status and thread/session
+  summaries so users can tell what mode is active.
 
 ### 1. Native Session Identity
 
@@ -121,6 +129,10 @@ That means:
 - Make tool visibility configurable by stable user-facing categories rather than
   raw protocol events.
 - Keep low-value protocol chatter and token deltas out of the main chat flow.
+- Add IM-user controls for message visibility so users can choose how much
+  progress, tool activity, and protocol chatter appears in chat.
+- Make the active message-visibility mode visible from IM-facing status/help
+  surfaces.
 
 ## Next: Validate Native Continuity On Real Surfaces
 
