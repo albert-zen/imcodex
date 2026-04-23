@@ -31,9 +31,9 @@ The current rewrite target is still the same product shape:
 
 The accepted product behavior is defined separately in:
 
-- [product-behavior-spec.md](/D:/desktop/imcodex/docs/product-behavior-spec.md:1)
-- [system-constraints-spec.md](/D:/desktop/imcodex/docs/system-constraints-spec.md:1)
-- [0001-native-thin-bridge.md](/D:/desktop/imcodex/docs/adr/0001-native-thin-bridge.md:1)
+- [product-behavior-spec.md](product-behavior-spec.md)
+- [system-constraints-spec.md](system-constraints-spec.md)
+- [0001-native-thin-bridge.md](adr/0001-native-thin-bridge.md)
 
 This document exists to make the rewrite team stop guessing about Codex.
 
@@ -51,7 +51,7 @@ Current `imcodex` already has simple common message models:
 
 Source:
 
-- `D:\desktop\imcodex\src\imcodex\models.py`
+- `src\imcodex\models.py`
 
 The current fields are already close to the right minimum:
 
@@ -86,7 +86,7 @@ Current QQ behavior uses:
 
 Source:
 
-- `D:\desktop\imcodex\src\imcodex\channels\qq.py`
+- `src\imcodex\channels\qq.py`
 
 Conclusion:
 
@@ -770,11 +770,11 @@ Before or during implementation, we should be able to answer yes to all of these
 
 ### Local `imcodex` sources
 
-- `D:\desktop\imcodex\src\imcodex\models.py`
-- `D:\desktop\imcodex\src\imcodex\channels\qq.py`
-- [product-behavior-spec.md](/D:/desktop/imcodex/docs/product-behavior-spec.md:1)
-- [system-constraints-spec.md](/D:/desktop/imcodex/docs/system-constraints-spec.md:1)
-- [0001-native-thin-bridge.md](/D:/desktop/imcodex/docs/adr/0001-native-thin-bridge.md:1)
+- `src\imcodex\models.py`
+- `src\imcodex\channels\qq.py`
+- [product-behavior-spec.md](product-behavior-spec.md)
+- [system-constraints-spec.md](system-constraints-spec.md)
+- [0001-native-thin-bridge.md](adr/0001-native-thin-bridge.md)
 
 ### Local `codex-upstream` sources
 

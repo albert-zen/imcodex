@@ -30,7 +30,13 @@ The dependency direction is intentionally one-way:
 - `bridge` may depend on `appserver`, but not on `channels`
 - `appserver` must not depend on `bridge` or `channels`
 
-This direction is enforced by architecture tests in [tests/test_architecture.py](/D:/desktop/imcodex/tests/test_architecture.py).
+This direction is enforced by architecture tests in [tests/test_architecture.py](tests/test_architecture.py).
+
+## Docs
+
+- [Startup and shutdown](docs/startup.md)
+- [Product behavior](docs/product-behavior-spec.md)
+- [System constraints](docs/system-constraints-spec.md)
 
 ## Run
 
@@ -95,24 +101,7 @@ Example body:
 }
 ```
 
-## Message Contract
-
-The bridge-visible sync/async contract is documented in
-[`docs/message-contract.md`](docs/message-contract.md).
-
-In short:
-
-- normal text gets an immediate `accepted`
-- slash commands return one immediate `status`, `command_result`, or `error`
-- async progress is `turn_progress`
-- async terminal content is `turn_result`
-- approvals and user-input requests are `approval_request` and `question_request`
-
-## Deployment
-
-Use [docs/deployment.md](/D:/desktop/imcodex/docs/deployment.md) for a fresh-machine deployment checklist.
-
-The short version is:
+## Deployment Short Version
 
 1. Install Python 3.13+ and `codex`
 2. Copy `.env.example` to `.env`
@@ -129,8 +118,13 @@ Codex version requirement:
 ## Environment
 
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
+- `IMCODEX_RUN_DIR`: observability and runtime snapshot directory, default `.imcodex-run`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
-- `IMCODEX_APP_SERVER_URL`: optional websocket URL for a shared Codex app-server; default probe is `ws://127.0.0.1:8765`
+- `IMCODEX_APP_SERVER_URL`: optional websocket URL for a shared Codex app-server
+- `IMCODEX_CORE_MODE`: Codex core mode, default `spawned-stdio`
+- `IMCODEX_CORE_URL`: optional dedicated Codex core websocket URL
+- `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command
+- `IMCODEX_DEBUG_API_ENABLED`: enable debug HTTP routes, default `false`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
@@ -140,3 +134,4 @@ Codex version requirement:
 - `IMCODEX_QQ_APP_ID`: QQ bot AppID
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret
 - `IMCODEX_QQ_API_BASE`: QQ API base, default `https://api.sgroup.qq.com`
+- `IMCODEX_PYTHON`: Python executable used by helper scripts, default `python`

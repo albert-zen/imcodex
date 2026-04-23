@@ -11,8 +11,8 @@ It exists to keep the rewrite aligned with the product model and to prevent the 
 
 This document should be read together with:
 
-- [ADR 0001](/D:/desktop/imcodex/docs/adr/0001-native-thin-bridge.md)
-- [Product Behavior Spec](/D:/desktop/imcodex/docs/product-behavior-spec.md)
+- [ADR 0001](adr/0001-native-thin-bridge.md)
+- [Product Behavior Spec](product-behavior-spec.md)
 
 ## Architecture
 
