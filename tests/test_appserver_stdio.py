@@ -241,6 +241,47 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
 
 
 @pytest.mark.asyncio
+async def test_client_reads_response_while_notification_handler_is_still_running() -> None:
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    process = ScriptedProcess(
+        {
+            "initialize": [
+                {
+                    "method": "thread/status/changed",
+                    "params": {"threadId": "thr_1", "status": "idle"},
+                },
+                {"id": 1, "result": {"ok": True}},
+            ],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        request_timeout_s=0.2,
+    )
+
+    async def slow_handler(_notification: dict) -> None:
+        handler_started.set()
+        await release_handler.wait()
+
+    client.add_notification_handler(slow_handler)
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert handler_started.is_set()
+    release_handler.set()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_stdio_client_replies_using_transport_request_id() -> None:
     process = ScriptedProcess(
         {

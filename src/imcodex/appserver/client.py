@@ -141,6 +141,8 @@ class AppServerClient:
         self._request_timeout_s = request_timeout_s
         self._transport: AppServerTransport | None = None
         self._listener_task: asyncio.Task[None] | None = None
+        self._dispatcher_task: asyncio.Task[None] | None = None
+        self._dispatch_queue: asyncio.Queue[JsonDict] | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
         self._notification_handlers: list[NotificationHandler] = []
@@ -332,6 +334,8 @@ class AppServerClient:
                     message="Connected to spawned stdio app-server",
                 )
                 mark_appserver_health(connected=True, mode="spawned-stdio")
+            self._dispatch_queue = asyncio.Queue()
+            self._dispatcher_task = asyncio.create_task(self._dispatch_loop())
             self._listener_task = asyncio.create_task(self._receive_loop())
             self.initialized = False
 
@@ -377,7 +381,10 @@ class AppServerClient:
         try:
             while self._transport is not None:
                 message = await self._transport.receive_json()
-                await self._dispatch(message)
+                if self._dispatch_response(message):
+                    continue
+                if self._dispatch_queue is not None:
+                    self._dispatch_queue.put_nowait(message)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -389,12 +396,34 @@ class AppServerClient:
                         future.set_exception(error)
             self.initialized = False
 
-    async def _dispatch(self, message: JsonDict) -> None:
-        if "id" in message and ("result" in message or "error" in message):
-            future = self._pending_futures.get(int(message["id"]))
-            if future is not None and not future.done():
-                future.set_result(message)
+    async def _dispatch_loop(self) -> None:
+        queue = self._dispatch_queue
+        if queue is None:
             return
+        while True:
+            message = await queue.get()
+            try:
+                await self._dispatch(message)
+            except Exception as exc:
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.dispatch.failed",
+                    level="ERROR",
+                    message=str(exc),
+                    data={"error_type": type(exc).__name__},
+                )
+            finally:
+                queue.task_done()
+
+    def _dispatch_response(self, message: JsonDict) -> bool:
+        if "id" not in message or ("result" not in message and "error" not in message):
+            return False
+        future = self._pending_futures.get(int(message["id"]))
+        if future is not None and not future.done():
+            future.set_result(message)
+        return True
+
+    async def _dispatch(self, message: JsonDict) -> None:
         if "id" in message and "method" in message:
             request_id = str(message["id"])
             enriched = {
@@ -430,6 +459,14 @@ class AppServerClient:
                 listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await listener_task
+        dispatcher_task = self._dispatcher_task
+        self._dispatcher_task = None
+        self._dispatch_queue = None
+        if dispatcher_task is not None and dispatcher_task is not asyncio.current_task():
+            if not dispatcher_task.done():
+                dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await dispatcher_task
         transport = self._transport
         self._transport = None
         if transport is not None:
