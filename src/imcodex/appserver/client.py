@@ -17,6 +17,17 @@ ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
 ConnectionReadyHandler = Callable[[int], Awaitable[None] | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
+DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
+    "command/exec/outputDelta",
+    "item/agentMessage/delta",
+    "item/plan/delta",
+    "item/commandExecution/outputDelta",
+    "item/fileChange/outputDelta",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/textDelta",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/outputAudio/delta",
+)
 
 
 class AppServerError(RuntimeError):
@@ -165,19 +176,7 @@ class AppServerClient:
             "initialize",
             {
                 "clientInfo": self._client_info,
-                "capabilities": {
-                    "optOutNotificationMethods": [
-                        "command/exec/outputDelta",
-                        "item/agentMessage/delta",
-                        "item/plan/delta",
-                        "item/commandExecution/outputDelta",
-                        "item/fileChange/outputDelta",
-                        "item/reasoning/summaryTextDelta",
-                        "item/reasoning/textDelta",
-                        "thread/realtime/transcript/delta",
-                        "thread/realtime/outputAudio/delta",
-                    ]
-                },
+                "capabilities": {"optOutNotificationMethods": list(DEFAULT_OPT_OUT_NOTIFICATION_METHODS)},
             },
         )
         await self._notify("initialized", {})

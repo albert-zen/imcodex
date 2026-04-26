@@ -53,7 +53,18 @@ pwsh -File .\scripts\start.ps1
 
 ## Native-First State
 
-`imcodex` now treats native Codex as the source of truth for:
+`imcodex` now treats native Codex source code and native protocol behavior as
+the source of truth when deciding where state should live and which layer
+should own a feature.
+
+That means:
+
+- first check whether native Codex already implements the capability
+- integrate with native behavior directly when it exists
+- only persist bridge-owned state when native Codex does not expose the needed
+  behavior and the IM bridge still must route or recover it
+
+Native Codex remains the source of truth for:
 
 - thread lifecycle
 - turn lifecycle

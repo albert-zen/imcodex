@@ -6,6 +6,7 @@ import json
 import pytest
 
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor
+from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
 
 
 class FakeStdout:
@@ -538,6 +539,9 @@ async def test_client_uses_explicit_websocket_app_server_before_spawning() -> No
     assert spawned is False
     assert client.connection_mode == "shared-ws"
     assert websocket.sent[0]["method"] == "initialize"
+    assert websocket.sent[0]["params"]["capabilities"]["optOutNotificationMethods"] == list(
+        DEFAULT_OPT_OUT_NOTIFICATION_METHODS
+    )
     await client.close()
 
 
@@ -642,6 +646,9 @@ async def test_client_falls_back_to_stdio_when_websocket_connection_fails() -> N
     assert captured_urls == ["ws://127.0.0.1:8765"]
     assert client.connection_mode == "spawned-stdio"
     assert process.sent[0]["method"] == "initialize"
+    assert process.sent[0]["params"]["capabilities"]["optOutNotificationMethods"] == list(
+        DEFAULT_OPT_OUT_NOTIFICATION_METHODS
+    )
     await client.close()
 
 

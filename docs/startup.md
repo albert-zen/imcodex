@@ -6,6 +6,36 @@ This document covers the local operator path for starting and stopping `imcodex`
 
 From the repository root:
 
+### Recommended: dedicated core + bridge
+
+For day-to-day IM use, prefer running a long-lived Codex core separately and
+then starting the IM bridge against it. This keeps the native agent core alive
+across bridge restarts.
+
+```powershell
+$env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
+
+& $env:IMCODEX_PYTHON -m imcodex core start --port 8765
+
+$env:IMCODEX_CORE_MODE="dedicated-ws"
+$env:IMCODEX_CORE_URL="ws://127.0.0.1:8765"
+pwsh -File .\scripts\start.ps1
+```
+
+After startup, check `.imcodex-run/current/health.json`:
+
+- `status` should be `healthy`
+- `http.listening` should be `true`
+- `appserver.connected` should be `true`
+
+Note: some older status text may still label websocket connections as
+`shared-ws`; verify `IMCODEX_CORE_URL` / `instance.json` when confirming the
+dedicated-core path.
+
+### Compatibility: bridge-managed core
+
+The helper script can still start the bridge by itself:
+
 ```powershell
 pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
@@ -16,6 +46,10 @@ The helper script runs:
 ```powershell
 python -m imcodex
 ```
+
+Without `IMCODEX_CORE_MODE=dedicated-ws` and `IMCODEX_CORE_URL`, this path may
+fall back to a bridge-managed `stdio` Codex app-server. It remains useful for
+quick local checks, but it is not the preferred long-running IM setup.
 
 If you use a dedicated Python environment, activate it first or set `IMCODEX_PYTHON`:
 
