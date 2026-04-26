@@ -11,6 +11,7 @@ from .client import AppServerError
 
 
 DEFAULT_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer"]
+ACTIVE_THREAD_STATUSES = {"inprogress", "in_progress", "running", "working"}
 
 
 class StaleThreadBindingError(RuntimeError):
@@ -299,6 +300,10 @@ class CodexBackend:
                 snapshot.thread_id,
                 snapshot.cwd,
             )
+            active = self.store.get_active_turn(snapshot.thread_id)
+            if active is not None and snapshot.status.strip().lower() not in ACTIVE_THREAD_STATUSES:
+                self.store.suppress_turn(snapshot.thread_id, active[0])
+                self.store.clear_active_turn(snapshot.thread_id)
             emit_event(
                 component="appserver.backend",
                 event="bridge.thread_rehydrate.succeeded",

@@ -109,8 +109,9 @@ class InterruptStaleClient:
 
 
 class RehydrateClient:
-    def __init__(self) -> None:
+    def __init__(self, *, status: str = "idle") -> None:
         self.resume_calls: list[dict] = []
+        self.status = status
 
     async def resume_thread(self, **params):
         self.resume_calls.append(params)
@@ -119,7 +120,7 @@ class RehydrateClient:
                 "id": params["thread_id"],
                 "cwd": r"D:\desktop\imcodex",
                 "preview": "Recovered thread",
-                "status": "idle",
+                "status": self.status,
             }
         }
 
@@ -279,3 +280,30 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
     ]
     assert store.get_thread_snapshot("thr_1").preview == "Recovered thread"
     assert store.get_thread_snapshot("thr_2").preview == "Recovered thread"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_idle() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client = RehydrateClient(status="idle")
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["inProgress", "in_progress", "running", "working"])
+async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_active(status: str) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client = RehydrateClient(status=status)
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") == ("turn_1", "inProgress")

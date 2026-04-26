@@ -652,6 +652,51 @@ async def test_connection_reset_in_websocket_mode_evicts_projection_without_inte
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("connection_mode", ["dedicated-ws", "shared-ws"])
+async def test_connection_ready_in_websocket_mode_clears_stale_active_turn_after_rehydrate(
+    connection_mode: str,
+) -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    await client.initialize()
+
+    assert store.get_active_turn("thr_1") is None
+    resume_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/resume"]
+    assert resume_payloads == [
+        {
+            "threadId": "thr_1",
+            "serviceName": "imcodex-test",
+            "personality": "friendly",
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_stop_command_cleans_up_stale_active_turn_when_native_turn_is_unknown() -> None:
     process = ScriptedProcess(
         {
