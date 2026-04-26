@@ -23,6 +23,7 @@ class UnifiedChannelMiddleware:
         reply_to_message_id: str | None = None,
     ) -> None:
         trace_id = ensure_trace_id(inbound)
+        content_sha = text_sha256(inbound.text)
         emit_event(
             component=f"channels.{adapter.channel_id}",
             event="message.inbound.received",
@@ -36,9 +37,28 @@ class UnifiedChannelMiddleware:
                 "reply_to_message_id": reply_to_message_id,
                 "text_length": len(inbound.text),
                 "text_preview": text_preview(inbound.text),
-                "text_sha256": text_sha256(inbound.text),
+                "text_sha256": content_sha,
             },
         )
+        if self._should_drop_duplicate_inbound(inbound=inbound, text_fingerprint=content_sha):
+            emit_event(
+                component=f"channels.{adapter.channel_id}",
+                event="message.inbound.duplicate_dropped",
+                message="Dropped short-window duplicate inbound message",
+                trace_id=trace_id,
+                channel_id=inbound.channel_id,
+                conversation_id=inbound.conversation_id,
+                user_id=inbound.user_id,
+                message_id=inbound.message_id,
+                data={
+                    "reply_to_message_id": reply_to_message_id,
+                    "text_length": len(inbound.text),
+                    "text_preview": text_preview(inbound.text),
+                    "text_sha256": content_sha,
+                    "dedup_window_s": 2.0,
+                },
+            )
+            return
         self._note_inbound_message(inbound)
         try:
             outbound = await self.service.handle_inbound(inbound)
@@ -101,6 +121,22 @@ class UnifiedChannelMiddleware:
         note = getattr(store, "note_inbound_message", None)
         if callable(note):
             note(inbound.channel_id, inbound.conversation_id, inbound.message_id)
+
+    def _should_drop_duplicate_inbound(self, *, inbound: InboundMessage, text_fingerprint: str) -> bool:
+        store = getattr(self.service, "store", None)
+        if store is None:
+            return False
+        deduper = getattr(store, "should_drop_duplicate_inbound_message", None)
+        if not callable(deduper):
+            return False
+        return bool(
+            deduper(
+                channel_id=inbound.channel_id,
+                conversation_id=inbound.conversation_id,
+                user_id=inbound.user_id,
+                text_fingerprint=text_fingerprint,
+            )
+        )
 
     def _emit_outbound_event(
         self,

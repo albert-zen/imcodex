@@ -7,12 +7,31 @@ import pytest
 from fastapi.testclient import TestClient
 
 from imcodex.channels import QQChannelAdapter, create_app
+from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.channels.qq import OP_DISPATCH, OP_HELLO
 from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.store import ConversationStore
 
 
 class StubService:
     async def handle_inbound(self, message):
+        return [
+            OutboundMessage(
+                channel_id=message.channel_id,
+                conversation_id=message.conversation_id,
+                message_type="accepted",
+                text="Accepted",
+            )
+        ]
+
+
+class CountingService:
+    def __init__(self, store: ConversationStore) -> None:
+        self.store = store
+        self.calls: list[InboundMessage] = []
+
+    async def handle_inbound(self, message: InboundMessage):
+        self.calls.append(message)
         return [
             OutboundMessage(
                 channel_id=message.channel_id,
@@ -180,3 +199,58 @@ async def test_qq_adapter_emits_ready_event_and_health_update(monkeypatch) -> No
 
     assert [event["event"] for event in observed_events] == ["qq.gateway.ready"]
     assert observed_health == [("qq", {"connected": True, "session_id": "session-1"})]
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_drops_short_window_duplicate_inbound_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_events: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    monkeypatch.setattr("imcodex.channels.middleware.emit_event", capture_event)
+
+    clock = iter([1.0, 1.0, 1.1, 1.1])
+    store = ConversationStore(clock=lambda: next(clock))
+    service = CountingService(store)
+    middleware = UnifiedChannelMiddleware(service=service)
+
+    class FakeAdapter:
+        channel_id = "qq"
+
+        def __init__(self) -> None:
+            self.sent: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.sent.append(message)
+
+    adapter = FakeAdapter()
+    inbound_1 = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m1",
+        text="Codex help这种命令你觉得会很重吗？",
+    )
+    inbound_2 = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m2",
+        text="Codex help这种命令你觉得会很重吗？",
+    )
+
+    await middleware.handle_inbound(adapter, inbound_1, reply_to_message_id="m1")
+    await middleware.handle_inbound(adapter, inbound_2, reply_to_message_id="m2")
+
+    assert [message.message_type for message in adapter.sent] == ["accepted"]
+    assert [message.message_id for message in service.calls] == ["m1"]
+    assert [event["event"] for event in observed_events] == [
+        "message.inbound.received",
+        "message.outbound.sending",
+        "message.outbound.sent",
+        "message.inbound.received",
+        "message.inbound.duplicate_dropped",
+    ]

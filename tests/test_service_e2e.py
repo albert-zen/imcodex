@@ -409,6 +409,73 @@ async def test_batch_approve_replies_to_all_pending_requests() -> None:
 
 
 @pytest.mark.asyncio
+async def test_plain_text_with_pending_approvals_cancels_all_then_continues_with_new_turn() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "turn/start": [{"id": 3, "result": {"turn": {"id": "turn_2", "status": "inProgress"}}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    for transport_id, suffix in ((91, "abc"), (92, "def")):
+        store.upsert_pending_request(
+            request_id=f"native-request-{suffix}",
+            channel_id="qq",
+            conversation_id="conv-1",
+            thread_id="thr_1",
+            turn_id="turn_1",
+            kind="approval",
+            request_method="item/commandExecution/requestApproval",
+            transport_request_id=transport_id,
+            connection_epoch=1,
+        )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="继续说刚刚那个问题",
+        )
+    )
+
+    assert messages == []
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") in {91, 92}
+    ]
+    assert reply_payloads == [
+        {"id": 91, "result": {"decision": "cancel"}},
+        {"id": 92, "result": {"decision": "cancel"}},
+    ]
+    assert store.list_pending_requests("qq", "conv-1") == []
+    assert store.get_active_turn("thr_1") == ("turn_2", "inProgress")
+    methods = [payload.get("method") for payload in process.inputs if payload.get("method")]
+    assert methods.count("turn/steer") == 0
+    assert methods.count("turn/start") == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_targeted_approve_keeps_other_pending_approvals_active() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1.0)

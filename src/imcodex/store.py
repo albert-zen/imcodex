@@ -11,6 +11,8 @@ Clock = Callable[[], float]
 
 
 class ConversationStore:
+    INBOUND_DEDUP_WINDOW_S = 2.0
+
     def __init__(
         self,
         clock: Clock,
@@ -25,6 +27,7 @@ class ConversationStore:
         self._active_turns: dict[str, tuple[str, str]] = {}
         self._suppressed_turns: set[tuple[str, str]] = set()
         self._next_model_overrides: dict[tuple[str, str], str | None] = {}
+        self._recent_inbound_fingerprints: dict[tuple[str, str], dict[str, float]] = {}
         if self.state_path and self.state_path.exists():
             self._load()
 
@@ -272,6 +275,31 @@ class ConversationStore:
         binding = self.get_binding(channel_id, conversation_id)
         binding.reply_context["last_inbound_message_id"] = message_id
         self._save()
+
+    def should_drop_duplicate_inbound_message(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        user_id: str,
+        text_fingerprint: str,
+    ) -> bool:
+        key = (channel_id, conversation_id)
+        now = self.clock()
+        bucket = self._recent_inbound_fingerprints.setdefault(key, {})
+        expired = [
+            fingerprint
+            for fingerprint, seen_at in bucket.items()
+            if now - seen_at > self.INBOUND_DEDUP_WINDOW_S
+        ]
+        for fingerprint in expired:
+            bucket.pop(fingerprint, None)
+        fingerprint = f"{user_id}:{text_fingerprint}"
+        seen_at = bucket.get(fingerprint)
+        if seen_at is not None and now - seen_at <= self.INBOUND_DEDUP_WINDOW_S:
+            return True
+        bucket[fingerprint] = now
+        return False
 
     def upsert_pending_request(
         self,
