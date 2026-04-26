@@ -1,0 +1,19 @@
+{
+  "name": "agentkit",
+  "version": "0.1.0",
+  "description": "Preserve human intent and project maintainability by guiding agents to read durable intent files and persist meaningful design, docs, and test changes.",
+  "skills": "./skills/",
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "AgentKit",
+    "shortDescription": "Preserve human intent and project maintainability through durable intent files.",
+    "longDescription": "AgentKit guides coding agents to read durable intent files before work and persist meaningful design, documentation, and test changes after work.",
+    "developerName": "AgentKit",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Use AgentKit to start this task and follow the repository closeout workflow.",
+      "Use AgentKit to check whether this task is ready for review and closeout."
+    ]
+  }
+}

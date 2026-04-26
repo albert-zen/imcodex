@@ -1,0 +1,223 @@
+version: 1
+
+docs:
+  root: docs
+  design: docs/design.md
+  workflow: docs/workflow.md
+  decisions: docs/decisions
+
+components:
+  agentkit:
+    description: Repository-local AgentKit guidance, plugin packaging, and Codex hook wiring for agent workflow.
+    code:
+      - .gitignore
+      - AGENTS.md
+      - agentkit.yml
+      - .agents/plugins/marketplace.json
+      - plugins/agentkit/**
+      - .codex/**
+    docs:
+      - docs/design.md
+      - docs/workflow.md
+    required_docs:
+      - design
+      - workflow
+    keywords:
+      - agentkit
+      - skill
+      - plugin
+      - workflow
+
+  channels:
+    description: IM-facing transport adapters, webhook ingress, outbound sinks, and channel-safe message shaping.
+    code:
+      - src/imcodex/channels/**
+      - tests/test_channels.py
+      - tests/test_service_e2e.py
+    docs:
+      - docs/design.md
+      - docs/product-behavior-spec.md
+      - docs/system-constraints-spec.md
+    required_docs:
+      - design
+    keywords:
+      - channel
+      - qq
+      - webhook
+      - adapter
+
+  bridge:
+    description: IM command handling, conversation-to-thread bindings, projection, and minimal bridge-owned state.
+    code:
+      - src/imcodex/bridge/**
+      - src/imcodex/store.py
+      - src/imcodex/models.py
+      - tests/test_commands.py
+      - tests/test_service_e2e.py
+    docs:
+      - docs/design.md
+      - docs/product-behavior-spec.md
+      - docs/system-constraints-spec.md
+      - docs/adr/0001-native-thin-bridge.md
+    required_docs:
+      - design
+    keywords:
+      - bridge
+      - command
+      - projection
+      - conversation
+
+  appserver:
+    description: Native Codex protocol integration, dedicated core transport, restart handling, and approval flow plumbing.
+    code:
+      - src/imcodex/appserver/**
+      - src/imcodex/core_cli.py
+      - src/imcodex/core_manager.py
+      - tests/test_appserver_stdio.py
+      - tests/test_backend.py
+    docs:
+      - docs/design.md
+      - docs/startup.md
+      - docs/system-constraints-spec.md
+      - docs/adr/0001-native-thin-bridge.md
+    required_docs:
+      - design
+    keywords:
+      - appserver
+      - codex
+      - core
+      - websocket
+      - approval
+
+  runtime:
+    description: Composition root, config, observability, debug harness, and operator-facing runtime commands.
+    code:
+      - src/imcodex/application.py
+      - src/imcodex/composition.py
+      - src/imcodex/config.py
+      - src/imcodex/debug_harness/**
+      - src/imcodex/logging_utils.py
+      - src/imcodex/main.py
+      - src/imcodex/observability/**
+      - src/imcodex/ops.py
+      - src/imcodex/ops_cli.py
+      - src/imcodex/runtime.py
+      - scripts/**
+    docs:
+      - docs/design.md
+      - docs/workflow.md
+      - docs/startup.md
+      - docs/architecture/dependency-rules.md
+    required_docs:
+      - design
+      - workflow
+    keywords:
+      - runtime
+      - observability
+      - restart
+      - harness
+      - startup
+
+layers:
+  support:
+    paths:
+      - src/imcodex/config.py
+      - src/imcodex/logging_utils.py
+      - src/imcodex/models.py
+      - src/imcodex/observability/context.py
+      - src/imcodex/observability/events.py
+      - src/imcodex/observability/health.py
+      - src/imcodex/observability/logger.py
+      - src/imcodex/observability/message_trace.py
+      - src/imcodex/observability/paths.py
+    may_import: []
+  state:
+    paths:
+      - src/imcodex/store.py
+      - src/imcodex/observability/runtime.py
+    may_import:
+      - support
+  appserver:
+    paths:
+      - src/imcodex/appserver/**
+      - src/imcodex/core_cli.py
+      - src/imcodex/core_manager.py
+    may_import:
+      - support
+      - state
+  bridge:
+    paths:
+      - src/imcodex/bridge/**
+    may_import:
+      - support
+      - state
+      - appserver
+  channels:
+    paths:
+      - src/imcodex/channels/**
+    may_import:
+      - support
+      - state
+  runtime:
+    paths:
+      - src/imcodex/application.py
+      - src/imcodex/composition.py
+      - src/imcodex/debug_harness/**
+      - src/imcodex/main.py
+      - src/imcodex/ops.py
+      - src/imcodex/ops_cli.py
+      - src/imcodex/runtime.py
+    may_import:
+      - support
+      - state
+      - appserver
+      - bridge
+      - channels
+
+review:
+  require_for:
+    - public_api
+    - data_model
+    - architecture
+    - guidance
+    - cli
+  default: warn
+
+skills:
+  source: plugins/agentkit/skills/agentkit/SKILL.md
+  output: plugins/agentkit/skills/agentkit/SKILL.md
+
+maintainability:
+  budgets:
+    - name: bridge-core-orchestration
+      paths:
+        - src/imcodex/bridge/core.py
+      max_lines: 750
+      max_functions: 35
+      max_classes: 2
+      mode: warn
+      guidance: "BridgeService is the biggest bridge orchestration surface. Prefer extracting formatting, approval helpers, or recovery helpers before growing it much further."
+    - name: appserver-backend
+      paths:
+        - src/imcodex/appserver/backend.py
+      max_lines: 550
+      max_functions: 30
+      max_classes: 8
+      mode: warn
+      guidance: "Keep native protocol translation and recovery focused. If backend.py grows, split dedicated core recovery or thread operations into smaller helpers."
+    - name: bridge-state
+      paths:
+        - src/imcodex/store.py
+      max_lines: 500
+      max_functions: 35
+      max_classes: 8
+      mode: warn
+      guidance: "Bridge state should stay intentionally small. Growth here is a signal to re-check whether state really belongs outside native Codex."
+    - name: debug-harness-scenarios
+      paths:
+        - src/imcodex/debug_harness/scenarios.py
+      max_lines: 425
+      max_functions: 25
+      max_classes: 6
+      mode: warn
+      guidance: "Scenario runners should stay small and evidence-oriented. Prefer extracting reusable probes or assertions before adding many more scenarios."

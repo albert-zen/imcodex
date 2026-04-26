@@ -96,3 +96,9 @@ Dependency direction is one-way:
 - If a change introduces a new local source of truth where native Codex already has one, it is probably the wrong change.
 - If a proposal makes the bridge thicker without clear user or operational benefit, reject or simplify it.
 - If a failure mode is hard to explain, reproduce, or observe, add observability before adding more behavior.
+
+### AgentKit
+
+<!-- agentkit:agents-section -->
+This repository uses AgentKit to keep agent-led changes tied to durable intent, checks, review, and closeout. For implementation, documentation edits, hook/plugin updates, or any repository-changing task, start with `agentkit start --task "..."`, use `agentkit check` plus `agentkit status` or `agentkit remind` while working, and finish with `agentkit close`. For read-only exploration, codebase orientation, or answering questions without edits, do not create an AgentKit task unless the work becomes long-running or the human asks for lifecycle tracking. For the full operating guide, read the AgentKit plugin skill.
+

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agentkit codex-stop-hook",
+            "timeout": 30,
+            "statusMessage": "Checking AgentKit task closeout"
+          }
+        ]
+      }
+    ]
+  }
+}
