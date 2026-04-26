@@ -11,7 +11,9 @@ The codebase now follows a simple three-layer shape plus a thin wiring root:
 - `imcodex.bridge`
   Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
 - `imcodex.appserver`
-  Owns native Codex `app-server` integration, preferring a shared websocket server when available and falling back to local `stdio` supervision for thread/turn operations.
+  Owns native Codex `app-server` integration across the supported runtime modes:
+  dedicated websocket cores, externally managed websocket cores, and
+  bridge-managed local `stdio` supervision.
 
 Supporting modules:
 
@@ -79,6 +81,25 @@ Persisted bridge state is intentionally small:
 - visibility preferences
 - channel reply context
 - pending native request routing
+
+## Runtime Modes
+
+`imcodex` intentionally supports more than one Codex-core runtime shape.
+
+- `dedicated-ws`
+  Recommended for day-to-day IM use. Run a long-lived Codex core separately and
+  point the bridge at it.
+- `shared-ws`
+  Supported when another process already manages a websocket Codex core and the
+  bridge should attach to it.
+- `spawned-stdio`
+  Supported as a bridge-managed compatibility mode for local checks, fallback,
+  and some test paths.
+
+We do **not** currently treat dedicated core as the only valid mode. The
+bridge must stay clear about which mode it is using, and changes should not
+silently remove support for the other documented paths without an explicit
+follow-up decision.
 
 ## QQ Bot
 

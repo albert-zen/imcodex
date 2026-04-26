@@ -55,9 +55,9 @@ as:
 If a change introduces a new local source of truth for something native Codex
 already owns, that is a design smell and should be challenged.
 
-## Dedicated Core Direction
+## Runtime Mode Direction
 
-The preferred runtime shape is:
+The preferred runtime shape for day-to-day IM use is:
 
 - a long-lived dedicated Codex core
 - a separately restartable IM bridge
@@ -66,6 +66,17 @@ The preferred runtime shape is:
 This direction is preferred over bridge-managed private cores because it keeps
 native thread and approval state alive across bridge restarts and makes
 observability clearer.
+
+However, this repository intentionally still supports multiple runtime modes:
+
+- dedicated websocket cores managed for `imcodex`
+- externally managed websocket cores that `imcodex` attaches to
+- bridge-managed local `stdio` cores for compatibility, fallback, and test
+  coverage
+
+The current decision is to keep those modes explicit rather than collapsing the
+product into dedicated-only behavior. Runtime-mode support is therefore part of
+the bridge contract and must be documented when changed.
 
 See also:
 

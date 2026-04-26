@@ -6,6 +6,9 @@ This document covers the local operator path for starting and stopping `imcodex`
 
 From the repository root:
 
+`imcodex` currently supports multiple runtime shapes. Dedicated core is the
+recommended day-to-day path, but it is not the only supported mode.
+
 ### Recommended: dedicated core + bridge
 
 For day-to-day IM use, prefer running a long-lived Codex core separately and
@@ -32,7 +35,22 @@ Note: some older status text may still label websocket connections as
 `shared-ws`; verify `IMCODEX_CORE_URL` / `instance.json` when confirming the
 dedicated-core path.
 
-### Compatibility: bridge-managed core
+### Supported: externally managed websocket core
+
+If another process already owns a websocket Codex core, point the bridge at it
+explicitly:
+
+```powershell
+$env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
+$env:IMCODEX_CORE_MODE="shared-ws"
+$env:IMCODEX_APP_SERVER_URL="ws://127.0.0.1:8765"
+pwsh -File .\scripts\start.ps1
+```
+
+Use this mode when the websocket server lifecycle is not owned by `imcodex`
+itself.
+
+### Supported: bridge-managed core
 
 The helper script can still start the bridge by itself:
 
@@ -116,3 +134,12 @@ By default:
 - Bridge state lives under `.imcodex`
 - Runtime and observability snapshots live under `.imcodex-run`
 - The current launch snapshot is written under `.imcodex-run/current/launch.json`
+
+## Mode Summary
+
+- `dedicated-ws`: recommended long-lived IM setup
+- `shared-ws`: supported attach-to-existing websocket setup
+- `spawned-stdio`: supported bridge-managed compatibility setup
+
+When changing startup behavior, update this document and keep the supported
+modes explicit. Do not silently collapse multiple runtime modes into one.

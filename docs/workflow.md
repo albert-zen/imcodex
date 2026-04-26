@@ -20,6 +20,14 @@ For day-to-day work, prefer the dedicated core path described in
 
 This keeps the bridge restartable while leaving the native core alive.
 
+That recommendation does not mean the repository is dedicated-only. When
+working on startup, supervision, or reconnect logic, preserve the documented
+support for:
+
+- dedicated websocket cores
+- externally managed websocket cores
+- bridge-managed local `stdio` cores
+
 ## Agent-Led Change Loop
 
 For repository-changing work:
