@@ -37,7 +37,7 @@ class CodexBackend:
         self.service_name = service_name
 
     def prefers_native_recovery(self) -> bool:
-        return getattr(self.client, "last_connection_mode", "") == "shared-ws"
+        return getattr(self.client, "last_connection_mode", "") in {"dedicated-ws", "shared-ws"}
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.store.clear_thread_binding(channel_id, conversation_id)

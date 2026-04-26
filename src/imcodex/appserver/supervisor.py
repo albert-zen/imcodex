@@ -54,7 +54,7 @@ class AppServerSupervisor:
                     connection = await connection
             except Exception:
                 continue
-            self._connection_mode = "shared-ws"
+            self._connection_mode = self._websocket_connection_mode()
             return connection
         return None
 
@@ -126,3 +126,8 @@ class AppServerSupervisor:
                 return [self.core_url or self.app_server_url or self.shared_app_server_url]
             return [self.shared_app_server_url]
         return []
+
+    def _websocket_connection_mode(self) -> str:
+        if self.core_mode == "dedicated-ws":
+            return "dedicated-ws"
+        return "shared-ws"

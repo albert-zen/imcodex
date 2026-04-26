@@ -579,9 +579,58 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
 
     assert [event["event"] for event in observed_events] == [
         "appserver.connect.started",
-        "appserver.connect.shared_ws_succeeded",
+        "appserver.connect.websocket_succeeded",
     ]
     assert observed_health[-1] == {"connected": True, "mode": "shared-ws"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connection(monkeypatch) -> None:
+    observed_events: list[dict] = []
+    observed_health: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    def capture_health(**payload) -> None:
+        observed_health.append(payload)
+
+    monkeypatch.setattr("imcodex.appserver.client.emit_event", capture_event)
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", capture_health)
+
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    captured_urls: list[str] = []
+
+    async def websocket_factory(url: str):
+        captured_urls.append(url)
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.list_threads()
+
+    assert captured_urls == ["ws://127.0.0.1:9001"]
+    assert client.connection_mode == "dedicated-ws"
+    assert [event["event"] for event in observed_events] == [
+        "appserver.connect.started",
+        "appserver.connect.websocket_succeeded",
+    ]
+    assert observed_health[-1] == {"connected": True, "mode": "dedicated-ws"}
     await client.close()
 
 

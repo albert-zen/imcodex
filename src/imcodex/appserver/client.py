@@ -309,14 +309,15 @@ class AppServerClient:
             websocket = await self._supervisor.connect_shared()
             if websocket is not None:
                 self._transport = WebSocketAppServerTransport(websocket)
-                self.connection_mode = "shared-ws"
+                websocket_mode = self._supervisor.connection_mode or "shared-ws"
+                self.connection_mode = websocket_mode
                 self.connection_epoch += 1
                 emit_event(
                     component="appserver.client",
-                    event="appserver.connect.shared_ws_succeeded",
-                    message="Connected to shared websocket app-server",
+                    event="appserver.connect.websocket_succeeded",
+                    message=f"Connected to {websocket_mode} app-server",
                 )
-                mark_appserver_health(connected=True, mode="shared-ws")
+                mark_appserver_health(connected=True, mode=websocket_mode)
             else:
                 if not self._supervisor.allow_spawn_fallback:
                     target = self._supervisor.core_url or self._supervisor.app_server_url or self._supervisor.shared_app_server_url

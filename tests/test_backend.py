@@ -124,6 +124,22 @@ class RehydrateClient:
         }
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("dedicated-ws", True),
+        ("shared-ws", True),
+        ("spawned-stdio", False),
+        ("disconnected", False),
+    ],
+)
+def test_prefers_native_recovery_for_websocket_modes(mode: str, expected: bool) -> None:
+    client = type("Client", (), {"last_connection_mode": mode})()
+    backend = CodexBackend(client=client, store=ConversationStore(clock=lambda: 1.0), service_name="imcodex")
+
+    assert backend.prefers_native_recovery() is expected
+
+
 @pytest.mark.asyncio
 async def test_list_threads_accepts_data_key_and_prioritizes_preferred_cwd() -> None:
     store = ConversationStore(clock=lambda: 1.0)

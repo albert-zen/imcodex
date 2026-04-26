@@ -30,10 +30,10 @@ After startup, check `.imcodex-run/current/health.json`:
 - `status` should be `healthy`
 - `http.listening` should be `true`
 - `appserver.connected` should be `true`
+- `appserver.mode` should be `dedicated-ws`
 
-Note: some older status text may still label websocket connections as
-`shared-ws`; verify `IMCODEX_CORE_URL` / `instance.json` when confirming the
-dedicated-core path.
+If `appserver.mode` reports `shared-ws`, the bridge is attached to an
+externally managed websocket core rather than the dedicated-core path.
 
 ### Supported: externally managed websocket core
 
