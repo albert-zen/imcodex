@@ -87,6 +87,8 @@ class ObservabilityRuntime:
         set_active_runtime(self)
 
     def stop(self) -> None:
+        if self.event_writer is not None:
+            self.event_writer.close()
         if self.health_writer is not None:
             self.health_writer.update(status="stopped")
         reset_observability_logging()

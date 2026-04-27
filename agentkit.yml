@@ -103,6 +103,7 @@ components:
       - src/imcodex/ops_cli.py
       - src/imcodex/runtime.py
       - scripts/**
+      - tests/test_observability.py
     docs:
       - docs/design.md
       - docs/workflow.md
