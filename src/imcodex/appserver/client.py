@@ -7,6 +7,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
+from .protocol_map import summarize_transport_message
 from ..observability.runtime import emit_event, mark_appserver_health
 
 
@@ -143,6 +144,7 @@ class AppServerClient:
         self._listener_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._dispatch_queue: asyncio.Queue[JsonDict] | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
         self._notification_handlers: list[NotificationHandler] = []
@@ -328,6 +330,7 @@ class AppServerClient:
                 self._transport = StdioAppServerTransport(process)
                 self.connection_mode = "spawned-stdio"
                 self.connection_epoch += 1
+                self._stderr_task = asyncio.create_task(self._drain_process_stderr(process))
                 emit_event(
                     component="appserver.client",
                     event="appserver.connect.spawn_stdio_succeeded",
@@ -374,6 +377,7 @@ class AppServerClient:
     async def _send_json(self, payload: JsonDict) -> None:
         if self._transport is None:
             raise AppServerError("transport is not connected")
+        self._trace_protocol_message(stage="sent", payload=payload)
         await self._transport.send_json(payload)
 
     async def _receive_loop(self) -> None:
@@ -381,6 +385,7 @@ class AppServerClient:
         try:
             while self._transport is not None:
                 message = await self._transport.receive_json()
+                self._trace_protocol_message(stage="received", payload=message)
                 if self._dispatch_response(message):
                     continue
                 if self._dispatch_queue is not None:
@@ -467,6 +472,13 @@ class AppServerClient:
                 dispatcher_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await dispatcher_task
+        stderr_task = self._stderr_task
+        self._stderr_task = None
+        if stderr_task is not None and stderr_task is not asyncio.current_task():
+            if not stderr_task.done():
+                stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stderr_task
         transport = self._transport
         self._transport = None
         if transport is not None:
@@ -503,6 +515,49 @@ class AppServerClient:
         if method in _TRIMMED_THREAD_METHODS:
             self._trim_thread_history(result)
         return result
+
+    async def _drain_process_stderr(self, process: Any) -> None:
+        stderr = getattr(process, "stderr", None)
+        if stderr is None:
+            return
+        try:
+            while True:
+                line = await stderr.readline()
+                if not line:
+                    return
+                if isinstance(line, bytes):
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                else:
+                    text = str(line).rstrip()
+                if not text:
+                    continue
+                emit_event(
+                    component="appserver.stderr",
+                    event="appserver.stderr.line",
+                    level="WARNING",
+                    message="App-server stderr output",
+                    data={"text": text},
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            emit_event(
+                component="appserver.stderr",
+                event="appserver.stderr.read_failed",
+                level="WARNING",
+                message="Failed while draining app-server stderr",
+                data={"error_type": type(exc).__name__},
+            )
+
+    def _trace_protocol_message(self, *, stage: str, payload: JsonDict) -> None:
+        emit_event(
+            component="appserver.protocol",
+            event=f"appserver.protocol.{stage}",
+            message=f"App-server protocol message {stage}",
+            connection_mode=self.connection_mode,
+            connection_epoch=self.connection_epoch,
+            data=summarize_transport_message(payload),
+        )
 
     def _trim_thread_history(self, result: JsonDict) -> None:
         thread = result.get("thread")

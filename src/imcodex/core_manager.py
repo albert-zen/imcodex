@@ -22,6 +22,9 @@ class DedicatedCoreManifest:
     url: str
     started_at: str
     status: str
+    command: list[str] | None = None
+    stdout_log: str | None = None
+    stderr_log: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -34,6 +37,9 @@ class DedicatedCoreManifest:
             url=str(payload["url"]),
             started_at=str(payload["started_at"]),
             status=str(payload["status"]),
+            command=list(payload["command"]) if isinstance(payload.get("command"), list) else None,
+            stdout_log=str(payload["stdout_log"]) if payload.get("stdout_log") is not None else None,
+            stderr_log=str(payload["stderr_log"]) if payload.get("stderr_log") is not None else None,
         )
 
 
@@ -61,8 +67,13 @@ class DedicatedCoreManager:
     def start(self, *, port: int) -> DedicatedCoreManifest:
         self.root.mkdir(parents=True, exist_ok=True)
         url = f"ws://127.0.0.1:{port}"
+        command = [self.codex_bin, "app-server", "--listen", url]
+        stdout_log = self.root / "core.stdout.log"
+        stderr_log = self.root / "core.stderr.log"
+        stdout_log.write_text("", encoding="utf-8")
+        stderr_log.write_text("", encoding="utf-8")
         process = self.launcher(
-            command=[self.codex_bin, "app-server", "--listen", url],
+            command=command,
             cwd=self.repo_root,
             env=os.environ.copy(),
         )
@@ -73,6 +84,9 @@ class DedicatedCoreManager:
             url=url,
             started_at=self.now(),
             status="running",
+            command=command,
+            stdout_log=str(stdout_log),
+            stderr_log=str(stderr_log),
         )
         self.manifest_path.write_text(json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
         return manifest
@@ -109,13 +123,16 @@ class DedicatedCoreManager:
 
     def _default_launcher(self, *, command: list[str], cwd: Path, env: dict[str, str]) -> object:
         resolved = self._resolve_command(command)
-        return subprocess.Popen(
-            resolved,
-            cwd=str(cwd),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        stdout_path = self.root / "core.stdout.log"
+        stderr_path = self.root / "core.stderr.log"
+        with stdout_path.open("ab") as stdout_handle, stderr_path.open("ab") as stderr_handle:
+            return subprocess.Popen(
+                resolved,
+                cwd=str(cwd),
+                env=env,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+            )
 
     def _default_now(self) -> str:
         from datetime import datetime, timezone

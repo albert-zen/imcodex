@@ -53,6 +53,20 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
+To start a dedicated websocket core explicitly:
+
+```powershell
+python -m imcodex core start --port 8765
+```
+
+Then run the bridge against it:
+
+```powershell
+$env:IMCODEX_CORE_MODE = "dedicated-ws"
+$env:IMCODEX_CORE_URL = "ws://127.0.0.1:8765"
+python -m imcodex
+```
+
 ## Native-First State
 
 `imcodex` now treats native Codex source code and native protocol behavior as
@@ -116,6 +130,34 @@ The adapter currently supports:
 - `GROUP_AT_MESSAGE_CREATE` for group `@bot` chat
 
 QQ inbound messages are mapped to internal conversation ids like `c2c:<openid>` and `group:<group_openid>`, so Codex thread routing and async completion messages can flow back through the QQ API.
+
+## Telemetry
+
+`imcodex` writes runtime telemetry under `.imcodex-run/current/`:
+
+- `bridge.log`
+- `events.jsonl`
+- `health.json`
+
+For app-server troubleshooting, `events.jsonl` now includes structured protocol events for:
+
+- app-server messages sent by the bridge
+- app-server messages received from Codex
+- server requests such as approvals
+- reasoning deltas
+- tool and item lifecycle messages when they reach the bridge
+
+Dedicated websocket cores started with `python -m imcodex core start` also write:
+
+- `.imcodex-core/core.stdout.log`
+- `.imcodex-core/core.stderr.log`
+- `.imcodex-core/core.json`
+
+This makes it possible to compare:
+
+- what the core itself emitted
+- what `imcodex` actually received
+- what the bridge projected or rejected
 
 ## Inbound Webhook
 

@@ -234,6 +234,26 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
 
     await client.reply_to_transport_request(99, {"answers": {"color": {"answers": ["blue"]}}})
 
+    assert process.sent[0] == {
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+            "capabilities": {
+                "optOutNotificationMethods": [
+                    "command/exec/outputDelta",
+                    "item/agentMessage/delta",
+                    "item/plan/delta",
+                    "item/commandExecution/outputDelta",
+                    "item/fileChange/outputDelta",
+                    "item/reasoning/summaryTextDelta",
+                    "item/reasoning/textDelta",
+                    "thread/realtime/transcript/delta",
+                    "thread/realtime/outputAudio/delta",
+                ]
+            },
+        },
+    }
     assert process.sent[-1] == {
         "id": 99,
         "result": {"answers": {"color": {"answers": ["blue"]}}},
@@ -618,11 +638,19 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
 
     await client.list_threads()
 
-    assert [event["event"] for event in observed_events] == [
+    event_names = [event["event"] for event in observed_events]
+    assert event_names[:2] == [
         "appserver.connect.started",
         "appserver.connect.websocket_succeeded",
     ]
+    assert event_names.count("appserver.protocol.sent") == 3
+    assert event_names.count("appserver.protocol.received") == 2
     assert observed_health[-1] == {"connected": True, "mode": "shared-ws"}
+    sent = [event for event in observed_events if event["event"] == "appserver.protocol.sent"]
+    received = [event for event in observed_events if event["event"] == "appserver.protocol.received"]
+    assert sent[0]["data"]["method"] == "initialize"
+    assert received[-1]["data"]["response_id"] == 2
+    assert received[-1]["data"]["transport_shape"] == "response"
     await client.close()
 
 
@@ -667,11 +695,89 @@ async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connecti
 
     assert captured_urls == ["ws://127.0.0.1:9001"]
     assert client.connection_mode == "dedicated-ws"
-    assert [event["event"] for event in observed_events] == [
+    event_names = [event["event"] for event in observed_events]
+    assert event_names[:2] == [
         "appserver.connect.started",
         "appserver.connect.websocket_succeeded",
     ]
     assert observed_health[-1] == {"connected": True, "mode": "dedicated-ws"}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_logs_reasoning_and_server_request_protocol_messages(monkeypatch) -> None:
+    observed_events: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    monkeypatch.setattr("imcodex.appserver.client.emit_event", capture_event)
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", lambda **_payload: None)
+
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "D:/repo/app",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                },
+                {
+                    "method": "item/reasoning/summaryTextDelta",
+                    "params": {
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "itemId": "item_reasoning",
+                        "summaryIndex": 0,
+                        "delta": "thinking through the repository state",
+                    },
+                },
+                {
+                    "id": 99,
+                    "method": "item/permissions/requestApproval",
+                    "params": {
+                        "requestId": "native-request-abcdef",
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "itemId": "item_perm",
+                        "reason": "Need broader access",
+                        "permissions": {"network": {"enabled": True}},
+                    },
+                },
+            ],
+        }
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    captured_requests: list[dict] = []
+    client.add_server_request_handler(captured_requests.append)
+
+    await client.start_thread(cwd="D:/repo/app")
+    await asyncio.sleep(0)
+
+    received = [event for event in observed_events if event["event"] == "appserver.protocol.received"]
+    reasoning = next(event for event in received if event["data"].get("method") == "item/reasoning/summaryTextDelta")
+    approval = next(event for event in received if event["data"].get("method") == "item/permissions/requestApproval")
+
+    assert reasoning["data"]["kind"] == "reasoning_summary_text_delta"
+    assert reasoning["data"]["delta_preview"] == "thinking through the repository state"
+    assert approval["data"]["kind"] == "approval_request"
+    assert approval["data"]["request_id"] == "native-request-abcdef"
+    assert captured_requests[0]["method"] == "item/permissions/requestApproval"
     await client.close()
 
 
