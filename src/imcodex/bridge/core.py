@@ -3,7 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
+from ..appserver import (
+    AppServerError,
+    StaleThreadBindingError,
+    ThreadSelectionError,
+    normalize_appserver_message,
+)
 from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
@@ -283,8 +288,42 @@ class BridgeService:
         return await self._emit(message)
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
+        event = normalize_appserver_message(request)
         message = self.projector.project_notification(request, self.store)
-        return await self._emit(message)
+        outbound = await self._emit(message)
+        if event.direction != "server_request":
+            return outbound
+        if event.request_id and self.store.get_pending_request(event.request_id) is not None:
+            return outbound
+        transport_request_id = self._transport_request_id(request)
+        if transport_request_id is not None:
+            await self.backend.reply_error_to_transport_request(
+                transport_request_id,
+                code=-32601,
+                message=f"unsupported or unroutable server request: {event.method}",
+                data={
+                    "reason": "unsupportedServerRequest",
+                    "method": event.method,
+                    "requestId": event.request_id,
+                },
+            )
+        emit_event(
+            component="bridge",
+            event="bridge.server_request.rejected",
+            level="WARNING",
+            message="Rejected unsupported or unroutable server request",
+            data={
+                "method": event.method,
+                "request_id": event.request_id,
+                "thread_id": event.thread_id,
+                "turn_id": event.turn_id,
+            },
+        )
+        warning = self._server_request_rejection_message(event)
+        if warning is None:
+            return outbound
+        outbound.extend(await self._emit(warning))
+        return outbound
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
@@ -612,8 +651,10 @@ class BridgeService:
         continue_on_failure: bool,
     ) -> list[OutboundMessage] | None:
         for request_id in request_ids:
+            route = self.store.get_pending_request(request_id)
+            payload = self._projected_request_resolution(route, decision)
             try:
-                await self.backend.reply_to_server_request(request_id, {"decision": decision})
+                await self.backend.reply_to_server_request(request_id, payload)
             except (AppServerError, KeyError) as exc:
                 failure = await self._request_reply_failure(inbound, request_id, action, exc)
                 if not continue_on_failure:
@@ -695,3 +736,37 @@ class BridgeService:
         if len(text) > 180:
             return "unexpected upstream error"
         return text
+
+    def _projected_request_resolution(self, route, decision: str) -> dict:
+        if route is None:
+            return {"decision": decision}
+        if route.request_method == "item/permissions/requestApproval":
+            permissions = route.payload.get("permissions")
+            granted = permissions if decision == "accept" and isinstance(permissions, dict) else {}
+            return {"permissions": granted}
+        return {"decision": decision}
+
+    def _server_request_rejection_message(self, event) -> OutboundMessage | None:
+        if not event.thread_id:
+            return None
+        binding = self.store.find_binding_by_thread_id(event.thread_id)
+        if binding is None:
+            return None
+        text = (
+            f"{_SYSTEM_PREFIX}Codex sent an unsupported or unroutable request "
+            f"(`{event.method}`), so I rejected it to avoid leaving the turn stuck."
+        )
+        return OutboundMessage(
+            channel_id=binding.channel_id,
+            conversation_id=binding.conversation_id,
+            message_type="status",
+            text=text,
+        )
+
+    def _transport_request_id(self, request: dict) -> str | int | None:
+        params = request.get("params")
+        if isinstance(params, dict):
+            transport_request_id = params.get("_transport_request_id")
+            if transport_request_id is not None:
+                return transport_request_id
+        return request.get("id")
