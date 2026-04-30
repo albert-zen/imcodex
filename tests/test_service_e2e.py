@@ -1332,6 +1332,139 @@ async def test_model_default_clears_native_default_model_config() -> None:
 
 
 @pytest.mark.asyncio
+async def test_think_command_writes_native_reasoning_effort_config() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/value/write": [
+                {
+                    "id": 2,
+                    "result": {
+                        "status": "updated",
+                        "version": "v3",
+                        "filePath": r"D:\Users\me\.codex\config.toml",
+                        "overriddenMetadata": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/think high",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    assert payloads == [{"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fast_command_writes_native_fast_mode_config() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/batchWrite": [{"id": 2, "result": {"status": "updated"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/fast on",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
+    assert payloads == [
+        {
+            "edits": [
+                {"keyPath": "service_tier", "value": "fast", "mergeStrategy": "replace"},
+                {"keyPath": "features.fast_mode", "value": True, "mergeStrategy": "replace"},
+            ],
+            "reloadUserConfig": False,
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_think_and_fast_without_args_read_native_config() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "config": {
+                            "model_reasoning_effort": "high",
+                            "service_tier": "fast",
+                            "features": {"fast_mode": True},
+                        }
+                    },
+                },
+                {
+                    "id": 3,
+                    "result": {
+                        "config": {
+                            "model_reasoning_effort": "high",
+                            "service_tier": "fast",
+                            "features": {"fast_mode": True},
+                        }
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    think_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/think",
+        )
+    )
+    fast_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/fast",
+        )
+    )
+
+    assert "Reasoning Effort" in think_messages[0].text
+    assert "Current: high" in think_messages[0].text
+    assert "Fast Mode" in fast_messages[0].text
+    assert "Current: Fast" in fast_messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_config_write_command_sends_native_json_value_write() -> None:
     process = ScriptedProcess(
         {
@@ -1494,6 +1627,9 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
                     "result": {
                         "config": {
                             "model": "gpt-5.4",
+                            "model_reasoning_effort": "high",
+                            "service_tier": "fast",
+                            "features": {"fast_mode": True},
                             "approval_policy": "on-request",
                             "sandbox_mode": "workspace-write",
                         }
@@ -1558,6 +1694,8 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
     assert "Status" in status_messages[0].text
     assert "CWD: D:\\work\\alpha" in status_messages[0].text
     assert "Model: gpt-5.4" in status_messages[0].text
+    assert "Reasoning: high" in status_messages[0].text
+    assert "Fast mode: Fast" in status_messages[0].text
     assert "Permissions: Default" in status_messages[0].text
     assert "Bridge visibility: Standard" in status_messages[0].text
     assert "Source: appServer" in thread_messages[0].text

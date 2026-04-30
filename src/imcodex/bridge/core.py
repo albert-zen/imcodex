@@ -8,6 +8,16 @@ from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
 from .server_requests import NativeRequestPolicy
+from .settings import (
+    current_model_label,
+    current_reasoning_label,
+    fast_mode_label,
+    permission_mode_label,
+    render_fast_mode,
+    render_models,
+    render_permission_modes,
+    render_reasoning_effort,
+)
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
@@ -149,10 +159,16 @@ class BridgeService:
             return [self._message(message, "command_result", text)]
         if response.action == "models.list":
             result = await self.backend.list_models()
-            return [self._message(message, "command_result", self._render_models(result))]
+            return [self._message(message, "command_result", render_models(result))]
         if response.action == "settings.permission.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
-            return [self._message(message, "command_result", self._render_permission_modes(result))]
+            return [self._message(message, "command_result", render_permission_modes(result))]
+        if response.action == "settings.reasoning.read":
+            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            return [self._message(message, "command_result", render_reasoning_effort(result))]
+        if response.action == "settings.fast.read":
+            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            return [self._message(message, "command_result", render_fast_mode(result))]
         if response.action == "config.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
             key_path = None if response.payload is None else response.payload.get("key_path")
@@ -173,6 +189,25 @@ class BridgeService:
             return [self._message(message, "status", response.text)]
         if response.action == "settings.model":
             await self.backend.set_default_model(None if response.payload is None else response.payload.get("model"))
+            return [self._message(message, "status", response.text)]
+        if response.action == "settings.reasoning.write":
+            payload = response.payload or {}
+            await self.backend.write_config_value(
+                key_path="model_reasoning_effort",
+                value=payload.get("effort"),
+            )
+            return [self._message(message, "status", response.text)]
+        if response.action == "settings.fast.write":
+            payload = response.payload or {}
+            edits = [
+                {
+                    "keyPath": edit["key_path"],
+                    "value": edit["value"],
+                    "mergeStrategy": edit["merge_strategy"],
+                }
+                for edit in list(payload.get("edits") or [])
+            ]
+            await self.backend.batch_write_config(edits=edits, reload_user_config=False)
             return [self._message(message, "status", response.text)]
         if response.action == "settings.permission.write":
             payload = response.payload or {}
@@ -409,8 +444,10 @@ class BridgeService:
                 f"CWD: {cwd}",
                 f"Thread: {thread_label}",
                 f"State: {state}",
-                f"Model: {self._current_model_label(current_config)}",
-                f"Permissions: {self._permission_mode_label(current_config)}",
+                f"Model: {current_model_label(current_config)}",
+                f"Reasoning: {current_reasoning_label(current_config)}",
+                f"Fast mode: {fast_mode_label(current_config)}",
+                f"Permissions: {permission_mode_label(current_config)}",
                 f"Bridge visibility: {self._bridge_visibility_label(binding)}",
                 f"Pending approvals: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id, kind='approval'))}",
             ]
@@ -461,6 +498,8 @@ class BridgeService:
             "settings.view",
             "settings.visibility",
             "settings.model",
+            "settings.reasoning.write",
+            "settings.fast.write",
             "settings.permission.write",
             "config.write",
             "config.batch",
@@ -477,36 +516,6 @@ class BridgeService:
         if action in {"thread.read.none", "turn.stop.none"}:
             return "command_result"
         return "command_result"
-
-    def _render_models(self, payload: dict) -> str:
-        items = payload.get("data")
-        if not isinstance(items, list) or not items:
-            return "Models\n\nCurrent: Unknown"
-        current = next((item for item in items if isinstance(item, dict) and item.get("isDefault")), None)
-        current_label = self._model_label(current) if isinstance(current, dict) else "Unknown"
-        lines = ["Models", "", f"Current: {current_label}", "", "Available:"]
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            lines.append(f"- {self._model_label(item)}")
-        lines.append("")
-        lines.append("Use /model <model-id> to switch directly.")
-        return "\n".join(lines)
-
-    def _render_permission_modes(self, payload: dict) -> str:
-        config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
-        current = self._permission_mode_label(config)
-        return "\n".join(
-            [
-                "Permission Modes",
-                "",
-                f"Current: {current}",
-                "",
-                "- /permission default",
-                "- /permission read-only",
-                "- /permission full-access",
-            ]
-        )
 
     def _render_config(self, payload: dict, key_path: object | None) -> str:
         config = payload.get("config")
@@ -641,31 +650,6 @@ class BridgeService:
                 "Use /cwd <path> to point me at an existing folder.",
             ]
         )
-
-    def _model_label(self, item: dict) -> str:
-        display = str(item.get("displayName") or item.get("model") or item.get("id") or "unknown")
-        model_id = str(item.get("model") or item.get("id") or display)
-        if display == model_id:
-            return display
-        return f"{display} ({model_id})"
-
-    def _current_model_label(self, config: dict) -> str:
-        model = config.get("model")
-        if not model:
-            return "Default"
-        return str(model)
-
-    def _permission_mode_label(self, config: dict) -> str:
-        approval = str(config.get("approval_policy") or "")
-        sandbox = str(config.get("sandbox_mode") or "")
-        if approval == "on-request" and sandbox == "workspace-write":
-            return "Default"
-        if approval == "on-request" and sandbox == "read-only":
-            return "Read Only"
-        if approval == "never" and sandbox == "danger-full-access":
-            return "Full Access"
-        details = ", ".join(part for part in (approval, sandbox) if part)
-        return f"Custom ({details})" if details else "Custom"
 
     def _bridge_visibility_label(self, binding) -> str:
         return binding.visibility_profile.replace("-", " ").title()

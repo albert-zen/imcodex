@@ -23,6 +23,7 @@ _PERMISSION_PRESETS = {
         {"key_path": "sandbox_mode", "value": "danger-full-access", "merge_strategy": "replace"},
     ],
 }
+_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 @dataclass(slots=True)
@@ -298,6 +299,64 @@ class CommandRouter:
         del channel_id, conversation_id, command
         return CommandResponse(action="models.list", text="")
 
+    def _handle_think(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="settings.reasoning.read", text="")
+        if len(command.args) != 1:
+            return CommandResponse(
+                action="settings.reasoning.invalid",
+                text="Usage: /think [minimal|low|medium|high|xhigh|default]",
+            )
+        effort = command.args[0].lower()
+        if effort == "default":
+            return CommandResponse(
+                action="settings.reasoning.write",
+                text="Native reasoning effort cleared.",
+                payload={"effort": None},
+            )
+        if effort not in _REASONING_EFFORTS:
+            return CommandResponse(
+                action="settings.reasoning.invalid",
+                text="Usage: /think [minimal|low|medium|high|xhigh|default]",
+            )
+        return CommandResponse(
+            action="settings.reasoning.write",
+            text=f"Native reasoning effort set to {effort}.",
+            payload={"effort": effort},
+        )
+
+    def _handle_fast(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if not command.args or command.args[0].lower() == "status":
+            if len(command.args) > 1:
+                return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
+            return CommandResponse(action="settings.fast.read", text="")
+        if len(command.args) != 1:
+            return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
+        mode = command.args[0].lower()
+        if mode == "on":
+            edits = [
+                {"key_path": "service_tier", "value": "fast", "merge_strategy": "replace"},
+                {"key_path": "features.fast_mode", "value": True, "merge_strategy": "replace"},
+            ]
+            return CommandResponse(
+                action="settings.fast.write",
+                text="Fast mode enabled.",
+                payload={"mode": "on", "edits": edits},
+            )
+        if mode == "off":
+            edits = [
+                {"key_path": "service_tier", "value": "standard", "merge_strategy": "replace"},
+                {"key_path": "features.fast_mode", "value": False, "merge_strategy": "replace"},
+            ]
+            return CommandResponse(
+                action="settings.fast.write",
+                text="Fast mode disabled.",
+                payload={"mode": "off", "edits": edits},
+            )
+        return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
+
     def _handle_permission(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id
         if not command.args:
@@ -485,6 +544,13 @@ class CommandRouter:
                     "/model [model-id]",
                     "Leave it empty to browse models, or switch directly.",
                     "Examples: /model gpt-5.4, /model gpt-5.3-codex",
+                    "",
+                    "/think [effort]",
+                    "Set native reasoning effort.",
+                    "Examples: /think low, /think xhigh, /think default",
+                    "",
+                    "/fast [on|off|status]",
+                    "Toggle native Codex Fast mode.",
                     "",
                     "/permission [mode]",
                     "Leave it empty to browse permission modes, or switch directly.",
