@@ -811,6 +811,33 @@ def test_unknown_protocol_summary_does_not_serialize_payload_content() -> None:
     assert "secret message body" not in str(summary)
 
 
+def test_error_protocol_summary_preserves_bounded_error_message() -> None:
+    summary = summarize_transport_message(
+        {
+            "method": "error",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "status": 400,
+                "terminal": True,
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "The 'gpt-5.5' model requires a newer version of Codex. Please upgrade.",
+                },
+            },
+        }
+    )
+
+    assert summary["kind"] == "error"
+    assert summary["category"] == "system"
+    assert summary["thread_id"] == "thr_1"
+    assert summary["turn_id"] == "turn_1"
+    assert summary["status"] == 400
+    assert summary["error_type"] == "invalid_request_error"
+    assert summary["error_message"] == "The 'gpt-5.5' model requires a newer version of Codex. Please upgrade."
+    assert "payload_key_fingerprints" not in summary
+
+
 @pytest.mark.asyncio
 async def test_stderr_diagnostics_emit_bounded_summary(monkeypatch) -> None:
     observed_events: list[dict] = []

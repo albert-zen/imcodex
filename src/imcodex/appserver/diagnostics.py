@@ -88,6 +88,20 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
         summary["content_index"] = payload.get("contentIndex")
     if "message" in payload:
         summary["message_preview"] = _trim_preview(str(payload.get("message") or ""), max_preview_chars)
+    error = payload.get("error")
+    if isinstance(error, dict):
+        if error.get("type") is not None:
+            summary["error_type"] = str(error.get("type"))
+        if error.get("code") is not None:
+            summary["error_code"] = error.get("code")
+        if error.get("status") is not None:
+            summary["error_status"] = error.get("status")
+        if error.get("message") is not None:
+            summary["error_message"] = _trim_preview(str(error.get("message") or ""), max_preview_chars)
+    elif error is not None:
+        summary["error_message"] = _trim_preview(str(error), max_preview_chars)
+    if payload.get("status") is not None:
+        summary["status"] = payload.get("status")
     command = item.get("command") if item else payload.get("command")
     if command:
         summary["command"] = _trim_preview(str(command), max_preview_chars)
