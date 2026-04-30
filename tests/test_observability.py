@@ -10,6 +10,7 @@ from pathlib import Path
 from imcodex.observability.context import InstanceContext
 from imcodex.observability.events import EventWriter
 from imcodex.observability.paths import ObservabilityPaths
+from imcodex.observability.raw_protocol import RawProtocolWriter
 from imcodex.observability.runtime import ObservabilityRuntime
 
 
@@ -188,6 +189,39 @@ def test_event_writer_flushes_events_from_background_writer(tmp_path: Path) -> N
 
     archived = json.loads(paths.events_path.read_text(encoding="utf-8").strip())
     assert archived["event"] == "bridge.started"
+    writer.close()
+
+
+def test_raw_protocol_writer_snapshots_payload_before_background_write(tmp_path: Path) -> None:
+    paths = ObservabilityPaths.build(tmp_path, "instance-1")
+    paths.instance_dir.mkdir(parents=True)
+    paths.current_dir.mkdir(parents=True)
+    writer_started = Event()
+    release_writer = Event()
+
+    class SlowRawProtocolWriter(RawProtocolWriter):
+        def _write_payload(self, payload: str) -> None:
+            writer_started.set()
+            release_writer.wait(timeout=1)
+            super()._write_payload(payload)
+
+    writer = SlowRawProtocolWriter(paths=paths, context=_context(), clock=_clock)
+    payload = {"method": "thread/resume", "result": {"thread": {"turns": ["raw-turn"]}}}
+
+    writer.emit(
+        stage="received",
+        connection_mode="spawned-stdio",
+        connection_epoch=1,
+        payload=payload,
+    )
+    assert writer_started.wait(timeout=1)
+    payload["result"]["thread"]["turns"] = ["mutated-turn"]
+
+    release_writer.set()
+    writer.flush()
+
+    archived = json.loads(paths.raw_protocol_path.read_text(encoding="utf-8").strip())
+    assert archived["payload"]["result"]["thread"]["turns"] == ["raw-turn"]
     writer.close()
 
 

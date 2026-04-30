@@ -17,7 +17,7 @@ class RawProtocolWriter:
         self.clock = clock
         self._lock = Lock()
         self._state_lock = Lock()
-        self._queue: Queue[dict[str, Any] | None] = Queue()
+        self._queue: Queue[str | None] = Queue()
         self._closed = False
         for path in (self.paths.raw_protocol_path, self.paths.current_raw_protocol_path):
             path.touch(exist_ok=True)
@@ -41,10 +41,14 @@ class RawProtocolWriter:
             "connection_epoch": connection_epoch,
             "payload": payload,
         }
+        try:
+            serialized = json.dumps(record, ensure_ascii=False)
+        except Exception:
+            return
         with self._state_lock:
             if self._closed:
                 return
-            self._queue.put(record)
+            self._queue.put(serialized)
 
     def flush(self) -> None:
         self._queue.join()
@@ -60,12 +64,12 @@ class RawProtocolWriter:
 
     def _write_loop(self) -> None:
         while True:
-            record = self._queue.get()
+            serialized = self._queue.get()
             try:
-                if record is None:
+                if serialized is None:
                     return
                 try:
-                    self._write_payload(json.dumps(record, ensure_ascii=False))
+                    self._write_payload(serialized)
                 except Exception:
                     pass
             finally:
