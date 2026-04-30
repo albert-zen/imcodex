@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import hashlib
 from typing import Any
 
 from .protocol_map import normalize_appserver_message
@@ -49,6 +49,10 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
             "payload_keys": sorted(payload.keys()),
         }
     )
+    if event.kind == "unknown":
+        summary["payload_key_count"] = len(payload)
+        summary["payload_value_types"] = {key: type(value).__name__ for key, value in sorted(payload.items())}
+        return summary
     if item:
         summary["item_type"] = item.get("type")
         if item.get("status") is not None:
@@ -97,9 +101,15 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
         summary["changed_paths"] = changes[:10]
     if isinstance(payload.get("permissions"), dict):
         summary["permissions_keys"] = sorted((payload.get("permissions") or {}).keys())
-    if event.kind == "unknown":
-        summary["payload_preview"] = _trim_preview(_safe_json(payload), max_preview_chars)
     return summary
+
+
+def summarize_text(value: str, *, max_preview_chars: int = 240) -> dict[str, Any]:
+    return {
+        "text_preview": _trim_preview(value, max_preview_chars),
+        "text_length": len(value),
+        "text_sha256": hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest(),
+    }
 
 
 def _transport_shape(message: dict[str, Any]) -> str:
@@ -119,10 +129,3 @@ def _trim_preview(value: str, max_chars: int) -> str:
     if max_chars <= 3:
         return text[:max_chars]
     return text[: max_chars - 3] + "..."
-
-
-def _safe_json(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=True, sort_keys=True)
-    except Exception:
-        return repr(value)

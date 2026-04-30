@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor
+from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, summarize_transport_message
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
 
 
@@ -758,6 +758,81 @@ async def test_client_logs_reasoning_and_server_request_protocol_messages(monkey
     assert approval["data"]["kind"] == "approval_request"
     assert approval["data"]["request_id"] == "native-request-abcdef"
     assert captured_requests[0]["method"] == "item/permissions/requestApproval"
+    await client.close()
+
+
+def test_unknown_protocol_summary_does_not_serialize_payload_content() -> None:
+    summary = summarize_transport_message(
+        {
+            "method": "plugin/newThing",
+            "params": {
+                "command": "run-secret-command",
+                "cwd": r"D:\secret\workspace",
+                "delta": "streaming-secret-delta",
+                "message": "secret message body",
+                "secret": "token-" + ("x" * 500),
+                "nested": {"raw": "payload"},
+                "items": [1, 2, 3],
+            },
+        }
+    )
+
+    assert summary["kind"] == "unknown"
+    assert summary["payload_keys"] == ["command", "cwd", "delta", "items", "message", "nested", "secret"]
+    assert summary["payload_key_count"] == 7
+    assert summary["payload_value_types"] == {
+        "command": "str",
+        "cwd": "str",
+        "delta": "str",
+        "items": "list",
+        "message": "str",
+        "nested": "dict",
+        "secret": "str",
+    }
+    assert "payload_preview" not in summary
+    assert "command" not in summary
+    assert "cwd" not in summary
+    assert "delta_preview" not in summary
+    assert "message_preview" not in summary
+    assert "token-" not in str(summary)
+    assert "streaming-secret-delta" not in str(summary)
+    assert "secret message body" not in str(summary)
+
+
+@pytest.mark.asyncio
+async def test_stderr_diagnostics_emit_bounded_summary(monkeypatch) -> None:
+    observed_events: list[dict] = []
+
+    def capture_event(**payload) -> None:
+        observed_events.append(payload)
+
+    monkeypatch.setattr("imcodex.appserver.client.emit_event", capture_event)
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", lambda **_payload: None)
+
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.connect()
+    secret_line = "credential=" + ("s" * 500)
+    process.stderr.lines.put_nowait((secret_line + "\n").encode("utf-8"))
+    await asyncio.sleep(0)
+
+    stderr_events = [event for event in observed_events if event["event"] == "appserver.stderr.line"]
+    assert stderr_events
+    data = stderr_events[-1]["data"]
+    assert data["text_length"] == len(secret_line)
+    assert len(data["text_sha256"]) == 64
+    assert len(data["text_preview"]) <= 240
+    assert "text" not in data
+    assert secret_line not in str(data)
     await client.close()
 
 

@@ -1,6 +1,6 @@
 from .backend import CodexBackend, StaleThreadBindingError, ThreadSelectionError, TurnSubmission
 from .client import AppServerClient, AppServerError
-from .diagnostics import summarize_transport_message
+from .diagnostics import summarize_text, summarize_transport_message
 from .protocol_map import AppServerEvent, normalize_appserver_message
 from .supervisor import AppServerSupervisor
 
@@ -14,5 +14,6 @@ __all__ = [
     "ThreadSelectionError",
     "TurnSubmission",
     "normalize_appserver_message",
+    "summarize_text",
     "summarize_transport_message",
 ]

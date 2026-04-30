@@ -7,7 +7,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from .diagnostics import summarize_transport_message
+from .diagnostics import summarize_text, summarize_transport_message
 from ..observability.runtime import emit_event, mark_appserver_health
 
 
@@ -536,7 +536,7 @@ class AppServerClient:
                     event="appserver.stderr.line",
                     level="WARNING",
                     message="App-server stderr output",
-                    data={"text": text},
+                    data=summarize_text(text),
                 )
         except asyncio.CancelledError:
             raise
