@@ -276,7 +276,7 @@ class BridgeService:
                     data=payload.get("data"),
                 )
             except (AppServerError, KeyError) as exc:
-                return self._request_reply_failure(message, response.request_id, response.action, exc)
+                return await self._request_reply_failure(message, response.request_id, response.action, exc)
         message_type = self._command_message_type(response.action)
         return [self._message(message, message_type, response.text, request_id=response.request_id)]
 

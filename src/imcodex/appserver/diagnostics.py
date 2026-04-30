@@ -6,6 +6,9 @@ from typing import Any
 from .protocol_map import normalize_appserver_message
 
 
+_MAX_UNKNOWN_PAYLOAD_KEYS = 20
+
+
 def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: int = 240) -> dict[str, Any]:
     transport_shape = _transport_shape(message)
     summary: dict[str, Any] = {"transport_shape": transport_shape}
@@ -42,17 +45,30 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
             "category": event.category,
             "kind": event.kind,
             "direction": event.direction,
-            "thread_id": event.thread_id or None,
-            "turn_id": event.turn_id or None,
-            "item_id": event.item_id or None,
-            "request_id": event.request_id,
-            "payload_keys": sorted(payload.keys()),
         }
     )
     if event.kind == "unknown":
         summary["payload_key_count"] = len(payload)
-        summary["payload_value_types"] = {key: type(value).__name__ for key, value in sorted(payload.items())}
+        summary["payload_keys_sampled"] = min(len(payload), _MAX_UNKNOWN_PAYLOAD_KEYS)
+        summary["payload_keys_omitted"] = max(0, len(payload) - _MAX_UNKNOWN_PAYLOAD_KEYS)
+        summary["payload_key_fingerprints"] = [
+            {
+                "key_sha256": _sha256_text(key),
+                "key_length": len(key),
+                "value_type": type(value).__name__,
+            }
+            for key, value in sorted(payload.items())[:_MAX_UNKNOWN_PAYLOAD_KEYS]
+        ]
         return summary
+    summary.update(
+        {
+            "thread_id": event.thread_id or None,
+            "turn_id": event.turn_id or None,
+            "item_id": event.item_id or None,
+            "request_id": event.request_id,
+        }
+    )
+    summary["payload_keys"] = sorted(payload.keys())
     if item:
         summary["item_type"] = item.get("type")
         if item.get("status") is not None:
@@ -108,7 +124,7 @@ def summarize_text(value: str, *, max_preview_chars: int = 240) -> dict[str, Any
     return {
         "text_preview": _trim_preview(value, max_preview_chars),
         "text_length": len(value),
-        "text_sha256": hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest(),
+        "text_sha256": _sha256_text(value),
     }
 
 
@@ -129,3 +145,7 @@ def _trim_preview(value: str, max_chars: int) -> str:
     if max_chars <= 3:
         return text[:max_chars]
     return text[: max_chars - 3] + "..."
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()

@@ -762,6 +762,8 @@ async def test_client_logs_reasoning_and_server_request_protocol_messages(monkey
 
 
 def test_unknown_protocol_summary_does_not_serialize_payload_content() -> None:
+    long_sensitive_key = "secret-key-" + ("k" * 400)
+    extra_keys = {f"extra-{index}": index for index in range(30)}
     summary = summarize_transport_message(
         {
             "method": "plugin/newThing",
@@ -769,32 +771,42 @@ def test_unknown_protocol_summary_does_not_serialize_payload_content() -> None:
                 "command": "run-secret-command",
                 "cwd": r"D:\secret\workspace",
                 "delta": "streaming-secret-delta",
+                "itemId": "item_secret",
                 "message": "secret message body",
-                "secret": "token-" + ("x" * 500),
+                "requestId": "request_secret",
+                "threadId": "thread_secret",
+                "turnId": "turn_secret",
+                long_sensitive_key: "token-" + ("x" * 500),
                 "nested": {"raw": "payload"},
                 "items": [1, 2, 3],
+                **extra_keys,
             },
         }
     )
 
     assert summary["kind"] == "unknown"
-    assert summary["payload_keys"] == ["command", "cwd", "delta", "items", "message", "nested", "secret"]
-    assert summary["payload_key_count"] == 7
-    assert summary["payload_value_types"] == {
-        "command": "str",
-        "cwd": "str",
-        "delta": "str",
-        "items": "list",
-        "message": "str",
-        "nested": "dict",
-        "secret": "str",
-    }
+    assert summary["payload_key_count"] == 41
+    assert summary["payload_keys_sampled"] == 20
+    assert summary["payload_keys_omitted"] == 21
+    assert len(summary["payload_key_fingerprints"]) == 20
+    assert all(set(item) == {"key_sha256", "key_length", "value_type"} for item in summary["payload_key_fingerprints"])
     assert "payload_preview" not in summary
+    assert "payload_keys" not in summary
+    assert "payload_value_types" not in summary
+    assert "thread_id" not in summary
+    assert "turn_id" not in summary
+    assert "item_id" not in summary
+    assert "request_id" not in summary
     assert "command" not in summary
     assert "cwd" not in summary
     assert "delta_preview" not in summary
     assert "message_preview" not in summary
     assert "token-" not in str(summary)
+    assert "thread_secret" not in str(summary)
+    assert "turn_secret" not in str(summary)
+    assert "item_secret" not in str(summary)
+    assert "request_secret" not in str(summary)
+    assert long_sensitive_key not in str(summary)
     assert "streaming-secret-delta" not in str(summary)
     assert "secret message body" not in str(summary)
 

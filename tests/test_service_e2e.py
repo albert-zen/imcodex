@@ -878,6 +878,52 @@ async def test_transient_request_reply_failure_keeps_route_for_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_native_error_reply_failure_returns_status_message() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.upsert_pending_request(
+        request_id="native-request-abcdef",
+        channel_id="qq",
+        conversation_id="conv-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        kind="approval",
+        request_method="item/commandExecution/requestApproval",
+        transport_request_id=99,
+        connection_epoch=1,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    async def broken_reply_error(
+        request_id: str,
+        *,
+        code: int,
+        message: str,
+        data: object | None = None,
+    ) -> None:
+        del code, message, data
+        raise AppServerError(f"broken pipe while replying to {request_id}")
+
+    service.backend.reply_error_to_server_request = broken_reply_error  # type: ignore[method-assign]
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/native error native-request-abcdef -32000 failed",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "could not be sent to Codex right now" in messages[0].text
+    assert store.match_pending_request("qq", "conv-1", "native-request-abcdef") is not None
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_plain_text_cancels_all_pending_approvals_before_submitting_new_input() -> None:
     process = ScriptedProcess(
         {
