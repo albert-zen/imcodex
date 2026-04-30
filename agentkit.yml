@@ -13,6 +13,8 @@ components:
       - .gitignore
       - AGENTS.md
       - agentkit.yml
+      - pyproject.toml
+      - .github/workflows/**
       - .agents/plugins/marketplace.json
       - plugins/agentkit/**
       - .codex/**

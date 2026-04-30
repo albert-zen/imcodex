@@ -17,6 +17,9 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.26.0",
 ]
+agentkit = [
+    "agentkit @ git+https://github.com/albert-zen/AgentKit.git@main",
+]
 
 [build-system]
 requires = ["setuptools>=69.0"]

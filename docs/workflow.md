@@ -65,3 +65,14 @@ state should get a clean-context review loop before human closeout.
 
 When review findings reveal missing durable intent, update the relevant docs
 instead of leaving the reasoning trapped in a transient conversation.
+
+## Continuous Integration
+
+Pull requests and pushes to `main` should pass the GitHub Actions CI workflow.
+The baseline CI gate installs the package with development dependencies on
+Python 3.13 and runs the full `python -m pytest` regression suite.
+
+CI also runs an advisory AgentKit check. The advisory job installs the
+repository's `agentkit` optional dependency and runs `agentkit check`, but it is
+configured as non-blocking so AgentKit availability or maintainability warnings
+do not prevent merging a PR.
