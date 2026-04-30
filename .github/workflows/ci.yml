@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,6 +44,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,4 +59,27 @@ jobs:
           python -m pip install -e ".[agentkit]"
 
       - name: Run AgentKit advisory check
-        run: agentkit check
+        shell: bash
+        run: |
+          agentkit check
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            base="$(git rev-list --max-parents=0 "$head" | tail -n 1)"
+          fi
+
+          echo "AgentKit docs impact for changed files:"
+          git diff --name-only "$base" "$head" | while IFS= read -r path; do
+            if [[ -n "$path" && -e "$path" ]]; then
+              echo "::group::agentkit docs-impact --path $path"
+              agentkit docs-impact --path "$path"
+              echo "::endgroup::"
+            fi
+          done
