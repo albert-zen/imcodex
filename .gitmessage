@@ -1,0 +1,11 @@
+<type>(<scope>): <short imperative summary>
+
+Why:
+- 
+
+Checks:
+- 
+
+# Types: feat, fix, docs, test, refactor, chore, ci
+# Scopes should usually match repo components: appserver, bridge, channels, runtime, docs, ci, agentkit
+# Keep the subject under 72 characters and explain intent in the body for non-trivial changes.

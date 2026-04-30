@@ -66,6 +66,27 @@ state should get a clean-context review loop before human closeout.
 When review findings reveal missing durable intent, update the relevant docs
 instead of leaving the reasoning trapped in a transient conversation.
 
+## Commit Messages
+
+Commit messages should follow a small Conventional Commits shape:
+
+```text
+<type>(<scope>): <short imperative summary>
+```
+
+Use `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, or `ci` as the type.
+Scopes should usually match repository components such as `appserver`,
+`bridge`, `channels`, `runtime`, `docs`, `ci`, or `agentkit`. Keep the subject
+under 72 characters. For non-trivial changes, add a short body that explains
+why the change exists and which checks were run.
+
+The repository includes `.gitmessage` as an optional template for local use.
+Enable it with:
+
+```powershell
+git config commit.template .gitmessage
+```
+
 ## Continuous Integration
 
 Pull requests and pushes to `main` should pass the GitHub Actions CI workflow.

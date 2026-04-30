@@ -585,6 +585,117 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
 
 
 @pytest.mark.asyncio
+async def test_permission_request_is_projected_and_approve_grants_requested_permissions() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    projected = await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/permissions/requestApproval",
+            "params": {
+                "_request_id": "native-request-perms",
+                "_transport_request_id": 91,
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "reason": "Need access outside the workspace root",
+                "permissions": {
+                    "fileSystem": {
+                        "read": [r"D:\desktop\codex-upstream"],
+                    }
+                },
+            },
+        }
+    )
+
+    assert projected[0].message_type == "approval_request"
+    assert "Permissions:" in projected[0].text
+    assert "fileSystem" in projected[0].text
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/approve",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if "result" in payload and payload.get("id") == 91
+    ]
+    assert reply_payloads == [
+        {
+            "id": 91,
+            "result": {
+                "permissions": {
+                    "fileSystem": {
+                        "read": [r"D:\desktop\codex-upstream"],
+                    }
+                }
+            },
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    projected = await service.handle_server_request(
+        {
+            "id": 77,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "native-request-tool",
+                "_transport_request_id": 77,
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "tool": "lookup_ticket",
+                "arguments": {"id": "ABC-123"},
+            },
+        }
+    )
+
+    assert projected[0].message_type == "status"
+    assert "unsupported or unroutable request" in projected[0].text
+    error_payloads = [
+        payload
+        for payload in process.inputs
+        if "error" in payload and payload.get("id") == 77
+    ]
+    assert error_payloads == [
+        {
+            "id": 77,
+            "error": {
+                "code": -32601,
+                "message": "unsupported or unroutable server request: item/tool/call",
+                "data": {
+                    "reason": "unsupportedServerRequest",
+                    "method": "item/tool/call",
+                    "requestId": "native-request-tool",
+                },
+            },
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_turn() -> None:
     process = ScriptedProcess(
         {

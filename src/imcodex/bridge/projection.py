@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from ..appserver import normalize_appserver_message
 from ..models import OutboundMessage
 from .message_pump import MessagePump
@@ -202,6 +204,7 @@ class MessageProjector:
         command = str(route.payload.get("command") or "").strip()
         cwd = str(route.payload.get("cwd") or "").strip()
         path = str(route.payload.get("path") or "").strip()
+        permissions = route.payload.get("permissions")
         if reason:
             lines.append(reason)
         if command:
@@ -210,6 +213,9 @@ class MessageProjector:
             lines.append(f"CWD: {cwd}")
         if path:
             lines.append(f"Path: {path}")
+        if isinstance(permissions, dict) and permissions:
+            lines.append("Permissions:")
+            lines.append(json.dumps(permissions, ensure_ascii=True, indent=2, sort_keys=True))
         lines.append("Use /approve to allow, /deny to reject, or send a new message to cancel and continue.")
         lines.append(f"Target one request with /approve {handle}, /deny {handle}, or /cancel {handle}.")
         text = "\n".join(lines)

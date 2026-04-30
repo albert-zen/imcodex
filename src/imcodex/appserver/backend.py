@@ -342,6 +342,21 @@ class CodexBackend:
         )
         self.store.remove_pending_request(request_id)
 
+    async def reply_error_to_transport_request(
+        self,
+        transport_request_id: str | int,
+        *,
+        code: int,
+        message: str,
+        data: object | None = None,
+    ) -> None:
+        await self.client.reply_error_to_transport_request(
+            transport_request_id,
+            code=code,
+            message=message,
+            data=data,
+        )
+
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = payload.get("status")
         if isinstance(status, dict):

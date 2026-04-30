@@ -7,6 +7,7 @@ from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelection
 from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
+from .server_requests import NativeRequestPolicy
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
@@ -30,6 +31,7 @@ class BridgeService:
         self.projector = projector
         self.outbound_sink = outbound_sink
         self._rehydration_lock = asyncio.Lock()
+        self.native_requests = NativeRequestPolicy(store=store, backend=backend)
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         trace_id = ensure_trace_id(message)
@@ -284,7 +286,11 @@ class BridgeService:
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
         message = self.projector.project_notification(request, self.store)
-        return await self._emit(message)
+        outbound = await self._emit(message)
+        rejection = await self.native_requests.reject_unrouted(request)
+        if rejection is not None:
+            outbound.extend(await self._emit(rejection))
+        return outbound
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
@@ -612,8 +618,9 @@ class BridgeService:
         continue_on_failure: bool,
     ) -> list[OutboundMessage] | None:
         for request_id in request_ids:
+            payload = self.native_requests.resolution_payload(request_id, decision)
             try:
-                await self.backend.reply_to_server_request(request_id, {"decision": decision})
+                await self.backend.reply_to_server_request(request_id, payload)
             except (AppServerError, KeyError) as exc:
                 failure = await self._request_reply_failure(inbound, request_id, action, exc)
                 if not continue_on_failure:

@@ -42,10 +42,17 @@ def test_core_manager_start_writes_manifest_and_uses_ws_listener(tmp_path: Path)
     assert manifest.pid == 42001
     assert manifest.port == 8765
     assert manifest.url == "ws://127.0.0.1:8765"
+    assert manifest.command == ["codex", "app-server", "--listen", "ws://127.0.0.1:8765"]
+    assert manifest.stdout_log is not None
+    assert manifest.stderr_log is not None
     assert launched["command"] == ["codex", "app-server", "--listen", "ws://127.0.0.1:8765"]
     saved = json.loads((tmp_path / "core-lab" / "core.json").read_text(encoding="utf-8"))
     assert saved["url"] == "ws://127.0.0.1:8765"
     assert saved["status"] == "running"
+    assert saved["stdout_log"].endswith("core.stdout.log")
+    assert saved["stderr_log"].endswith("core.stderr.log")
+    assert (tmp_path / "core-lab" / "core.stdout.log").exists()
+    assert (tmp_path / "core-lab" / "core.stderr.log").exists()
 
 
 def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:

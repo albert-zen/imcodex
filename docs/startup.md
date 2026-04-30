@@ -35,6 +35,17 @@ After startup, check `.imcodex-run/current/health.json`:
 If `appserver.mode` reports `shared-ws`, the bridge is attached to an
 externally managed websocket core rather than the dedicated-core path.
 
+Protocol troubleshooting data is written under `.imcodex-run/current/`:
+
+- `bridge.log`
+- `events.jsonl`
+- `health.json`
+
+`events.jsonl` includes summarized app-server messages sent and received by the
+bridge. The summaries include transport shape, method names, request ids,
+thread and turn ids, and short previews for diagnostic fields, but they avoid
+recording full native payloads.
+
 ### Supported: externally managed websocket core
 
 If another process already owns a websocket Codex core, point the bridge at it

@@ -11,6 +11,7 @@ components:
     description: Repository-local AgentKit guidance, plugin packaging, and Codex hook wiring for agent workflow.
     code:
       - .gitignore
+      - .gitmessage
       - AGENTS.md
       - agentkit.yml
       - pyproject.toml
@@ -77,6 +78,7 @@ components:
       - src/imcodex/core_manager.py
       - tests/test_appserver_stdio.py
       - tests/test_backend.py
+      - tests/test_core_manager.py
     docs:
       - docs/design.md
       - docs/startup.md

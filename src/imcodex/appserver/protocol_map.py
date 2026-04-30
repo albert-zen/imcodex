@@ -20,10 +20,16 @@ class AppServerEvent:
 
 
 _EVENT_KINDS = {
+    "item/started": "item_started",
+    "item/mcpToolCall/progress": "mcp_tool_progress",
     "item/commandExecution/requestApproval": "approval_request",
     "item/fileChange/requestApproval": "approval_request",
+    "item/permissions/requestApproval": "approval_request",
     "item/tool/requestUserInput": "question_request",
     "item/agentMessage/delta": "agent_delta",
+    "item/reasoning/summaryTextDelta": "reasoning_summary_text_delta",
+    "item/reasoning/summaryPartAdded": "reasoning_summary_part_added",
+    "item/reasoning/textDelta": "reasoning_text_delta",
     "turn/started": "turn_started",
     "serverRequest/resolved": "request_resolved",
     "turn/plan/updated": "plan_updated",
