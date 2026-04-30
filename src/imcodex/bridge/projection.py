@@ -88,7 +88,7 @@ class MessageProjector:
                 ),
             )
         if event.kind == "diff_updated":
-            if not self._show_commentary(event.thread_id, store):
+            if not self._show_toolcalls(event.thread_id, store):
                 return None
             return self._attach_to_thread(
                 event.thread_id,
