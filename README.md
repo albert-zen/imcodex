@@ -72,6 +72,8 @@ Native Codex remains the source of truth for:
 - turn lifecycle
 - request identity
 - model continuity
+- reasoning effort
+- Fast mode service tier
 - permission and sandbox behavior
 
 Persisted bridge state is intentionally small:

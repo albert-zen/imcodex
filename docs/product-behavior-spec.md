@@ -108,9 +108,11 @@ It should prominently include:
 - `/status`
 - `/stop`
 - `/model [model-id]`
+- `/think [effort]`
+- `/fast [on|off|status]`
 - `/permission [mode]`
 
-It should include short examples for `/model` and `/permission`.
+It should include short examples for `/model`, `/think`, and `/permission`.
 
 It does not need to expose contextual thread-browser commands or advanced commands such as:
 
@@ -207,6 +209,8 @@ It should show:
 - current thread
 - current state such as idle or working
 - current model
+- current reasoning effort
+- current Fast mode state
 - current permission mode
 - current bridge visibility profile
 - pending approval count when approvals are enabled in the product
@@ -234,6 +238,44 @@ Behavior:
 
 - model changes are written to native Codex config
 - the bridge does not invent a second long-term model authority
+
+### `/think`
+
+`/think` without arguments shows the current native reasoning effort and supported command choices.
+
+`/think <effort>` sets the native default reasoning effort.
+
+`/think default` clears the native reasoning-effort override.
+
+Supported product choices:
+
+- `minimal`
+- `low`
+- `medium`
+- `high`
+- `xhigh`
+- `default`
+
+Behavior:
+
+- reasoning-effort changes are written to native Codex config
+- the bridge does not maintain a second reasoning-effort truth
+- model-specific support and clamping remain native Codex behavior
+
+### `/fast`
+
+`/fast` or `/fast status` shows the current native Fast mode state.
+
+`/fast on` enables native Codex Fast mode.
+
+`/fast off` disables native Codex Fast mode.
+
+Behavior:
+
+- Fast mode changes are written to native Codex config
+- enabling Fast mode writes `service_tier = "fast"` and `features.fast_mode = true`
+- disabling Fast mode writes `service_tier = "standard"` and `features.fast_mode = false`
+- the bridge does not maintain a second speed-mode truth
 
 ### `/permission`
 
