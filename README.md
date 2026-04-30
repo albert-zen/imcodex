@@ -157,6 +157,7 @@ Codex version requirement:
 - `IMCODEX_CORE_URL`: optional dedicated Codex core websocket URL
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command
 - `IMCODEX_DEBUG_API_ENABLED`: enable debug HTTP routes, default `false`
+- `IMCODEX_RAW_PROTOCOL_LOG`: write local-only raw app-server protocol logs, default `false`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`

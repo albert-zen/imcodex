@@ -35,6 +35,16 @@ def test_settings_reads_optional_debug_api_flag_from_env(monkeypatch, tmp_path) 
     assert settings.debug_api_enabled is True
 
 
+def test_settings_reads_raw_protocol_log_flag_from_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_RAW_PROTOCOL_LOG", "1")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.raw_protocol_log_enabled is True
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")

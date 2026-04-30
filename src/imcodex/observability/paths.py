@@ -16,6 +16,8 @@ class ObservabilityPaths:
     current_log_path: Path
     events_path: Path
     current_events_path: Path
+    raw_protocol_path: Path
+    current_raw_protocol_path: Path
     health_path: Path
     current_health_path: Path
     launch_path: Path
@@ -37,6 +39,8 @@ class ObservabilityPaths:
             current_log_path=current_dir / "bridge.log",
             events_path=instance_dir / "events.jsonl",
             current_events_path=current_dir / "events.jsonl",
+            raw_protocol_path=instance_dir / "raw-protocol.jsonl",
+            current_raw_protocol_path=current_dir / "raw-protocol.jsonl",
             health_path=instance_dir / "health.json",
             current_health_path=current_dir / "health.json",
             launch_path=instance_dir / "launch.json",

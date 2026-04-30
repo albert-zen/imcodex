@@ -123,6 +123,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         http_port=8000,
         outbound_url=None,
         service_name="imcodex",
+        raw_protocol_log_enabled=False,
         qq_enabled=False,
         qq_app_id="",
         qq_client_secret="",
@@ -154,6 +155,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         http_port=8000,
         outbound_url=None,
         service_name="imcodex",
+        raw_protocol_log_enabled=False,
         qq_enabled=False,
         qq_app_id="",
         qq_client_secret="",
@@ -169,6 +171,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
 
     assert launch["command"] == ["python", "-m", "imcodex"]
     assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
+    assert launch["env"]["IMCODEX_RAW_PROTOCOL_LOG"] == "0"
     assert launch["env"]["IMCODEX_CORE_MODE"] == "dedicated-ws"
     assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
     assert launch["port"] == 8000

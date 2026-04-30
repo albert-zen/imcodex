@@ -46,6 +46,12 @@ bridge. The summaries include transport shape, method names, request ids,
 thread and turn ids, and short previews for diagnostic fields, but they avoid
 recording full native payloads.
 
+For local-only deep protocol debugging, set `IMCODEX_RAW_PROTOCOL_LOG=1` before
+startup. This writes raw app-server transport messages to
+`.imcodex-run/current/raw-protocol.jsonl` and the archived run directory. The
+file is intended for local diagnosis only; it may contain user prompts, tool
+arguments, paths, connector data, or other sensitive native payload content.
+
 ### Supported: externally managed websocket core
 
 If another process already owns a websocket Codex core, point the bridge at it

@@ -47,6 +47,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         http_port=settings.http_port,
         app_server_url=settings.core_url or settings.app_server_url,
         cwd=Path.cwd(),
+        raw_protocol_log_enabled=settings.raw_protocol_log_enabled,
     )
     observability.write_launch_snapshot(
         command=["python", "-m", "imcodex"],
@@ -61,6 +62,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_CORE_URL": settings.core_url or "",
             "IMCODEX_RESTART_EXECUTOR": settings.restart_executor or "",
             "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
+            "IMCODEX_RAW_PROTOCOL_LOG": "1" if settings.raw_protocol_log_enabled else "0",
             "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",
             "IMCODEX_QQ_APP_ID": settings.qq_app_id,
             "IMCODEX_QQ_CLIENT_SECRET": settings.qq_client_secret,

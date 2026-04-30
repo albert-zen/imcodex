@@ -100,6 +100,66 @@ def test_observability_runtime_writes_structured_events_to_archive_and_current(t
     runtime.stop()
 
 
+def test_observability_runtime_writes_raw_protocol_only_when_enabled(tmp_path: Path) -> None:
+    disabled = ObservabilityRuntime(
+        run_root=tmp_path / "disabled",
+        service_name="imcodex",
+        log_level="INFO",
+        http_host="0.0.0.0",
+        http_port=8000,
+        app_server_url=None,
+        cwd=Path(r"D:\desktop\imcodex"),
+        clock=_clock,
+        pid_provider=lambda: 48648,
+        git_metadata_provider=lambda cwd: {"git_branch": "main", "git_commit": "abc1234"},
+    )
+
+    disabled.start()
+    disabled.write_raw_protocol_message(
+        stage="received",
+        connection_mode="spawned-stdio",
+        connection_epoch=1,
+        payload={"method": "error", "params": {"error": {"message": "secret raw value"}}},
+    )
+    assert not disabled.paths.raw_protocol_path.exists()
+    assert not disabled.paths.current_raw_protocol_path.exists()
+    disabled.stop()
+
+    enabled = ObservabilityRuntime(
+        run_root=tmp_path / "enabled",
+        service_name="imcodex",
+        log_level="INFO",
+        http_host="0.0.0.0",
+        http_port=8000,
+        app_server_url=None,
+        cwd=Path(r"D:\desktop\imcodex"),
+        clock=_clock,
+        pid_provider=lambda: 48648,
+        git_metadata_provider=lambda cwd: {"git_branch": "main", "git_commit": "abc1234"},
+        raw_protocol_log_enabled=True,
+    )
+
+    enabled.start()
+    enabled.write_raw_protocol_message(
+        stage="received",
+        connection_mode="spawned-stdio",
+        connection_epoch=1,
+        payload={"method": "error", "params": {"error": {"message": "secret raw value"}}},
+    )
+    assert enabled.raw_protocol_writer is not None
+    enabled.raw_protocol_writer.flush()
+
+    archived = json.loads(enabled.paths.raw_protocol_path.read_text(encoding="utf-8").strip())
+    current = json.loads(enabled.paths.current_raw_protocol_path.read_text(encoding="utf-8").strip())
+
+    assert archived == current
+    assert archived["stage"] == "received"
+    assert archived["connection_mode"] == "spawned-stdio"
+    assert archived["connection_epoch"] == 1
+    assert archived["payload"]["params"]["error"]["message"] == "secret raw value"
+    enabled.stop()
+
+
 def test_event_writer_flushes_events_from_background_writer(tmp_path: Path) -> None:
     paths = ObservabilityPaths.build(tmp_path, "instance-1")
     paths.instance_dir.mkdir(parents=True)

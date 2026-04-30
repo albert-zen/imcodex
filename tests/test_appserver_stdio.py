@@ -590,6 +590,7 @@ async def test_client_uses_explicit_websocket_app_server_before_spawning() -> No
 async def test_client_emits_observability_events_for_shared_websocket_connection(monkeypatch) -> None:
     observed_events: list[dict] = []
     observed_health: list[dict] = []
+    raw_protocol: list[dict] = []
 
     def capture_event(**payload) -> None:
         observed_events.append(payload)
@@ -599,6 +600,10 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
 
     monkeypatch.setattr("imcodex.appserver.client.emit_event", capture_event)
     monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", capture_health)
+    monkeypatch.setattr(
+        "imcodex.appserver.client.write_raw_protocol_message",
+        lambda **payload: raw_protocol.append(payload),
+    )
 
     websocket = ScriptedWebSocket(
         {
@@ -631,6 +636,10 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
     assert received[-1]["data"]["response_id"] == 2
     assert received[-1]["data"]["transport_shape"] == "response"
     assert observed_health[-1] == {"connected": True, "mode": "shared-ws"}
+    assert raw_protocol[0]["stage"] == "sent"
+    assert raw_protocol[0]["payload"]["method"] == "initialize"
+    assert raw_protocol[-1]["stage"] == "received"
+    assert raw_protocol[-1]["payload"]["result"] == {"threads": []}
     await client.close()
 
 
