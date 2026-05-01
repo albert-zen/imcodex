@@ -14,6 +14,7 @@ from .events import EventWriter
 from .health import HealthWriter
 from .logger import configure_observability_logging, reset_observability_logging
 from .paths import ObservabilityPaths
+from .raw_protocol import RawProtocolWriter
 
 _ACTIVE_RUNTIME: "ObservabilityRuntime | None" = None
 
@@ -33,6 +34,7 @@ class ObservabilityRuntime:
         pid_provider: Callable[[], int] | None = None,
         git_metadata_provider: Callable[[Path], dict[str, str]] | None = None,
         retention: int = 20,
+        raw_protocol_log_enabled: bool = False,
     ) -> None:
         self.run_root = Path(run_root)
         self.service_name = service_name
@@ -45,10 +47,12 @@ class ObservabilityRuntime:
         self.pid_provider = pid_provider or os.getpid
         self.git_metadata_provider = git_metadata_provider or _read_git_metadata
         self.retention = retention
+        self.raw_protocol_log_enabled = raw_protocol_log_enabled
         self.instance_id = ""
         self.context: InstanceContext | None = None
         self.paths: ObservabilityPaths | None = None
         self.event_writer: EventWriter | None = None
+        self.raw_protocol_writer: RawProtocolWriter | None = None
         self.health_writer: HealthWriter | None = None
         self._pending_launch_snapshot: dict[str, Any] | None = None
 
@@ -80,6 +84,8 @@ class ObservabilityRuntime:
             log_paths=[self.paths.log_path, self.paths.current_log_path],
         )
         self.event_writer = EventWriter(paths=self.paths, context=self.context, clock=self.clock)
+        if self.raw_protocol_log_enabled:
+            self.raw_protocol_writer = RawProtocolWriter(paths=self.paths, context=self.context, clock=self.clock)
         self.health_writer = HealthWriter(paths=self.paths, context=self.context, clock=self.clock)
         if self._pending_launch_snapshot is not None:
             self._persist_launch_snapshot(self._pending_launch_snapshot)
@@ -89,6 +95,8 @@ class ObservabilityRuntime:
     def stop(self) -> None:
         if self.event_writer is not None:
             self.event_writer.close()
+        if self.raw_protocol_writer is not None:
+            self.raw_protocol_writer.close()
         if self.health_writer is not None:
             self.health_writer.update(status="stopped")
         reset_observability_logging()
@@ -119,6 +127,23 @@ class ObservabilityRuntime:
         if self.health_writer is None:
             return
         self.health_writer.update(**changes)
+
+    def write_raw_protocol_message(
+        self,
+        *,
+        stage: str,
+        connection_mode: str,
+        connection_epoch: int,
+        payload: dict[str, Any],
+    ) -> None:
+        if self.raw_protocol_writer is None:
+            return
+        self.raw_protocol_writer.emit(
+            stage=stage,
+            connection_mode=connection_mode,
+            connection_epoch=connection_epoch,
+            payload=payload,
+        )
 
     def mark_channel_health(self, channel_id: str, **changes: Any) -> None:
         if self.health_writer is None:
@@ -217,6 +242,23 @@ def emit_event(
             message=message,
             data=data,
             **fields,
+        )
+
+
+def write_raw_protocol_message(
+    *,
+    stage: str,
+    connection_mode: str,
+    connection_epoch: int,
+    payload: dict[str, Any],
+) -> None:
+    runtime = get_active_runtime()
+    if runtime is not None:
+        runtime.write_raw_protocol_message(
+            stage=stage,
+            connection_mode=connection_mode,
+            connection_epoch=connection_epoch,
+            payload=payload,
         )
 
 

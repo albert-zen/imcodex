@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .diagnostics import summarize_text, summarize_transport_message
-from ..observability.runtime import emit_event, mark_appserver_health
+from ..observability.runtime import emit_event, mark_appserver_health, write_raw_protocol_message
 
 
 JsonDict = dict[str, Any]
@@ -550,6 +550,12 @@ class AppServerClient:
             )
 
     def _trace_protocol_message(self, *, stage: str, payload: JsonDict) -> None:
+        write_raw_protocol_message(
+            stage=stage,
+            connection_mode=self.connection_mode,
+            connection_epoch=self.connection_epoch,
+            payload=payload,
+        )
         emit_event(
             component="appserver.protocol",
             event=f"appserver.protocol.{stage}",

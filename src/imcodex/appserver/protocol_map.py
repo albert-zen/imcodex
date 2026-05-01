@@ -40,6 +40,7 @@ _EVENT_KINDS = {
     "thread/status/changed": "thread_status_changed",
     "thread/compacted": "thread_compacted",
     "model/rerouted": "model_rerouted",
+    "error": "error",
     "configWarning": "config_warning",
     "deprecationNotice": "deprecation_notice",
 }
