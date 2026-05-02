@@ -4,11 +4,12 @@ import asyncio
 import json
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 
 from imcodex.channels import QQChannelAdapter, create_app
 from imcodex.channels.middleware import UnifiedChannelMiddleware
-from imcodex.channels.qq import OP_DISPATCH, OP_HELLO
+from imcodex.channels.qq import OP_DISPATCH, OP_HELLO, RECONNECT_MAX_DELAY_S
 from imcodex.models import InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
 
@@ -198,7 +199,79 @@ async def test_qq_adapter_emits_ready_event_and_health_update(monkeypatch) -> No
     await adapter._run_session("ws://gateway", "token")
 
     assert [event["event"] for event in observed_events] == ["qq.gateway.ready"]
-    assert observed_health == [("qq", {"connected": True, "session_id": "session-1"})]
+    assert observed_health == [
+        ("qq", {"connected": True, "session_id": "session-1", "status": "connected"})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_start_survives_initial_network_failure(monkeypatch) -> None:
+    observed_health: list[tuple[str, dict]] = []
+
+    def capture_health(channel_id: str, **payload) -> None:
+        observed_health.append((channel_id, payload))
+
+    monkeypatch.setattr("imcodex.channels.qq.mark_channel_health", capture_health)
+
+    class FailingHttpClient:
+        async def post(self, *_args, **_kwargs):
+            request = httpx.Request("POST", "https://bots.qq.com/app/getAppAccessToken")
+            raise httpx.ConnectError("network unavailable", request=request)
+
+    sleep_started = asyncio.Event()
+    release_sleep = asyncio.Event()
+    delays: list[float] = []
+
+    async def controlled_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        sleep_started.set()
+        await release_sleep.wait()
+
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+        http_client=FailingHttpClient(),
+        sleep=controlled_sleep,
+    )
+
+    await adapter.start()
+    await asyncio.wait_for(sleep_started.wait(), timeout=1)
+
+    assert adapter._runner_task is not None
+    assert not adapter._runner_task.done()
+    assert delays == [1.0]
+    assert observed_health[0] == (
+        "qq",
+        {"enabled": True, "connected": False, "status": "connecting"},
+    )
+    assert observed_health[-1] == (
+        "qq",
+        {
+            "connected": False,
+            "session_id": None,
+            "status": "reconnecting",
+            "error_type": "ConnectError",
+            "retry_delay_s": 1.0,
+        },
+    )
+
+    await adapter.stop()
+
+
+def test_qq_adapter_reconnect_delay_is_capped() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+    )
+
+    assert adapter._reconnect_delay(0) == 1.0
+    assert adapter._reconnect_delay(1) == 1.0
+    assert adapter._reconnect_delay(3) == 4.0
+    assert adapter._reconnect_delay(100) == RECONNECT_MAX_DELAY_S
 
 
 @pytest.mark.asyncio

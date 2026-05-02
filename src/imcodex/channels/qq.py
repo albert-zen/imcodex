@@ -37,6 +37,8 @@ INTENT_GROUP_AND_C2C = 1 << 25
 INTENT_PUBLIC_GUILD_MESSAGES = 1 << 30
 SUPPORTED_EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}
 MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
+RECONNECT_INITIAL_DELAY_S = 1.0
+RECONNECT_MAX_DELAY_S = 60.0
 
 
 class QQChannelAdapter(BaseChannelAdapter):
@@ -97,7 +99,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._ready_event.clear()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
-        await asyncio.wait_for(self._ready_event.wait(), timeout=self.startup_timeout_s)
+        mark_channel_health("qq", enabled=True, connected=False, status="connecting")
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -174,7 +176,9 @@ class QQChannelAdapter(BaseChannelAdapter):
         response.raise_for_status()
 
     async def _run_forever(self) -> None:
+        failures = 0
         while not self._stop_event.is_set():
+            reconnect_delay = RECONNECT_INITIAL_DELAY_S
             try:
                 logger.info("QQ adapter connecting via %s", self.api_base)
                 emit_event(
@@ -186,12 +190,46 @@ class QQChannelAdapter(BaseChannelAdapter):
                 token = await self._get_access_token()
                 gateway = await self._get_gateway_url(token)
                 await self._run_session(gateway, token)
+                failures = 0
+                self._mark_disconnected(status="reconnecting")
+                if not self._stop_event.is_set():
+                    emit_event(
+                        component="channels.qq",
+                        event="qq.gateway.disconnected",
+                        message="QQ gateway session ended; reconnecting",
+                        data={"retry_delay_s": reconnect_delay},
+                    )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("QQ adapter loop failed")
+            except Exception as exc:
+                failures += 1
+                reconnect_delay = self._reconnect_delay(failures)
+                self._ready_event.clear()
+                self._mark_disconnected(
+                    status="reconnecting",
+                    error_type=type(exc).__name__,
+                    retry_delay_s=reconnect_delay,
+                )
+                logger.warning(
+                    "QQ adapter connection failed; retrying in %.1fs: %s",
+                    reconnect_delay,
+                    exc,
+                )
+                logger.debug("QQ adapter connection failure details", exc_info=True)
+                emit_event(
+                    component="channels.qq",
+                    event="qq.gateway.connect_failed",
+                    level="ERROR",
+                    message="QQ adapter gateway connection failed; retrying",
+                    data={
+                        "api_base": self.api_base,
+                        "error_type": type(exc).__name__,
+                        "retry_attempt": failures,
+                        "retry_delay_s": reconnect_delay,
+                    },
+                )
             if not self._stop_event.is_set():
-                await self.sleep(1)
+                await self.sleep(reconnect_delay)
 
     async def _run_session(self, gateway_url: str, token: str) -> None:
         heartbeat_task: asyncio.Task | None = None
@@ -224,7 +262,12 @@ class QQChannelAdapter(BaseChannelAdapter):
                                 message="QQ gateway ready",
                                 data={"session_id": self._session_id},
                             )
-                            mark_channel_health("qq", connected=True, session_id=self._session_id)
+                            mark_channel_health(
+                                "qq",
+                                connected=True,
+                                session_id=self._session_id,
+                                status="connected",
+                            )
                             self._ready_event.set()
                             continue
                         if event_type == "RESUMED":
@@ -234,7 +277,12 @@ class QQChannelAdapter(BaseChannelAdapter):
                                 event="qq.gateway.resumed",
                                 message="QQ gateway resumed",
                             )
-                            mark_channel_health("qq", connected=True, session_id=self._session_id)
+                            mark_channel_health(
+                                "qq",
+                                connected=True,
+                                session_id=self._session_id,
+                                status="connected",
+                            )
                             self._ready_event.set()
                             continue
                         if event_type in SUPPORTED_EVENTS:
@@ -255,6 +303,20 @@ class QQChannelAdapter(BaseChannelAdapter):
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    def _reconnect_delay(self, failures: int) -> float:
+        if failures <= 0:
+            return RECONNECT_INITIAL_DELAY_S
+        return min(RECONNECT_MAX_DELAY_S, RECONNECT_INITIAL_DELAY_S * (2 ** (failures - 1)))
+
+    def _mark_disconnected(self, *, status: str, **changes: Any) -> None:
+        payload = {
+            "connected": False,
+            "session_id": self._session_id,
+            "status": status,
+        }
+        payload.update(changes)
+        mark_channel_health("qq", **payload)
 
     async def _heartbeat_loop(self, websocket, interval_seconds: float) -> None:
         while not self._stop_event.is_set():

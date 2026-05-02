@@ -52,6 +52,40 @@ def render_fast_mode(payload: dict) -> str:
     )
 
 
+def render_credits(payload: dict) -> str:
+    rate_limits = _rate_limit_snapshot(payload)
+    if rate_limits is None:
+        return "Credits\n\nCurrent: Unknown"
+
+    credits = rate_limits.get("credits") if isinstance(rate_limits.get("credits"), dict) else None
+    lines = ["Credits", ""]
+    if credits is None:
+        lines.append("Current: Unknown")
+    elif credits.get("unlimited") is True:
+        lines.append("Current: Unlimited")
+    elif credits.get("hasCredits") is True:
+        lines.append("Current: Available")
+    elif credits.get("hasCredits") is False:
+        lines.append("Current: Depleted")
+    else:
+        lines.append("Current: Unknown")
+
+    if isinstance(credits, dict) and credits.get("balance") is not None:
+        lines.append(f"Balance: {credits['balance']}")
+    if rate_limits.get("planType"):
+        lines.append(f"Plan: {rate_limits['planType']}")
+    if rate_limits.get("limitName") or rate_limits.get("limitId"):
+        lines.append(f"Limit: {rate_limits.get('limitName') or rate_limits.get('limitId')}")
+    reached_type = rate_limits.get("rateLimitReachedType")
+    if reached_type:
+        lines.append(f"Limit state: {reached_type}")
+    for label, key in (("Primary", "primary"), ("Secondary", "secondary")):
+        window = rate_limits.get(key)
+        if isinstance(window, dict):
+            lines.append(_rate_limit_window_label(label, window))
+    return "\n".join(lines)
+
+
 def render_permission_modes(payload: dict) -> str:
     config = payload.get("config") if isinstance(payload.get("config"), dict) else {}
     current = permission_mode_label(config)
@@ -117,3 +151,28 @@ def permission_mode_label(config: dict) -> str:
         return "Full Access"
     details = ", ".join(part for part in (approval, sandbox) if part)
     return f"Custom ({details})" if details else "Custom"
+
+
+def _rate_limit_snapshot(payload: dict) -> dict | None:
+    by_limit_id = payload.get("rateLimitsByLimitId")
+    if isinstance(by_limit_id, dict):
+        codex = by_limit_id.get("codex")
+        if isinstance(codex, dict):
+            return codex
+        for snapshot in by_limit_id.values():
+            if isinstance(snapshot, dict):
+                return snapshot
+    rate_limits = payload.get("rateLimits")
+    return rate_limits if isinstance(rate_limits, dict) else None
+
+
+def _rate_limit_window_label(label: str, window: dict) -> str:
+    used = window.get("usedPercent")
+    parts = [f"{label}: {used}%" if used is not None else f"{label}: unknown"]
+    duration = window.get("windowDurationMins")
+    if duration is not None:
+        parts.append(f"window {duration} min")
+    resets_at = window.get("resetsAt")
+    if resets_at is not None:
+        parts.append(f"resets at {resets_at}")
+    return ", ".join(parts)

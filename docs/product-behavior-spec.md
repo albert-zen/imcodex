@@ -106,6 +106,7 @@ It should prominently include:
 - `/threads`
 - `/new`
 - `/status`
+- `/credits`
 - `/stop`
 - `/model [model-id]`
 - `/think [effort]`
@@ -217,6 +218,16 @@ It should show:
 
 If Codex cannot provide fresh status, the user should still get a safe, friendly status response rather than protocol noise.
 
+### `/credits`
+
+`/credits` shows the current ChatGPT credits and rate-limit status reported by Codex.
+
+Behavior:
+
+- credits and rate-limit state are read from Codex with `account/rateLimits/read`
+- the bridge does not persist credits or infer a local quota
+- if Codex cannot provide the data, the user gets a friendly status response rather than protocol noise
+
 ### `/stop`
 
 `/stop` interrupts the currently active turn for the conversation.
@@ -241,11 +252,11 @@ Behavior:
 
 ### `/think`
 
-`/think` without arguments shows the current native reasoning effort and supported command choices.
+`/think` without arguments shows the current reasoning effort and supported command choices.
 
 `/think <effort>` sets the native default reasoning effort.
 
-`/think default` clears the native reasoning-effort override.
+`/think default` clears the reasoning-effort override.
 
 Supported product choices:
 
@@ -264,11 +275,11 @@ Behavior:
 
 ### `/fast`
 
-`/fast` or `/fast status` shows the current native Fast mode state.
+`/fast` or `/fast status` shows the current Fast mode state.
 
-`/fast on` enables native Codex Fast mode.
+`/fast on` enables Fast mode.
 
-`/fast off` disables native Codex Fast mode.
+`/fast off` disables Fast mode.
 
 Behavior:
 

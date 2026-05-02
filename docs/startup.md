@@ -46,6 +46,12 @@ bridge. The summaries include transport shape, method names, request ids,
 thread and turn ids, and short previews for diagnostic fields, but they avoid
 recording full native payloads.
 
+Managed IM channels reconnect in the background. For example, if the QQ gateway
+or token endpoint is temporarily unreachable, the bridge should still finish
+startup and keep the HTTP/app-server path available. Check
+`.imcodex-run/current/health.json` for `channels.qq.status`, retry delay, and
+the latest connection error type.
+
 ### Supported: externally managed websocket core
 
 If another process already owns a websocket Codex core, point the bridge at it

@@ -12,6 +12,7 @@ from .settings import (
     current_model_label,
     current_reasoning_label,
     fast_mode_label,
+    render_credits,
     permission_mode_label,
     render_fast_mode,
     render_models,
@@ -169,6 +170,13 @@ class BridgeService:
         if response.action == "settings.fast.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
             return [self._message(message, "command_result", render_fast_mode(result))]
+        if response.action == "credits.read":
+            try:
+                result = await self.backend.read_account_rate_limits()
+            except AppServerError as exc:
+                text = f"Credits could not be queried from Codex right now: {self._safe_appserver_error(exc)}. Try again in a moment."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "command_result", render_credits(result))]
         if response.action == "config.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
             key_path = None if response.payload is None else response.payload.get("key_path")

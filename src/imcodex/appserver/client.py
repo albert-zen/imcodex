@@ -214,6 +214,9 @@ class AppServerClient:
         payload.update(kwargs)
         return await self._request("model/list", payload)
 
+    async def read_account_rate_limits(self) -> JsonDict:
+        return await self._request("account/rateLimits/read", None)
+
     async def read_thread(self, thread_id: str) -> JsonDict:
         return await self._request("thread/read", {"threadId": thread_id})
 
@@ -347,17 +350,20 @@ class AppServerClient:
         if not self.initialized:
             await self.initialize()
 
-    async def _request(self, method: str, params: JsonDict) -> JsonDict:
+    async def _request(self, method: str, params: JsonDict | None) -> JsonDict:
         await self._ensure_ready()
         return await self._request_without_initialize(method, params)
 
-    async def _request_without_initialize(self, method: str, params: JsonDict) -> JsonDict:
+    async def _request_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
         await self._ensure_connected()
         request_id = self._next_request_id
         self._next_request_id += 1
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
         self._pending_futures[request_id] = future
-        await self._send_json({"id": request_id, "method": method, "params": params})
+        payload: JsonDict = {"id": request_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        await self._send_json(payload)
         try:
             response = await asyncio.wait_for(future, timeout=self._request_timeout_s)
         except asyncio.TimeoutError as exc:

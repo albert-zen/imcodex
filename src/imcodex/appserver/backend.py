@@ -150,6 +150,9 @@ class CodexBackend:
     async def list_models(self) -> dict:
         return await self.client.list_models()
 
+    async def read_account_rate_limits(self) -> dict:
+        return await self.client.read_account_rate_limits()
+
     async def read_config(
         self,
         channel_id: str,

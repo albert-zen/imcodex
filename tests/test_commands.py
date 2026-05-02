@@ -103,10 +103,13 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     assert "/cwd playground" in response.text
     assert "/threads" in response.text
     assert "/pick <n>" in response.text
+    assert "/credits" in response.text
     assert "/model [model-id]" in response.text
     assert "/model gpt-5.4" in response.text
     assert "/think [effort]" in response.text
     assert "/fast [on|off|status]" in response.text
+    assert "native reasoning effort" not in response.text
+    assert "native Codex Fast mode" not in response.text
     assert "/permission [mode]" in response.text
     assert "/permission full-access" in response.text
     assert "/thread attach" not in response.text
@@ -248,6 +251,15 @@ def test_fast_status_reads_native_config() -> None:
     response = router.handle("qq", "conv-1", "/fast status")
 
     assert response.action == "settings.fast.read"
+
+
+def test_credits_command_reads_account_rate_limits() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/credits")
+
+    assert response.action == "credits.read"
 
 
 def test_permission_with_mode_builds_native_permission_payload() -> None:

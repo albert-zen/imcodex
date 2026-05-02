@@ -218,6 +218,12 @@ class CommandRouter:
         del channel_id, conversation_id, command
         return CommandResponse(action="status.query", text="")
 
+    def _handle_credits(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if command.args:
+            return CommandResponse(action="credits.invalid", text="Usage: /credits")
+        return CommandResponse(action="credits.read", text="")
+
     def _handle_stop(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del command
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -538,6 +544,9 @@ class CommandRouter:
                     "/status",
                     "Show the current CWD, thread, run state, model, permissions, and bridge visibility.",
                     "",
+                    "/credits",
+                    "Show current credits and rate-limit status.",
+                    "",
                     "/stop",
                     "Stop the current running task.",
                     "",
@@ -546,11 +555,11 @@ class CommandRouter:
                     "Examples: /model gpt-5.4, /model gpt-5.3-codex",
                     "",
                     "/think [effort]",
-                    "Set native reasoning effort.",
+                    "Set reasoning effort.",
                     "Examples: /think low, /think xhigh, /think default",
                     "",
                     "/fast [on|off|status]",
-                    "Toggle native Codex Fast mode.",
+                    "Toggle Fast mode.",
                     "",
                     "/permission [mode]",
                     "Leave it empty to browse permission modes, or switch directly.",

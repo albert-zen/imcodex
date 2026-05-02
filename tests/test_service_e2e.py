@@ -1406,6 +1406,61 @@ async def test_fast_command_writes_native_fast_mode_config() -> None:
 
 
 @pytest.mark.asyncio
+async def test_credits_command_reads_account_rate_limits() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "account/rateLimits/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "rateLimits": {
+                            "limitId": "codex",
+                            "limitName": "Codex",
+                            "planType": "pro",
+                            "credits": {
+                                "hasCredits": True,
+                                "unlimited": False,
+                                "balance": "123",
+                            },
+                            "primary": {
+                                "usedPercent": 25,
+                                "windowDurationMins": 15,
+                                "resetsAt": 1730947200,
+                            },
+                            "secondary": None,
+                            "rateLimitReachedType": None,
+                        },
+                        "rateLimitsByLimitId": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/credits",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Credits" in messages[0].text
+    assert "Current: Available" in messages[0].text
+    assert "Balance: 123" in messages[0].text
+    payloads = [payload for payload in process.inputs if payload.get("method") == "account/rateLimits/read"]
+    assert payloads == [{"id": 2, "method": "account/rateLimits/read"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_think_and_fast_without_args_read_native_config() -> None:
     process = ScriptedProcess(
         {
