@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
+from typing import Any
+
 
 def render_models(payload: dict) -> str:
     items = payload.get("data")
@@ -166,13 +170,56 @@ def _rate_limit_snapshot(payload: dict) -> dict | None:
     return rate_limits if isinstance(rate_limits, dict) else None
 
 
-def _rate_limit_window_label(label: str, window: dict) -> str:
-    used = window.get("usedPercent")
-    parts = [f"{label}: {used}%" if used is not None else f"{label}: unknown"]
+def _rate_limit_window_label(label: str, window: dict, *, tz=None) -> str:
+    remaining = _remaining_percent(window.get("usedPercent"))
+    parts = [f"{label}: {remaining} remaining" if remaining is not None else f"{label}: unknown"]
     duration = window.get("windowDurationMins")
     if duration is not None:
         parts.append(f"window {duration} min")
     resets_at = window.get("resetsAt")
     if resets_at is not None:
-        parts.append(f"resets at {resets_at}")
+        parts.append(f"resets at {_format_reset_time(resets_at, tz=tz)}")
     return ", ".join(parts)
+
+
+def _remaining_percent(used_percent: Any) -> str | None:
+    if used_percent is None:
+        return None
+    try:
+        used = float(str(used_percent).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return None
+    remaining = max(0.0, min(100.0, 100.0 - used))
+    if remaining.is_integer():
+        return f"{int(remaining)}%"
+    return f"{remaining:.1f}".rstrip("0").rstrip(".") + "%"
+
+
+def _format_reset_time(value: Any, *, tz=None) -> str:
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    target_tz = tz
+    if target_tz is None:
+        target_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    reset = datetime.fromtimestamp(timestamp, timezone.utc).astimezone(target_tz)
+    offset = _utc_offset_label(reset)
+    zone_name = reset.tzname()
+    if zone_name and zone_name != offset:
+        zone_label = f"{zone_name} ({offset})"
+    else:
+        zone_label = offset
+    return f"{reset:%Y-%m-%d %H:%M:%S} {zone_label}"
+
+
+def _utc_offset_label(value: datetime) -> str:
+    offset = value.utcoffset()
+    if offset is None:
+        return "UTC"
+    total_seconds = int(offset.total_seconds())
+    sign = "+" if total_seconds >= 0 else "-"
+    total_seconds = abs(total_seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
