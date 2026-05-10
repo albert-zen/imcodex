@@ -226,6 +226,8 @@ Behavior:
 
 - credits and rate-limit state are read from Codex with `account/rateLimits/read`
 - the bridge does not persist credits or infer a local quota
+- rate-limit window percentages are shown as remaining capacity rather than consumed usage
+- rate-limit reset timestamps are rendered as local date/time using the user's or runtime environment's detected timezone, with UTC as the fallback if local timezone detection is unavailable
 - if Codex cannot provide the data, the user gets a friendly status response rather than protocol noise
 
 ### `/stop`

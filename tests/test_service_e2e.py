@@ -1455,6 +1455,8 @@ async def test_credits_command_reads_account_rate_limits() -> None:
     assert "Credits" in messages[0].text
     assert "Current: Available" in messages[0].text
     assert "Balance: 123" in messages[0].text
+    assert "Primary: 75% remaining" in messages[0].text
+    assert "resets at 1730947200" not in messages[0].text
     payloads = [payload for payload in process.inputs if payload.get("method") == "account/rateLimits/read"]
     assert payloads == [{"id": 2, "method": "account/rateLimits/read"}]
     await client.close()
