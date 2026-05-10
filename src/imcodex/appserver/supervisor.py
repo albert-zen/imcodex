@@ -78,16 +78,26 @@ class AppServerSupervisor:
         if self._process is None:
             self._connection_mode = "disconnected"
             return
-        terminate = getattr(self._process, "terminate", None)
-        if callable(terminate):
-            terminate()
-        wait = getattr(self._process, "wait", None)
-        if callable(wait):
-            result = wait()
-            if inspect.isawaitable(result):
-                await result
-        self._process = None
-        self._connection_mode = "disconnected"
+        process = self._process
+        try:
+            if getattr(process, "returncode", None) is None:
+                terminate = getattr(process, "terminate", None)
+                if callable(terminate):
+                    try:
+                        terminate()
+                    except ProcessLookupError:
+                        pass
+            wait = getattr(process, "wait", None)
+            if callable(wait):
+                try:
+                    result = wait()
+                    if inspect.isawaitable(result):
+                        await result
+                except ProcessLookupError:
+                    pass
+        finally:
+            self._process = None
+            self._connection_mode = "disconnected"
 
     async def _default_spawn(self, *command: str) -> Any:
         resolved = self._resolve_command_for_spawn(command)
