@@ -542,6 +542,36 @@ async def test_default_spawn_uses_larger_stream_limit(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_supervisor_stop_tolerates_already_exited_process() -> None:
+    class AlreadyExitedProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.terminate_called = False
+            self.wait_called = False
+
+        def terminate(self) -> None:
+            self.terminate_called = True
+            raise ProcessLookupError()
+
+        async def wait(self) -> int:
+            self.wait_called = True
+            self.returncode = 0
+            return 0
+
+    process = AlreadyExitedProcess()
+    supervisor = AppServerSupervisor()
+    supervisor._process = process
+    supervisor._connection_mode = "spawned-stdio"
+
+    await supervisor.stop()
+
+    assert process.terminate_called is True
+    assert process.wait_called is True
+    assert supervisor.process is None
+    assert supervisor.connection_mode == "disconnected"
+
+
+@pytest.mark.asyncio
 async def test_client_uses_explicit_websocket_app_server_before_spawning() -> None:
     websocket = ScriptedWebSocket(
         {
