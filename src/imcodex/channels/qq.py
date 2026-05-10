@@ -41,6 +41,14 @@ RECONNECT_INITIAL_DELAY_S = 1.0
 RECONNECT_MAX_DELAY_S = 60.0
 
 
+def _config_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class QQChannelAdapter(BaseChannelAdapter):
     channel_id = "qq"
 
@@ -58,6 +66,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         sleep=asyncio.sleep,
         clock=time.time,
         startup_timeout_s: float = 15.0,
+        markdown_enabled: bool = False,
     ) -> None:
         super().__init__(middleware=middleware)
         self.enabled = enabled
@@ -71,6 +80,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         self.sleep = sleep
         self.clock = clock
         self.startup_timeout_s = startup_timeout_s
+        self.markdown_enabled = markdown_enabled
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._ready_event = asyncio.Event()
@@ -88,6 +98,7 @@ class QQChannelAdapter(BaseChannelAdapter):
             client_secret=str(config.get("client_secret") or ""),
             middleware=middleware,
             api_base=str(config.get("api_base") or DEFAULT_API_BASE),
+            markdown_enabled=_config_bool(config.get("markdown_enabled")),
         )
 
     async def start(self) -> None:
@@ -158,22 +169,20 @@ class QQChannelAdapter(BaseChannelAdapter):
             or self._reply_to_message_id(message.conversation_id)
         )
         sequence_key = reply_to or message.conversation_id
-        body = {
-            "content": message.text,
-            "msg_type": 0,
-            "msg_seq": self._next_msg_seq(sequence_key),
-        }
-        if reply_to:
-            body["msg_id"] = reply_to
-        response = await self.http_client.post(
-            f"{self.api_base}{path}",
-            headers={
-                "Authorization": f"QQBot {token}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        response.raise_for_status()
+        body = self._message_body(message.text, msg_seq=self._next_msg_seq(sequence_key), reply_to=reply_to)
+        try:
+            await self._post_message(path=path, token=token, body=body)
+        except httpx.HTTPStatusError as exc:
+            if not self._should_retry_plain_text(exc):
+                raise
+            logger.warning("QQ markdown message failed; retrying as plain text", exc_info=True)
+            fallback_body = self._message_body(
+                message.text,
+                msg_seq=body["msg_seq"],
+                reply_to=reply_to,
+                markdown_enabled=False,
+            )
+            await self._post_message(path=path, token=token, body=fallback_body)
 
     async def _run_forever(self) -> None:
         failures = 0
@@ -420,6 +429,45 @@ class QQChannelAdapter(BaseChannelAdapter):
     def _next_msg_seq(self, conversation_id: str) -> int:
         self._msg_seq[conversation_id] += 1
         return self._msg_seq[conversation_id]
+
+    def _message_body(
+        self,
+        text: str,
+        *,
+        msg_seq: int,
+        reply_to: str | None,
+        markdown_enabled: bool | None = None,
+    ) -> dict[str, Any]:
+        use_markdown = self.markdown_enabled if markdown_enabled is None else markdown_enabled
+        if use_markdown:
+            body: dict[str, Any] = {
+                "markdown": {"content": text},
+                "msg_type": 2,
+                "msg_seq": msg_seq,
+            }
+        else:
+            body = {
+                "content": text,
+                "msg_type": 0,
+                "msg_seq": msg_seq,
+            }
+        if reply_to:
+            body["msg_id"] = reply_to
+        return body
+
+    async def _post_message(self, *, path: str, token: str, body: dict[str, Any]) -> None:
+        response = await self.http_client.post(
+            f"{self.api_base}{path}",
+            headers={
+                "Authorization": f"QQBot {token}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+        response.raise_for_status()
+
+    def _should_retry_plain_text(self, exc: httpx.HTTPStatusError) -> bool:
+        return self.markdown_enabled and exc.response.status_code in {400, 403}
 
     def _reply_to_message_id(self, conversation_id: str) -> str | None:
         store = getattr(self.middleware, "service", None)

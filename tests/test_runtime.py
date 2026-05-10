@@ -127,6 +127,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_app_id="",
         qq_client_secret="",
         qq_api_base="https://api.sgroup.qq.com",
+        qq_markdown_enabled=False,
     )
 
     runtime = build_runtime(settings)
@@ -158,6 +159,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         qq_app_id="",
         qq_client_secret="",
         qq_api_base="https://api.sgroup.qq.com",
+        qq_markdown_enabled=True,
     )
     runtime = build_runtime(settings)
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
@@ -171,6 +173,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
     assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
     assert launch["env"]["IMCODEX_CORE_MODE"] == "dedicated-ws"
     assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
+    assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 
 

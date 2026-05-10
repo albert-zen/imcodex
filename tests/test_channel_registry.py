@@ -21,6 +21,7 @@ def test_build_enabled_channel_adapters_uses_settings_channel_configs() -> None:
                 "app_id": "app",
                 "client_secret": "secret",
                 "api_base": "https://api.sgroup.qq.com",
+                "markdown_enabled": True,
             },
             "unknown": {"enabled": True},
         }
@@ -31,3 +32,4 @@ def test_build_enabled_channel_adapters_uses_settings_channel_configs() -> None:
     assert len(adapters) == 1
     assert isinstance(adapters[0], QQChannelAdapter)
     assert adapters[0].middleware is middleware
+    assert adapters[0].markdown_enabled is True

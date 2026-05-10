@@ -85,6 +85,169 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qq_adapter_sends_plain_text_messages_by_default() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+        )
+
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="group:group-1",
+                message_type="turn_result",
+                text="**Accepted**",
+                metadata={"reply_to_message_id": "msg-1"},
+            )
+        )
+
+    message_body = json.loads(requests[-1].content)
+    assert requests[-1].url.path == "/v2/groups/group-1/messages"
+    assert message_body == {
+        "content": "**Accepted**",
+        "msg_type": 0,
+        "msg_seq": 1,
+        "msg_id": "msg-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_sends_markdown_messages_when_enabled() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            markdown_enabled=True,
+        )
+
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="**Accepted**",
+            )
+        )
+
+    message_body = json.loads(requests[-1].content)
+    assert requests[-1].url.path == "/v2/users/user-1/messages"
+    assert message_body == {
+        "markdown": {"content": "**Accepted**"},
+        "msg_type": 2,
+        "msg_seq": 1,
+    }
+
+
+@pytest.mark.parametrize("status_code", [400, 403])
+@pytest.mark.asyncio
+async def test_qq_adapter_retries_plain_text_when_markdown_send_fails(status_code: int) -> None:
+    message_requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        message_requests.append(request)
+        if len(message_requests) == 1:
+            return httpx.Response(status_code, json={"message": "markdown unsupported"})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            markdown_enabled=True,
+        )
+
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="group:group-1",
+                message_type="turn_result",
+                text="**Accepted**",
+                metadata={"reply_to_message_id": "msg-1"},
+            )
+        )
+
+    assert [json.loads(request.content) for request in message_requests] == [
+        {
+            "markdown": {"content": "**Accepted**"},
+            "msg_type": 2,
+            "msg_seq": 1,
+            "msg_id": "msg-1",
+        },
+        {
+            "content": "**Accepted**",
+            "msg_type": 0,
+            "msg_seq": 1,
+            "msg_id": "msg-1",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_does_not_retry_plain_text_for_server_errors() -> None:
+    message_requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        message_requests.append(request)
+        return httpx.Response(500, json={"message": "temporary failure"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            markdown_enabled=True,
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.send_message(
+                OutboundMessage(
+                    channel_id="qq",
+                    conversation_id="group:group-1",
+                    message_type="turn_result",
+                    text="**Accepted**",
+                )
+            )
+
+    assert len(message_requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_qq_adapter_delegates_standardized_inbound_message_to_middleware() -> None:
     class CapturingMiddleware:
         def __init__(self) -> None:

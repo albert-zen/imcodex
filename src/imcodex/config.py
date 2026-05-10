@@ -48,6 +48,7 @@ class Settings:
     qq_app_id: str
     qq_client_secret: str
     qq_api_base: str
+    qq_markdown_enabled: bool
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -56,6 +57,7 @@ class Settings:
                 "app_id": self.qq_app_id,
                 "client_secret": self.qq_client_secret,
                 "api_base": self.qq_api_base,
+                "markdown_enabled": self.qq_markdown_enabled,
             }
         }
 
@@ -80,4 +82,5 @@ class Settings:
             qq_app_id=_env("IMCODEX_QQ_APP_ID", "", dotenv),
             qq_client_secret=_env("IMCODEX_QQ_CLIENT_SECRET", "", dotenv),
             qq_api_base=_env("IMCODEX_QQ_API_BASE", "https://api.sgroup.qq.com", dotenv),
+            qq_markdown_enabled=_env_bool("IMCODEX_QQ_MARKDOWN_ENABLED", False, dotenv),
         )
