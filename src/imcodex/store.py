@@ -144,7 +144,6 @@ class ConversationStore:
         page: int,
         total: int,
         query: str | None,
-        include_all: bool,
         ttl_s: float = 900.0,
     ) -> ThreadBrowserContext:
         context = ThreadBrowserContext(
@@ -154,7 +153,6 @@ class ConversationStore:
             page=page,
             total=total,
             query=query,
-            include_all=include_all,
             expires_at=self.clock() + ttl_s,
         )
         self._thread_browser_contexts[(channel_id, conversation_id)] = context

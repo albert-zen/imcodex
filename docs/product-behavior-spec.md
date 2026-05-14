@@ -164,12 +164,18 @@ Behavior:
 - it renders a paged list
 - it may filter by a search term
 - it may support `--page N`
-- it may support `--all`
+
+The bridge should not maintain its own thread source allowlist. Native Codex
+owns which thread sources are visible, including standalone app conversations
+that are not nested under a user-selected project folder. The bridge may only
+reorder the returned list for IM ergonomics, such as placing the current thread
+or matching `CWD` first.
 
 The list should clearly indicate:
 
 - which thread is current
 - each visible thread's label
+- each visible thread's working-directory label, when known
 - enough state to help the user choose
 
 The rendered list should tell the user what to do next:
@@ -180,6 +186,11 @@ The rendered list should tell the user what to do next:
 - `/exit` to close the browser
 
 If thread listing fails, the user gets a friendly status message rather than raw upstream protocol output.
+
+The working-directory label is derived only from native `cwd` or `path` metadata
+that Codex returned for the thread, including last-known native metadata retained
+across partial native updates. The bridge must not infer a separate project model
+from unconfirmed or app-private fields.
 
 ### `/next`, `/prev`, `/pick <n>`, `/exit`
 

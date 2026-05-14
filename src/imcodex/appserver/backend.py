@@ -10,7 +10,6 @@ from ..store import ConversationStore
 from .client import AppServerError
 
 
-DEFAULT_THREAD_SOURCE_KINDS = ["cli", "vscode", "appServer"]
 ACTIVE_THREAD_STATUSES = {"inprogress", "in_progress", "running", "working"}
 
 
@@ -83,13 +82,11 @@ class CodexBackend:
         channel_id: str,
         conversation_id: str,
         selector: str,
-        *,
-        include_all: bool = False,
     ) -> NativeThreadSnapshot:
         normalized_selector = self._normalize_selector(selector)
         if not normalized_selector:
             raise ThreadSelectionError("Enter a thread name, preview, or ID.")
-        threads = await self.list_threads(channel_id, conversation_id, include_all=include_all)
+        threads = await self.list_threads(channel_id, conversation_id)
         ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
         for index, snapshot in enumerate(threads):
             score = self._thread_match_score(snapshot, selector)
@@ -113,13 +110,9 @@ class CodexBackend:
         self,
         channel_id: str,
         conversation_id: str,
-        *,
-        include_all: bool = False,
     ) -> list[NativeThreadSnapshot]:
         preferred_cwd = self.store.current_cwd(channel_id, conversation_id)
         params: dict[str, str | list[str]] = {"sortKey": "updated_at"}
-        if not include_all:
-            params["sourceKinds"] = list(DEFAULT_THREAD_SOURCE_KINDS)
         result = await self.client.list_threads(**params)
         threads = [self._remember_snapshot(item) for item in self._thread_list_items(result)]
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -402,11 +395,20 @@ class CodexBackend:
             priority = 2
             if bound_thread_id and snapshot.thread_id == bound_thread_id:
                 priority = 0
-            elif preferred_cwd and snapshot.cwd == preferred_cwd:
+            elif preferred_cwd and self._same_path(snapshot.cwd, preferred_cwd):
                 priority = 1
             ranked.append((priority, index, snapshot))
         ranked.sort(key=lambda item: (item[0], item[1]))
         return [snapshot for _, _, snapshot in ranked]
+
+    def _same_path(self, left: str, right: str) -> bool:
+        return self._normalize_path(left) == self._normalize_path(right)
+
+    def _normalize_path(self, value: str) -> str:
+        normalized = value.strip()
+        if normalized.startswith("\\\\?\\"):
+            normalized = normalized[4:]
+        return os.path.normcase(os.path.normpath(normalized))
 
     def _thread_list_items(self, payload: dict) -> list[dict]:
         for key in ("threads", "data"):

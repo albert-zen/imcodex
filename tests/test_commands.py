@@ -151,6 +151,16 @@ def test_threads_command_accepts_query_and_page_flags() -> None:
     assert response.payload == {"page": 2, "query": "polish"}
 
 
+def test_threads_command_rejects_unknown_flags() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/threads --all")
+
+    assert response.action == "threads.invalid"
+    assert response.text == "Usage: /threads [query] [--page N]"
+
+
 def test_next_requires_active_thread_browser_context() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
@@ -170,7 +180,6 @@ def test_pick_uses_current_thread_browser_page() -> None:
         page=1,
         total=2,
         query=None,
-        include_all=False,
     )
     router = CommandRouter(store)
 

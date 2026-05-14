@@ -41,7 +41,6 @@ class CommandResponse:
     request_id: str | None = None
     request_ids: list[str] | None = None
     answers: dict[str, list[str]] | None = None
-    include_all: bool = False
     payload: dict | None = None
 
 
@@ -92,28 +91,23 @@ class CommandRouter:
         return CommandResponse(action="project.cwd", text=f"CWD set to {resolved}.")
 
     def _handle_threads(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        include_all = False
         page = 1
         query_parts: list[str] = []
         index = 0
         while index < len(command.args):
             arg = command.args[index]
-            if arg == "--all":
-                include_all = True
-                index += 1
-                continue
             if arg == "--page":
                 if index + 1 >= len(command.args):
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N] [--all]",
+                        text="Usage: /threads [query] [--page N]",
                     )
                 try:
                     page = int(command.args[index + 1])
                 except ValueError:
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N] [--all]",
+                        text="Usage: /threads [query] [--page N]",
                     )
                 index += 2
                 continue
@@ -123,10 +117,15 @@ class CommandRouter:
                 except ValueError:
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N] [--all]",
+                        text="Usage: /threads [query] [--page N]",
                     )
                 index += 1
                 continue
+            if arg.startswith("--"):
+                return CommandResponse(
+                    action="threads.invalid",
+                    text="Usage: /threads [query] [--page N]",
+                )
             query_parts.append(arg)
             index += 1
         if page < 1:
@@ -135,7 +134,6 @@ class CommandRouter:
         return CommandResponse(
             action="threads.query",
             text="",
-            include_all=include_all,
             payload={"page": page, "query": query},
         )
 
@@ -147,7 +145,6 @@ class CommandRouter:
         return CommandResponse(
             action="threads.query",
             text="",
-            include_all=context.include_all,
             payload={"page": context.page + 1, "query": context.query},
         )
 
@@ -159,7 +156,6 @@ class CommandRouter:
         return CommandResponse(
             action="threads.query",
             text="",
-            include_all=context.include_all,
             payload={"page": max(1, context.page - 1), "query": context.query},
         )
 

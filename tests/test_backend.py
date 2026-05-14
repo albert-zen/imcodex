@@ -151,7 +151,36 @@ async def test_list_threads_accepts_data_key_and_prioritizes_preferred_cwd() -> 
     threads = await backend.list_threads("qq", "conv-1")
 
     assert [thread.thread_id for thread in threads] == ["thr_same_cwd", "thr_other"]
-    assert client.list_calls == [{"sortKey": "updated_at", "sourceKinds": ["cli", "vscode", "appServer"]}]
+    assert client.list_calls == [{"sortKey": "updated_at"}]
+
+
+@pytest.mark.asyncio
+async def test_list_threads_prioritizes_windows_extended_length_cwd_match() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
+    client = NamedClient(
+        [
+            {
+                "id": "thr_projectless",
+                "cwd": r"\\?\D:\desktop\imcodex",
+                "preview": "projectless cwd form",
+                "status": {"type": "notLoaded"},
+                "source": "vscode",
+            },
+            {
+                "id": "thr_other",
+                "cwd": r"D:\elsewhere",
+                "preview": "other cwd",
+                "status": {"type": "notLoaded"},
+                "source": "cli",
+            },
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    threads = await backend.list_threads("qq", "conv-1")
+
+    assert [thread.thread_id for thread in threads] == ["thr_projectless", "thr_other"]
 
 
 @pytest.mark.asyncio

@@ -136,7 +136,6 @@ class BridgeService:
                 payload = response.payload or {}
                 text = await self._render_threads(
                     message,
-                    response.include_all,
                     page=int(payload.get("page") or 1),
                     query=str(payload.get("query") or "").strip() or None,
                 )
@@ -374,12 +373,11 @@ class BridgeService:
     async def _render_threads(
         self,
         message: InboundMessage,
-        include_all: bool,
         *,
         page: int = 1,
         query: str | None = None,
     ) -> str:
-        threads = await self.backend.list_threads(message.channel_id, message.conversation_id, include_all=include_all)
+        threads = await self.backend.list_threads(message.channel_id, message.conversation_id)
         if query:
             threads = [snapshot for snapshot in threads if self._matches_thread_query(snapshot, query)]
         if not threads:
@@ -390,7 +388,6 @@ class BridgeService:
                 page=1,
                 total=1,
                 query=query,
-                include_all=include_all,
             )
             return "\n".join(
                 [
@@ -410,14 +407,17 @@ class BridgeService:
             page=safe_page,
             total=page_count,
             query=query,
-            include_all=include_all,
         )
         lines = [f"Threads (Page {safe_page}/{page_count})"]
         for index, snapshot in enumerate(visible, start=1):
             details = [snapshot.status]
             if snapshot.thread_id == self.store.get_binding(message.channel_id, message.conversation_id).thread_id:
                 details.append("current")
-            lines.append(f"{index}. {self._thread_label(snapshot)} ({', '.join(details)})")
+            lines.append(
+                f"{index}. {self._thread_label(snapshot)} "
+                f"[Workspace: {self._thread_workspace_label(snapshot)}] "
+                f"({', '.join(details)})"
+            )
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
         if safe_page < page_count:
             actions.insert(1, "/next for more")
@@ -474,6 +474,7 @@ class BridgeService:
             [
                 f"Thread: {self._thread_label(snapshot)}",
                 f"Thread id: {snapshot.thread_id}",
+                f"Workspace: {self._thread_workspace_label(snapshot)}",
                 f"CWD: {snapshot.cwd or '(unknown)'}",
                 f"Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
                 f"Status: {snapshot.status}",
@@ -553,6 +554,18 @@ class BridgeService:
                 return text
         return snapshot.thread_id
 
+    def _thread_workspace_label(self, snapshot) -> str:
+        for candidate in (snapshot.cwd, snapshot.path):
+            if not candidate:
+                continue
+            text = str(candidate).strip()
+            if not text:
+                continue
+            if "\\" in text or "/" in text:
+                text = text.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+            return text or "(unknown)"
+        return "(unknown)"
+
     def _matches_thread_query(self, snapshot, query: str) -> bool:
         normalized_query = self._normalize_text(query)
         if not normalized_query:
@@ -563,6 +576,7 @@ class BridgeService:
             snapshot.preview or "",
             snapshot.cwd or "",
             snapshot.path or "",
+            self._thread_workspace_label(snapshot),
             self._thread_label(snapshot),
         ]
         return any(normalized_query in self._normalize_text(candidate) for candidate in candidates if candidate)

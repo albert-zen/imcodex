@@ -1560,7 +1560,7 @@ async def test_config_write_command_sends_native_json_value_write() -> None:
 
 
 @pytest.mark.asyncio
-async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_matching_cwd() -> None:
+async def test_threads_command_lets_native_codex_choose_sources_and_prefers_bound_and_matching_cwd() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -1623,9 +1623,12 @@ async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_m
     lines = messages[0].text.splitlines()
     assert lines[0] == "Threads (Page 1/1)"
     assert lines[1].startswith("1. Bound thread")
+    assert "[Workspace: gamma]" in lines[1]
     assert "idle" in lines[1]
     assert lines[2].startswith("2. Matching cwd thread")
+    assert "[Workspace: alpha]" in lines[2]
     assert lines[3].startswith("3. Other thread")
+    assert "[Workspace: beta]" in lines[3]
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
@@ -1633,7 +1636,6 @@ async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_m
     ]
     assert thread_list_payloads == [
         {
-            "sourceKinds": ["cli", "vscode", "appServer"],
             "sortKey": "updated_at",
         }
     ]
@@ -1641,15 +1643,30 @@ async def test_threads_command_uses_default_source_kinds_and_prefers_bound_and_m
 
 
 @pytest.mark.asyncio
-async def test_threads_all_command_omits_default_source_filter() -> None:
+async def test_threads_command_uses_native_path_for_workspace_when_cwd_is_empty() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/list": [{"id": 2, "result": {"threads": []}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_projectless",
+                                "cwd": "",
+                                "path": r"C:\Users\two-one\Documents\Codex\2026-05-13\standalone-thread",
+                                "preview": "Standalone thread",
+                                "status": "idle",
+                                "source": "vscode",
+                            }
+                        ]
+                    },
+                }
+            ],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
-    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
@@ -1659,17 +1676,12 @@ async def test_threads_all_command_omits_default_source_filter() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/threads --all",
+            text="/threads",
         )
     )
 
     assert messages[0].message_type == "command_result"
-    thread_list_payloads = [
-        payload["params"]
-        for payload in process.inputs
-        if payload.get("method") == "thread/list"
-    ]
-    assert thread_list_payloads == [{"sortKey": "updated_at"}]
+    assert "Standalone thread [Workspace: standalone-thread] (idle)" in messages[0].text
     await client.close()
 
 
@@ -1755,6 +1767,7 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
     assert "Fast mode: Fast" in status_messages[0].text
     assert "Permissions: Default" in status_messages[0].text
     assert "Bridge visibility: Standard" in status_messages[0].text
+    assert "Workspace: alpha" in thread_messages[0].text
     assert "Source: appServer" in thread_messages[0].text
     await client.close()
 

@@ -130,7 +130,6 @@ def test_thread_browser_context_is_runtime_only_and_expires(tmp_path) -> None:
         page=1,
         total=2,
         query="alpha",
-        include_all=False,
         ttl_s=30.0,
     )
 

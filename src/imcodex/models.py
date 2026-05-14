@@ -51,7 +51,6 @@ class ThreadBrowserContext:
     page: int
     total: int
     query: str | None = None
-    include_all: bool = False
     expires_at: float = 0.0
 
 
