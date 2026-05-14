@@ -415,7 +415,7 @@ class BridgeService:
                 details.append("current")
             lines.append(
                 f"{index}. {self._thread_label(snapshot)} "
-                f"[Workspace: {self._thread_workspace_label(snapshot)}] "
+                f"[{self._thread_workspace_label(snapshot)}] "
                 f"({', '.join(details)})"
             )
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
