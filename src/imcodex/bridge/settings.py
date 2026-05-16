@@ -59,34 +59,20 @@ def render_fast_mode(payload: dict) -> str:
 def render_credits(payload: dict) -> str:
     rate_limits = _rate_limit_snapshot(payload)
     if rate_limits is None:
-        return "Credits\n\nCurrent: Unknown"
+        return "Usage\n\nPlan: Unknown\nCredits: Unknown"
 
     credits = rate_limits.get("credits") if isinstance(rate_limits.get("credits"), dict) else None
-    lines = ["Credits", ""]
-    if credits is None:
-        lines.append("Current: Unknown")
-    elif credits.get("unlimited") is True:
-        lines.append("Current: Unlimited")
-    elif credits.get("hasCredits") is True:
-        lines.append("Current: Available")
-    elif credits.get("hasCredits") is False:
-        lines.append("Current: Depleted")
-    else:
-        lines.append("Current: Unknown")
-
-    if isinstance(credits, dict) and credits.get("balance") is not None:
-        lines.append(f"Balance: {credits['balance']}")
+    lines = ["Usage", ""]
     if rate_limits.get("planType"):
         lines.append(f"Plan: {rate_limits['planType']}")
-    if rate_limits.get("limitName") or rate_limits.get("limitId"):
-        lines.append(f"Limit: {rate_limits.get('limitName') or rate_limits.get('limitId')}")
     reached_type = rate_limits.get("rateLimitReachedType")
     if reached_type:
         lines.append(f"Limit state: {reached_type}")
-    for label, key in (("Primary", "primary"), ("Secondary", "secondary")):
+    for fallback_label, key in (("Primary limit", "primary"), ("Secondary limit", "secondary")):
         window = rate_limits.get(key)
         if isinstance(window, dict):
-            lines.append(_rate_limit_window_label(label, window))
+            lines.append(_usage_rate_limit_window_label(fallback_label, window))
+    lines.append(_credits_line(credits))
     return "\n".join(lines)
 
 
@@ -180,6 +166,44 @@ def _rate_limit_window_label(label: str, window: dict, *, tz=None) -> str:
     if resets_at is not None:
         parts.append(f"resets at {_format_reset_time(resets_at, tz=tz)}")
     return ", ".join(parts)
+
+
+def _usage_rate_limit_window_label(label: str, window: dict) -> str:
+    display_label = _rate_limit_window_display_label(label, window.get("windowDurationMins"))
+    remaining = _remaining_percent(window.get("usedPercent")) or "unknown"
+    parts = [f"{display_label}: {remaining} remaining"]
+    resets_at = window.get("resetsAt")
+    if resets_at is not None:
+        parts.append(f"resets {_format_reset_time(resets_at)}")
+    return ", ".join(parts)
+
+
+def _rate_limit_window_display_label(fallback_label: str, duration_mins: Any) -> str:
+    try:
+        minutes = int(duration_mins)
+    except (TypeError, ValueError):
+        return fallback_label
+    if minutes == 300:
+        return "5h limit"
+    if minutes == 10080:
+        return "Weekly limit"
+    return f"{fallback_label} ({minutes} min)"
+
+
+def _credits_line(credits: dict | None) -> str:
+    if not isinstance(credits, dict):
+        return "Credits: Unknown"
+    if credits.get("unlimited") is True:
+        status = "Unlimited"
+    elif credits.get("hasCredits") is True:
+        status = "Available"
+    elif credits.get("hasCredits") is False:
+        status = "Depleted"
+    else:
+        status = "Unknown"
+    if credits.get("balance") is not None:
+        return f"Credits: {status}, balance {credits['balance']}"
+    return f"Credits: {status}"
 
 
 def _remaining_percent(used_percent: Any) -> str | None:

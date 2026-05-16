@@ -44,14 +44,32 @@ def test_render_credits_uses_remaining_language() -> None:
         {
             "rateLimits": {
                 "limitId": "codex",
+                "planType": "plus",
                 "credits": {"hasCredits": False, "balance": 0},
-                "primary": {"usedPercent": 2},
-                "secondary": {"usedPercent": 41},
+                "primary": {"usedPercent": 2, "windowDurationMins": 300},
+                "secondary": {"usedPercent": 41, "windowDurationMins": 10080},
             }
         }
     )
 
-    assert "Current: Depleted" in text
-    assert "Primary: 98% remaining" in text
-    assert "Secondary: 59% remaining" in text
+    assert text.startswith("Usage\n\n")
+    assert "Plan: plus" in text
+    assert "5h limit: 98% remaining" in text
+    assert "Weekly limit: 59% remaining" in text
+    assert "Credits: Depleted, balance 0" in text
+    assert "Current:" not in text
     assert "Primary: 2%" not in text
+
+
+def test_render_credits_falls_back_for_unusual_windows() -> None:
+    text = render_credits(
+        {
+            "rateLimits": {
+                "credits": {"unlimited": True},
+                "primary": {"usedPercent": 10, "windowDurationMins": 60},
+            }
+        }
+    )
+
+    assert "Primary limit (60 min): 90% remaining" in text
+    assert "Credits: Unlimited" in text
