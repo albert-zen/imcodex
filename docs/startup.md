@@ -9,6 +9,35 @@ From the repository root:
 `imcodex` currently supports multiple runtime shapes. Dedicated core is the
 recommended day-to-day path, but it is not the only supported mode.
 
+### macOS quick start
+
+Double-click `scripts/start.command` in Finder to open Terminal and start the
+project, or run this from the repository root:
+
+```bash
+open scripts/start.command
+```
+
+The macOS launcher delegates to `scripts/start.sh`. By default, it starts or
+reuses a dedicated Codex core on `ws://127.0.0.1:8765`, exports
+`IMCODEX_CORE_MODE=dedicated-ws`, and then starts the bridge.
+
+If `.venv/bin/python` exists, the launcher uses it automatically. Set
+`IMCODEX_PYTHON` only when you want to override that interpreter.
+
+Optional environment controls:
+
+```env
+IMCODEX_CONDA_ENV=imcodex
+IMCODEX_PYTHON=/path/to/python
+IMCODEX_CORE_PORT=8765
+IMCODEX_CORE_MODE=dedicated-ws
+```
+
+Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
+set, the launcher activates that conda environment before resolving
+`IMCODEX_PYTHON`.
+
 ### Recommended: dedicated core + bridge
 
 For day-to-day IM use, prefer running a long-lived Codex core separately and

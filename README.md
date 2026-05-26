@@ -53,6 +53,12 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
+On macOS, double-click `scripts/start.command` in Finder, or run:
+
+```bash
+open scripts/start.command
+```
+
 ## Native-First State
 
 `imcodex` now treats native Codex source code and native protocol behavior as
