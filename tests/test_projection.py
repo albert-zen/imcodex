@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from imcodex.appserver import normalize_appserver_message
 from imcodex.bridge import MessageProjector
+from imcodex.models import NativeThreadSnapshot
 from imcodex.store import ConversationStore
 
 
@@ -410,3 +411,56 @@ def test_projector_emits_terminal_result_for_early_failed_turn() -> None:
     assert final is not None
     assert final.message_type == "turn_result"
     assert final.text == "Turn failed."
+
+
+def test_projector_reconciles_thread_status_even_when_system_messages_hidden() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": "thr_1",
+                "status": {"type": "idle"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    assert store.get_active_turn("thr_1") is None
+
+
+def test_projector_updates_thread_status_snapshot_before_visibility_filter() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_thread_snapshot(
+        NativeThreadSnapshot(
+            thread_id="thr_1",
+            cwd=r"D:\work\alpha",
+            preview="hello",
+            status="inProgress",
+        )
+    )
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": "thr_1",
+                "status": {"type": "idle"},
+            },
+        },
+        store,
+    )
+
+    assert message is None
+    snapshot = store.get_thread_snapshot("thr_1")
+    assert snapshot is not None
+    assert snapshot.status == "idle"

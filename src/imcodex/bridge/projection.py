@@ -62,6 +62,8 @@ class MessageProjector:
             "config_warning",
             "deprecation_notice",
         }:
+            if event.kind == "thread_status_changed":
+                self._reconcile_thread_status(event, store)
             if not self._show_system(event.thread_id, store):
                 return None
             return self._attach_to_thread(
@@ -243,6 +245,22 @@ class MessageProjector:
             return False
         return active[0] != turn_id
 
+    def _reconcile_thread_status(self, event, store) -> None:
+        status = self._thread_status(event.payload)
+        if not event.thread_id or not status:
+            return
+        store.update_thread_snapshot(event.thread_id, status=status)
+        if status.strip().lower() not in {"inprogress", "in_progress", "running", "working"}:
+            active = store.get_active_turn(event.thread_id)
+            if active is not None:
+                store.complete_turn(event.thread_id, active[0], status)
+
+    def _thread_status(self, payload: dict) -> str:
+        status = payload.get("status")
+        if isinstance(status, dict):
+            status = status.get("type") or status.get("status")
+        return str(status or "")
+
     def _render_plan_update(self, params: dict) -> str:
         lines: list[str] = []
         explanation = params.get("explanation")
@@ -266,9 +284,7 @@ class MessageProjector:
 
     def _render_system_event(self, event) -> str:
         if event.kind == "thread_status_changed":
-            status = event.payload.get("status")
-            if isinstance(status, dict):
-                status = status.get("type") or status.get("status")
+            status = self._thread_status(event.payload)
             return f"Thread status changed: {status or 'updated'}."
         if event.kind == "thread_compacted":
             summary = str(event.payload.get("summary") or "").strip()
