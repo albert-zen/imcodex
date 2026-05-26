@@ -72,6 +72,23 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
+wait_for_core() {
+    local port="$1"
+    local deadline="${IMCODEX_CORE_START_TIMEOUT:-30}"
+    local waited=0
+
+    while (( waited < deadline )); do
+        if port_is_listening "${port}"; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    echo "Dedicated core on ${core_url} did not become ready within ${deadline}s." >&2
+    return 1
+}
+
 load_dotenv
 activate_conda_env
 
@@ -111,6 +128,7 @@ if [[ "${core_mode}" == "dedicated-ws" ]]; then
     else
         echo "Starting dedicated Codex core on ${IMCODEX_CORE_URL}"
         "${python}" -m imcodex core start --port "${core_port}"
+        wait_for_core "${core_port}"
     fi
 fi
 

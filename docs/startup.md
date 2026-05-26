@@ -41,12 +41,14 @@ IMCODEX_CONDA_ENV=imcodex
 IMCODEX_PYTHON=/path/to/python
 IMCODEX_CORE_PORT=8765
 IMCODEX_CORE_MODE=dedicated-ws
+IMCODEX_CORE_START_TIMEOUT=30
 ```
 
 Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
 set, the launcher activates that conda environment before resolving
 `IMCODEX_PYTHON`. On Windows, `scripts\start.cmd` keeps the terminal open after
-the bridge exits; set `IMCODEX_NO_PAUSE=1` to skip that pause.
+the bridge exits; set `IMCODEX_NO_PAUSE=1` in the shell before running
+`scripts\start.cmd` to skip that pause.
 
 ### Recommended: dedicated core + bridge
 

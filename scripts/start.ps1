@@ -107,6 +107,20 @@ function Test-PortListening {
     }
 }
 
+function Wait-DedicatedCore {
+    param([int] $Port)
+
+    $timeout = if ($env:IMCODEX_CORE_START_TIMEOUT) { [int] $env:IMCODEX_CORE_START_TIMEOUT } else { 30 }
+    for ($waited = 0; $waited -lt $timeout; $waited++) {
+        if (Test-PortListening -Port $Port) {
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    throw "Dedicated core on $coreUrl did not become ready within ${timeout}s."
+}
+
 Import-DotEnv
 Enable-CondaEnv
 
@@ -143,6 +157,7 @@ if ($coreMode -eq "dedicated-ws") {
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
+        Wait-DedicatedCore -Port ([int] $corePort)
     }
 }
 
