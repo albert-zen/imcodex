@@ -9,21 +9,30 @@ From the repository root:
 `imcodex` currently supports multiple runtime shapes. Dedicated core is the
 recommended day-to-day path, but it is not the only supported mode.
 
-### macOS quick start
+### Platform quick start
 
-Double-click `scripts/start.command` in Finder to open Terminal and start the
-project, or run this from the repository root:
+On Windows, double-click `scripts\start.cmd`, or run this from the repository
+root:
+
+```cmd
+scripts\start.cmd
+```
+
+On macOS, double-click `scripts/start.command` in Finder to open Terminal and
+start the project, or run this from the repository root:
 
 ```bash
 open scripts/start.command
 ```
 
-The macOS launcher delegates to `scripts/start.sh`. By default, it starts or
-reuses a dedicated Codex core on `ws://127.0.0.1:8765`, exports
-`IMCODEX_CORE_MODE=dedicated-ws`, and then starts the bridge.
+The Windows launcher delegates to `scripts/start.ps1`; the macOS launcher
+delegates to `scripts/start.sh`. By default, both start or reuse a dedicated
+Codex core on `ws://127.0.0.1:8765`, export `IMCODEX_CORE_MODE=dedicated-ws`,
+and then start the bridge.
 
-If `.venv/bin/python` exists, the launcher uses it automatically. Set
-`IMCODEX_PYTHON` only when you want to override that interpreter.
+If `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS/Linux
+exists, the launcher uses it automatically. Set `IMCODEX_PYTHON` only when you
+want to override that interpreter.
 
 Optional environment controls:
 
@@ -36,7 +45,8 @@ IMCODEX_CORE_MODE=dedicated-ws
 
 Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
 set, the launcher activates that conda environment before resolving
-`IMCODEX_PYTHON`.
+`IMCODEX_PYTHON`. On Windows, `scripts\start.cmd` keeps the terminal open after
+the bridge exits; set `IMCODEX_NO_PAUSE=1` to skip that pause.
 
 ### Recommended: dedicated core + bridge
 
@@ -105,15 +115,15 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
-The helper script runs:
+Set `IMCODEX_CORE_MODE=spawned-stdio` to use the bridge-managed stdio path:
 
 ```powershell
-python -m imcodex
+$env:IMCODEX_CORE_MODE="spawned-stdio"
+pwsh -File .\scripts\start.ps1
 ```
 
-Without `IMCODEX_CORE_MODE=dedicated-ws` and `IMCODEX_CORE_URL`, this path may
-fall back to a bridge-managed `stdio` Codex app-server. It remains useful for
-quick local checks, but it is not the preferred long-running IM setup.
+This remains useful for quick local checks, but it is not the preferred
+long-running IM setup.
 
 If you use a dedicated Python environment, activate it first or set `IMCODEX_PYTHON`:
 

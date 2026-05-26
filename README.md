@@ -53,6 +53,12 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
+On Windows, double-click `scripts\start.cmd`, or run:
+
+```cmd
+scripts\start.cmd
+```
+
 On macOS, double-click `scripts/start.command` in Finder, or run:
 
 ```bash
