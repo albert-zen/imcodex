@@ -55,6 +55,21 @@ class MessageProjector:
             if name:
                 store.update_thread_snapshot(event.thread_id, name=name)
             return None
+        if event.kind == "thread_goal_updated":
+            if not event.turn_id:
+                return None
+            return self._attach_to_thread(
+                event.thread_id,
+                store,
+                OutboundMessage(
+                    channel_id="",
+                    conversation_id="",
+                    message_type="status",
+                    text=self._render_goal_event(event.payload),
+                ),
+            )
+        if event.kind == "thread_goal_cleared":
+            return None
         if event.kind in {
             "thread_status_changed",
             "thread_compacted",
@@ -260,6 +275,25 @@ class MessageProjector:
         if isinstance(status, dict):
             status = status.get("type") or status.get("status")
         return str(status or "")
+
+    def _render_goal_event(self, payload: dict) -> str:
+        goal = payload.get("goal") or {}
+        status = self._goal_status_label(str(goal.get("status") or ""))
+        objective = str(goal.get("objective") or "").strip()
+        if objective:
+            return f"Goal {status}: {objective}"
+        return f"Goal {status}."
+
+    def _goal_status_label(self, status: str) -> str:
+        labels = {
+            "active": "active",
+            "paused": "paused",
+            "blocked": "blocked",
+            "usageLimited": "usage limited",
+            "budgetLimited": "limited by budget",
+            "complete": "complete",
+        }
+        return labels.get(status, status or "updated")
 
     def _render_plan_update(self, params: dict) -> str:
         lines: list[str] = []

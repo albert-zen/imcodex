@@ -263,6 +263,81 @@ def test_protocol_mapping_classifies_system_notifications_without_dropping_them(
     assert event.category == "system"
 
 
+def test_protocol_mapping_classifies_goal_notifications() -> None:
+    updated = normalize_appserver_message(
+        {
+            "method": "thread/goal/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "goal": {"status": "complete"},
+            },
+        }
+    )
+    cleared = normalize_appserver_message(
+        {
+            "method": "thread/goal/cleared",
+            "params": {"threadId": "thr_1"},
+        }
+    )
+
+    assert updated.kind == "thread_goal_updated"
+    assert updated.category == "thread"
+    assert cleared.kind == "thread_goal_cleared"
+
+
+def test_projector_emits_turn_goal_updates() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "thread/goal/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "goal": {
+                    "threadId": "thr_1",
+                    "objective": "Finish the migration",
+                    "status": "complete",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "status"
+    assert message.text == "Goal complete: Finish the migration"
+
+
+def test_projector_suppresses_command_goal_updates_to_avoid_echoing_goal_commands() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "thread/goal/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": None,
+                "goal": {
+                    "threadId": "thr_1",
+                    "objective": "Finish the migration",
+                    "status": "active",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is None
+
+
 def test_projector_preserves_changed_files_in_failed_turn_result() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")

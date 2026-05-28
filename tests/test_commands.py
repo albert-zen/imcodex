@@ -103,6 +103,7 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     assert "/cwd playground" in response.text
     assert "/threads" in response.text
     assert "/pick <n>" in response.text
+    assert "/goal [objective|pause|resume|clear]" in response.text
     assert "/credits" in response.text
     assert "/model [model-id]" in response.text
     assert "/model gpt-5.4" in response.text
@@ -269,6 +270,50 @@ def test_credits_command_reads_account_rate_limits() -> None:
     response = router.handle("qq", "conv-1", "/credits")
 
     assert response.action == "credits.read"
+
+
+def test_goal_without_args_reads_native_goal() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/goal")
+
+    assert response.action == "goal.read"
+
+
+def test_goal_with_objective_builds_native_goal_payload() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/goal Finish the migration and keep tests green")
+
+    assert response.action == "goal.set"
+    assert response.payload == {"objective": "Finish the migration and keep tests green"}
+
+
+def test_goal_subcommands_map_to_native_status_or_clear() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    pause = router.handle("qq", "conv-1", "/goal pause")
+    resume = router.handle("qq", "conv-1", "/goal resume")
+    clear = router.handle("qq", "conv-1", "/goal clear")
+
+    assert pause.action == "goal.status"
+    assert pause.payload == {"status": "paused"}
+    assert resume.action == "goal.status"
+    assert resume.payload == {"status": "active"}
+    assert clear.action == "goal.clear"
+
+
+def test_goal_rejects_oversized_objective_before_native_call() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/goal " + "x" * 4001)
+
+    assert response.action == "goal.invalid"
+    assert "4000" in response.text
 
 
 def test_permission_with_mode_builds_native_permission_payload() -> None:

@@ -129,6 +129,13 @@ class BridgeService:
             self.store.note_active_turn(submission.thread_id, submission.turn_id, "inProgress")
         return []
 
+    def _stale_thread_status(self, message: InboundMessage, exc: StaleThreadBindingError) -> str:
+        self.store.clear_thread_binding(message.channel_id, message.conversation_id)
+        return (
+            f"Current thread {exc.thread_id} could not be resumed. "
+            "Use /threads to pick another thread or /new to start fresh."
+        )
+
     async def _handle_command(self, message: InboundMessage) -> list[OutboundMessage]:
         response = self.command_router.handle(message.channel_id, message.conversation_id, message.text)
         if response.action == "threads.query":
@@ -176,6 +183,59 @@ class BridgeService:
                 text = f"Credits could not be queried from Codex right now: {self._safe_appserver_error(exc)}. Try again in a moment."
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_credits(result))]
+        if response.action == "goal.read":
+            try:
+                result = await self.backend.read_thread_goal(message.channel_id, message.conversation_id)
+            except StaleThreadBindingError as exc:
+                return [self._message(message, "status", self._stale_thread_status(message, exc))]
+            except AppServerError as exc:
+                text = f"Goal could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "command_result", self._render_goal(result))]
+        if response.action == "goal.set":
+            payload = response.payload or {}
+            try:
+                result = await self.backend.set_thread_goal(
+                    message.channel_id,
+                    message.conversation_id,
+                    objective=str(payload.get("objective") or ""),
+                    status="active",
+                )
+            except KeyError:
+                return [self._message(message, "status", "Choose a CWD first with /cwd <path>.")]
+            except StaleThreadBindingError as exc:
+                return [self._message(message, "status", self._stale_thread_status(message, exc))]
+            except AppServerError as exc:
+                text = f"Goal could not be set in Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "status", self._render_goal(result))]
+        if response.action == "goal.status":
+            binding = self.store.get_binding(message.channel_id, message.conversation_id)
+            if binding.thread_id is None:
+                return [self._message(message, "command_result", "No goal currently set.")]
+            payload = response.payload or {}
+            try:
+                result = await self.backend.set_thread_goal(
+                    message.channel_id,
+                    message.conversation_id,
+                    status=str(payload.get("status") or ""),
+                )
+            except StaleThreadBindingError as exc:
+                return [self._message(message, "status", self._stale_thread_status(message, exc))]
+            except AppServerError as exc:
+                text = f"Goal could not be updated in Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "status", self._render_goal(result))]
+        if response.action == "goal.clear":
+            try:
+                result = await self.backend.clear_thread_goal(message.channel_id, message.conversation_id)
+            except StaleThreadBindingError as exc:
+                return [self._message(message, "status", self._stale_thread_status(message, exc))]
+            except AppServerError as exc:
+                text = f"Goal could not be cleared in Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            text = "Goal cleared." if result.get("cleared") else "No goal currently set."
+            return [self._message(message, "status", text)]
         if response.action == "config.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
             key_path = None if response.payload is None else response.payload.get("key_path")
@@ -510,6 +570,9 @@ class BridgeService:
             "settings.reasoning.write",
             "settings.fast.write",
             "settings.permission.write",
+            "goal.set",
+            "goal.status",
+            "goal.clear",
             "config.write",
             "config.batch",
             "native.respond",
@@ -531,6 +594,69 @@ class BridgeService:
         if key_path is not None and isinstance(config, dict):
             return self._render_json(self._lookup_config_value(config, str(key_path)))
         return self._render_json(config if config is not None else payload)
+
+    def _render_goal(self, payload: dict) -> str:
+        goal = payload.get("goal") if isinstance(payload, dict) else None
+        if not isinstance(goal, dict):
+            return "No goal currently set."
+        status = self._goal_status_label(str(goal.get("status") or ""))
+        lines = [f"Goal {status}".strip()]
+        objective = str(goal.get("objective") or "").strip()
+        if objective:
+            lines.append(f"Objective: {objective}")
+        time_used = self._int_or_none(goal.get("timeUsedSeconds"))
+        if time_used and time_used > 0:
+            lines.append(f"Time: {self._format_goal_elapsed_seconds(time_used)}")
+        token_budget = self._int_or_none(goal.get("tokenBudget"))
+        tokens_used = self._int_or_none(goal.get("tokensUsed")) or 0
+        if token_budget is not None:
+            lines.append(
+                f"Tokens: {self._format_compact_number(tokens_used)}/{self._format_compact_number(token_budget)}"
+            )
+        return "\n".join(lines)
+
+    def _goal_status_label(self, status: str) -> str:
+        labels = {
+            "active": "active",
+            "paused": "paused",
+            "blocked": "blocked",
+            "usageLimited": "usage limited",
+            "budgetLimited": "limited by budget",
+            "complete": "complete",
+        }
+        return labels.get(status, status or "updated")
+
+    def _format_goal_elapsed_seconds(self, seconds: int) -> str:
+        seconds = max(0, seconds)
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        remaining_minutes = minutes % 60
+        if hours >= 24:
+            days = hours // 24
+            remaining_hours = hours % 24
+            return f"{days}d {remaining_hours}h {remaining_minutes}m"
+        if remaining_minutes == 0:
+            return f"{hours}h"
+        return f"{hours}h {remaining_minutes}m"
+
+    def _format_compact_number(self, value: int) -> str:
+        if abs(value) >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
+        if abs(value) >= 1_000:
+            return f"{value / 1_000:.1f}K".replace(".0K", "K")
+        return str(value)
+
+    def _int_or_none(self, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _lookup_config_value(self, payload: dict, key_path: str) -> object:
         current: object = payload

@@ -24,6 +24,7 @@ _PERMISSION_PRESETS = {
     ],
 }
 _REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_MAX_GOAL_OBJECTIVE_CHARS = 4000
 
 
 @dataclass(slots=True)
@@ -219,6 +220,32 @@ class CommandRouter:
         if command.args:
             return CommandResponse(action="credits.invalid", text="Usage: /credits")
         return CommandResponse(action="credits.read", text="")
+
+    def _handle_goal(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="goal.read", text="")
+        if len(command.args) == 1:
+            subcommand = command.args[0].lower()
+            if subcommand == "clear":
+                return CommandResponse(action="goal.clear", text="Clearing goal.")
+            if subcommand == "pause":
+                return CommandResponse(action="goal.status", text="Pausing goal.", payload={"status": "paused"})
+            if subcommand == "resume":
+                return CommandResponse(action="goal.status", text="Resuming goal.", payload={"status": "active"})
+        objective = self._strip_matching_quotes(command.raw_args_text).strip()
+        if not objective:
+            return CommandResponse(action="goal.invalid", text="Usage: /goal [pause|resume|clear|<objective>]")
+        if len(objective) > _MAX_GOAL_OBJECTIVE_CHARS:
+            return CommandResponse(
+                action="goal.invalid",
+                text="Goal objective must be at most 4000 characters.",
+            )
+        return CommandResponse(
+            action="goal.set",
+            text="Setting goal.",
+            payload={"objective": objective},
+        )
 
     def _handle_stop(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del command
@@ -540,6 +567,9 @@ class CommandRouter:
                     "/status",
                     "Show the current CWD, thread, run state, model, permissions, and bridge visibility.",
                     "",
+                    "/goal [objective|pause|resume|clear]",
+                    "Set, view, pause, resume, or clear the active thread goal.",
+                    "",
                     "/credits",
                     "Show current credits and rate-limit status.",
                     "",
@@ -609,6 +639,12 @@ class CommandRouter:
             return CommandResponse(action="settings.visibility", text=f"Tool-call messages {'shown' if enabled else 'hidden'}.")
         self.store.set_system_visibility(channel_id, conversation_id, enabled=enabled)
         return CommandResponse(action="settings.visibility", text=f"System messages {'shown' if enabled else 'hidden'}.")
+
+    def _strip_matching_quotes(self, value: str) -> str:
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            return text[1:-1]
+        return text
 
     def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:
         answers: dict[str, list[str]] = {}

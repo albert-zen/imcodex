@@ -106,6 +106,7 @@ It should prominently include:
 - `/threads`
 - `/new`
 - `/status`
+- `/goal [objective|pause|resume|clear]`
 - `/credits`
 - `/stop`
 - `/model [model-id]`
@@ -228,6 +229,22 @@ It should show:
 - pending approval count when approvals are enabled in the product
 
 If Codex cannot provide fresh status, the user should still get a safe, friendly status response rather than protocol noise.
+
+### `/goal`
+
+`/goal` without arguments shows the current native Codex goal for the active thread.
+
+`/goal <objective>` sets or replaces the active thread goal.
+
+`/goal pause`, `/goal resume`, and `/goal clear` update or clear the active thread goal.
+
+Behavior:
+
+- goal operations use native Codex `thread/goal/get`, `thread/goal/set`, and `thread/goal/clear`
+- the bridge does not persist a second local goal source of truth
+- `/goal <objective>` requires a current working directory if no native thread exists yet
+- goal objectives must be non-empty and no longer than native Codex's 4,000-character limit
+- if native Codex has the goals feature disabled or rejects the request, the user gets a friendly status response rather than raw protocol noise
 
 ### `/credits`
 

@@ -140,6 +140,38 @@ class CodexBackend:
             return None
         return self._remember_snapshot(payload)
 
+    async def read_thread_goal(self, channel_id: str, conversation_id: str) -> dict:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.thread_id is None:
+            return {"goal": None}
+        thread_id = await self.ensure_thread(channel_id, conversation_id)
+        return await self.client.get_thread_goal(thread_id)
+
+    async def set_thread_goal(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        thread_id = await self.ensure_thread(channel_id, conversation_id)
+        if objective is not None:
+            # Native goal replacement clears first so accounting and budgets do not carry over.
+            await self.client.clear_thread_goal(thread_id)
+        return await self.client.set_thread_goal(
+            thread_id,
+            objective=objective,
+            status=status,
+        )
+
+    async def clear_thread_goal(self, channel_id: str, conversation_id: str) -> dict:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.thread_id is None:
+            return {"cleared": False}
+        thread_id = await self.ensure_thread(channel_id, conversation_id)
+        return await self.client.clear_thread_goal(thread_id)
+
     async def list_models(self) -> dict:
         return await self.client.list_models()
 

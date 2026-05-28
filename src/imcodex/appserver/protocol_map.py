@@ -38,6 +38,8 @@ _EVENT_KINDS = {
     "item/completed": "item_completed",
     "turn/completed": "turn_completed",
     "thread/status/changed": "thread_status_changed",
+    "thread/goal/updated": "thread_goal_updated",
+    "thread/goal/cleared": "thread_goal_cleared",
     "thread/compacted": "thread_compacted",
     "model/rerouted": "model_rerouted",
     "configWarning": "config_warning",

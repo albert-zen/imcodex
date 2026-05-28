@@ -196,6 +196,233 @@ async def test_text_without_cwd_returns_friendly_onboarding_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_goal_command_sets_native_thread_goal() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_goal",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "goal thread",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/goal/clear": [
+                {
+                    "id": 3,
+                    "result": {"cleared": False},
+                }
+            ],
+            "thread/goal/set": [
+                {
+                    "id": 4,
+                    "result": {
+                        "goal": {
+                            "threadId": "thr_goal",
+                            "objective": "Finish the migration",
+                            "status": "active",
+                            "tokenBudget": None,
+                            "tokensUsed": 0,
+                            "timeUsedSeconds": 0,
+                            "createdAt": 1,
+                            "updatedAt": 1,
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/goal Finish the migration",
+        )
+    )
+
+    clear_request = process.inputs[-2]
+    goal_request = process.inputs[-1]
+    assert clear_request["method"] == "thread/goal/clear"
+    assert clear_request["params"] == {"threadId": "thr_goal"}
+    assert goal_request["method"] == "thread/goal/set"
+    assert goal_request["params"] == {
+        "threadId": "thr_goal",
+        "objective": "Finish the migration",
+        "status": "active",
+    }
+    assert messages[0].message_type == "status"
+    assert "Goal active" in messages[0].text
+    assert "Objective: Finish the migration" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_command_recovers_from_stale_bound_thread() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [{"id": 2, "error": {"message": "unknown thread"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_stale")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/goal Finish the migration",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Use /threads to pick another thread or /new to start fresh." in messages[0].text
+    assert store.get_binding("qq", "conv-1").thread_id is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_read_recovers_from_stale_bound_thread() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [{"id": 2, "error": {"message": "unknown thread"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_stale")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/goal",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Use /threads to pick another thread or /new to start fresh." in messages[0].text
+    assert store.get_binding("qq", "conv-1").thread_id is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_clear_recovers_from_stale_bound_thread() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [{"id": 2, "error": {"message": "unknown thread"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_stale")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/goal clear",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Use /threads to pick another thread or /new to start fresh." in messages[0].text
+    assert store.get_binding("qq", "conv-1").thread_id is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_command_reads_current_native_thread_goal() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_goal",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "goal thread",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/goal/get": [
+                {
+                    "id": 3,
+                    "result": {
+                        "goal": {
+                            "threadId": "thr_goal",
+                            "objective": "Keep tests green",
+                            "status": "paused",
+                            "tokenBudget": 50000,
+                            "tokensUsed": 12500,
+                            "timeUsedSeconds": 120,
+                            "createdAt": 1,
+                            "updatedAt": 2,
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_goal")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/goal",
+        )
+    )
+
+    assert process.inputs[-1]["method"] == "thread/goal/get"
+    assert process.inputs[-1]["params"] == {"threadId": "thr_goal"}
+    assert messages[0].message_type == "command_result"
+    assert "Goal paused" in messages[0].text
+    assert "Objective: Keep tests green" in messages[0].text
+    assert "Time: 2m" in messages[0].text
+    assert "Tokens: 12.5K/50K" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_bridge_emits_started_and_completed_events_for_inbound_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

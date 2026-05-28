@@ -220,6 +220,29 @@ class AppServerClient:
     async def read_thread(self, thread_id: str) -> JsonDict:
         return await self._request("thread/read", {"threadId": thread_id})
 
+    async def get_thread_goal(self, thread_id: str) -> JsonDict:
+        return await self._request("thread/goal/get", {"threadId": thread_id})
+
+    async def set_thread_goal(
+        self,
+        thread_id: str,
+        *,
+        objective: str | None = None,
+        status: str | None = None,
+        token_budget: int | None = None,
+    ) -> JsonDict:
+        payload: JsonDict = {"threadId": thread_id}
+        if objective is not None:
+            payload["objective"] = objective
+        if status is not None:
+            payload["status"] = status
+        if token_budget is not None:
+            payload["tokenBudget"] = token_budget
+        return await self._request("thread/goal/set", payload)
+
+    async def clear_thread_goal(self, thread_id: str) -> JsonDict:
+        return await self._request("thread/goal/clear", {"threadId": thread_id})
+
     async def read_config(self, *, include_layers: bool = False, cwd: str | None = None) -> JsonDict:
         payload: JsonDict = {"includeLayers": include_layers}
         if cwd is not None:
