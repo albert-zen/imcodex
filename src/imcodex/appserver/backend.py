@@ -37,7 +37,10 @@ class CodexBackend:
         self.service_name = service_name
 
     def prefers_native_recovery(self) -> bool:
-        return getattr(self.client, "last_connection_mode", "") in {"dedicated-ws", "shared-ws"}
+        mode = getattr(self.client, "connection_mode", "") or getattr(self.client, "last_connection_mode", "")
+        if mode == "disconnected":
+            mode = getattr(self.client, "last_connection_mode", "")
+        return mode in {"dedicated-ws", "shared-ws"}
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.store.clear_thread_binding(channel_id, conversation_id)
@@ -71,9 +74,15 @@ class CodexBackend:
         return snapshot.thread_id
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
-        snapshot = await self.read_thread(channel_id, conversation_id, thread_id)
-        if snapshot is None:
+        result = await self.client.resume_thread(
+            thread_id=thread_id,
+            service_name=self.service_name,
+            personality="friendly",
+        )
+        payload = result.get("thread")
+        if not isinstance(payload, dict):
             raise AppServerError(f"thread {thread_id} is not available in Codex")
+        snapshot = self._remember_snapshot(payload)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         return snapshot.thread_id
 

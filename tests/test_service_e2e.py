@@ -1362,7 +1362,7 @@ async def test_attach_thread_preserves_cwd_for_follow_up_new_thread() -> None:
                     },
                 }
             ],
-            "thread/read": [
+            "thread/resume": [
                 {
                     "id": 3,
                     "result": {

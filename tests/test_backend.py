@@ -125,6 +125,22 @@ class RehydrateClient:
         }
 
 
+class AttachClient:
+    def __init__(self) -> None:
+        self.resume_calls: list[dict] = []
+
+    async def resume_thread(self, **params):
+        self.resume_calls.append(params)
+        return {
+            "thread": {
+                "id": params["thread_id"],
+                "cwd": r"D:\desktop\attached",
+                "preview": "Attached thread",
+                "status": "idle",
+            }
+        }
+
+
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
@@ -135,10 +151,17 @@ class RehydrateClient:
     ],
 )
 def test_prefers_native_recovery_for_websocket_modes(mode: str, expected: bool) -> None:
-    client = type("Client", (), {"last_connection_mode": mode})()
+    client = type("Client", (), {"connection_mode": mode, "last_connection_mode": "disconnected"})()
     backend = CodexBackend(client=client, store=ConversationStore(clock=lambda: 1.0), service_name="imcodex")
 
     assert backend.prefers_native_recovery() is expected
+
+
+def test_prefers_native_recovery_falls_back_to_last_connection_mode() -> None:
+    client = type("Client", (), {"connection_mode": "disconnected", "last_connection_mode": "dedicated-ws"})()
+    backend = CodexBackend(client=client, store=ConversationStore(clock=lambda: 1.0), service_name="imcodex")
+
+    assert backend.prefers_native_recovery() is True
 
 
 @pytest.mark.asyncio
@@ -181,6 +204,26 @@ async def test_list_threads_prioritizes_windows_extended_length_cwd_match() -> N
     threads = await backend.list_threads("qq", "conv-1")
 
     assert [thread.thread_id for thread in threads] == ["thr_projectless", "thr_other"]
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_resumes_selected_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = AttachClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    thread_id = await backend.attach_thread("qq", "conv-1", "thr_attached")
+
+    assert thread_id == "thr_attached"
+    assert client.resume_calls == [
+        {
+            "thread_id": "thr_attached",
+            "service_name": "imcodex-test",
+            "personality": "friendly",
+        }
+    ]
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_attached"
+    assert store.get_binding("qq", "conv-1").bootstrap_cwd == r"D:\desktop\attached"
 
 
 @pytest.mark.asyncio
