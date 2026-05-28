@@ -123,7 +123,7 @@ Set these environment variables to enable the built-in QQ adapter:
 - `IMCODEX_QQ_APP_ID=<your AppID>`
 - `IMCODEX_QQ_CLIENT_SECRET=<your AppSecret>`
 - `IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com`
-- `IMCODEX_QQ_MARKDOWN_ENABLED=1` to send outbound QQ messages as Markdown rich text
+- `IMCODEX_QQ_MARKDOWN_ENABLED=0` to force outbound QQ messages to plain text
 
 The adapter currently supports:
 
@@ -181,5 +181,5 @@ Codex version requirement:
 - `IMCODEX_QQ_APP_ID`: QQ bot AppID
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret
 - `IMCODEX_QQ_API_BASE`: QQ API base, default `https://api.sgroup.qq.com`
-- `IMCODEX_QQ_MARKDOWN_ENABLED`: send QQ outbound messages as Markdown rich text with plain-text fallback, default `false`
+- `IMCODEX_QQ_MARKDOWN_ENABLED`: send QQ outbound messages as Markdown rich text with plain-text fallback, default `true`
 - `IMCODEX_PYTHON`: Python executable used by helper scripts, default `python`

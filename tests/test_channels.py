@@ -85,7 +85,7 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qq_adapter_sends_plain_text_messages_by_default() -> None:
+async def test_qq_adapter_sends_markdown_messages_by_default() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -117,15 +117,15 @@ async def test_qq_adapter_sends_plain_text_messages_by_default() -> None:
     message_body = json.loads(requests[-1].content)
     assert requests[-1].url.path == "/v2/groups/group-1/messages"
     assert message_body == {
-        "content": "**Accepted**",
-        "msg_type": 0,
+        "markdown": {"content": "**Accepted**"},
+        "msg_type": 2,
         "msg_seq": 1,
         "msg_id": "msg-1",
     }
 
 
 @pytest.mark.asyncio
-async def test_qq_adapter_sends_markdown_messages_when_enabled() -> None:
+async def test_qq_adapter_sends_plain_text_messages_when_disabled() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -142,7 +142,7 @@ async def test_qq_adapter_sends_markdown_messages_when_enabled() -> None:
             middleware=object(),
             api_base="https://api.sgroup.qq.com",
             http_client=client,
-            markdown_enabled=True,
+            markdown_enabled=False,
         )
 
         await adapter.send_message(
@@ -157,8 +157,8 @@ async def test_qq_adapter_sends_markdown_messages_when_enabled() -> None:
     message_body = json.loads(requests[-1].content)
     assert requests[-1].url.path == "/v2/users/user-1/messages"
     assert message_body == {
-        "markdown": {"content": "**Accepted**"},
-        "msg_type": 2,
+        "content": "**Accepted**",
+        "msg_type": 0,
         "msg_seq": 1,
     }
 

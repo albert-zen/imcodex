@@ -66,7 +66,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         sleep=asyncio.sleep,
         clock=time.time,
         startup_timeout_s: float = 15.0,
-        markdown_enabled: bool = False,
+        markdown_enabled: bool = True,
     ) -> None:
         super().__init__(middleware=middleware)
         self.enabled = enabled
