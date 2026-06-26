@@ -99,24 +99,46 @@ This behavior spec does not require a separate immediate `accepted` message for 
 
 ### `/help`
 
-`/help` should show the compact top-level product commands, not every advanced or recovery-oriented command.
+`/help` should be a compact grouped command map, not a command dictionary.
+It should show user-facing product commands only.
 
-It should prominently include:
+It should use these groups:
+
+Start:
 
 - `/cwd <path>`
-- `/cwd playground`
-- `/threads`
 - `/new`
+
+Threads:
+
+- `/threads`
+- `/thread history`
+- `/fork`
+- `/rename <name>`
+- `/compact`
+
+Run:
+
 - `/status`
 - `/goal [objective|pause|resume|clear]`
-- `/credits`
 - `/stop`
+
+Settings:
+
 - `/model [model-id]`
 - `/think [effort]`
 - `/fast [on|off|status]`
 - `/permission [mode]`
 
-It should include short examples for `/model`, `/think`, and `/permission`.
+Account:
+
+- `/credits`
+
+Advanced:
+
+- `/native help`
+
+It should not expose app-server internal server requests such as `currentTime/read`.
 
 It does not need to expose contextual thread-browser commands or advanced commands such as:
 

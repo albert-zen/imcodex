@@ -521,8 +521,11 @@ class CodexBackend:
         route = self.store.get_pending_request(request_id)
         if route is None or route.transport_request_id is None:
             raise AppServerError(f"unknown pending request: {request_id}")
-        await self.client.reply_to_transport_request(route.transport_request_id, decision_or_answers)
+        await self.reply_to_transport_request(route.transport_request_id, decision_or_answers)
         self.store.remove_pending_request(request_id)
+
+    async def reply_to_transport_request(self, transport_request_id: str | int, result: dict) -> None:
+        await self.client.reply_to_transport_request(transport_request_id, result)
 
     async def reply_error_to_server_request(
         self,
@@ -614,6 +617,8 @@ class CodexBackend:
                 "unknown method",
                 "not implemented",
                 "unsupported method",
+                "requires experimentalapi",
+                "experimentalapi capability",
                 "no handler",
             )
         )

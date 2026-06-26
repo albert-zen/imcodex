@@ -938,6 +938,60 @@ async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling
 
 
 @pytest.mark.asyncio
+async def test_current_time_server_request_is_resolved_internally_without_help_surface() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1_788_888_888.9)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    projected = await service.handle_server_request(
+        {
+            "id": 78,
+            "method": "currentTime/read",
+            "params": {
+                "_request_id": "78",
+                "_transport_request_id": 78,
+                "threadId": "thr_1",
+            },
+        }
+    )
+
+    assert projected == []
+    assert sink.messages == []
+    reply_payloads = [
+        payload
+        for payload in process.inputs
+        if payload.get("id") == 78 and "result" in payload
+    ]
+    assert reply_payloads == [{"id": 78, "result": {"currentTimeAt": 1_788_888_888}}]
+
+    help_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m-help",
+            text="/help",
+        )
+    )
+    assert "currentTime/read" not in help_messages[0].text
+
+    events = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m-events",
+            text="/native events method=currentTime/read",
+        )
+    )
+    assert "currentTime/read" in events[0].text
+    assert "resolved" in events[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_turn() -> None:
     process = ScriptedProcess(
         {
@@ -2173,11 +2227,20 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
 
 
 @pytest.mark.asyncio
-async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_is_experimental() -> None:
+@pytest.mark.parametrize(
+    "turns_list_error",
+    [
+        {"code": -32601, "message": "method not found"},
+        {"code": -32600, "message": "thread/turns/list requires experimentalApi capability"},
+    ],
+)
+async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_is_experimental(
+    turns_list_error: dict,
+) -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/turns/list": [{"id": 2, "error": {"code": -32601, "message": "method not found"}}],
+            "thread/turns/list": [{"id": 2, "error": turns_list_error}],
             "thread/read": [
                 {
                     "id": 3,

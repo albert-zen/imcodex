@@ -444,6 +444,21 @@ class BridgeService:
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
         journal_entry = record_native_appserver_journal(self.store, request)
+        if request.get("method") == "currentTime/read":
+            transport_request_id = self._transport_request_id(request)
+            if transport_request_id is not None:
+                await self.backend.reply_to_transport_request(
+                    transport_request_id,
+                    {"currentTimeAt": int(self.store.clock())},
+                )
+                self.store.update_native_appserver_event(journal_entry.sequence, outcome="resolved")
+            else:
+                self.store.update_native_appserver_event(
+                    journal_entry.sequence,
+                    outcome="rejected",
+                    note="currentTime/read missing transport request id",
+                )
+            return []
         message = self.projector.project_notification(request, self.store)
         outbound = await self._emit(message)
         rejection = await self.native_requests.reject_unrouted(request)
@@ -458,6 +473,12 @@ class BridgeService:
             outcome = "pending" if message is not None and journal_entry.direction == "server_request" else "ingested"
             self.store.update_native_appserver_event(journal_entry.sequence, outcome=outcome)
         return outbound
+
+    def _transport_request_id(self, request: dict) -> str | int | None:
+        params = request.get("params")
+        if isinstance(params, dict) and params.get("_transport_request_id") is not None:
+            return params["_transport_request_id"]
+        return request.get("id")
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)

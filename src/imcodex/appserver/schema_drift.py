@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .protocol_map import REJECTED_SERVER_REQUEST_METHODS, SUPPORTED_SERVER_REQUEST_METHODS
+from .protocol_map import (
+    EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS,
+    REJECTED_SERVER_REQUEST_METHODS,
+    SUPPORTED_SERVER_REQUEST_METHODS,
+)
 
 
 JsonDict = dict[str, Any]
@@ -104,8 +108,12 @@ def check_generated_server_request_schema_drift(
                 command=command,
                 unavailable_reason=f"schema generation output could not be read: {exc}",
             )
+        supported_methods = SUPPORTED_SERVER_REQUEST_METHODS
+        if include_experimental:
+            supported_methods = supported_methods | EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS
         return compare_server_request_methods(
             extract_server_request_methods(schema),
+            supported_methods=supported_methods,
             command=command,
         )
 

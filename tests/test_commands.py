@@ -99,22 +99,26 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     response = router.handle("qq", "conv-1", "/help")
 
     assert response.action == "help"
+    assert response.text.startswith("Help\n\nStart")
     assert "/cwd <path>" in response.text
-    assert "/cwd playground" in response.text
-    assert "/threads" in response.text
-    assert "/pick <n>" in response.text
+    assert "/threads [query]" in response.text
+    assert "/thread history" in response.text
+    assert "/fork" in response.text
+    assert "/rename <name>" in response.text
+    assert "/compact" in response.text
     assert "/goal [objective|pause|resume|clear]" in response.text
     assert "/credits" in response.text
     assert "/model [model-id]" in response.text
-    assert "/model gpt-5.4" in response.text
     assert "/think [effort]" in response.text
     assert "/fast [on|off|status]" in response.text
     assert "native reasoning effort" not in response.text
     assert "native Codex Fast mode" not in response.text
     assert "/permission [mode]" in response.text
-    assert "/permission full-access" in response.text
     assert "/thread attach" not in response.text
     assert "/approve" not in response.text
+    assert "/native help" in response.text
+    assert "/native call" not in response.text
+    assert "currentTime/read" not in response.text
     assert "Doctor" not in response.text
 
 

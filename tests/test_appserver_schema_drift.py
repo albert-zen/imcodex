@@ -127,18 +127,35 @@ def test_generated_schema_drift_check_can_include_experimental_schema() -> None:
         output_dir = Path(command[command.index("--out") + 1])
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "ServerRequest.json").write_text(
-            json.dumps({"title": "ServerRequest", "oneOf": []}),
+            json.dumps(
+                {
+                    "title": "ServerRequest",
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "method": {
+                                    "type": "string",
+                                    "enum": ["currentTime/read"],
+                                }
+                            },
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    check_generated_server_request_schema_drift(
+    report = check_generated_server_request_schema_drift(
         codex_bin="codex-test",
         include_experimental=True,
         run=fake_run,
     )
 
     assert "--experimental" in captured_commands[0]
+    assert report.ok is True
+    assert report.missing_methods == frozenset()
 
 
 def test_generated_schema_drift_check_reports_unavailable_codex() -> None:

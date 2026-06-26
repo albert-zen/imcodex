@@ -42,6 +42,7 @@ _EVENT_KINDS = {
     "thread/goal/cleared": "thread_goal_cleared",
     "thread/compacted": "thread_compacted",
     "model/rerouted": "model_rerouted",
+    "currentTime/read": "current_time_read",
     "configWarning": "config_warning",
     "deprecationNotice": "deprecation_notice",
 }
@@ -52,6 +53,12 @@ SUPPORTED_SERVER_REQUEST_METHODS = frozenset(
         "item/fileChange/requestApproval",
         "item/tool/requestUserInput",
         "item/permissions/requestApproval",
+    }
+)
+
+EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS = frozenset(
+    {
+        "currentTime/read",
     }
 )
 
@@ -66,7 +73,11 @@ REJECTED_SERVER_REQUEST_METHODS = frozenset(
     }
 )
 
-SERVER_REQUEST_METHODS = SUPPORTED_SERVER_REQUEST_METHODS | REJECTED_SERVER_REQUEST_METHODS
+SERVER_REQUEST_METHODS = (
+    SUPPORTED_SERVER_REQUEST_METHODS
+    | EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS
+    | REJECTED_SERVER_REQUEST_METHODS
+)
 
 _CATEGORY_PREFIXES = (
     ("thread/realtime/", "realtime"),
@@ -83,6 +94,7 @@ _CATEGORY_PREFIXES = (
     ("mcpServer/", "mcp"),
     ("mcpTool", "mcp"),
     ("account/", "account"),
+    ("currentTime/", "system"),
     ("config/", "config"),
     ("windowsSandbox/", "system"),
     ("windows/", "system"),
