@@ -12,20 +12,25 @@ from .models import (
     PendingNativeRequestRoute,
     ThreadBrowserContext,
 )
+from .store_native_events import (
+    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT as _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
+    NativeEventJournalMixin,
+)
+from .store_pending_requests import PendingRequestStoreMixin
 
 
 Clock = Callable[[], float]
 
 
-class ConversationStore:
+class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
     INBOUND_DEDUP_WINDOW_S = 2.0
-    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT = 50
+    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT = _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT
 
     def __init__(
         self,
         clock: Clock,
         state_path: str | Path | None = None,
-        native_event_journal_limit: int = DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
+        native_event_journal_limit: int = _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
     ) -> None:
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
@@ -214,67 +219,6 @@ class ConversationStore:
     def is_turn_suppressed(self, thread_id: str, turn_id: str) -> bool:
         return (thread_id, turn_id) in self._suppressed_turns
 
-    def append_native_appserver_event(
-        self,
-        *,
-        seen_at: float,
-        direction: str,
-        method: str,
-        category: str,
-        kind: str,
-        thread_id: str = "",
-        turn_id: str = "",
-        item_id: str = "",
-        request_id: str | None = None,
-        outcome: str | None = None,
-        note: str | None = None,
-        summary: dict | None = None,
-    ) -> NativeAppServerJournalEntry:
-        self._native_appserver_journal_sequence += 1
-        entry = NativeAppServerJournalEntry(
-            sequence=self._native_appserver_journal_sequence,
-            seen_at=seen_at,
-            direction=direction,
-            method=method,
-            category=category,
-            kind=kind,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            item_id=item_id,
-            request_id=request_id,
-            outcome=outcome,
-            note=note,
-            summary=dict(summary or {}),
-        )
-        self._native_appserver_journal.append(entry)
-        return entry
-
-    def update_native_appserver_event(
-        self,
-        sequence: int,
-        *,
-        outcome: str | None = None,
-        note: str | None = None,
-    ) -> NativeAppServerJournalEntry | None:
-        for entry in reversed(self._native_appserver_journal):
-            if entry.sequence != sequence:
-                continue
-            if outcome is not None:
-                entry.outcome = outcome
-            if note is not None:
-                entry.note = note
-            return entry
-        return None
-
-    def list_native_appserver_events(
-        self,
-        *,
-        limit: int = DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
-    ) -> list[NativeAppServerJournalEntry]:
-        if limit <= 0:
-            return []
-        return list(self._native_appserver_journal)[-limit:]
-
     def set_visibility_profile(self, channel_id: str, conversation_id: str, profile: str) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.visibility_profile = profile
@@ -358,141 +302,6 @@ class ConversationStore:
             return True
         bucket[fingerprint] = now
         return False
-
-    def upsert_pending_request(
-        self,
-        *,
-        request_id: str,
-        request_handle: str | None = None,
-        channel_id: str,
-        conversation_id: str,
-        thread_id: str | None,
-        turn_id: str | None,
-        kind: str,
-        request_method: str | None,
-        transport_request_id: str | int | None = None,
-        connection_epoch: int = 0,
-        payload: dict | None = None,
-    ) -> PendingNativeRequestRoute:
-        route = PendingNativeRequestRoute(
-            request_id=request_id,
-            request_handle=request_handle or request_id[:8],
-            channel_id=channel_id,
-            conversation_id=conversation_id,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            kind=kind,
-            request_method=request_method,
-            transport_request_id=transport_request_id,
-            connection_epoch=connection_epoch,
-            payload=dict(payload or {}),
-        )
-        self._pending_requests[request_id] = route
-        self._save()
-        return route
-
-    def list_pending_requests(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        *,
-        kind: str | None = None,
-    ) -> list[PendingNativeRequestRoute]:
-        routes = [
-            route
-            for route in self._pending_requests.values()
-            if route.channel_id == channel_id and route.conversation_id == conversation_id
-        ]
-        if kind is not None:
-            routes = [route for route in routes if route.kind == kind]
-        return routes
-
-    def get_pending_request(self, request_id: str) -> PendingNativeRequestRoute | None:
-        return self._pending_requests.get(request_id)
-
-    def select_pending_requests(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        token: str | None = None,
-        *,
-        kind: str | None = None,
-    ) -> list[PendingNativeRequestRoute]:
-        candidates = self.list_pending_requests(channel_id, conversation_id, kind=kind)
-        if not candidates:
-            return []
-        if token is None or not token.strip():
-            return candidates
-        token = token.strip()
-        exact = [
-            route
-            for route in candidates
-            if token == route.request_id or (route.request_handle is not None and token == route.request_handle)
-        ]
-        if exact:
-            return exact[:1]
-        prefix_matches = [
-            route
-            for route in candidates
-            if route.request_id.startswith(token)
-            or (route.request_handle is not None and route.request_handle.startswith(token))
-        ]
-        if len(prefix_matches) > 1:
-            raise ValueError(f"Ambiguous request id prefix: {token}")
-        if len(prefix_matches) == 1:
-            return prefix_matches
-        return []
-
-    def match_pending_request(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        token: str | None = None,
-        *,
-        kind: str | None = None,
-    ) -> PendingNativeRequestRoute | None:
-        candidates = self.select_pending_requests(
-            channel_id,
-            conversation_id,
-            token,
-            kind=kind,
-        )
-        if token is None or not str(token).strip():
-            if len(candidates) == 1:
-                return candidates[0]
-            return None
-        return candidates[0] if candidates else None
-
-    def remove_pending_request(self, request_id: str) -> PendingNativeRequestRoute | None:
-        route = self._pending_requests.pop(request_id, None)
-        if route is not None:
-            self._save()
-        return route
-
-    def remove_pending_requests_for_turn(self, thread_id: str, turn_id: str) -> None:
-        removed = [
-            request_id
-            for request_id, route in self._pending_requests.items()
-            if route.thread_id == thread_id and route.turn_id == turn_id
-        ]
-        if not removed:
-            return
-        for request_id in removed:
-            self._pending_requests.pop(request_id, None)
-        self._save()
-
-    def invalidate_pending_requests_for_connection(self, connection_epoch: int) -> list[PendingNativeRequestRoute]:
-        removed = [
-            route
-            for route in self._pending_requests.values()
-            if route.connection_epoch == connection_epoch
-        ]
-        if not removed:
-            return []
-        for route in removed:
-            self._pending_requests.pop(route.request_id, None)
-        self._save()
-        return removed
 
     def _save(self) -> None:
         if not self.state_path:
