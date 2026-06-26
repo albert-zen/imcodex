@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
-from .models import ConversationBinding, NativeThreadSnapshot, PendingNativeRequestRoute, ThreadBrowserContext
+from .models import (
+    ConversationBinding,
+    NativeAppServerJournalEntry,
+    NativeThreadSnapshot,
+    PendingNativeRequestRoute,
+    ThreadBrowserContext,
+)
 
 
 Clock = Callable[[], float]
@@ -12,21 +19,25 @@ Clock = Callable[[], float]
 
 class ConversationStore:
     INBOUND_DEDUP_WINDOW_S = 2.0
+    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT = 50
 
     def __init__(
         self,
         clock: Clock,
         state_path: str | Path | None = None,
+        native_event_journal_limit: int = DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
     ) -> None:
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
+        journal_limit = max(1, int(native_event_journal_limit))
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
         self._suppressed_turns: set[tuple[str, str]] = set()
-        self._next_model_overrides: dict[tuple[str, str], str | None] = {}
+        self._native_appserver_journal: deque[NativeAppServerJournalEntry] = deque(maxlen=journal_limit)
+        self._native_appserver_journal_sequence = 0
         self._recent_inbound_fingerprints: dict[tuple[str, str], dict[str, float]] = {}
         if self.state_path and self.state_path.exists():
             self._load()
@@ -53,7 +64,6 @@ class ConversationStore:
         binding = self.get_binding(channel_id, conversation_id)
         binding.bootstrap_cwd = cwd
         binding.thread_id = None
-        self._next_model_overrides.pop((channel_id, conversation_id), None)
         self._save()
         return binding
 
@@ -144,6 +154,8 @@ class ConversationStore:
         page: int,
         total: int,
         query: str | None,
+        next_cursor: str | None = None,
+        page_cursors: list[str | None] | None = None,
         ttl_s: float = 900.0,
     ) -> ThreadBrowserContext:
         context = ThreadBrowserContext(
@@ -153,6 +165,8 @@ class ConversationStore:
             page=page,
             total=total,
             query=query,
+            next_cursor=next_cursor,
+            page_cursors=list(page_cursors or [None]),
             expires_at=self.clock() + ttl_s,
         )
         self._thread_browser_contexts[(channel_id, conversation_id)] = context
@@ -200,20 +214,66 @@ class ConversationStore:
     def is_turn_suppressed(self, thread_id: str, turn_id: str) -> bool:
         return (thread_id, turn_id) in self._suppressed_turns
 
-    def set_next_model_override(
+    def append_native_appserver_event(
         self,
-        channel_id: str,
-        conversation_id: str,
-        model: str | None,
-    ) -> None:
-        key = (channel_id, conversation_id)
-        if model is None:
-            self._next_model_overrides.pop(key, None)
-            return
-        self._next_model_overrides[key] = model
+        *,
+        seen_at: float,
+        direction: str,
+        method: str,
+        category: str,
+        kind: str,
+        thread_id: str = "",
+        turn_id: str = "",
+        item_id: str = "",
+        request_id: str | None = None,
+        outcome: str | None = None,
+        note: str | None = None,
+        summary: dict | None = None,
+    ) -> NativeAppServerJournalEntry:
+        self._native_appserver_journal_sequence += 1
+        entry = NativeAppServerJournalEntry(
+            sequence=self._native_appserver_journal_sequence,
+            seen_at=seen_at,
+            direction=direction,
+            method=method,
+            category=category,
+            kind=kind,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            item_id=item_id,
+            request_id=request_id,
+            outcome=outcome,
+            note=note,
+            summary=dict(summary or {}),
+        )
+        self._native_appserver_journal.append(entry)
+        return entry
 
-    def pop_next_model_override(self, channel_id: str, conversation_id: str) -> str | None:
-        return self._next_model_overrides.pop((channel_id, conversation_id), None)
+    def update_native_appserver_event(
+        self,
+        sequence: int,
+        *,
+        outcome: str | None = None,
+        note: str | None = None,
+    ) -> NativeAppServerJournalEntry | None:
+        for entry in reversed(self._native_appserver_journal):
+            if entry.sequence != sequence:
+                continue
+            if outcome is not None:
+                entry.outcome = outcome
+            if note is not None:
+                entry.note = note
+            return entry
+        return None
+
+    def list_native_appserver_events(
+        self,
+        *,
+        limit: int = DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
+    ) -> list[NativeAppServerJournalEntry]:
+        if limit <= 0:
+            return []
+        return list(self._native_appserver_journal)[-limit:]
 
     def set_visibility_profile(self, channel_id: str, conversation_id: str, profile: str) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .diagnostics import summarize_text, summarize_transport_message
+from .retry import RetryBackoff
 from ..observability.runtime import emit_event, mark_appserver_health
 
 
@@ -19,6 +20,7 @@ ConnectionReadyHandler = Callable[[int], Awaitable[None] | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
 DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
+    "account/rateLimits/updated",
     "command/exec/outputDelta",
     "item/agentMessage/delta",
     "item/plan/delta",
@@ -32,7 +34,10 @@ DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
 
 
 class AppServerError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: int | None = None, data: Any | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
 
 
 class AppServerTransport(Protocol):
@@ -135,16 +140,26 @@ class AppServerClient:
         *,
         supervisor,
         client_info: dict[str, str],
+        experimental_api_enabled: bool = False,
         request_timeout_s: float = 15.0,
+        request_retry_policy: RetryBackoff | None = None,
+        sleep: Callable[[float], Awaitable[None] | None] | None = None,
+        random_float: Callable[[], float] | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._client_info = client_info
+        self._experimental_api_enabled = experimental_api_enabled
         self._request_timeout_s = request_timeout_s
+        self._request_retry_policy = request_retry_policy or RetryBackoff()
+        self._sleep = sleep or asyncio.sleep
+        self._random_float = random_float
         self._transport: AppServerTransport | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._dispatch_queue: asyncio.Queue[JsonDict] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
+        self._resetting = False
+        self._reset_owner_task: asyncio.Task | None = None
         self._next_request_id = 1
         self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
         self._notification_handlers: list[NotificationHandler] = []
@@ -180,7 +195,7 @@ class AppServerClient:
             "initialize",
             {
                 "clientInfo": self._client_info,
-                "capabilities": {"optOutNotificationMethods": list(DEFAULT_OPT_OUT_NOTIFICATION_METHODS)},
+                "capabilities": self._initialize_capabilities(),
             },
         )
         await self._notify("initialized", {})
@@ -209,16 +224,53 @@ class AppServerClient:
         payload.update(kwargs)
         return await self._request("thread/list", payload)
 
+    async def fork_thread(self, thread_id: str) -> JsonDict:
+        return await self._request("thread/fork", {"threadId": thread_id})
+
+    async def set_thread_name(self, thread_id: str, name: str) -> JsonDict:
+        return await self._request("thread/name/set", {"threadId": thread_id, "name": name})
+
+    async def compact_thread(self, thread_id: str) -> JsonDict:
+        return await self._request("thread/compact/start", {"threadId": thread_id})
+
     async def list_models(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
         payload = dict(params or {})
         payload.update(kwargs)
         return await self._request("model/list", payload)
 
+    async def list_permission_profiles(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
+        payload = dict(params or {})
+        payload.update(kwargs)
+        return await self._request("permissionProfile/list", payload)
+
+    async def read_config_requirements(self) -> JsonDict:
+        return await self._request("configRequirements/read", None)
+
     async def read_account_rate_limits(self) -> JsonDict:
         return await self._request("account/rateLimits/read", None)
 
-    async def read_thread(self, thread_id: str) -> JsonDict:
-        return await self._request("thread/read", {"threadId": thread_id})
+    async def read_account_usage(self) -> JsonDict:
+        return await self._request("account/usage/read", None)
+
+    async def read_thread(self, thread_id: str, *, include_turns: bool = False) -> JsonDict:
+        payload: JsonDict = {"threadId": thread_id}
+        if include_turns:
+            payload["includeTurns"] = True
+        return await self._request("thread/read", payload)
+
+    async def list_thread_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> JsonDict:
+        payload: JsonDict = {"threadId": thread_id}
+        if limit is not None:
+            payload["limit"] = limit
+        if cursor is not None:
+            payload["cursor"] = cursor
+        return await self._request("thread/turns/list", payload)
 
     async def get_thread_goal(self, thread_id: str) -> JsonDict:
         return await self._request("thread/goal/get", {"threadId": thread_id})
@@ -323,6 +375,7 @@ class AppServerClient:
         return payload
 
     async def _ensure_connected(self) -> None:
+        await self._wait_for_connection_reset()
         if self._listener_task is not None and self._listener_task.done():
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._listener_task
@@ -336,7 +389,18 @@ class AppServerClient:
                 event="appserver.connect.started",
                 message="Connecting to app-server",
             )
-            websocket = await self._supervisor.connect_shared()
+            try:
+                websocket = await self._supervisor.connect_shared()
+            except Exception as exc:
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.connect.failed",
+                    level="ERROR",
+                    message="Failed to prepare app-server connection",
+                    data={"error_type": type(exc).__name__},
+                )
+                mark_appserver_health(connected=False, mode="disconnected", error_type=type(exc).__name__)
+                raise AppServerError(str(exc) or "failed to prepare app-server connection") from exc
             if websocket is not None:
                 self._transport = WebSocketAppServerTransport(websocket)
                 websocket_mode = self._supervisor.connection_mode or "shared-ws"
@@ -350,8 +414,17 @@ class AppServerClient:
                 mark_appserver_health(connected=True, mode=websocket_mode)
             else:
                 if not self._supervisor.allow_spawn_fallback:
-                    target = self._supervisor.core_url or self._supervisor.app_server_url or self._supervisor.shared_app_server_url
-                    raise AppServerError(f"dedicated app-server at `{target}` is unavailable")
+                    target = self._connection_target()
+                    diagnostic = getattr(self._supervisor, "last_connect_diagnostic", None) or {}
+                    display_target = str(diagnostic.get("url") or target)
+                    mark_appserver_health(
+                        connected=False,
+                        mode="disconnected",
+                        target=display_target,
+                        error_type=diagnostic.get("error_type"),
+                        health_ok=diagnostic.get("health_ok"),
+                    )
+                    raise AppServerError(self._unavailable_message(display_target, diagnostic))
                 process = await self._supervisor.start()
                 self._transport = StdioAppServerTransport(process)
                 self.connection_mode = "spawned-stdio"
@@ -379,6 +452,36 @@ class AppServerClient:
 
     async def _request_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
         await self._ensure_connected()
+        attempts = self._request_retry_policy.attempts
+        attempt = 1
+        while True:
+            response = await self._request_once_without_initialize(method, params)
+            if "error" not in response:
+                return self._normalize_result(method, response["result"])
+            error = response["error"]
+            if self._is_overload_error(error) and attempt < attempts:
+                delay_s = self._request_retry_policy.delay_after_failure(
+                    attempt,
+                    random_float=self._random_float,
+                )
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.request.overload_retry_scheduled",
+                    level="WARNING",
+                    message="App-server overloaded; retrying request",
+                    data={
+                        "method": method,
+                        "attempt": attempt + 1,
+                        "max_attempts": attempts,
+                        "delay_s": round(delay_s, 3),
+                    },
+                )
+                await self._sleep_for_retry(delay_s)
+                attempt += 1
+                continue
+            raise self._error_from_response(method, error)
+
+    async def _request_once_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
         request_id = self._next_request_id
         self._next_request_id += 1
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
@@ -394,11 +497,50 @@ class AppServerClient:
             raise AppServerError(f"{method} timed out after {self._request_timeout_s:.1f}s") from exc
         finally:
             self._pending_futures.pop(request_id, None)
-        if "error" in response:
-            error = response["error"]
-            message = error.get("message") if isinstance(error, dict) else str(error)
-            raise AppServerError(message or f"{method} failed")
-        return self._normalize_result(method, response["result"])
+        return response
+
+    def _is_overload_error(self, error: Any) -> bool:
+        if not isinstance(error, dict):
+            return False
+        code = self._error_code(error)
+        message = error.get("message")
+        return code == -32001 or message == "Server overloaded; retry later"
+
+    def _error_from_response(self, method: str, error: Any) -> AppServerError:
+        if not isinstance(error, dict):
+            return AppServerError(str(error) or f"{method} failed")
+        message = error.get("message") or f"{method} failed"
+        return AppServerError(str(message), code=self._error_code(error), data=error.get("data"))
+
+    def _error_code(self, error: JsonDict) -> int | None:
+        code = error.get("code")
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            return None
+
+    async def _sleep_for_retry(self, delay_s: float) -> None:
+        result = self._sleep(max(0.0, delay_s))
+        if inspect.isawaitable(result):
+            await result
+
+    def _connection_target(self) -> str:
+        return self._supervisor.core_url or self._supervisor.app_server_url or self._supervisor.shared_app_server_url
+
+    def _unavailable_message(self, target: str, diagnostic: dict[str, Any]) -> str:
+        mode = getattr(self._supervisor, "core_mode", "")
+        label = "shared" if mode == "shared-ws" else "dedicated"
+        detail_parts: list[str] = []
+        error_type = diagnostic.get("error_type")
+        if error_type:
+            detail_parts.append(f"last_error={error_type}")
+        health_status = diagnostic.get("health_status_code")
+        if health_status is not None:
+            detail_parts.append(f"health_status={health_status}")
+        elif diagnostic.get("health_error_type"):
+            detail_parts.append(f"health_error={diagnostic['health_error_type']}")
+        details = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        return f"{label} app-server at `{target}` is unavailable{details}"
 
     async def _notify(self, method: str, params: JsonDict) -> None:
         await self._send_json({"method": method, "params": params})
@@ -411,6 +553,7 @@ class AppServerClient:
 
     async def _receive_loop(self) -> None:
         error: Exception | None = None
+        cancelled = False
         try:
             while self._transport is not None:
                 message = await self._transport.receive_json()
@@ -420,6 +563,7 @@ class AppServerClient:
                 if self._dispatch_queue is not None:
                     self._dispatch_queue.put_nowait(message)
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception as exc:
             error = exc
@@ -429,6 +573,8 @@ class AppServerClient:
                     if not future.done():
                         future.set_exception(error)
             self.initialized = False
+            if error is not None and not cancelled:
+                await self._reset_connection()
 
     async def _dispatch_loop(self) -> None:
         queue = self._dispatch_queue
@@ -460,11 +606,18 @@ class AppServerClient:
     async def _dispatch(self, message: JsonDict) -> None:
         if "id" in message and "method" in message:
             request_id = str(message["id"])
+            params = message.get("params")
+            if isinstance(params, dict):
+                request_params = dict(params)
+            elif params is None:
+                request_params = {}
+            else:
+                request_params = {"_raw_params": params}
             enriched = {
                 "id": message["id"],
                 "method": message["method"],
                 "params": {
-                    **(message.get("params") or {}),
+                    **request_params,
                     "_request_id": request_id,
                     "_transport_request_id": message["id"],
                     "_connection_epoch": self.connection_epoch,
@@ -483,52 +636,68 @@ class AppServerClient:
                     await result
 
     async def _reset_connection(self, *, notify_handlers: bool = True) -> None:
+        current_task = asyncio.current_task()
+        if self._resetting and self._reset_owner_task is not current_task:
+            await self._wait_for_connection_reset()
+            return
+        self._resetting = True
+        self._reset_owner_task = current_task
         reset_epoch = self.connection_epoch
-        if self.connection_mode != "disconnected":
-            self.last_connection_mode = self.connection_mode
-        listener_task = self._listener_task
-        self._listener_task = None
-        if listener_task is not None and listener_task is not asyncio.current_task():
-            if not listener_task.done():
-                listener_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await listener_task
-        dispatcher_task = self._dispatcher_task
-        self._dispatcher_task = None
-        self._dispatch_queue = None
-        if dispatcher_task is not None and dispatcher_task is not asyncio.current_task():
-            if not dispatcher_task.done():
-                dispatcher_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await dispatcher_task
-        stderr_task = self._stderr_task
-        self._stderr_task = None
-        if stderr_task is not None and stderr_task is not asyncio.current_task():
-            if not stderr_task.done():
-                stderr_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await stderr_task
-        transport = self._transport
-        self._transport = None
-        if transport is not None:
-            with contextlib.suppress(Exception):
-                await transport.close()
-        self.initialized = False
-        self.connection_mode = "disconnected"
-        await self._supervisor.stop()
-        if notify_handlers and reset_epoch > 0:
-            for handler in list(self._connection_reset_handlers):
-                result = handler(reset_epoch)
-                if inspect.isawaitable(result):
-                    await result
-        if self._transport is None:
+        try:
+            if self.connection_mode != "disconnected":
+                self.last_connection_mode = self.connection_mode
+            listener_task = self._listener_task
+            self._listener_task = None
+            if listener_task is not None and listener_task is not current_task:
+                if not listener_task.done():
+                    listener_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await listener_task
+            dispatcher_task = self._dispatcher_task
+            self._dispatcher_task = None
+            self._dispatch_queue = None
+            if dispatcher_task is not None and dispatcher_task is not current_task:
+                if not dispatcher_task.done():
+                    dispatcher_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await dispatcher_task
+            stderr_task = self._stderr_task
+            self._stderr_task = None
+            if stderr_task is not None and stderr_task is not current_task:
+                if not stderr_task.done():
+                    stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stderr_task
+            transport = self._transport
+            self._transport = None
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    await transport.close()
+            self.initialized = False
             self.connection_mode = "disconnected"
-            emit_event(
-                component="appserver.client",
-                event="appserver.connection.closed",
-                message="App-server connection closed",
-            )
-            mark_appserver_health(connected=False, mode="disconnected")
+            await self._supervisor.stop()
+            if notify_handlers and reset_epoch > 0:
+                for handler in list(self._connection_reset_handlers):
+                    result = handler(reset_epoch)
+                    if inspect.isawaitable(result):
+                        await result
+            if self._transport is None:
+                self.connection_mode = "disconnected"
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.connection.closed",
+                    message="App-server connection closed",
+                )
+                mark_appserver_health(connected=False, mode="disconnected")
+        finally:
+            if self._reset_owner_task is current_task:
+                self._resetting = False
+                self._reset_owner_task = None
+
+    async def _wait_for_connection_reset(self) -> None:
+        current_task = asyncio.current_task()
+        while self._resetting and self._reset_owner_task is not current_task:
+            await asyncio.sleep(0)
 
     def _normalize_thread_params(self, payload: JsonDict) -> JsonDict:
         mappings = {
@@ -539,6 +708,12 @@ class AppServerClient:
             "service_name": "serviceName",
         }
         return {mappings.get(key, key): value for key, value in payload.items()}
+
+    def _initialize_capabilities(self) -> JsonDict:
+        capabilities: JsonDict = {"optOutNotificationMethods": list(DEFAULT_OPT_OUT_NOTIFICATION_METHODS)}
+        if self._experimental_api_enabled:
+            capabilities["experimentalApi"] = True
+        return capabilities
 
     def _normalize_result(self, method: str, result: JsonDict) -> JsonDict:
         if method in _TRIMMED_THREAD_METHODS:

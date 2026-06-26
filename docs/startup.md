@@ -42,6 +42,15 @@ IMCODEX_PYTHON=/path/to/python
 IMCODEX_CORE_PORT=8765
 IMCODEX_CORE_MODE=dedicated-ws
 IMCODEX_CORE_START_TIMEOUT=30
+IMCODEX_APP_SERVER_EXPERIMENTAL_API=0
+IMCODEX_APP_SERVER_AUTH_TOKEN_FILE=.imcodex-appserver-token
+IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS=3
+IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS=3
+IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY=0.25
+IMCODEX_APP_SERVER_RETRY_MAX_DELAY=2.0
+IMCODEX_APP_SERVER_RETRY_JITTER=0.25
+IMCODEX_APP_SERVER_CONNECT_TIMEOUT=3.0
+IMCODEX_APP_SERVER_HEALTH_TIMEOUT=1.0
 ```
 
 Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
@@ -49,6 +58,18 @@ set, the launcher activates that conda environment before resolving
 `IMCODEX_PYTHON`. On Windows, `scripts\start.cmd` keeps the terminal open after
 the bridge exits; set `IMCODEX_NO_PAUSE=1` in the shell before running
 `scripts\start.cmd` to skip that pause.
+
+`IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
+intentionally testing upstream experimental app-server protocol behavior.
+
+For websocket cores that require bearer auth, set
+`IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` to a local file containing the token, or
+set `IMCODEX_APP_SERVER_AUTH_TOKEN` directly in the process environment. The
+direct token takes precedence when both are set and is intentionally not written
+to launch snapshots. Websocket connect failures and native overload responses
+use bounded exponential retry with jitter; dedicated/shared websocket modes also
+probe derived `/readyz` then `/healthz` HTTP endpoints before reporting the core
+as unavailable.
 
 ### Recommended: dedicated core + bridge
 

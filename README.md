@@ -168,6 +168,16 @@ Codex version requirement:
 - `IMCODEX_RUN_DIR`: observability and runtime snapshot directory, default `.imcodex-run`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
 - `IMCODEX_APP_SERVER_URL`: optional websocket URL for a shared Codex app-server
+- `IMCODEX_APP_SERVER_EXPERIMENTAL_API`: opt into experimental native app-server capabilities, default `false`
+- `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE`: optional file containing the websocket bearer token
+- `IMCODEX_APP_SERVER_AUTH_TOKEN`: optional websocket bearer token; takes precedence over the token file and is not written to launch snapshots
+- `IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS`: websocket connection attempts, default `3`
+- `IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS`: retries for native overload responses, default `3`
+- `IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY`: initial retry delay in seconds, default `0.25`
+- `IMCODEX_APP_SERVER_RETRY_MAX_DELAY`: maximum retry delay in seconds, default `2.0`
+- `IMCODEX_APP_SERVER_RETRY_JITTER`: retry jitter fraction, default `0.25`
+- `IMCODEX_APP_SERVER_CONNECT_TIMEOUT`: websocket open timeout in seconds, default `3.0`
+- `IMCODEX_APP_SERVER_HEALTH_TIMEOUT`: `/readyz`/`/healthz` probe timeout in seconds, default `1.0`
 - `IMCODEX_CORE_MODE`: Codex core mode, default `spawned-stdio`
 - `IMCODEX_CORE_URL`: optional dedicated Codex core websocket URL
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command

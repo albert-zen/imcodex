@@ -46,17 +46,27 @@ _EVENT_KINDS = {
     "deprecationNotice": "deprecation_notice",
 }
 
-_SERVER_REQUEST_METHODS = {
-    "item/commandExecution/requestApproval",
-    "item/fileChange/requestApproval",
-    "item/tool/requestUserInput",
-    "mcpServer/elicitation/request",
-    "item/permissions/requestApproval",
-    "item/tool/call",
-    "account/chatgptAuthTokens/refresh",
-    "applyPatchApproval",
-    "execCommandApproval",
-}
+SUPPORTED_SERVER_REQUEST_METHODS = frozenset(
+    {
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/tool/requestUserInput",
+        "item/permissions/requestApproval",
+    }
+)
+
+REJECTED_SERVER_REQUEST_METHODS = frozenset(
+    {
+        "mcpServer/elicitation/request",
+        "item/tool/call",
+        "account/chatgptAuthTokens/refresh",
+        "attestation/generate",
+        "applyPatchApproval",
+        "execCommandApproval",
+    }
+)
+
+SERVER_REQUEST_METHODS = SUPPORTED_SERVER_REQUEST_METHODS | REJECTED_SERVER_REQUEST_METHODS
 
 _CATEGORY_PREFIXES = (
     ("thread/realtime/", "realtime"),
@@ -90,9 +100,11 @@ def normalize_appserver_message(message: dict[str, Any]) -> AppServerEvent:
     if not isinstance(payload, dict):
         payload = {}
     item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    direction = "server_request" if method and "id" in message else "notification"
     request_id = payload.get("requestId") or payload.get("_request_id")
+    if request_id is None and direction == "server_request":
+        request_id = message.get("id")
     item_id = payload.get("itemId") or item.get("id")
-    direction = "server_request" if method in _SERVER_REQUEST_METHODS and "id" in message else "notification"
     return AppServerEvent(
         direction=direction,
         method=method,

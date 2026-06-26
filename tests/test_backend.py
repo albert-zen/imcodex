@@ -141,6 +141,37 @@ class AttachClient:
         }
 
 
+class ThreadOpsClient:
+    def __init__(self) -> None:
+        self.history_calls: list[dict] = []
+        self.fork_calls: list[str] = []
+        self.rename_calls: list[dict] = []
+        self.compact_calls: list[str] = []
+
+    async def list_thread_turns(self, thread_id: str, **params):
+        self.history_calls.append({"thread_id": thread_id, **params})
+        return {"turns": []}
+
+    async def fork_thread(self, thread_id: str):
+        self.fork_calls.append(thread_id)
+        return {
+            "thread": {
+                "id": "thr_forked",
+                "cwd": r"D:\desktop\attached",
+                "preview": "Forked thread",
+                "status": "idle",
+            }
+        }
+
+    async def set_thread_name(self, thread_id: str, name: str):
+        self.rename_calls.append({"thread_id": thread_id, "name": name})
+        return {"ok": True}
+
+    async def compact_thread(self, thread_id: str):
+        self.compact_calls.append(thread_id)
+        return {"ok": True}
+
+
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
@@ -207,6 +238,74 @@ async def test_list_threads_prioritizes_windows_extended_length_cwd_match() -> N
 
 
 @pytest.mark.asyncio
+async def test_query_threads_sends_native_search_and_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = NamedClient(
+        [
+            {
+                "id": "thr_named",
+                "cwd": r"D:\desktop\imcodex",
+                "preview": "native match",
+                "status": {"type": "notLoaded"},
+                "source": "vscode",
+            }
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.query_threads("qq", "conv-1", search_term="native match", limit=6)
+
+    assert [thread.thread_id for thread in result.threads] == ["thr_named"]
+    assert client.list_calls == [{"sortKey": "updated_at", "searchTerm": "native match", "limit": 6}]
+
+
+@pytest.mark.asyncio
+async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_page() -> None:
+    class CursoredClient(NamedClient):
+        async def list_threads(self, **params):
+            self.list_calls.append(params)
+            return {"data": list(self.items), "nextCursor": "cursor-2"}
+
+        async def read_thread(self, thread_id: str):
+            raise AssertionError(f"read_thread should not be called for cursored page {thread_id}")
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_bound")
+    client = CursoredClient(
+        [
+            {"id": f"thr_{index}", "cwd": rf"D:\work\{index}", "preview": f"Thread {index}", "status": "idle"}
+            for index in range(1, 6)
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.query_threads("qq", "conv-1", limit=5)
+
+    assert [thread.thread_id for thread in result.threads] == ["thr_1", "thr_2", "thr_3", "thr_4", "thr_5"]
+    assert result.next_cursor == "cursor-2"
+    assert client.list_calls == [{"sortKey": "updated_at", "limit": 5}]
+
+
+@pytest.mark.asyncio
+async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_native_page() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_bound")
+    client = NamedClient(
+        [
+            {"id": f"thr_{index}", "cwd": rf"D:\work\{index}", "preview": f"Thread {index}", "status": "idle"}
+            for index in range(1, 6)
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.query_threads("qq", "conv-1", limit=5)
+
+    assert [thread.thread_id for thread in result.threads] == ["thr_1", "thr_2", "thr_3", "thr_4", "thr_5"]
+    assert result.next_cursor is None
+    assert client.list_calls == [{"sortKey": "updated_at", "limit": 5}]
+
+
+@pytest.mark.asyncio
 async def test_attach_thread_resumes_selected_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = AttachClient()
@@ -224,6 +323,27 @@ async def test_attach_thread_resumes_selected_thread() -> None:
     ]
     assert store.get_binding("qq", "conv-1").thread_id == "thr_attached"
     assert store.get_binding("qq", "conv-1").bootstrap_cwd == r"D:\desktop\attached"
+
+
+@pytest.mark.asyncio
+async def test_thread_operations_use_active_native_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\attached")
+    client = ThreadOpsClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    history = await backend.read_thread_history("qq", "conv-1", limit=3)
+    forked = await backend.fork_thread("qq", "conv-1")
+    await backend.rename_thread("qq", "conv-1", "Renamed thread")
+    await backend.compact_thread("qq", "conv-1")
+
+    assert history == {"turns": []}
+    assert forked.thread_id == "thr_forked"
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_forked"
+    assert client.history_calls == [{"thread_id": "thr_1", "limit": 3}]
+    assert client.fork_calls == ["thr_1"]
+    assert client.rename_calls == [{"thread_id": "thr_forked", "name": "Renamed thread"}]
+    assert client.compact_calls == ["thr_forked"]
 
 
 @pytest.mark.asyncio

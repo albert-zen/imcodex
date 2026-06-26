@@ -886,9 +886,8 @@ async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling
     projected = await service.handle_server_request(
         {
             "id": 77,
-            "method": "item/tool/call",
+            "method": "future/native/requestThing",
             "params": {
-                "_request_id": "native-request-tool",
                 "_transport_request_id": 77,
                 "threadId": "thr_1",
                 "turnId": "turn_1",
@@ -910,15 +909,31 @@ async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling
             "id": 77,
             "error": {
                 "code": -32601,
-                "message": "unsupported or unroutable server request: item/tool/call",
+                "message": "unsupported or unroutable server request: future/native/requestThing",
                 "data": {
                     "reason": "unsupportedServerRequest",
-                    "method": "item/tool/call",
-                    "requestId": "native-request-tool",
+                    "method": "future/native/requestThing",
+                    "requestId": "77",
                 },
             },
         }
     ]
+
+    events = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m-events",
+            text="/native events outcome=rejected",
+        )
+    )
+
+    assert events[0].message_type == "command_result"
+    assert "future/native/requestThing" in events[0].text
+    assert "rejected" in events[0].text
+    assert "77" in events[0].text
+    assert "ABC-123" not in events[0].text
     await client.close()
 
 
@@ -1662,6 +1677,24 @@ async def test_credits_command_reads_account_rate_limits() -> None:
                     },
                 }
             ],
+            "account/usage/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "summary": {
+                            "lifetimeTokens": 6007921192,
+                            "peakDailyTokens": 504382843,
+                            "longestRunningTurnSec": 8943,
+                            "currentStreakDays": 33,
+                            "longestStreakDays": 40,
+                        },
+                        "dailyUsageBuckets": [
+                            {"startDate": "2026-06-25", "tokens": 294319854},
+                            {"startDate": "2026-06-26", "tokens": 2314249},
+                        ],
+                    },
+                }
+            ],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -1683,9 +1716,97 @@ async def test_credits_command_reads_account_rate_limits() -> None:
     assert "Plan: pro" in messages[0].text
     assert "Credits: Available, balance 123" in messages[0].text
     assert "Primary limit (15 min): 75% remaining" in messages[0].text
+    assert "Tokens: 6B lifetime, 504.4M peak/day" in messages[0].text
+    assert "Latest day: 2026-06-26 2.3M tokens" in messages[0].text
     assert "resets at 1730947200" not in messages[0].text
     payloads = [payload for payload in process.inputs if payload.get("method") == "account/rateLimits/read"]
     assert payloads == [{"id": 2, "method": "account/rateLimits/read"}]
+    usage_payloads = [payload for payload in process.inputs if payload.get("method") == "account/usage/read"]
+    assert usage_payloads == [{"id": 3, "method": "account/usage/read"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_credits_command_shows_rate_limits_when_usage_fails() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "account/rateLimits/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "rateLimits": {
+                            "planType": "pro",
+                            "credits": {"hasCredits": True, "balance": "123"},
+                            "primary": {"usedPercent": 25, "windowDurationMins": 300},
+                        }
+                    },
+                }
+            ],
+            "account/usage/read": [
+                {"id": 3, "error": {"code": -32000, "message": "usage unavailable"}},
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/credits",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Plan: pro" in messages[0].text
+    assert "Credits: Available, balance 123" in messages[0].text
+    assert "Warning: usage could not be queried from Codex right now." in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_credits_command_shows_usage_when_rate_limits_fail() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "account/rateLimits/read": [
+                {"id": 2, "error": {"code": -32000, "message": "rate limits unavailable"}},
+            ],
+            "account/usage/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "summary": {"lifetimeTokens": 1234},
+                        "dailyUsageBuckets": [{"startDate": "2026-06-26", "tokens": 5678}],
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/credits",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Credits and rate limits: Unavailable" in messages[0].text
+    assert "Tokens: 1.2K lifetime" in messages[0].text
+    assert "Latest day: 2026-06-26 5.7K tokens" in messages[0].text
+    assert "Warning: credits and rate limits could not be queried from Codex right now." in messages[0].text
     await client.close()
 
 
@@ -1862,10 +1983,11 @@ async def test_threads_command_lets_native_codex_choose_sources_and_prefers_boun
         if payload.get("method") == "thread/list"
     ]
     assert thread_list_payloads == [
-        {
-            "sortKey": "updated_at",
-        }
-    ]
+            {
+                "sortKey": "updated_at",
+                "limit": 5,
+            }
+        ]
     await client.close()
 
 
@@ -1921,14 +2043,11 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
                 {
                     "id": 2,
                     "result": {
-                        "config": {
-                            "model": "gpt-5.4",
-                            "model_reasoning_effort": "high",
-                            "service_tier": "fast",
-                            "features": {"fast_mode": True},
-                            "approval_policy": "on-request",
-                            "sandbox_mode": "workspace-write",
-                        }
+                        "modelId": "gpt-5.4",
+                        "reasoningEffort": "high",
+                        "serviceTier": "fast",
+                        "features": {"fastMode": True},
+                        "permissionProfile": ":workspace",
                     },
                 }
             ],
@@ -2000,21 +2119,29 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
 
 
 @pytest.mark.asyncio
-async def test_threads_command_supports_query_filter_and_page_window() -> None:
+async def test_thread_history_command_uses_native_turns_list_and_renders_summary() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/list": [
+            "thread/turns/list": [
                 {
                     "id": 2,
                     "result": {
-                        "threads": [
-                            {"id": "thr_1", "cwd": r"D:\work\a", "preview": "Alpha project", "status": "idle", "source": "cli"},
-                            {"id": "thr_2", "cwd": r"D:\work\b", "preview": "Alpha notes", "status": "idle", "source": "cli"},
-                            {"id": "thr_3", "cwd": r"D:\work\c", "preview": "Alpha tests", "status": "idle", "source": "cli"},
-                            {"id": "thr_4", "cwd": r"D:\work\d", "preview": "Alpha docs", "status": "idle", "source": "cli"},
-                            {"id": "thr_5", "cwd": r"D:\work\e", "preview": "Alpha deploy", "status": "idle", "source": "cli"},
-                            {"id": "thr_6", "cwd": r"D:\work\f", "preview": "Alpha release", "status": "idle", "source": "cli"},
+                        "turns": [
+                            {
+                                "id": "turn_1",
+                                "status": "completed",
+                                "items": [
+                                    {
+                                        "type": "userMessage",
+                                        "content": [{"type": "text", "text": "Please inspect the repo"}],
+                                    },
+                                    {
+                                        "type": "agentMessage",
+                                        "text": "I checked the relevant files and summarized the issue.",
+                                    },
+                                ],
+                            }
                         ]
                     },
                 }
@@ -2022,7 +2149,7 @@ async def test_threads_command_supports_query_filter_and_page_window() -> None:
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
-    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\a")
+    store.bind_thread("qq", "conv-1", "thr_1")
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
@@ -2032,14 +2159,283 @@ async def test_threads_command_supports_query_filter_and_page_window() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/threads alpha --page 2",
+            text="/thread history",
         )
     )
 
-    lines = messages[0].text.splitlines()
+    assert messages[0].message_type == "command_result"
+    assert "Thread History" in messages[0].text
+    assert "User: Please inspect the repo" in messages[0].text
+    assert "Codex: I checked the relevant files" in messages[0].text
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
+    assert payloads == [{"threadId": "thr_1", "limit": 6}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_is_experimental() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/turns/list": [{"id": 2, "error": {"code": -32601, "message": "method not found"}}],
+            "thread/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "turns": [
+                                {
+                                    "id": "turn_fallback",
+                                    "status": "completed",
+                                    "items": [
+                                        {"type": "userMessage", "text": "Use the stable API"},
+                                        {"type": "assistantMessage", "text": "Stable history loaded."},
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread history",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "User: Use the stable API" in messages[0].text
+    assert "Codex: Stable history loaded." in messages[0].text
+    turns_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
+    read_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/read"]
+    assert turns_payloads == [{"threadId": "thr_1", "limit": 6}]
+    assert read_payloads == [{"threadId": "thr_1", "includeTurns": True}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_history_command_reports_native_failure() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/turns/list": [{"id": 2, "error": {"message": "server overloaded"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/thread history",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Thread history could not be queried from Codex right now" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_rename_and_compact_commands_call_native_thread_methods() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/fork": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_forked",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Forked thread",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/name/set": [{"id": 3, "result": {"ok": True}}],
+            "thread/compact/start": [{"id": 4, "result": {"ok": True}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\work\alpha")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    fork_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/fork",
+        )
+    )
+    rename_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/rename Forked polish",
+        )
+    )
+    compact_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m3",
+            text="/compact",
+        )
+    )
+
+    assert fork_messages[0].message_type == "status"
+    assert "Forked to Forked thread" in fork_messages[0].text
+    assert "CWD: D:\\work\\alpha" in fork_messages[0].text
+    assert rename_messages[0].message_type == "status"
+    assert "Renamed thread to Forked polish." in rename_messages[0].text
+    assert compact_messages[0].message_type == "status"
+    assert "Compaction started." in compact_messages[0].text
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_forked"
+    payloads = {
+        payload["method"]: payload["params"]
+        for payload in process.inputs
+        if payload.get("method") in {"thread/fork", "thread/name/set", "thread/compact/start"}
+    }
+    assert payloads == {
+        "thread/fork": {"threadId": "thr_1"},
+        "thread/name/set": {"threadId": "thr_forked", "name": "Forked polish"},
+        "thread/compact/start": {"threadId": "thr_forked"},
+    }
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_command_reports_native_failure() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/fork": [{"id": 2, "error": {"message": "fork unavailable"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/fork",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Thread could not be forked: fork unavailable" in messages[0].text
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_supports_query_filter_and_native_cursor_next_page() -> None:
+    class PagedThreadListProcess(ScriptedProcess):
+        def __init__(self) -> None:
+            super().__init__({"initialize": [{"id": 1, "result": {"ok": True}}]})
+            self.thread_list_pages = [
+                {
+                    "result": {
+                        "threads": [
+                            {"id": "thr_1", "cwd": r"D:\work\a", "preview": "Alpha project", "status": "idle", "source": "cli"},
+                            {"id": "thr_2", "cwd": r"D:\work\b", "preview": "Alpha notes", "status": "idle", "source": "cli"},
+                            {"id": "thr_3", "cwd": r"D:\work\c", "preview": "Alpha tests", "status": "idle", "source": "cli"},
+                            {"id": "thr_4", "cwd": r"D:\work\d", "preview": "Alpha docs", "status": "idle", "source": "cli"},
+                            {"id": "thr_5", "cwd": r"D:\work\e", "preview": "Alpha deploy", "status": "idle", "source": "cli"},
+                        ],
+                        "nextCursor": "cursor-2",
+                    },
+                },
+                {
+                    "result": {
+                        "threads": [
+                            {"id": "thr_6", "cwd": r"D:\work\f", "preview": "Alpha release", "status": "idle", "source": "cli"},
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ]
+
+        def on_input(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload.get("method") != "thread/list":
+                super().on_input(raw)
+                return
+            self.inputs.append(payload)
+            response = self.thread_list_pages.pop(0)
+            self.stdout.lines.put_nowait(
+                (json.dumps(self._prepare_scripted_message(payload, response)) + "\n").encode("utf-8")
+            )
+
+    process = PagedThreadListProcess()
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\a")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    first_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads alpha",
+        )
+    )
+    next_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/next",
+        )
+    )
+
+    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2)"
+    lines = next_messages[0].text.splitlines()
     assert lines[0] == "Threads (Page 2/2)"
     assert lines[1].startswith("1. Alpha release")
     assert "/prev" in lines[-1]
+    thread_list_payloads = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "thread/list"
+    ]
+    assert thread_list_payloads == [
+        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5},
+        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-2"},
+    ]
     await client.close()
 
 
@@ -2065,14 +2461,31 @@ async def test_next_without_thread_browser_context_prompts_user_to_open_threads_
 
 
 @pytest.mark.asyncio
-async def test_permission_command_writes_native_permission_preset() -> None:
+async def test_permission_command_selects_native_permission_profile() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "config/batchWrite": [{"id": 2, "result": {"status": "updated"}}],
+            "config/read": [{"id": 2, "result": {"config": {"default_permissions": ":workspace"}}}],
+            "permissionProfile/list": [
+                {
+                    "id": 3,
+                    "result": {
+                        "data": [
+                            {"id": ":read-only", "description": "Read files only"},
+                            {"id": ":workspace"},
+                            {"id": ":danger-full-access"},
+                            {"id": "team/custom", "description": "Team-managed restrictions"},
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+            "configRequirements/read": [{"id": 4, "result": {"requirements": None}}],
+            "config/value/write": [{"id": 5, "result": {"status": "updated"}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
 
@@ -2087,12 +2500,60 @@ async def test_permission_command_writes_native_permission_preset() -> None:
     )
 
     assert messages[0].message_type == "status"
+    assert "Permission mode set to Full Access." in messages[0].text
+    profile_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "permissionProfile/list"]
+    assert profile_payloads == [{"cwd": r"D:\work\alpha"}]
+    requirement_payloads = [payload for payload in process.inputs if payload.get("method") == "configRequirements/read"]
+    assert requirement_payloads == [{"id": 4, "method": "configRequirements/read"}]
+    value_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    assert value_payloads == [
+        {
+            "keyPath": "default_permissions",
+            "value": ":danger-full-access",
+            "mergeStrategy": "replace",
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_permission_command_falls_back_to_legacy_config_for_old_codex() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [{"id": 2, "result": {"config": {"approval_policy": "on-request", "sandbox_mode": "workspace-write"}}}],
+            "permissionProfile/list": [
+                {"id": 3, "error": {"code": -32601, "message": "method not found"}},
+            ],
+            "configRequirements/read": [
+                {"id": 4, "error": {"code": -32601, "message": "method not found"}},
+            ],
+            "config/batchWrite": [{"id": 5, "result": {"status": "updated"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/permission read-only",
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert "Permission mode set to Read Only." in messages[0].text
+    assert "compatibility config" in messages[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
     assert payloads == [
         {
             "edits": [
-                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
-                {"keyPath": "sandbox_mode", "value": "danger-full-access", "mergeStrategy": "replace"},
+                {"keyPath": "approval_policy", "value": "on-request", "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": "read-only", "mergeStrategy": "replace"},
             ],
             "reloadUserConfig": False,
         }
@@ -2116,6 +2577,35 @@ async def test_permission_without_arg_shows_permission_browser() -> None:
                     },
                 }
             ],
+            "permissionProfile/list": [
+                {
+                    "id": 3,
+                    "result": {
+                        "data": [
+                            {"id": ":read-only", "description": "Read files only"},
+                            {"id": ":workspace"},
+                            {"id": ":danger-full-access"},
+                            {"id": "team/custom", "description": "Team-managed restrictions"},
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+            "configRequirements/read": [
+                {
+                    "id": 4,
+                    "result": {
+                        "requirements": {
+                            "allowedPermissionProfiles": {
+                                ":read-only": True,
+                                ":workspace": True,
+                                ":danger-full-access": False,
+                                "team/custom": True,
+                            }
+                        }
+                    },
+                }
+            ],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -2135,5 +2625,14 @@ async def test_permission_without_arg_shows_permission_browser() -> None:
     assert messages[0].message_type == "command_result"
     assert "Permission Modes" in messages[0].text
     assert "Current: Default" in messages[0].text
+    assert "Native profiles:" in messages[0].text
+    assert "- :read-only: Read files only" in messages[0].text
+    assert "- team/custom: Team-managed restrictions" in messages[0].text
     assert "/permission read-only" in messages[0].text
+    assert "Unavailable by Codex requirements:" in messages[0].text
+    assert "/permission full-access (:danger-full-access)" in messages[0].text
+    profile_payloads = [payload for payload in process.inputs if payload.get("method") == "permissionProfile/list"]
+    assert profile_payloads == [{"id": 3, "method": "permissionProfile/list", "params": {}}]
+    requirement_payloads = [payload for payload in process.inputs if payload.get("method") == "configRequirements/read"]
+    assert requirement_payloads == [{"id": 4, "method": "configRequirements/read"}]
     await client.close()

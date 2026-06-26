@@ -2,6 +2,7 @@ __pycache__/
 .pytest_cache/
 .agentkit/
 .env
+.imcodex-appserver-token
 .imcodex/
 .imcodex-data/
 .imcodex-run/

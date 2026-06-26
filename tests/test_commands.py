@@ -200,6 +200,51 @@ def test_thread_attach_accepts_human_readable_selector() -> None:
     assert response.payload == {"selector": "repo polish"}
 
 
+def test_thread_history_requires_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/thread history")
+
+    assert response.action == "thread.history.missing"
+    assert response.text == "No active thread."
+
+
+def test_thread_history_reads_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/thread history")
+
+    assert response.action == "thread.history.query"
+    assert response.thread_id == "thr_1"
+
+
+def test_native_thread_operations_require_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    assert router.handle("qq", "conv-1", "/fork").action == "thread.fork.missing"
+    assert router.handle("qq", "conv-1", "/rename Ship notes").action == "thread.rename.missing"
+    assert router.handle("qq", "conv-1", "/compact").action == "thread.compact.missing"
+
+
+def test_native_thread_operations_parse_payloads() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    router = CommandRouter(store)
+
+    fork = router.handle("qq", "conv-1", "/fork")
+    rename = router.handle("qq", "conv-1", "/rename Ship the thread polish")
+    compact = router.handle("qq", "conv-1", "/compact")
+
+    assert fork.action == "thread.fork"
+    assert rename.action == "thread.rename"
+    assert rename.payload == {"name": "Ship the thread polish"}
+    assert compact.action == "thread.compact"
+
+
 def test_model_without_args_opens_browser() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
@@ -323,13 +368,7 @@ def test_permission_with_mode_builds_native_permission_payload() -> None:
     response = router.handle("qq", "conv-1", "/permission full-access")
 
     assert response.action == "settings.permission.write"
-    assert response.payload == {
-        "mode": "full-access",
-        "edits": [
-            {"key_path": "approval_policy", "value": "never", "merge_strategy": "replace"},
-            {"key_path": "sandbox_mode", "value": "danger-full-access", "merge_strategy": "replace"},
-        ],
-    }
+    assert response.payload == {"mode": "full-access"}
 
 
 def test_show_system_updates_bridge_visibility_only() -> None:
@@ -351,3 +390,23 @@ def test_native_help_exposes_advanced_escape_hatch_commands() -> None:
     assert response.action == "native.help"
     assert "/native call <method> <json>" in response.text
     assert "/native requests" not in response.text
+
+
+def test_native_events_command_builds_filter_payload() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/native events outcome=rejected method=item/tool --limit 3")
+
+    assert response.action == "native.events"
+    assert response.payload == {"filters": ["outcome=rejected", "method=item/tool"], "limit": 3}
+
+
+def test_native_events_command_rejects_invalid_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/native events --limit 0")
+
+    assert response.action == "native.events.invalid"
+    assert "at least 1" in response.text

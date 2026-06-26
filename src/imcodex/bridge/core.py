@@ -4,21 +4,30 @@ import asyncio
 import json
 
 from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, NativeThreadSnapshot, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
+from .native_events import (
+    clamp_native_events_limit,
+    record_native_appserver_journal,
+    render_native_events,
+    select_native_events,
+)
 from .server_requests import NativeRequestPolicy
 from .settings import (
     current_model_label,
     current_reasoning_label,
+    effective_config,
     fast_mode_label,
     render_credits,
     permission_mode_label,
     render_fast_mode,
     render_models,
     render_permission_modes,
+    render_permission_set_result,
     render_reasoning_effort,
 )
+from .thread_history import render_thread_history
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
@@ -168,7 +177,11 @@ class BridgeService:
             result = await self.backend.list_models()
             return [self._message(message, "command_result", render_models(result))]
         if response.action == "settings.permission.read":
-            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            try:
+                result = await self.backend.read_permission_options(message.channel_id, message.conversation_id)
+            except AppServerError as exc:
+                text = f"Permission modes could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_permission_modes(result))]
         if response.action == "settings.reasoning.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
@@ -178,11 +191,17 @@ class BridgeService:
             return [self._message(message, "command_result", render_fast_mode(result))]
         if response.action == "credits.read":
             try:
-                result = await self.backend.read_account_rate_limits()
+                result = await self.backend.read_account_credits()
             except AppServerError as exc:
                 text = f"Credits could not be queried from Codex right now: {self._safe_appserver_error(exc)}. Try again in a moment."
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_credits(result))]
+        if response.action == "native.events":
+            payload = response.payload or {}
+            filters = [str(token) for token in list(payload.get("filters") or [])]
+            limit = clamp_native_events_limit(payload.get("limit"))
+            entries = select_native_events(self.store, limit=limit, filters=filters)
+            return [self._message(message, "command_result", render_native_events(entries, filters=filters))]
         if response.action == "goal.read":
             try:
                 result = await self.backend.read_thread_goal(message.channel_id, message.conversation_id)
@@ -278,21 +297,53 @@ class BridgeService:
             return [self._message(message, "status", response.text)]
         if response.action == "settings.permission.write":
             payload = response.payload or {}
-            edits = [
-                {
-                    "keyPath": edit["key_path"],
-                    "value": edit["value"],
-                    "mergeStrategy": edit["merge_strategy"],
-                }
-                for edit in list(payload.get("edits") or [])
-            ]
-            await self.backend.batch_write_config(edits=edits, reload_user_config=False)
-            return [self._message(message, "status", response.text)]
+            try:
+                result = await self.backend.set_permission_mode(
+                    message.channel_id,
+                    message.conversation_id,
+                    str(payload.get("mode") or ""),
+                )
+            except AppServerError as exc:
+                text = f"Permission mode could not be set in Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "status", render_permission_set_result(result))]
         if response.action == "thread.read.query":
             return [self._message(message, "command_result", await self._render_thread(message, response.thread_id))]
+        if response.action == "thread.history.query":
+            try:
+                payload = await self.backend.read_thread_history(
+                    message.channel_id,
+                    message.conversation_id,
+                    limit=6,
+                )
+            except AppServerError as exc:
+                text = f"Thread history could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "command_result", text)]
+            return [self._message(message, "command_result", render_thread_history(payload, limit=6))]
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             return [self._message(message, "status", f"Started thread {thread_id}.")]
+        if response.action == "thread.fork":
+            try:
+                snapshot = await self.backend.fork_thread(message.channel_id, message.conversation_id)
+            except AppServerError as exc:
+                return [self._message(message, "status", f"Thread could not be forked: {self._safe_appserver_error(exc)}.")]
+            if snapshot.cwd:
+                return [self._message(message, "status", f"Forked to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}")]
+            return [self._message(message, "status", f"Forked to {self._thread_label(snapshot)}.")]
+        if response.action == "thread.rename":
+            name = str((response.payload or {}).get("name") or "").strip()
+            try:
+                await self.backend.rename_thread(message.channel_id, message.conversation_id, name)
+            except AppServerError as exc:
+                return [self._message(message, "status", f"Thread could not be renamed: {self._safe_appserver_error(exc)}.")]
+            return [self._message(message, "status", f"Renamed thread to {name}.")]
+        if response.action == "thread.compact":
+            try:
+                await self.backend.compact_thread(message.channel_id, message.conversation_id)
+            except AppServerError as exc:
+                return [self._message(message, "status", f"Compaction could not be started: {self._safe_appserver_error(exc)}.")]
+            return [self._message(message, "status", "Compaction started.")]
         if response.action == "thread.pick":
             context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
             if context is None:
@@ -383,15 +434,29 @@ class BridgeService:
         return [self._message(message, message_type, response.text, request_id=response.request_id)]
 
     async def handle_notification(self, notification: dict) -> list[OutboundMessage]:
+        journal_entry = record_native_appserver_journal(self.store, notification)
         message = self.projector.project_notification(notification, self.store)
+        self.store.update_native_appserver_event(
+            journal_entry.sequence,
+            outcome="projected" if message is not None else "ingested",
+        )
         return await self._emit(message)
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
+        journal_entry = record_native_appserver_journal(self.store, request)
         message = self.projector.project_notification(request, self.store)
         outbound = await self._emit(message)
         rejection = await self.native_requests.reject_unrouted(request)
         if rejection is not None:
+            self.store.update_native_appserver_event(
+                journal_entry.sequence,
+                outcome="rejected",
+                note="unsupported or unroutable server request",
+            )
             outbound.extend(await self._emit(rejection))
+        else:
+            outcome = "pending" if message is not None and journal_entry.direction == "server_request" else "ingested"
+            self.store.update_native_appserver_event(journal_entry.sequence, outcome=outcome)
         return outbound
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
@@ -437,10 +502,14 @@ class BridgeService:
         page: int = 1,
         query: str | None = None,
     ) -> str:
-        threads = await self.backend.list_threads(message.channel_id, message.conversation_id)
-        if query:
-            threads = [snapshot for snapshot in threads if self._matches_thread_query(snapshot, query)]
-        if not threads:
+        requested_page = max(page, 1)
+        threads, safe_page, page_count, next_cursor, page_cursors = await self._load_thread_page(
+            message,
+            requested_page=requested_page,
+            query=query,
+        )
+        visible = threads[:_THREADS_PAGE_SIZE]
+        if not visible:
             self.store.set_thread_browser_context(
                 message.channel_id,
                 message.conversation_id,
@@ -448,6 +517,8 @@ class BridgeService:
                 page=1,
                 total=1,
                 query=query,
+                next_cursor=None,
+                page_cursors=[None],
             )
             return "\n".join(
                 [
@@ -456,10 +527,6 @@ class BridgeService:
                     "Use /threads <keyword> to filter, or /new to start a fresh thread.",
                 ]
             )
-        page_count = max(1, (len(threads) + _THREADS_PAGE_SIZE - 1) // _THREADS_PAGE_SIZE)
-        safe_page = min(max(page, 1), page_count)
-        start = (safe_page - 1) * _THREADS_PAGE_SIZE
-        visible = threads[start : start + _THREADS_PAGE_SIZE]
         self.store.set_thread_browser_context(
             message.channel_id,
             message.conversation_id,
@@ -467,6 +534,8 @@ class BridgeService:
             page=safe_page,
             total=page_count,
             query=query,
+            next_cursor=next_cursor,
+            page_cursors=page_cursors,
         )
         lines = [f"Threads (Page {safe_page}/{page_count})"]
         for index, snapshot in enumerate(visible, start=1):
@@ -487,11 +556,63 @@ class BridgeService:
             actions.append("/threads <keyword> to filter")
         return "\n".join(lines + ["; ".join(actions) + "."])
 
+    async def _load_thread_page(
+        self,
+        message: InboundMessage,
+        *,
+        requested_page: int,
+        query: str | None,
+    ) -> tuple[list[NativeThreadSnapshot], int, int, str | None, list[str | None]]:
+        context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
+        page_cursors = (
+            list(context.page_cursors)
+            if context is not None and context.query == query and context.page_cursors
+            else [None]
+        )
+        current_page = requested_page if requested_page <= len(page_cursors) else len(page_cursors)
+        current_page = max(1, current_page)
+        while True:
+            cursor = page_cursors[current_page - 1] if current_page - 1 < len(page_cursors) else None
+            query_result = await self.backend.query_threads(
+                message.channel_id,
+                message.conversation_id,
+                search_term=query,
+                limit=_THREADS_PAGE_SIZE,
+                cursor=cursor,
+            )
+            page_cursors = self._remember_thread_page_cursor(
+                page_cursors,
+                page=current_page,
+                next_cursor=query_result.next_cursor,
+            )
+            if current_page == requested_page or not query_result.next_cursor:
+                page_count = current_page + (1 if query_result.next_cursor else 0)
+                return (
+                    query_result.threads,
+                    current_page,
+                    page_count,
+                    query_result.next_cursor,
+                    page_cursors,
+                )
+            current_page += 1
+
+    def _remember_thread_page_cursor(
+        self,
+        page_cursors: list[str | None],
+        *,
+        page: int,
+        next_cursor: str | None,
+    ) -> list[str | None]:
+        page_cursors = list(page_cursors[:page])
+        if next_cursor:
+            page_cursors.append(next_cursor)
+        return page_cursors or [None]
+
     async def _render_status(self, message: InboundMessage) -> str:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         cwd = self.store.current_cwd(message.channel_id, message.conversation_id) or "(none)"
         config = await self._read_status_config(message.channel_id, message.conversation_id)
-        current_config = config.get("config") if isinstance(config.get("config"), dict) else {}
+        current_config = effective_config(config)
         if binding.thread_id is None:
             thread_label = "(none)"
             state = "Idle"
