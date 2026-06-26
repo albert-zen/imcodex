@@ -51,7 +51,26 @@ class ThreadBrowserContext:
     page: int
     total: int
     query: str | None = None
+    next_cursor: str | None = None
+    page_cursors: list[str | None] = field(default_factory=lambda: [None])
     expires_at: float = 0.0
+
+
+@dataclass(slots=True)
+class NativeAppServerJournalEntry:
+    sequence: int
+    seen_at: float
+    direction: str
+    method: str
+    category: str
+    kind: str
+    summary: dict[str, Any] = field(default_factory=dict)
+    thread_id: str = ""
+    turn_id: str = ""
+    item_id: str = ""
+    request_id: str | None = None
+    outcome: str | None = None
+    note: str | None = None
 
 
 @dataclass(slots=True)

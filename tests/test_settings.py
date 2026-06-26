@@ -4,7 +4,13 @@ from datetime import timedelta
 from datetime import timezone
 
 from imcodex.bridge.settings import _rate_limit_window_label
+from imcodex.bridge.settings import current_model_label
+from imcodex.bridge.settings import current_reasoning_label
+from imcodex.bridge.settings import fast_mode_label
+from imcodex.bridge.settings import permission_mode_label
 from imcodex.bridge.settings import render_credits
+from imcodex.bridge.settings import render_permission_modes
+from imcodex.bridge.settings import render_permission_set_result
 
 
 def test_rate_limit_window_label_shows_remaining_percent_and_local_reset_time() -> None:
@@ -73,3 +79,111 @@ def test_render_credits_falls_back_for_unusual_windows() -> None:
 
     assert "Primary limit (60 min): 90% remaining" in text
     assert "Credits: Unlimited" in text
+
+
+def test_render_credits_combines_rate_limits_and_usage() -> None:
+    text = render_credits(
+        {
+            "rateLimitsResult": {
+                "rateLimits": {
+                    "planType": "pro",
+                    "credits": {"hasCredits": True, "balance": "123"},
+                    "primary": {"usedPercent": 25, "windowDurationMins": 300},
+                }
+            },
+            "usageResult": {
+                "summary": {
+                    "lifetimeTokens": 6007921192,
+                    "peakDailyTokens": 504382843,
+                    "longestRunningTurnSec": 8943,
+                    "currentStreakDays": 33,
+                    "longestStreakDays": 40,
+                },
+                "dailyUsageBuckets": [
+                    {"startDate": "2026-06-25", "tokens": 294319854},
+                    {"startDate": "2026-06-26", "tokens": 2314249},
+                ],
+            },
+        }
+    )
+
+    assert "Plan: pro" in text
+    assert "Credits: Available, balance 123" in text
+    assert "Tokens: 6B lifetime, 504.4M peak/day" in text
+    assert "Streak: 33 days current, 40 days longest" in text
+    assert "Longest turn: 2h 29m" in text
+    assert "Latest day: 2026-06-26 2.3M tokens" in text
+
+
+def test_render_credits_shows_partial_warning() -> None:
+    text = render_credits(
+        {
+            "usageResult": {
+                "summary": {"lifetimeTokens": 1234},
+                "dailyUsageBuckets": [],
+            },
+            "warnings": {"rateLimits": "method failed"},
+        }
+    )
+
+    assert "Tokens: 1.2K lifetime" in text
+    assert "Warning: credits and rate limits could not be queried from Codex right now." in text
+
+
+def test_render_permission_modes_uses_native_profiles_and_requirements() -> None:
+    text = render_permission_modes(
+        {
+            "config": {"default_permissions": ":danger-full-access"},
+            "profiles": [
+                {"id": ":read-only", "description": "Only reads files"},
+                {"id": ":workspace"},
+                {"id": ":danger-full-access"},
+                {"id": "team/custom", "description": "Team profile"},
+            ],
+            "requirements": {
+                "allowedPermissionProfiles": {
+                    ":read-only": True,
+                    ":workspace": True,
+                    ":danger-full-access": False,
+                    "team/custom": True,
+                }
+            },
+        }
+    )
+
+    assert "Current: Full Access" in text
+    assert "Native profiles:" in text
+    assert "- :read-only: Only reads files" in text
+    assert "- team/custom: Team profile" in text
+    assert "- /permission default (:workspace)" in text
+    assert "- /permission read-only (:read-only)" in text
+    assert "Unavailable by Codex requirements:" in text
+    assert "- /permission full-access (:danger-full-access)" in text
+
+
+def test_settings_labels_accept_native_camel_case_effective_config() -> None:
+    config = {
+        "modelId": "gpt-5.4",
+        "reasoningEffort": "high",
+        "serviceTier": "fast",
+        "features": {"fastMode": True},
+        "permissionProfile": ":read-only",
+        "approvalPolicy": "on-request",
+        "sandbox": {"mode": "read-only"},
+    }
+
+    assert current_model_label(config) == "gpt-5.4"
+    assert current_reasoning_label(config) == "high"
+    assert fast_mode_label(config) == "Fast"
+    assert permission_mode_label(config) == "Read Only"
+
+
+def test_permission_mode_label_falls_back_to_legacy_config() -> None:
+    assert permission_mode_label({"approval_policy": "on-request", "sandbox_mode": "workspace-write"}) == "Default"
+
+
+def test_render_permission_set_result_marks_compatibility_fallback() -> None:
+    text = render_permission_set_result({"mode": "read-only", "fallback": True})
+
+    assert "Permission mode set to Read Only." in text
+    assert "compatibility config" in text

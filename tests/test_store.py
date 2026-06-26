@@ -142,3 +142,63 @@ def test_thread_browser_context_is_runtime_only_and_expires(tmp_path) -> None:
 
     now["value"] = 131.0
     assert store.get_thread_browser_context("qq", "conv-1") is None
+
+
+def test_native_appserver_journal_is_bounded_and_runtime_only(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 10.0, state_path=state_path, native_event_journal_limit=2)
+
+    store.append_native_appserver_event(
+        seen_at=10.0,
+        direction="notification",
+        method="turn/started",
+        category="turn",
+        kind="turn_started",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        summary={"payload_keys": ["threadId", "turn"]},
+    )
+    store.append_native_appserver_event(
+        seen_at=11.0,
+        direction="notification",
+        method="item/completed",
+        category="item",
+        kind="item_completed",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        item_id="item_1",
+        summary={"item_type": "agentMessage"},
+    )
+    rejected = store.append_native_appserver_event(
+        seen_at=12.0,
+        direction="server_request",
+        method="item/tool/call",
+        category="item",
+        kind="unknown",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        request_id="native-request-tool",
+        outcome="rejected",
+        summary={"payload_key_count": 6},
+    )
+
+    assert [entry.method for entry in store.list_native_appserver_events()] == [
+        "item/completed",
+        "item/tool/call",
+    ]
+    assert store.list_native_appserver_events(limit=1) == [rejected]
+
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "native_appserver_journal" not in payload
+
+    reloaded = ConversationStore(clock=lambda: 12.0, state_path=state_path)
+    assert reloaded.list_native_appserver_events() == []
+
+
+def test_store_has_no_bridge_owned_next_model_override_state() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    assert not hasattr(store, "_next_model_overrides")
+    assert not hasattr(store, "set_next_model_override")
+    assert not hasattr(store, "pop_next_model_override")

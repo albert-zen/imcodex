@@ -7,6 +7,8 @@ import pytest
 
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, summarize_transport_message
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
+from imcodex.appserver.retry import RetryBackoff
+from imcodex.appserver.supervisor import HealthProbeResult, derive_health_probe_urls
 
 
 class FakeStdout:
@@ -169,6 +171,32 @@ class ScriptedWebSocket:
         return response
 
 
+class OverloadThenOkProcess(ScriptedProcess):
+    def __init__(self) -> None:
+        super().__init__({})
+        self.thread_list_attempts = 0
+
+    def on_input(self, raw: str) -> None:
+        payload = json.loads(raw)
+        self.sent.append(payload)
+        method = payload.get("method")
+        if method == "initialized" or method is None:
+            return
+        if method == "initialize":
+            self.stdout.lines.put_nowait((json.dumps({"id": payload["id"], "result": {"ok": True}}) + "\n").encode("utf-8"))
+            return
+        if method == "thread/list":
+            self.thread_list_attempts += 1
+            if self.thread_list_attempts == 1:
+                response = {
+                    "id": payload["id"],
+                    "error": {"code": -32001, "message": "Server overloaded; retry later"},
+                }
+            else:
+                response = {"id": payload["id"], "result": {"threads": []}}
+            self.stdout.lines.put_nowait((json.dumps(response) + "\n").encode("utf-8"))
+
+
 @pytest.mark.asyncio
 async def test_scripted_helpers_mirror_request_ids_for_responses() -> None:
     process = ScriptedProcess({"thread/list": [{"id": 999, "result": {"threads": []}}]})
@@ -238,6 +266,82 @@ async def test_stdio_client_initializes_dispatches_notifications_and_replies_to_
         "id": 99,
         "result": {"answers": {"color": {"answers": ["blue"]}}},
     }
+
+
+@pytest.mark.asyncio
+async def test_stdio_client_dispatches_server_request_with_non_object_params() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {"id": 2, "result": {"thread": {"id": "thr_1", "cwd": "D:/repo/app", "status": "idle"}}},
+                {"id": 98, "method": "future/native/requestThing", "params": ["unexpected", "shape"]},
+            ],
+        }
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    captured_requests: list[dict] = []
+    client.add_server_request_handler(captured_requests.append)
+
+    await client.start_thread(cwd="D:/repo/app")
+    await asyncio.sleep(0)
+
+    assert captured_requests[0]["method"] == "future/native/requestThing"
+    assert captured_requests[0]["params"]["_raw_params"] == ["unexpected", "shape"]
+    assert captured_requests[0]["params"]["_request_id"] == "98"
+    assert captured_requests[0]["params"]["_transport_request_id"] == 98
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_does_not_enable_experimental_api_by_default() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.initialize()
+
+    capabilities = process.sent[0]["params"]["capabilities"]
+    assert capabilities["optOutNotificationMethods"] == list(DEFAULT_OPT_OUT_NOTIFICATION_METHODS)
+    assert "experimentalApi" not in capabilities
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_initialize_enables_experimental_api_only_when_configured() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        experimental_api_enabled=True,
+    )
+
+    await client.initialize()
+
+    capabilities = process.sent[0]["params"]["capabilities"]
+    assert capabilities["optOutNotificationMethods"] == list(DEFAULT_OPT_OUT_NOTIFICATION_METHODS)
+    assert capabilities["experimentalApi"] is True
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -878,6 +982,183 @@ async def test_stderr_diagnostics_emit_bounded_summary(monkeypatch) -> None:
     await client.close()
 
 
+def test_supervisor_builds_authorization_header_from_token_file(tmp_path) -> None:
+    token_file = tmp_path / "appserver.token"
+    token_file.write_text(" file-token \n", encoding="utf-8")
+
+    supervisor = AppServerSupervisor(app_server_auth_token_file=token_file)
+
+    assert supervisor.websocket_headers() == {"Authorization": "Bearer file-token"}
+
+
+def test_supervisor_prefers_direct_authorization_token_over_file(tmp_path) -> None:
+    token_file = tmp_path / "appserver.token"
+    token_file.write_text(" file-token \n", encoding="utf-8")
+
+    supervisor = AppServerSupervisor(
+        app_server_auth_token=" env-token ",
+        app_server_auth_token_file=token_file,
+    )
+
+    assert supervisor.websocket_headers() == {"Authorization": "Bearer env-token"}
+
+
+@pytest.mark.asyncio
+async def test_client_passes_authorization_header_to_websocket_factory() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    captured: dict[str, object] = {}
+
+    async def websocket_factory(url: str, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs.get("additional_headers")
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        app_server_url="ws://127.0.0.1:9999",
+        app_server_auth_token="secret-token",
+        websocket_factory=websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.list_threads()
+
+    assert captured == {
+        "url": "ws://127.0.0.1:9999",
+        "headers": {"Authorization": "Bearer secret-token"},
+    }
+    await client.close()
+
+
+def test_health_probe_urls_are_derived_from_ws_and_http_endpoints() -> None:
+    assert derive_health_probe_urls("ws://127.0.0.1:8765") == [
+        "http://127.0.0.1:8765/readyz",
+        "http://127.0.0.1:8765/healthz",
+    ]
+    assert derive_health_probe_urls("wss://core.example.test/socket?token=secret") == [
+        "https://core.example.test/readyz",
+        "https://core.example.test/healthz",
+    ]
+    assert derive_health_probe_urls("https://core.example.test/app") == [
+        "https://core.example.test/readyz",
+        "https://core.example.test/healthz",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dedicated_ws_unavailable_probes_health_without_real_network() -> None:
+    health_calls: list[tuple[list[str], dict[str, str], float]] = []
+
+    async def websocket_factory(_url: str):
+        raise OSError("connection refused")
+
+    async def health_probe(urls: list[str], headers: dict[str, str], timeout_s: float) -> HealthProbeResult:
+        health_calls.append((urls, headers, timeout_s))
+        return HealthProbeResult(ok=False, url=urls[0], status_code=503)
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        app_server_auth_token="health-token",
+        websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        health_probe=health_probe,
+        health_probe_timeout_s=0.4,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    with pytest.raises(AppServerError, match="health_status=503"):
+        await client.list_threads()
+
+    assert health_calls == [
+        (
+            ["http://127.0.0.1:9001/readyz", "http://127.0.0.1:9001/healthz"],
+            {"Authorization": "Bearer health-token"},
+            0.4,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_websocket_connection_retries_with_bounded_backoff() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [{"id": 2, "result": {"threads": []}}],
+        }
+    )
+    attempts = 0
+    sleeps: list[float] = []
+
+    async def websocket_factory(_url: str):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise OSError("connection refused")
+        return websocket
+
+    async def sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+
+    supervisor = AppServerSupervisor(
+        app_server_url="ws://127.0.0.1:9999",
+        websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=3, initial_delay_s=0.5, max_delay_s=2.0, jitter_fraction=0.0),
+        sleep=sleep,
+        random_float=lambda: 0.0,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert attempts == 3
+    assert sleeps == [0.5, 1.0]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_retries_native_overload_with_bounded_backoff() -> None:
+    process = OverloadThenOkProcess()
+    sleeps: list[float] = []
+
+    async def sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        request_retry_policy=RetryBackoff(max_attempts=2, initial_delay_s=0.25, max_delay_s=1.0, jitter_fraction=0.0),
+        sleep=sleep,
+        random_float=lambda: 0.0,
+    )
+
+    result = await client.list_threads()
+
+    assert result == {"threads": []}
+    assert process.thread_list_attempts == 2
+    assert sleeps == [0.25]
+    await client.close()
+
+
 @pytest.mark.asyncio
 async def test_client_probes_default_websocket_app_server_before_spawning() -> None:
     websocket = ScriptedWebSocket(
@@ -926,6 +1207,7 @@ async def test_client_falls_back_to_stdio_when_websocket_connection_fails() -> N
     supervisor = AppServerSupervisor(
         codex_bin="codex",
         websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
         spawn_process=lambda *args: process,
     )
     client = AppServerClient(
@@ -987,11 +1269,43 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_idle_reader_disconnect_notifies_reset_handlers() -> None:
+    process = ScriptedProcess({})
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        core_mode="spawned-stdio",
+        spawn_process=lambda *args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    reset_epochs: list[int] = []
+    client.add_connection_reset_handler(lambda epoch: reset_epochs.append(epoch))
+
+    await client.connect()
+    listener_task = client._listener_task
+    assert listener_task is not None
+
+    process.stdout.lines.put_nowait(b"")
+    await asyncio.wait_for(listener_task, timeout=1)
+
+    assert reset_epochs == [1]
+    assert client.connection_mode == "disconnected"
+    assert client._listener_task is None
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_dedicated_ws_mode_does_not_fallback_to_spawned_stdio() -> None:
     spawned = False
 
     async def websocket_factory(_url: str):
         raise OSError("connection refused")
+
+    async def health_probe(urls: list[str], headers: dict[str, str], timeout_s: float) -> HealthProbeResult:
+        del headers, timeout_s
+        return HealthProbeResult(ok=False, url=urls[0], error_type="ConnectionRefusedError")
 
     async def unexpected_spawn(*args):
         nonlocal spawned
@@ -1003,6 +1317,8 @@ async def test_dedicated_ws_mode_does_not_fallback_to_spawned_stdio() -> None:
         core_mode="dedicated-ws",
         core_url="ws://127.0.0.1:9001",
         websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        health_probe=health_probe,
         spawn_process=unexpected_spawn,
     )
     client = AppServerClient(

@@ -9,20 +9,7 @@ from pathlib import Path
 from ..store import ConversationStore
 
 
-_PERMISSION_PRESETS = {
-    "default": [
-        {"key_path": "approval_policy", "value": "on-request", "merge_strategy": "replace"},
-        {"key_path": "sandbox_mode", "value": "workspace-write", "merge_strategy": "replace"},
-    ],
-    "read-only": [
-        {"key_path": "approval_policy", "value": "on-request", "merge_strategy": "replace"},
-        {"key_path": "sandbox_mode", "value": "read-only", "merge_strategy": "replace"},
-    ],
-    "full-access": [
-        {"key_path": "approval_policy", "value": "never", "merge_strategy": "replace"},
-        {"key_path": "sandbox_mode", "value": "danger-full-access", "merge_strategy": "replace"},
-    ],
-}
+_PERMISSION_MODES = {"default", "read-only", "full-access"}
 _REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
 
@@ -187,12 +174,16 @@ class CommandRouter:
             if binding.thread_id is None:
                 return CommandResponse(action="thread.read.none", text="No active thread.")
             return CommandResponse(action="thread.read.query", text="", thread_id=binding.thread_id)
+        if len(command.args) == 1 and command.args[0] == "history":
+            if binding.thread_id is None:
+                return CommandResponse(action="thread.history.missing", text="No active thread.")
+            return CommandResponse(action="thread.history.query", text="", thread_id=binding.thread_id)
         if command.args and command.args[0] == "attach":
             selector = command.raw_args_text[len("attach") :].strip()
             if not selector:
                 return CommandResponse(
                     action="thread.invalid",
-                    text="Usage: /thread attach <thread-id-or-name> or /thread read",
+                    text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history",
                 )
             return CommandResponse(
                 action="thread.attach",
@@ -201,8 +192,30 @@ class CommandRouter:
             )
         return CommandResponse(
             action="thread.invalid",
-            text="Usage: /thread attach <thread-id-or-name> or /thread read",
+            text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history",
         )
+
+    def _handle_fork(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        if command.args:
+            return CommandResponse(action="thread.fork.invalid", text="Usage: /fork")
+        if self.store.get_binding(channel_id, conversation_id).thread_id is None:
+            return CommandResponse(action="thread.fork.missing", text="No active thread.")
+        return CommandResponse(action="thread.fork", text="Forking thread.")
+
+    def _handle_rename(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        if self.store.get_binding(channel_id, conversation_id).thread_id is None:
+            return CommandResponse(action="thread.rename.missing", text="No active thread.")
+        name = self._strip_matching_quotes(command.raw_args_text).strip()
+        if not name:
+            return CommandResponse(action="thread.rename.invalid", text="Usage: /rename <name>")
+        return CommandResponse(action="thread.rename", text="", payload={"name": name})
+
+    def _handle_compact(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        if command.args:
+            return CommandResponse(action="thread.compact.invalid", text="Usage: /compact")
+        if self.store.get_binding(channel_id, conversation_id).thread_id is None:
+            return CommandResponse(action="thread.compact.missing", text="No active thread.")
+        return CommandResponse(action="thread.compact", text="Starting compaction.")
 
     def _handle_new(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del command
@@ -393,8 +406,7 @@ class CommandRouter:
         if len(command.args) != 1:
             return CommandResponse(action="settings.permission.invalid", text="Usage: /permission [mode]")
         mode = command.args[0].lower()
-        edits = _PERMISSION_PRESETS.get(mode)
-        if edits is None:
+        if mode not in _PERMISSION_MODES:
             return CommandResponse(
                 action="settings.permission.invalid",
                 text="Usage: /permission [default|read-only|full-access]",
@@ -402,7 +414,7 @@ class CommandRouter:
         return CommandResponse(
             action="settings.permission.write",
             text=f"Permission mode set to {mode}.",
-            payload={"mode": mode, "edits": edits},
+            payload={"mode": mode},
         )
 
     def _handle_config(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -474,7 +486,7 @@ class CommandRouter:
             )
         subcommand = command.args[0]
         if subcommand == "events":
-            return CommandResponse(action="native.events", text="Native event journal is not available yet.")
+            return self._handle_native_events(command.args[1:])
         if subcommand == "call":
             raw = command.raw_args_text[len("call") :].strip()
             method, _, params_text = raw.partition(" ")
@@ -545,51 +557,91 @@ class CommandRouter:
             )
         return CommandResponse(action="native.invalid", text="Usage: /native help")
 
+    def _handle_native_events(self, args: list[str]) -> CommandResponse:
+        filters: list[str] = []
+        limit = 12
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg in {"--limit", "-n"}:
+                if index + 1 >= len(args):
+                    return CommandResponse(action="native.events.invalid", text="Usage: /native events [filters...] [--limit N]")
+                try:
+                    limit = int(args[index + 1])
+                except ValueError:
+                    return CommandResponse(action="native.events.invalid", text="Native event limit must be an integer.")
+                index += 2
+                continue
+            if arg.startswith("--limit="):
+                try:
+                    limit = int(arg.partition("=")[2])
+                except ValueError:
+                    return CommandResponse(action="native.events.invalid", text="Native event limit must be an integer.")
+                index += 1
+                continue
+            if arg.startswith("--"):
+                return CommandResponse(action="native.events.invalid", text="Usage: /native events [filters...] [--limit N]")
+            filters.append(arg)
+            index += 1
+        if limit < 1:
+            return CommandResponse(action="native.events.invalid", text="Native event limit must be at least 1.")
+        return CommandResponse(
+            action="native.events",
+            text="",
+            payload={"filters": filters, "limit": limit},
+        )
+
     def _handle_help(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id, command
         return CommandResponse(
             action="help",
             text="\n".join(
                 [
-                    "Core Commands",
+                    "Help",
                     "",
+                    "Start",
                     "/cwd <path>",
-                    "Set the current working directory.",
-                    "Use /cwd to view it, or /cwd playground to use a default folder.",
-                    "",
-                    "/threads",
-                    "Browse and switch threads.",
-                    "After opening the list, use /next, /prev, /pick <n>, or /exit.",
-                    "",
+                    "Choose a workspace.",
                     "/new",
-                    "Start a new thread in the current CWD.",
+                    "Start a fresh thread.",
                     "",
+                    "Threads",
+                    "/threads [query]",
+                    "Browse and switch threads.",
+                    "/thread history",
+                    "Show recent turns.",
+                    "/fork",
+                    "Continue from a copy.",
+                    "/rename <name>",
+                    "Name the current thread.",
+                    "/compact",
+                    "Compact current thread context.",
+                    "",
+                    "Run",
                     "/status",
-                    "Show the current CWD, thread, run state, model, permissions, and bridge visibility.",
-                    "",
-                    "/goal [objective|pause|resume|clear]",
-                    "Set, view, pause, resume, or clear the active thread goal.",
-                    "",
-                    "/credits",
-                    "Show current credits and rate-limit status.",
-                    "",
+                    "Show current thread, model, permissions, and state.",
                     "/stop",
-                    "Stop the current running task.",
+                    "Stop the running task.",
+                    "/goal [objective|pause|resume|clear]",
+                    "View or set the thread goal.",
                     "",
+                    "Settings",
                     "/model [model-id]",
-                    "Leave it empty to browse models, or switch directly.",
-                    "Examples: /model gpt-5.4, /model gpt-5.3-codex",
-                    "",
+                    "Browse or switch model.",
                     "/think [effort]",
                     "Set reasoning effort.",
-                    "Examples: /think low, /think xhigh, /think default",
-                    "",
                     "/fast [on|off|status]",
-                    "Toggle Fast mode.",
-                    "",
+                    "Toggle fast mode.",
                     "/permission [mode]",
-                    "Leave it empty to browse permission modes, or switch directly.",
-                    "Examples: /permission default, /permission full-access",
+                    "Browse or switch permission mode.",
+                    "",
+                    "Account",
+                    "/credits",
+                    "Show usage, credits, and rate limits.",
+                    "",
+                    "Advanced",
+                    "/native help",
+                    "Diagnostics and native escape hatches.",
                 ]
             ),
         )

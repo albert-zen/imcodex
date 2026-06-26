@@ -44,6 +44,7 @@ This includes:
 - model configuration
 - permission configuration
 - reasoning-effort configuration
+- credits, usage, and rate-limit truth
 - native request identity and approval flow
 
 The bridge may keep only the minimum local state needed to support IM UX.
@@ -61,6 +62,7 @@ The bridge must not introduce a second authority for:
 - model truth
 - permission truth
 - reasoning-effort truth
+- credits, usage, or rate-limit truth
 - request identity truth
 
 The default operating configuration must align to native Codex settings:
@@ -97,24 +99,46 @@ This behavior spec does not require a separate immediate `accepted` message for 
 
 ### `/help`
 
-`/help` should show the compact top-level product commands, not every advanced or recovery-oriented command.
+`/help` should be a compact grouped command map, not a command dictionary.
+It should show user-facing product commands only.
 
-It should prominently include:
+It should use these groups:
+
+Start:
 
 - `/cwd <path>`
-- `/cwd playground`
-- `/threads`
 - `/new`
+
+Threads:
+
+- `/threads`
+- `/thread history`
+- `/fork`
+- `/rename <name>`
+- `/compact`
+
+Run:
+
 - `/status`
 - `/goal [objective|pause|resume|clear]`
-- `/credits`
 - `/stop`
+
+Settings:
+
 - `/model [model-id]`
 - `/think [effort]`
 - `/fast [on|off|status]`
 - `/permission [mode]`
 
-It should include short examples for `/model`, `/think`, and `/permission`.
+Account:
+
+- `/credits`
+
+Advanced:
+
+- `/native help`
+
+It should not expose app-server internal server requests such as `currentTime/read`.
 
 It does not need to expose contextual thread-browser commands or advanced commands such as:
 
@@ -212,6 +236,29 @@ When `/pick <n>` succeeds:
 
 If no thread browser is active, `/next`, `/prev`, and `/pick` should return a user-facing error telling the user to run `/threads` first.
 
+### `/thread history`
+
+`/thread history` shows a compact recent history summary for the active native thread.
+
+Behavior:
+
+- it requires an active thread
+- it reads recent turns from native Codex using `thread/turns/list` or a native thread read that includes turns
+- it renders an IM-safe summary of recent user and Codex text without exposing raw protocol payloads
+- if native history cannot be read, the user gets a friendly status instead of protocol noise
+
+### `/fork`, `/rename <name>`, `/compact`
+
+These commands are thin wrappers over native thread operations.
+
+Behavior:
+
+- `/fork` requires an active thread, calls native `thread/fork`, and switches the current IM conversation to the forked native thread returned by Codex
+- `/rename <name>` requires an active thread and calls native `thread/name/set`
+- `/compact` requires an active thread and calls native `thread/compact/start`
+- native failures are summarized in product language rather than raw protocol output
+- `/archive` and `/unarchive` remain out of scope until archived thread browsing has a product design
+
 ### `/status`
 
 `/status` returns a compact overview of the current conversation state.
@@ -248,14 +295,17 @@ Behavior:
 
 ### `/credits`
 
-`/credits` shows the current ChatGPT credits and rate-limit status reported by Codex.
+`/credits` shows the current ChatGPT credits, rate-limit status, and usage summary reported by Codex.
 
 Behavior:
 
 - credits and rate-limit state are read from Codex with `account/rateLimits/read`
-- the bridge does not persist credits or infer a local quota
+- usage summary is read from Codex with `account/usage/read`
+- `/credits` is read-only and on-demand; users run it again when they want fresh data
+- the bridge does not subscribe to `account/rateLimits/updated`, push quota updates, persist usage, or infer a local quota
 - rate-limit window percentages are shown as remaining capacity rather than consumed usage
 - rate-limit reset timestamps are rendered as local date/time using the user's or runtime environment's detected timezone, with UTC as the fallback if local timezone detection is unavailable
+- if either rate limits or usage cannot be read, the response shows the successful partial data plus a friendly warning
 - if Codex cannot provide the data, the user gets a friendly status response rather than protocol noise
 
 ### `/stop`
@@ -320,9 +370,9 @@ Behavior:
 
 ### `/permission`
 
-`/permission` without arguments shows the current effective permission mode and the supported presets.
+`/permission` without arguments shows the current effective permission mode and the supported native permission profiles.
 
-`/permission <mode>` writes the corresponding native permission settings.
+`/permission <mode>` selects the corresponding native permission profile where supported.
 
 Supported product presets:
 
@@ -332,7 +382,9 @@ Supported product presets:
 
 Behavior:
 
-- permission changes are written to native Codex config
+- permission options are read from Codex with `permissionProfile/list` and `configRequirements/read`
+- native profile selection is written to Codex config when profile support exists
+- older Codex versions that do not expose native permission profiles may use the legacy approval/sandbox config fallback for the same product presets
 - `full-access` maps to native full access behavior
 - `full-access` means native `approvalPolicy = never` plus native `sandbox = danger-full-access`
 - the bridge does not maintain a second permission truth

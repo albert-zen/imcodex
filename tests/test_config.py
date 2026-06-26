@@ -15,6 +15,25 @@ def test_settings_reads_optional_app_server_url_from_env(monkeypatch, tmp_path) 
     assert settings.app_server_url == "ws://127.0.0.1:8765"
 
 
+def test_settings_disables_app_server_experimental_api_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.app_server_experimental_api_enabled is False
+
+
+def test_settings_reads_app_server_experimental_api_flag_from_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_APP_SERVER_EXPERIMENTAL_API", "1")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.app_server_experimental_api_enabled is True
+
+
 def test_settings_reads_optional_run_dir_from_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_RUN_DIR", ".custom-run")
@@ -68,3 +87,29 @@ def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) ->
     assert settings.core_mode == "dedicated-ws"
     assert settings.core_url == "ws://127.0.0.1:9001"
     assert settings.restart_executor == "scripts/restart-imcodex.ps1"
+
+
+def test_settings_reads_app_server_auth_and_retry_settings(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_APP_SERVER_AUTH_TOKEN", "secret-token")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_AUTH_TOKEN_FILE", "token.txt")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS", "4")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS", "5")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY", "0.1")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RETRY_MAX_DELAY", "3.5")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RETRY_JITTER", "0.2")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", "1.25")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", "0.75")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.app_server_auth_token == "secret-token"
+    assert settings.app_server_auth_token_file == Path("token.txt")
+    assert settings.app_server_connect_max_attempts == 4
+    assert settings.app_server_request_max_attempts == 5
+    assert settings.app_server_retry_initial_delay_s == 0.1
+    assert settings.app_server_retry_max_delay_s == 3.5
+    assert settings.app_server_retry_jitter_fraction == 0.2
+    assert settings.app_server_connect_timeout_s == 1.25
+    assert settings.app_server_health_timeout_s == 0.75

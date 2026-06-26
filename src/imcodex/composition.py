@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
+from .appserver.retry import RetryBackoff
 from .bridge import BridgeService, CommandRouter, MessageProjector
 from .channels import MultiplexOutboundSink, UnifiedChannelMiddleware, WebhookOutboundSink
 from .channels.registry import build_enabled_channel_adapters
@@ -16,15 +17,27 @@ from .store import ConversationStore
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
     store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
+    retry_backoff = RetryBackoff(
+        initial_delay_s=settings.app_server_retry_initial_delay_s,
+        max_delay_s=settings.app_server_retry_max_delay_s,
+        jitter_fraction=settings.app_server_retry_jitter_fraction,
+    )
     supervisor = AppServerSupervisor(
         codex_bin=settings.codex_bin,
         app_server_url=settings.app_server_url,
         core_mode=settings.core_mode,
         core_url=settings.core_url,
+        app_server_auth_token=settings.app_server_auth_token,
+        app_server_auth_token_file=settings.app_server_auth_token_file,
+        websocket_retry_policy=retry_backoff.with_max_attempts(settings.app_server_connect_max_attempts),
+        websocket_open_timeout_s=settings.app_server_connect_timeout_s,
+        health_probe_timeout_s=settings.app_server_health_timeout_s,
     )
     client = AppServerClient(
         supervisor=supervisor,
         client_info={"name": settings.service_name, "title": "IM Codex Bridge", "version": "0.1.0"},
+        experimental_api_enabled=settings.app_server_experimental_api_enabled,
+        request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
     )
     service = BridgeService(
         store=store,
@@ -57,8 +70,17 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_HTTP_HOST": settings.http_host,
             "IMCODEX_HTTP_PORT": str(settings.http_port),
             "IMCODEX_CODEX_BIN": settings.codex_bin,
+            "IMCODEX_APP_SERVER_EXPERIMENTAL_API": "1" if settings.app_server_experimental_api_enabled else "0",
             "IMCODEX_CORE_MODE": settings.core_mode,
             "IMCODEX_CORE_URL": settings.core_url or "",
+            "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE": str(settings.app_server_auth_token_file or ""),
+            "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS": str(settings.app_server_connect_max_attempts),
+            "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS": str(settings.app_server_request_max_attempts),
+            "IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY": str(settings.app_server_retry_initial_delay_s),
+            "IMCODEX_APP_SERVER_RETRY_MAX_DELAY": str(settings.app_server_retry_max_delay_s),
+            "IMCODEX_APP_SERVER_RETRY_JITTER": str(settings.app_server_retry_jitter_fraction),
+            "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(settings.app_server_connect_timeout_s),
+            "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
             "IMCODEX_RESTART_EXECUTOR": settings.restart_executor or "",
             "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
             "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",

@@ -114,6 +114,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         run_dir=tmp_path / ".imcodex-run",
         codex_bin="codex",
         app_server_url=None,
+        app_server_experimental_api_enabled=False,
         core_mode="dedicated-ws",
         core_url="ws://127.0.0.1:8765",
         restart_executor=None,
@@ -137,6 +138,8 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.observability.service_name == settings.service_name
     assert runtime.client._supervisor.core_mode == "dedicated-ws"
     assert runtime.client._supervisor.core_url == "ws://127.0.0.1:8765"
+    assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
+    assert runtime.client._experimental_api_enabled is False
 
 
 @pytest.mark.asyncio
@@ -146,6 +149,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         run_dir=tmp_path / ".imcodex-run",
         codex_bin="codex",
         app_server_url=None,
+        app_server_experimental_api_enabled=False,
         core_mode="dedicated-ws",
         core_url="ws://127.0.0.1:8765",
         restart_executor="python -m imcodex ops restart",
@@ -171,8 +175,11 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
 
     assert launch["command"] == ["python", "-m", "imcodex"]
     assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
+    assert launch["env"]["IMCODEX_APP_SERVER_EXPERIMENTAL_API"] == "0"
     assert launch["env"]["IMCODEX_CORE_MODE"] == "dedicated-ws"
     assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
+    assert launch["env"]["IMCODEX_APP_SERVER_AUTH_TOKEN_FILE"] == ""
+    assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 

@@ -11,6 +11,25 @@ from .client import AppServerError
 
 
 ACTIVE_THREAD_STATUSES = {"inprogress", "in_progress", "running", "working"}
+PERMISSION_MODE_PROFILE_IDS = {
+    "default": ":workspace",
+    "read-only": ":read-only",
+    "full-access": ":danger-full-access",
+}
+_LEGACY_PERMISSION_PRESETS = {
+    "default": [
+        {"keyPath": "approval_policy", "value": "on-request", "mergeStrategy": "replace"},
+        {"keyPath": "sandbox_mode", "value": "workspace-write", "mergeStrategy": "replace"},
+    ],
+    "read-only": [
+        {"keyPath": "approval_policy", "value": "on-request", "mergeStrategy": "replace"},
+        {"keyPath": "sandbox_mode", "value": "read-only", "mergeStrategy": "replace"},
+    ],
+    "full-access": [
+        {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+        {"keyPath": "sandbox_mode", "value": "danger-full-access", "mergeStrategy": "replace"},
+    ],
+}
 
 
 class StaleThreadBindingError(RuntimeError):
@@ -28,6 +47,12 @@ class TurnSubmission:
     kind: str
     thread_id: str
     turn_id: str
+
+
+@dataclass(slots=True)
+class ThreadListResult:
+    threads: list[NativeThreadSnapshot]
+    next_cursor: str | None = None
 
 
 class CodexBackend:
@@ -120,20 +145,49 @@ class CodexBackend:
         channel_id: str,
         conversation_id: str,
     ) -> list[NativeThreadSnapshot]:
+        result = await self.query_threads(channel_id, conversation_id)
+        return result.threads
+
+    async def query_threads(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        search_term: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ThreadListResult:
         preferred_cwd = self.store.current_cwd(channel_id, conversation_id)
-        params: dict[str, str | list[str]] = {"sortKey": "updated_at"}
+        params: dict[str, object] = {"sortKey": "updated_at"}
+        if search_term:
+            params["searchTerm"] = search_term
+        if limit is not None:
+            params["limit"] = limit
+        if cursor is not None:
+            params["cursor"] = cursor
         result = await self.client.list_threads(**params)
         threads = [self._remember_snapshot(item) for item in self._thread_list_items(result)]
         binding = self.store.get_binding(channel_id, conversation_id)
+        next_cursor = self._next_thread_cursor(result)
         seen_thread_ids = {snapshot.thread_id for snapshot in threads}
-        if binding.thread_id and binding.thread_id not in seen_thread_ids:
+        if (
+            not search_term
+            and cursor is None
+            and next_cursor is None
+            and (limit is None or len(threads) < limit)
+            and binding.thread_id
+            and binding.thread_id not in seen_thread_ids
+        ):
             snapshot = await self.read_thread(channel_id, conversation_id, binding.thread_id)
             if snapshot is not None:
                 threads.append(snapshot)
-        return self._prioritize_threads(
-            threads,
-            bound_thread_id=binding.thread_id,
-            preferred_cwd=preferred_cwd,
+        return ThreadListResult(
+            threads=self._prioritize_threads(
+                threads,
+                bound_thread_id=binding.thread_id,
+                preferred_cwd=preferred_cwd,
+            ),
+            next_cursor=next_cursor,
         )
 
     async def read_thread(
@@ -148,6 +202,46 @@ class CodexBackend:
         if not isinstance(payload, dict):
             return None
         return self._remember_snapshot(payload)
+
+    async def read_thread_history(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        limit: int = 6,
+    ) -> dict:
+        thread_id = self._active_thread_id(channel_id, conversation_id)
+        try:
+            return await self.client.list_thread_turns(thread_id, limit=limit)
+        except AppServerError as exc:
+            if not self._is_unsupported_method_error(exc):
+                raise
+        return await self.client.read_thread(thread_id, include_turns=True)
+
+    async def fork_thread(self, channel_id: str, conversation_id: str) -> NativeThreadSnapshot:
+        thread_id = self._active_thread_id(channel_id, conversation_id)
+        result = await self.client.fork_thread(thread_id)
+        payload = result.get("thread")
+        if not isinstance(payload, dict):
+            forked_id = result.get("threadId")
+            if forked_id is None:
+                raise AppServerError("Codex did not return a forked thread")
+            payload = {"id": forked_id}
+        snapshot = self._remember_snapshot(payload)
+        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        return snapshot
+
+    async def rename_thread(self, channel_id: str, conversation_id: str, name: str) -> dict:
+        thread_id = self._active_thread_id(channel_id, conversation_id)
+        result = await self.client.set_thread_name(thread_id, name)
+        payload = result.get("thread")
+        if isinstance(payload, dict):
+            self._remember_snapshot(payload)
+        return result
+
+    async def compact_thread(self, channel_id: str, conversation_id: str) -> dict:
+        thread_id = self._active_thread_id(channel_id, conversation_id)
+        return await self.client.compact_thread(thread_id)
 
     async def read_thread_goal(self, channel_id: str, conversation_id: str) -> dict:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -186,6 +280,76 @@ class CodexBackend:
 
     async def read_account_rate_limits(self) -> dict:
         return await self.client.read_account_rate_limits()
+
+    async def read_account_usage(self) -> dict:
+        return await self.client.read_account_usage()
+
+    async def read_account_credits(self) -> dict:
+        result: dict = {}
+        warnings: dict[str, str] = {}
+        try:
+            result["rateLimitsResult"] = await self.read_account_rate_limits()
+        except AppServerError as exc:
+            warnings["rateLimits"] = str(exc)
+        try:
+            result["usageResult"] = await self.read_account_usage()
+        except AppServerError as exc:
+            warnings["usage"] = str(exc)
+        if warnings:
+            result["warnings"] = warnings
+        if "rateLimitsResult" not in result and "usageResult" not in result:
+            raise AppServerError("account rate limits and usage are unavailable")
+        return result
+
+    async def read_permission_options(self, channel_id: str, conversation_id: str) -> dict:
+        result = await self.read_config(channel_id, conversation_id)
+        warnings: dict[str, str] = {}
+        try:
+            result["profiles"] = await self._list_permission_profiles(channel_id, conversation_id)
+        except AppServerError as exc:
+            if not self._is_native_permission_profile_unsupported(exc):
+                raise
+            warnings["profiles"] = str(exc)
+            result["profiles"] = []
+            result["nativeProfilesSupported"] = False
+        else:
+            result["nativeProfilesSupported"] = True
+        try:
+            result.update(await self.client.read_config_requirements())
+        except AppServerError as exc:
+            if not self._is_native_permission_profile_unsupported(exc):
+                raise
+            warnings["requirements"] = str(exc)
+        if warnings:
+            result["warnings"] = warnings
+        return result
+
+    async def set_permission_mode(self, channel_id: str, conversation_id: str, mode: str) -> dict:
+        profile_id = PERMISSION_MODE_PROFILE_IDS.get(mode)
+        if profile_id is None:
+            raise AppServerError(f"unsupported permission mode: {mode}")
+        try:
+            options = await self.read_permission_options(channel_id, conversation_id)
+        except AppServerError as exc:
+            if not self._is_native_permission_profile_unsupported(exc):
+                raise
+            return await self._set_legacy_permission_mode(mode, warning=str(exc))
+        if options.get("nativeProfilesSupported") is False:
+            warning = str((options.get("warnings") or {}).get("profiles") or "")
+            return await self._set_legacy_permission_mode(mode, warning=warning)
+        if not self._permission_profile_is_available(profile_id, options):
+            raise AppServerError(f"permission profile {profile_id} is not available in Codex")
+        if not self._permission_profile_is_allowed(profile_id, options.get("requirements")):
+            raise AppServerError(f"permission profile {profile_id} is not allowed by Codex requirements")
+        write_result = await self.write_config_value(
+            key_path="default_permissions",
+            value=profile_id,
+            merge_strategy="replace",
+        )
+        write_result["mode"] = mode
+        write_result["profile"] = profile_id
+        write_result["fallback"] = False
+        return write_result
 
     async def read_config(
         self,
@@ -357,8 +521,11 @@ class CodexBackend:
         route = self.store.get_pending_request(request_id)
         if route is None or route.transport_request_id is None:
             raise AppServerError(f"unknown pending request: {request_id}")
-        await self.client.reply_to_transport_request(route.transport_request_id, decision_or_answers)
+        await self.reply_to_transport_request(route.transport_request_id, decision_or_answers)
         self.store.remove_pending_request(request_id)
+
+    async def reply_to_transport_request(self, transport_request_id: str | int, result: dict) -> None:
+        await self.client.reply_to_transport_request(transport_request_id, result)
 
     async def reply_error_to_server_request(
         self,
@@ -392,6 +559,68 @@ class CodexBackend:
             code=code,
             message=message,
             data=data,
+        )
+
+    async def _list_permission_profiles(self, channel_id: str, conversation_id: str) -> list[dict]:
+        cwd = self.store.current_cwd(channel_id, conversation_id)
+        cursor: str | None = None
+        profiles: list[dict] = []
+        while True:
+            params: dict[str, object] = {}
+            if cwd is not None:
+                params["cwd"] = cwd
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = await self.client.list_permission_profiles(params)
+            profiles.extend(item for item in result.get("data", []) if isinstance(item, dict))
+            next_cursor = result.get("nextCursor")
+            if not next_cursor:
+                return profiles
+            cursor = str(next_cursor)
+
+    async def _set_legacy_permission_mode(self, mode: str, *, warning: str = "") -> dict:
+        edits = _LEGACY_PERMISSION_PRESETS.get(mode)
+        if edits is None:
+            raise AppServerError(f"unsupported permission mode: {mode}")
+        result = await self.batch_write_config(edits=edits, reload_user_config=False)
+        result["mode"] = mode
+        result["fallback"] = True
+        if warning:
+            result["warning"] = warning
+        return result
+
+    def _permission_profile_is_available(self, profile_id: str, options: dict) -> bool:
+        profiles = options.get("profiles")
+        if not isinstance(profiles, list):
+            return False
+        return any(isinstance(profile, dict) and profile.get("id") == profile_id for profile in profiles)
+
+    def _permission_profile_is_allowed(self, profile_id: str, requirements: object) -> bool:
+        if not isinstance(requirements, dict):
+            return True
+        allowed = requirements.get("allowedPermissionProfiles")
+        if not isinstance(allowed, dict):
+            return True
+        return bool(allowed.get(profile_id))
+
+    def _is_native_permission_profile_unsupported(self, error: AppServerError) -> bool:
+        return self._is_unsupported_method_error(error)
+
+    def _is_unsupported_method_error(self, error: AppServerError) -> bool:
+        if getattr(error, "code", None) == -32601:
+            return True
+        message = str(error).lower()
+        return any(
+            marker in message
+            for marker in (
+                "method not found",
+                "unknown method",
+                "not implemented",
+                "unsupported method",
+                "requires experimentalapi",
+                "experimentalapi capability",
+                "no handler",
+            )
         )
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
@@ -457,6 +686,19 @@ class CodexBackend:
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
         return []
+
+    def _next_thread_cursor(self, payload: dict) -> str | None:
+        for key in ("nextCursor", "next_cursor"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        return None
+
+    def _active_thread_id(self, channel_id: str, conversation_id: str) -> str:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.thread_id is None:
+            raise KeyError("No active thread.")
+        return binding.thread_id
 
     def _thread_match_score(self, snapshot: NativeThreadSnapshot, selector: str) -> int | None:
         selector_norm = self._normalize_selector(selector)
