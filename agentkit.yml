@@ -54,6 +54,7 @@ components:
     code:
       - src/imcodex/bridge/**
       - src/imcodex/store.py
+      - src/imcodex/store_*.py
       - src/imcodex/models.py
       - tests/test_commands.py
       - tests/test_settings.py
@@ -141,6 +142,7 @@ layers:
   state:
     paths:
       - src/imcodex/store.py
+      - src/imcodex/store_*.py
       - src/imcodex/observability/runtime.py
     may_import:
       - support
@@ -215,6 +217,7 @@ maintainability:
     - name: bridge-state
       paths:
         - src/imcodex/store.py
+        - src/imcodex/store_*.py
       max_lines: 500
       max_functions: 35
       max_classes: 8

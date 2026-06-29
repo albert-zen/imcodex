@@ -3,7 +3,18 @@ from __future__ import annotations
 import pytest
 
 from imcodex.appserver import AppServerError, CodexBackend, ThreadSelectionError
+from imcodex.appserver.backend import (
+    ACTIVE_THREAD_STATUSES,
+    PERMISSION_MODE_PROFILE_IDS,
+    ThreadListResult,
+)
 from imcodex.store import ConversationStore
+
+
+def test_backend_module_keeps_split_compatibility_exports() -> None:
+    assert "running" in ACTIVE_THREAD_STATUSES
+    assert PERMISSION_MODE_PROFILE_IDS["read-only"] == ":read-only"
+    assert ThreadListResult(threads=[]).threads == []
 
 
 class FakeClient:

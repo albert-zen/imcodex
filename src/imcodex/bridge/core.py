@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
-from ..models import InboundMessage, NativeThreadSnapshot, OutboundMessage
+from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
 from .native_events import (
@@ -13,14 +12,10 @@ from .native_events import (
     render_native_events,
     select_native_events,
 )
+from .rendering import BridgeRenderingMixin
 from .server_requests import NativeRequestPolicy
 from .settings import (
-    current_model_label,
-    current_reasoning_label,
-    effective_config,
-    fast_mode_label,
     render_credits,
-    permission_mode_label,
     render_fast_mode,
     render_models,
     render_permission_modes,
@@ -28,14 +23,14 @@ from .settings import (
     render_reasoning_effort,
 )
 from .thread_history import render_thread_history
+from .thread_views import ThreadViewMixin
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
 _SYSTEM_PREFIX = "[System] "
-_THREADS_PAGE_SIZE = 5
 
 
-class BridgeService:
+class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
     def __init__(
         self,
         *,
@@ -516,174 +511,6 @@ class BridgeService:
             await self.outbound_sink.send_message(message)
         return [message]
 
-    async def _render_threads(
-        self,
-        message: InboundMessage,
-        *,
-        page: int = 1,
-        query: str | None = None,
-    ) -> str:
-        requested_page = max(page, 1)
-        threads, safe_page, page_count, next_cursor, page_cursors = await self._load_thread_page(
-            message,
-            requested_page=requested_page,
-            query=query,
-        )
-        visible = threads[:_THREADS_PAGE_SIZE]
-        if not visible:
-            self.store.set_thread_browser_context(
-                message.channel_id,
-                message.conversation_id,
-                thread_ids=[],
-                page=1,
-                total=1,
-                query=query,
-                next_cursor=None,
-                page_cursors=[None],
-            )
-            return "\n".join(
-                [
-                    "Threads (Page 1/1)",
-                    "(none)",
-                    "Use /threads <keyword> to filter, or /new to start a fresh thread.",
-                ]
-            )
-        self.store.set_thread_browser_context(
-            message.channel_id,
-            message.conversation_id,
-            thread_ids=[snapshot.thread_id for snapshot in visible],
-            page=safe_page,
-            total=page_count,
-            query=query,
-            next_cursor=next_cursor,
-            page_cursors=page_cursors,
-        )
-        lines = [f"Threads (Page {safe_page}/{page_count})"]
-        for index, snapshot in enumerate(visible, start=1):
-            details = [snapshot.status]
-            if snapshot.thread_id == self.store.get_binding(message.channel_id, message.conversation_id).thread_id:
-                details.append("current")
-            lines.append(
-                f"{index}. {self._thread_label(snapshot)} "
-                f"[{self._thread_workspace_label(snapshot)}] "
-                f"({', '.join(details)})"
-            )
-        actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
-        if safe_page < page_count:
-            actions.insert(1, "/next for more")
-        if safe_page > 1:
-            actions.insert(1, "/prev for previous")
-        if query is None:
-            actions.append("/threads <keyword> to filter")
-        return "\n".join(lines + ["; ".join(actions) + "."])
-
-    async def _load_thread_page(
-        self,
-        message: InboundMessage,
-        *,
-        requested_page: int,
-        query: str | None,
-    ) -> tuple[list[NativeThreadSnapshot], int, int, str | None, list[str | None]]:
-        context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
-        page_cursors = (
-            list(context.page_cursors)
-            if context is not None and context.query == query and context.page_cursors
-            else [None]
-        )
-        current_page = requested_page if requested_page <= len(page_cursors) else len(page_cursors)
-        current_page = max(1, current_page)
-        while True:
-            cursor = page_cursors[current_page - 1] if current_page - 1 < len(page_cursors) else None
-            query_result = await self.backend.query_threads(
-                message.channel_id,
-                message.conversation_id,
-                search_term=query,
-                limit=_THREADS_PAGE_SIZE,
-                cursor=cursor,
-            )
-            page_cursors = self._remember_thread_page_cursor(
-                page_cursors,
-                page=current_page,
-                next_cursor=query_result.next_cursor,
-            )
-            if current_page == requested_page or not query_result.next_cursor:
-                page_count = current_page + (1 if query_result.next_cursor else 0)
-                return (
-                    query_result.threads,
-                    current_page,
-                    page_count,
-                    query_result.next_cursor,
-                    page_cursors,
-                )
-            current_page += 1
-
-    def _remember_thread_page_cursor(
-        self,
-        page_cursors: list[str | None],
-        *,
-        page: int,
-        next_cursor: str | None,
-    ) -> list[str | None]:
-        page_cursors = list(page_cursors[:page])
-        if next_cursor:
-            page_cursors.append(next_cursor)
-        return page_cursors or [None]
-
-    async def _render_status(self, message: InboundMessage) -> str:
-        binding = self.store.get_binding(message.channel_id, message.conversation_id)
-        cwd = self.store.current_cwd(message.channel_id, message.conversation_id) or "(none)"
-        config = await self._read_status_config(message.channel_id, message.conversation_id)
-        current_config = effective_config(config)
-        if binding.thread_id is None:
-            thread_label = "(none)"
-            state = "Idle"
-        else:
-            snapshot = await self.backend.read_thread(message.channel_id, message.conversation_id, binding.thread_id)
-            if snapshot is None:
-                thread_label = binding.thread_id
-                state = "Unavailable"
-            else:
-                thread_label = self._thread_label(snapshot)
-                cwd = snapshot.cwd or cwd
-                active = self.store.get_active_turn(binding.thread_id)
-                state = "Working" if active and active[1] == "inProgress" else self._human_state(snapshot.status)
-        return "\n".join(
-            [
-                "Status",
-                "",
-                f"CWD: {cwd}",
-                f"Thread: {thread_label}",
-                f"State: {state}",
-                f"Model: {current_model_label(current_config)}",
-                f"Reasoning: {current_reasoning_label(current_config)}",
-                f"Fast mode: {fast_mode_label(current_config)}",
-                f"Permissions: {permission_mode_label(current_config)}",
-                f"Bridge visibility: {self._bridge_visibility_label(binding)}",
-                f"Pending approvals: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id, kind='approval'))}",
-            ]
-        )
-
-    async def _render_thread(self, message: InboundMessage, thread_id: str | None) -> str:
-        if thread_id is None:
-            return "No active thread."
-        try:
-            snapshot = await self.backend.read_thread(message.channel_id, message.conversation_id, thread_id)
-        except AppServerError as exc:
-            return f"Current thread {thread_id} could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
-        if snapshot is None:
-            return f"Current thread {thread_id} is no longer available in Codex."
-        return "\n".join(
-            [
-                f"Thread: {self._thread_label(snapshot)}",
-                f"Thread id: {snapshot.thread_id}",
-                f"Workspace: {self._thread_workspace_label(snapshot)}",
-                f"CWD: {snapshot.cwd or '(unknown)'}",
-                f"Path: {snapshot.path or snapshot.cwd or '(unknown)'}",
-                f"Status: {snapshot.status}",
-                f"Source: {snapshot.source or 'unknown'}",
-            ]
-        )
-
     def _message(
         self,
         inbound: InboundMessage,
@@ -730,127 +557,6 @@ class BridgeService:
         if action in {"thread.read.none", "turn.stop.none"}:
             return "command_result"
         return "command_result"
-
-    def _render_config(self, payload: dict, key_path: object | None) -> str:
-        config = payload.get("config")
-        if key_path is not None and isinstance(config, dict):
-            return self._render_json(self._lookup_config_value(config, str(key_path)))
-        return self._render_json(config if config is not None else payload)
-
-    def _render_goal(self, payload: dict) -> str:
-        goal = payload.get("goal") if isinstance(payload, dict) else None
-        if not isinstance(goal, dict):
-            return "No goal currently set."
-        status = self._goal_status_label(str(goal.get("status") or ""))
-        lines = [f"Goal {status}".strip()]
-        objective = str(goal.get("objective") or "").strip()
-        if objective:
-            lines.append(f"Objective: {objective}")
-        time_used = self._int_or_none(goal.get("timeUsedSeconds"))
-        if time_used and time_used > 0:
-            lines.append(f"Time: {self._format_goal_elapsed_seconds(time_used)}")
-        token_budget = self._int_or_none(goal.get("tokenBudget"))
-        tokens_used = self._int_or_none(goal.get("tokensUsed")) or 0
-        if token_budget is not None:
-            lines.append(
-                f"Tokens: {self._format_compact_number(tokens_used)}/{self._format_compact_number(token_budget)}"
-            )
-        return "\n".join(lines)
-
-    def _goal_status_label(self, status: str) -> str:
-        labels = {
-            "active": "active",
-            "paused": "paused",
-            "blocked": "blocked",
-            "usageLimited": "usage limited",
-            "budgetLimited": "limited by budget",
-            "complete": "complete",
-        }
-        return labels.get(status, status or "updated")
-
-    def _format_goal_elapsed_seconds(self, seconds: int) -> str:
-        seconds = max(0, seconds)
-        if seconds < 60:
-            return f"{seconds}s"
-        minutes = seconds // 60
-        if minutes < 60:
-            return f"{minutes}m"
-        hours = minutes // 60
-        remaining_minutes = minutes % 60
-        if hours >= 24:
-            days = hours // 24
-            remaining_hours = hours % 24
-            return f"{days}d {remaining_hours}h {remaining_minutes}m"
-        if remaining_minutes == 0:
-            return f"{hours}h"
-        return f"{hours}h {remaining_minutes}m"
-
-    def _format_compact_number(self, value: int) -> str:
-        if abs(value) >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
-        if abs(value) >= 1_000:
-            return f"{value / 1_000:.1f}K".replace(".0K", "K")
-        return str(value)
-
-    def _int_or_none(self, value: object) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _lookup_config_value(self, payload: dict, key_path: str) -> object:
-        current: object = payload
-        for part in key_path.split("."):
-            if not isinstance(current, dict):
-                return None
-            current = current.get(part)
-        return current
-
-    def _render_json(self, payload: object) -> str:
-        return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
-
-    def _thread_label(self, snapshot) -> str:
-        for candidate in (snapshot.name, snapshot.preview, snapshot.path, snapshot.cwd):
-            if not candidate:
-                continue
-            text = str(candidate).strip()
-            if text:
-                if "\\" in text or "/" in text:
-                    text = text.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-                return text
-        return snapshot.thread_id
-
-    def _thread_workspace_label(self, snapshot) -> str:
-        for candidate in (snapshot.cwd, snapshot.path):
-            if not candidate:
-                continue
-            text = str(candidate).strip()
-            if not text:
-                continue
-            if "\\" in text or "/" in text:
-                text = text.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-            return text or "(unknown)"
-        return "(unknown)"
-
-    def _matches_thread_query(self, snapshot, query: str) -> bool:
-        normalized_query = self._normalize_text(query)
-        if not normalized_query:
-            return True
-        candidates = [
-            snapshot.thread_id,
-            snapshot.name or "",
-            snapshot.preview or "",
-            snapshot.cwd or "",
-            snapshot.path or "",
-            self._thread_workspace_label(snapshot),
-            self._thread_label(snapshot),
-        ]
-        return any(normalized_query in self._normalize_text(candidate) for candidate in candidates if candidate)
-
-    def _normalize_text(self, value: str) -> str:
-        return " ".join(value.lower().replace("_", " ").replace("-", " ").split())
 
     async def _request_reply_failure(
         self,
@@ -940,39 +646,3 @@ class BridgeService:
                 "Use /cwd <path> to point me at an existing folder.",
             ]
         )
-
-    def _bridge_visibility_label(self, binding) -> str:
-        return binding.visibility_profile.replace("-", " ").title()
-
-    def _human_state(self, status: str) -> str:
-        normalized = str(status or "").strip().lower()
-        if normalized in {"inprogress", "in_progress", "working", "running"}:
-            return "Working"
-        if normalized == "completed":
-            return "Completed"
-        if normalized == "failed":
-            return "Failed"
-        return "Idle" if normalized == "idle" else str(status or "Idle").title()
-
-    async def _read_status_config(self, channel_id: str, conversation_id: str) -> dict:
-        try:
-            return await asyncio.wait_for(
-                self.backend.read_config(channel_id, conversation_id),
-                timeout=2.5,
-            )
-        except (asyncio.TimeoutError, AppServerError):
-            return {"config": {}}
-
-    def _safe_appserver_error(self, error: AppServerError) -> str:
-        return self._safe_exception_text(error)
-
-    def _safe_exception_text(self, error: Exception) -> str:
-        text = " ".join(str(error).split())
-        lowered = text.lower()
-        if not text:
-            return "unexpected upstream error"
-        if any(marker in lowered for marker in ("<html", "<!doctype", "</html", "separator is not found", "chunk exceed the limit")):
-            return "unexpected upstream error"
-        if len(text) > 180:
-            return "unexpected upstream error"
-        return text
