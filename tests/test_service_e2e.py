@@ -2485,7 +2485,7 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
         )
     )
 
-    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2)"
+    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2+)"
     lines = next_messages[0].text.splitlines()
     assert lines[0] == "Threads (Page 2/2)"
     assert lines[1].startswith("1. Alpha release")
@@ -2498,6 +2498,124 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
     assert thread_list_payloads == [
         {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5},
         {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-2"},
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_keeps_paging_beyond_second_native_cursor_page() -> None:
+    class ThreePageThreadListProcess(ScriptedProcess):
+        def __init__(self) -> None:
+            super().__init__({"initialize": [{"id": 1, "result": {"ok": True}}]})
+            self.thread_list_pages = [
+                {
+                    "result": {
+                        "threads": [
+                            {
+                                "id": f"thr_{index}",
+                                "cwd": rf"D:\work\{index}",
+                                "preview": f"Alpha thread {index}",
+                                "status": "idle",
+                                "source": "cli",
+                            }
+                            for index in range(1, 6)
+                        ],
+                        "nextCursor": "cursor-2",
+                    },
+                },
+                {
+                    "result": {
+                        "threads": [
+                            {
+                                "id": f"thr_{index}",
+                                "cwd": rf"D:\work\{index}",
+                                "preview": f"Alpha thread {index}",
+                                "status": "idle",
+                                "source": "cli",
+                            }
+                            for index in range(6, 11)
+                        ],
+                        "nextCursor": "cursor-3",
+                    },
+                },
+                {
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_11",
+                                "cwd": r"D:\work\11",
+                                "preview": "Alpha thread 11",
+                                "status": "idle",
+                                "source": "cli",
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ]
+
+        def on_input(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload.get("method") != "thread/list":
+                super().on_input(raw)
+                return
+            self.inputs.append(payload)
+            response = self.thread_list_pages.pop(0)
+            self.stdout.lines.put_nowait(
+                (json.dumps(self._prepare_scripted_message(payload, response)) + "\n").encode("utf-8")
+            )
+
+    process = ThreePageThreadListProcess()
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    first_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads alpha",
+        )
+    )
+    second_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/next",
+        )
+    )
+    third_messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m3",
+            text="/next",
+        )
+    )
+
+    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2+)"
+    second_lines = second_messages[0].text.splitlines()
+    assert second_lines[0] == "Threads (Page 2/3+)"
+    assert second_lines[1].startswith("1. Alpha thread 6")
+    third_lines = third_messages[0].text.splitlines()
+    assert third_lines[0] == "Threads (Page 3/3)"
+    assert third_lines[1].startswith("1. Alpha thread 11")
+    assert "/prev" in third_lines[-1]
+    assert "/next" not in third_lines[-1]
+    thread_list_payloads = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "thread/list"
+    ]
+    assert thread_list_payloads == [
+        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5},
+        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-2"},
+        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-3"},
     ]
     await client.close()
 

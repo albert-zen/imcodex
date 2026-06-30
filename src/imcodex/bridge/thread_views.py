@@ -59,7 +59,7 @@ class ThreadViewMixin:
             next_cursor=next_cursor,
             page_cursors=page_cursors,
         )
-        lines = [f"Threads (Page {safe_page}/{page_count})"]
+        lines = [self._thread_page_heading(safe_page, page_count, has_more=next_cursor is not None)]
         for index, snapshot in enumerate(visible, start=1):
             details = [snapshot.status]
             if snapshot.thread_id == self.store.get_binding(message.channel_id, message.conversation_id).thread_id:
@@ -129,6 +129,10 @@ class ThreadViewMixin:
         if next_cursor:
             page_cursors.append(next_cursor)
         return page_cursors or [None]
+
+    def _thread_page_heading(self, page: int, page_count: int, *, has_more: bool) -> str:
+        page_count_label = f"{page_count}+" if has_more else str(page_count)
+        return f"Threads (Page {page}/{page_count_label})"
 
     async def _render_status(self, message: InboundMessage) -> str:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
