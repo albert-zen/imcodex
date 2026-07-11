@@ -4,6 +4,23 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
+$script:TargetEnvironmentKeys = @(
+    "IMCODEX_APP_SERVER_URL",
+    "IMCODEX_CORE_URL",
+    "IMCODEX_CORE_MODE",
+    "IMCODEX_CORE_PORT"
+)
+$script:PreActivationTargetValues = @{}
+$script:PreActivationTargetConfigured = $false
+foreach ($targetKey in $script:TargetEnvironmentKeys) {
+    $targetValue = [Environment]::GetEnvironmentVariable($targetKey, "Process")
+    $script:PreActivationTargetValues[$targetKey] = $targetValue
+    if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+        $script:PreActivationTargetConfigured = $true
+    }
+}
+$script:DotEnvTargetValues = @{}
+
 function Import-DotEnv {
     $dotenvPath = Join-Path $repoRoot ".env"
     if (-not (Test-Path $dotenvPath)) {
@@ -23,9 +40,48 @@ function Import-DotEnv {
         if ($key -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") {
             continue
         }
+        if ($script:TargetEnvironmentKeys -contains $key) {
+            $script:DotEnvTargetValues[$key] = $value
+            continue
+        }
         if ($null -eq [Environment]::GetEnvironmentVariable($key, "Process")) {
             [Environment]::SetEnvironmentVariable($key, $value, "Process")
         }
+    }
+}
+
+function Set-TargetEnvironmentValue([string] $Name, $Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        [Environment]::SetEnvironmentVariable($Name, $null, "Process")
+    }
+    else {
+        [Environment]::SetEnvironmentVariable($Name, $Value, "Process")
+    }
+}
+
+function Resolve-TargetEnvironment {
+    if ($script:PreActivationTargetConfigured) {
+        foreach ($targetKey in $script:TargetEnvironmentKeys) {
+            Set-TargetEnvironmentValue $targetKey $script:PreActivationTargetValues[$targetKey]
+        }
+        return
+    }
+
+    foreach ($targetKey in $script:TargetEnvironmentKeys) {
+        $targetValue = [Environment]::GetEnvironmentVariable($targetKey, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+            return
+        }
+    }
+
+    foreach ($targetKey in $script:TargetEnvironmentKeys) {
+        $targetValue = if ($script:DotEnvTargetValues.ContainsKey($targetKey)) {
+            $script:DotEnvTargetValues[$targetKey]
+        }
+        else {
+            $null
+        }
+        Set-TargetEnvironmentValue $targetKey $targetValue
     }
 }
 
@@ -123,12 +179,23 @@ function Wait-DedicatedCore {
 
 Import-DotEnv
 Enable-CondaEnv
+Resolve-TargetEnvironment
 
 $python = Resolve-ImcodexPython
-$coreMode = if ($env:IMCODEX_CORE_MODE) { $env:IMCODEX_CORE_MODE } else { "dedicated-ws" }
-$coreUrl = if ($env:IMCODEX_CORE_URL) { $env:IMCODEX_CORE_URL } else { "" }
-$corePort = if ($env:IMCODEX_CORE_PORT) { $env:IMCODEX_CORE_PORT } else { "" }
-$appServerUrl = if ($env:IMCODEX_APP_SERVER_URL) { $env:IMCODEX_APP_SERVER_URL } else { "" }
+$coreMode = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_MODE)) { "" } else { $env:IMCODEX_CORE_MODE.Trim() }
+$coreUrl = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_URL)) { "" } else { $env:IMCODEX_CORE_URL.Trim() }
+$corePort = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_PORT)) { "" } else { $env:IMCODEX_CORE_PORT.Trim() }
+$appServerUrl = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_APP_SERVER_URL)) { "" } else { $env:IMCODEX_APP_SERVER_URL.Trim() }
+$legacyCoreConfigured = [bool]($coreMode -or $coreUrl -or $corePort)
+
+if (-not $appServerUrl -and -not $legacyCoreConfigured) {
+    $appServerUrl = "stdio://"
+    $env:IMCODEX_APP_SERVER_URL = $appServerUrl
+}
+
+if (-not $coreMode) {
+    $coreMode = "dedicated-ws"
+}
 
 if (-not $corePort -and $coreUrl -match "^ws://(127\.0\.0\.1|localhost):([0-9]+)$") {
     $corePort = $Matches[2]
@@ -150,7 +217,7 @@ else {
     Write-Host "Legacy core mode: $coreMode"
 }
 
-if (-not $appServerUrl -and $coreMode -eq "dedicated-ws") {
+if (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws") {
     $env:IMCODEX_CORE_MODE = $coreMode
     $env:IMCODEX_CORE_URL = $coreUrl
 

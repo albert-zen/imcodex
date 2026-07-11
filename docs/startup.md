@@ -26,10 +26,18 @@ open scripts/start.command
 ```
 
 The Windows launcher delegates to `scripts/start.ps1`; the macOS launcher
-delegates to `scripts/start.sh`. By default, both start or reuse a dedicated
-Codex core on `ws://127.0.0.1:8765`, export `IMCODEX_CORE_MODE=dedicated-ws`,
-and then start the bridge. This is a temporary legacy launcher path; the runtime
-normalizes that configuration to one external App Server.
+delegates to `scripts/start.sh`. With no App Server target configured,
+`start.sh` exports `IMCODEX_APP_SERVER_URL=unix://`, asks native Codex to start
+or reuse its App Server daemon, and then starts the bridge. Native Windows
+cannot use that Unix control socket, so `start.ps1` defaults explicitly to the
+bridge-child `stdio://` compatibility target.
+
+An explicit `IMCODEX_APP_SERVER_URL` is always connect-only: neither launcher
+starts another App Server. Explicit legacy `IMCODEX_CORE_MODE`,
+`IMCODEX_CORE_URL`, or `IMCODEX_CORE_PORT` values retain the old TCP core
+launcher behavior for rollback. Running `python -m imcodex` directly also does
+not manage an external App Server lifecycle; start the native daemon separately
+when relying on the runtime's default `unix://` target.
 
 If `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS/Linux
 exists, the launcher uses it automatically. Set `IMCODEX_PYTHON` only when you
@@ -73,6 +81,12 @@ set, the launcher activates that conda environment before resolving
 the bridge exits; set `IMCODEX_NO_PAUSE=1` in the shell before running
 `scripts\start.cmd` to skip that pause.
 
+The App Server target variables are treated as one configuration group. Target
+precedence is the entry shell, then values injected by conda activation, then
+`.env`; values from those groups are never mixed into one target tuple.
+`doctor.ps1` does not activate conda itself, so run it from inside the selected
+environment when conda environment variables define the App Server target.
+
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.
 
@@ -107,8 +121,9 @@ least the initial delay, and jitter must be between `0` and `1`.
 
 ### Legacy compatibility: TCP core + bridge
 
-The old launcher can still run a separate TCP WebSocket core. It is retained for
-rollback and Windows compatibility while the native daemon path settles:
+The launcher can still run a separate TCP WebSocket core when legacy target
+configuration is explicit. It is retained for rollback while the native daemon
+path settles:
 
 ```powershell
 $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"

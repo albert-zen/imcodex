@@ -269,6 +269,13 @@ identity, PID, socket cleanup, version compatibility, installation checks, and
 updates. The bridge MUST NOT add a second daemon manifest or infer lifecycle
 state by probing a PID or arbitrary TCP port.
 
+Launchers MUST treat an explicit canonical App Server target as connect-only
+and MUST NOT start or select another server. On POSIX, only a completely
+unconfigured launcher may ensure the native daemon and select `unix://`; native
+Windows may instead select explicit `stdio://` compatibility. Canonical and
+legacy target values from the entry process, conda activation, and `.env` MUST
+NOT be mixed across configuration layers; that is their precedence order.
+
 The rewrite MUST assume that:
 
 - websocket notification volume can exceed what a slow bridge consumer can safely absorb

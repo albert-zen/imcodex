@@ -136,6 +136,64 @@ $dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex"
 
 Write-Check "HTTP port" $true $httpPort
 Write-Check "Data dir" $true $dataDir
+$condaEnvName = Get-Setting "IMCODEX_CONDA_ENV"
+if (-not [string]::IsNullOrWhiteSpace($condaEnvName)) {
+    Write-Check "Conda target preview" $true "doctor does not activate conda; run it inside '$condaEnvName' to inspect target variables injected by that environment"
+}
+
+$launcherTargetNames = @(
+    "IMCODEX_APP_SERVER_URL",
+    "IMCODEX_CORE_URL",
+    "IMCODEX_CORE_MODE",
+    "IMCODEX_CORE_PORT"
+)
+$processLauncherTargetConfigured = $false
+foreach ($targetName in $launcherTargetNames) {
+    if (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($targetName, "Process"))) {
+        $processLauncherTargetConfigured = $true
+        break
+    }
+}
+$selectedLauncherTarget = @{}
+foreach ($targetName in $launcherTargetNames) {
+    if ($processLauncherTargetConfigured) {
+        $selectedLauncherTarget[$targetName] = [Environment]::GetEnvironmentVariable($targetName, "Process")
+    }
+    elseif ($dotenv.ContainsKey($targetName)) {
+        $selectedLauncherTarget[$targetName] = $dotenv[$targetName]
+    }
+    else {
+        $selectedLauncherTarget[$targetName] = ""
+    }
+}
+$selectedAppServerUrl = $selectedLauncherTarget["IMCODEX_APP_SERVER_URL"]
+$selectedCoreUrl = $selectedLauncherTarget["IMCODEX_CORE_URL"]
+$selectedCoreMode = $selectedLauncherTarget["IMCODEX_CORE_MODE"]
+$selectedCorePort = $selectedLauncherTarget["IMCODEX_CORE_PORT"]
+$selectedCoreModeNormalized = if ([string]::IsNullOrWhiteSpace($selectedCoreMode)) {
+    ""
+}
+else {
+    $selectedCoreMode.Trim().ToLowerInvariant()
+}
+$targetSelectorConfigured = -not (
+    [string]::IsNullOrWhiteSpace($selectedAppServerUrl) -and
+    [string]::IsNullOrWhiteSpace($selectedCoreUrl) -and
+    [string]::IsNullOrWhiteSpace($selectedCoreMode)
+)
+
+if (
+    [string]::IsNullOrWhiteSpace($selectedAppServerUrl) -and
+    [string]::IsNullOrWhiteSpace($selectedCoreUrl) -and
+    -not [string]::IsNullOrWhiteSpace($selectedCorePort) -and
+    $selectedCoreModeNormalized -in @("", "dedicated-ws")
+) {
+    $env:IMCODEX_CORE_MODE = "dedicated-ws"
+    $env:IMCODEX_CORE_URL = "ws://127.0.0.1:$($selectedCorePort.Trim())"
+}
+elseif (-not $targetSelectorConfigured -and $env:OS -eq "Windows_NT") {
+    $env:IMCODEX_APP_SERVER_URL = "stdio://"
+}
 
 $targetOutput = @(& $python -c "import json; from imcodex.config import load_app_server_target; t = load_app_server_target(); print(json.dumps({'endpoint': t.endpoint, 'ownership': t.ownership, 'transport': t.transport}))" 2>&1)
 $target = $null

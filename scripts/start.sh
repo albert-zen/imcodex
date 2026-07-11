@@ -5,6 +5,30 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 cd "${repo_root}"
 
+is_nonblank() {
+    local value="${1:-}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    [[ -n "${value}" ]]
+}
+
+pre_activation_app_server_url="${IMCODEX_APP_SERVER_URL-}"
+pre_activation_core_url="${IMCODEX_CORE_URL-}"
+pre_activation_core_mode="${IMCODEX_CORE_MODE-}"
+pre_activation_core_port="${IMCODEX_CORE_PORT-}"
+pre_activation_target_configured=false
+if is_nonblank "${pre_activation_app_server_url}" \
+    || is_nonblank "${pre_activation_core_url}" \
+    || is_nonblank "${pre_activation_core_mode}" \
+    || is_nonblank "${pre_activation_core_port}"; then
+    pre_activation_target_configured=true
+fi
+
+dotenv_app_server_url=""
+dotenv_core_url=""
+dotenv_core_mode=""
+dotenv_core_port=""
+
 load_dotenv() {
     local dotenv_path="${repo_root}/.env"
     [[ -f "${dotenv_path}" ]] || return 0
@@ -26,10 +50,58 @@ load_dotenv() {
         value="${value#\'}"
 
         [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        if [[ -z "${!key+x}" ]]; then
-            export "${key}=${value}"
-        fi
+        case "${key}" in
+            IMCODEX_APP_SERVER_URL)
+                dotenv_app_server_url="${value}"
+                ;;
+            IMCODEX_CORE_URL)
+                dotenv_core_url="${value}"
+                ;;
+            IMCODEX_CORE_MODE)
+                dotenv_core_mode="${value}"
+                ;;
+            IMCODEX_CORE_PORT)
+                dotenv_core_port="${value}"
+                ;;
+            *)
+                if [[ -z "${!key+x}" ]]; then
+                    export "${key}=${value}"
+                fi
+                ;;
+        esac
     done < "${dotenv_path}"
+}
+
+apply_target_value() {
+    local key="$1"
+    local value="$2"
+    if is_nonblank "${value}"; then
+        export "${key}=${value}"
+    else
+        unset "${key}"
+    fi
+}
+
+resolve_target_environment() {
+    if [[ "${pre_activation_target_configured}" == "true" ]]; then
+        apply_target_value IMCODEX_APP_SERVER_URL "${pre_activation_app_server_url}"
+        apply_target_value IMCODEX_CORE_URL "${pre_activation_core_url}"
+        apply_target_value IMCODEX_CORE_MODE "${pre_activation_core_mode}"
+        apply_target_value IMCODEX_CORE_PORT "${pre_activation_core_port}"
+        return
+    fi
+
+    if is_nonblank "${IMCODEX_APP_SERVER_URL-}" \
+        || is_nonblank "${IMCODEX_CORE_URL-}" \
+        || is_nonblank "${IMCODEX_CORE_MODE-}" \
+        || is_nonblank "${IMCODEX_CORE_PORT-}"; then
+        return
+    fi
+
+    apply_target_value IMCODEX_APP_SERVER_URL "${dotenv_app_server_url}"
+    apply_target_value IMCODEX_CORE_URL "${dotenv_core_url}"
+    apply_target_value IMCODEX_CORE_MODE "${dotenv_core_mode}"
+    apply_target_value IMCODEX_CORE_PORT "${dotenv_core_port}"
 }
 
 activate_conda_env() {
@@ -91,6 +163,7 @@ wait_for_core() {
 
 load_dotenv
 activate_conda_env
+resolve_target_environment
 
 if [[ -n "${IMCODEX_PYTHON:-}" ]]; then
     python="${IMCODEX_PYTHON}"
@@ -104,10 +177,29 @@ else
     python="python"
 fi
 
-core_mode="${IMCODEX_CORE_MODE:-dedicated-ws}"
+core_mode="${IMCODEX_CORE_MODE:-}"
 core_url="${IMCODEX_CORE_URL:-}"
 core_port="${IMCODEX_CORE_PORT:-}"
 app_server_url="${IMCODEX_APP_SERVER_URL:-}"
+for target_value_name in core_mode core_url core_port app_server_url; do
+    target_value="${!target_value_name}"
+    target_value="${target_value#"${target_value%%[![:space:]]*}"}"
+    target_value="${target_value%"${target_value##*[![:space:]]}"}"
+    printf -v "${target_value_name}" '%s' "${target_value}"
+done
+
+legacy_core_configured=false
+if [[ -n "${core_mode}" || -n "${core_url}" || -n "${core_port}" ]]; then
+    legacy_core_configured=true
+fi
+core_mode="${core_mode:-dedicated-ws}"
+ensure_native_daemon=false
+
+if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "false" ]]; then
+    app_server_url="unix://"
+    export IMCODEX_APP_SERVER_URL="${app_server_url}"
+    ensure_native_daemon=true
+fi
 
 if [[ -z "${core_port}" && "${core_url}" =~ ^ws://(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
     core_port="${BASH_REMATCH[2]}"
@@ -124,7 +216,12 @@ else
     echo "Legacy core mode: ${core_mode}"
 fi
 
-if [[ -z "${app_server_url}" && "${core_mode}" == "dedicated-ws" ]]; then
+if [[ "${ensure_native_daemon}" == "true" ]]; then
+    echo "Ensuring native Codex App Server daemon is running"
+    "${python}" -m imcodex app-server start
+fi
+
+if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core_mode}" == "dedicated-ws" ]]; then
     export IMCODEX_CORE_MODE="${core_mode}"
     export IMCODEX_CORE_URL="${core_url}"
 

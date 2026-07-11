@@ -42,7 +42,14 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 
 ## Run
 
-On macOS/Linux, start the native App Server first, then the bridge:
+On macOS/Linux, the launcher ensures the native daemon is running and then
+connects the bridge over its Unix control socket:
+
+```bash
+./scripts/start.sh
+```
+
+The equivalent explicit two-process workflow is:
 
 ```bash
 python -m imcodex app-server start
@@ -50,9 +57,9 @@ export IMCODEX_APP_SERVER_URL=unix://
 python -m imcodex
 ```
 
-On native Windows, use the launcher below or explicitly choose
-`IMCODEX_APP_SERVER_URL=stdio://`; the Python Unix connector is unavailable
-outside WSL.
+On native Windows, `scripts/start.ps1` defaults explicitly to `stdio://`; the
+Python Unix connector is unavailable outside WSL. Configure a canonical target
+before launching to connect to an already-managed App Server instead.
 
 Helper scripts:
 
@@ -60,6 +67,10 @@ Helper scripts:
 pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
+
+An explicit `IMCODEX_APP_SERVER_URL` is connect-only on every platform. Running
+`python -m imcodex` directly never starts an external App Server; its unresolved
+runtime default is `unix://`, so start the native daemon first on that path.
 
 On Windows, double-click `scripts\start.cmd`, or run:
 
