@@ -785,6 +785,24 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
     assert sent[0]["data"]["method"] == "initialize"
     assert received[-1]["data"]["response_id"] == 2
     assert received[-1]["data"]["transport_shape"] == "response"
+    initializing_health = next(
+        payload for payload in observed_health if payload.get("status") == "initializing"
+    )
+    assert initializing_health == {
+        "connected": True,
+        "mode": "external",
+        "status": "initializing",
+        "error_type": None,
+        "health_ok": None,
+        "health_status_code": None,
+        "health_error_type": None,
+        "ready": False,
+        "ownership": "external",
+        "transport": "tcp-websocket",
+        "endpoint": "ws://127.0.0.1:9999",
+        "connection_epoch": 1,
+        "reconnect_enabled": True,
+    }
     assert observed_health[-1] == {
         "connected": True,
         "mode": "external",
@@ -795,8 +813,55 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
         "health_ok": None,
         "health_status_code": None,
         "health_error_type": None,
+        "ready": True,
+        "ownership": "external",
+        "transport": "tcp-websocket",
+        "endpoint": "ws://127.0.0.1:9999",
+        "connection_epoch": 1,
+        "reconnect_enabled": True,
     }
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connection_facts_do_not_report_a_closed_transport_as_ready() -> None:
+    websocket = ScriptedWebSocket(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        app_server_url="ws://127.0.0.1:9999",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    await client.initialize()
+
+    websocket.closed = True
+
+    assert client.connection_facts() == {
+        "connected": False,
+        "ready": False,
+        "status": "disconnected",
+        "mode": "external",
+        "ownership": "external",
+        "transport": "tcp-websocket",
+        "endpoint": "ws://127.0.0.1:9999",
+        "connection_epoch": 1,
+        "reconnect_enabled": True,
+    }
+    await client.close()
+
+
+def test_display_connection_target_removes_userinfo_query_and_fragment() -> None:
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        app_server_url="wss://bridge-user:bridge-secret@example.com/rpc?token=secret#debug",
+    )
+
+    assert supervisor.display_connection_target == "wss://example.com/rpc"
 
 
 @pytest.mark.asyncio
@@ -855,6 +920,12 @@ async def test_legacy_dedicated_mode_reports_canonical_external_connection(monke
         "health_ok": None,
         "health_status_code": None,
         "health_error_type": None,
+        "ready": True,
+        "ownership": "external",
+        "transport": "tcp-websocket",
+        "endpoint": "ws://127.0.0.1:9001",
+        "connection_epoch": 1,
+        "reconnect_enabled": True,
     }
     await client.close()
 
@@ -1589,6 +1660,12 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
         "health_ok": None,
         "health_status_code": None,
         "health_error_type": None,
+        "ready": True,
+        "ownership": "bridge-child",
+        "transport": "stdio-jsonl",
+        "endpoint": "stdio://",
+        "connection_epoch": 2,
+        "reconnect_enabled": False,
     }
 
 
@@ -1713,6 +1790,12 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
         "health_ok": None,
         "health_status_code": None,
         "health_error_type": None,
+        "ready": True,
+        "ownership": "external",
+        "transport": "tcp-websocket",
+        "endpoint": "ws://127.0.0.1:9001",
+        "connection_epoch": 2,
+        "reconnect_enabled": True,
     }
     await client.close()
 

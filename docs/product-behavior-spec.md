@@ -296,6 +296,7 @@ It should show:
 - current cwd
 - current thread
 - current state such as idle or working
+- App Server connection status, ownership, transport, safe endpoint, and connection epoch
 - current model
 - current reasoning effort
 - current Fast mode state
@@ -303,7 +304,9 @@ It should show:
 - current bridge visibility profile
 - pending approval count when approvals are enabled in the product
 
-If Codex cannot provide fresh status, the user should still get a safe, friendly status response rather than protocol noise.
+If Codex cannot provide fresh thread status, the user should still get the local
+App Server connection facts and a safe `Unavailable` thread state rather than
+protocol noise.
 
 ### `/goal`
 

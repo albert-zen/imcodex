@@ -17,6 +17,27 @@ def test_backend_module_keeps_split_compatibility_exports() -> None:
     assert ThreadListResult(threads=[]).threads == []
 
 
+@pytest.mark.parametrize("connection_mode", [None, ""])
+def test_connection_facts_fallback_treats_empty_modes_as_disconnected(connection_mode) -> None:
+    client = type(
+        "ConnectionModeOnlyClient",
+        (),
+        {"connection_mode": connection_mode, "initialized": True, "connection_epoch": 0},
+    )()
+    backend = CodexBackend(
+        client=client,
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex-test",
+    )
+
+    facts = backend.app_server_connection_facts()
+
+    assert facts["connected"] is False
+    assert facts["ready"] is False
+    assert facts["status"] == "disconnected"
+    assert facts["ownership"] == "unknown"
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.list_calls: list[dict] = []

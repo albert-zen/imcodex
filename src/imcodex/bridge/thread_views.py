@@ -14,6 +14,7 @@ from .settings import (
 
 
 _THREADS_PAGE_SIZE = 5
+_STATUS_QUERY_TIMEOUT_S = 2.5
 
 
 class ThreadViewMixin:
@@ -143,7 +144,17 @@ class ThreadViewMixin:
             thread_label = "(none)"
             state = "Idle"
         else:
-            snapshot = await self.backend.read_thread(message.channel_id, message.conversation_id, binding.thread_id)
+            try:
+                snapshot = await asyncio.wait_for(
+                    self.backend.read_thread(
+                        message.channel_id,
+                        message.conversation_id,
+                        binding.thread_id,
+                    ),
+                    timeout=_STATUS_QUERY_TIMEOUT_S,
+                )
+            except (asyncio.TimeoutError, AppServerError):
+                snapshot = None
             if snapshot is None:
                 thread_label = binding.thread_id
                 state = "Unavailable"
@@ -152,6 +163,7 @@ class ThreadViewMixin:
                 cwd = snapshot.cwd or cwd
                 active = self.store.get_active_turn(binding.thread_id)
                 state = "Working" if active and active[1] == "inProgress" else self._human_state(snapshot.status)
+        app_server = self.backend.app_server_connection_facts()
         return "\n".join(
             [
                 "Status",
@@ -159,6 +171,11 @@ class ThreadViewMixin:
                 f"CWD: {cwd}",
                 f"Thread: {thread_label}",
                 f"State: {state}",
+                f"App Server: {self._app_server_status_label(app_server)}",
+                f"Ownership: {self._app_server_ownership_label(app_server)}",
+                f"Transport: {self._app_server_transport_label(app_server)}",
+                f"Endpoint: {app_server.get('endpoint') or '(unknown)'}",
+                f"Connection epoch: {int(app_server.get('connection_epoch') or 0)}",
                 f"Model: {current_model_label(current_config)}",
                 f"Reasoning: {current_reasoning_label(current_config)}",
                 f"Fast mode: {fast_mode_label(current_config)}",
@@ -215,6 +232,32 @@ class ThreadViewMixin:
     def _bridge_visibility_label(self, binding) -> str:
         return binding.visibility_profile.replace("-", " ").title()
 
+    def _app_server_status_label(self, facts: dict) -> str:
+        labels = {
+            "connected": "Connected",
+            "initializing": "Initializing",
+            "reconnecting": "Reconnecting",
+            "disconnected": "Disconnected",
+        }
+        status = str(facts.get("status") or "disconnected")
+        return labels.get(status, status.replace("-", " ").title())
+
+    def _app_server_ownership_label(self, facts: dict) -> str:
+        if facts.get("ownership") == "external":
+            return "Externally managed"
+        if facts.get("ownership") == "bridge-child":
+            return "Bridge child (compatibility)"
+        return "Unknown"
+
+    def _app_server_transport_label(self, facts: dict) -> str:
+        labels = {
+            "unix-websocket": "Unix WebSocket",
+            "tcp-websocket": "TCP WebSocket",
+            "stdio-jsonl": "stdio JSONL",
+        }
+        transport = str(facts.get("transport") or "unknown")
+        return labels.get(transport, transport.replace("-", " ").title())
+
     def _human_state(self, status: str) -> str:
         normalized = str(status or "").strip().lower()
         if normalized in {"inprogress", "in_progress", "working", "running"}:
@@ -229,7 +272,7 @@ class ThreadViewMixin:
         try:
             return await asyncio.wait_for(
                 self.backend.read_config(channel_id, conversation_id),
-                timeout=2.5,
+                timeout=_STATUS_QUERY_TIMEOUT_S,
             )
         except (asyncio.TimeoutError, AppServerError):
             return {"config": {}}

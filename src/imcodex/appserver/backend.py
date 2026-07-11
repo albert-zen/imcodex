@@ -29,6 +29,30 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
             mode = getattr(self.client, "last_connection_mode", "")
         return mode in {"external", "dedicated-ws", "shared-ws"}
 
+    def app_server_connection_facts(self) -> dict:
+        provider = getattr(self.client, "connection_facts", None)
+        if callable(provider):
+            return dict(provider())
+        mode = str(getattr(self.client, "connection_mode", "") or "disconnected")
+        connected = mode != "disconnected"
+        if mode in {"external", "dedicated-ws", "shared-ws"}:
+            ownership = "external"
+        elif mode == "spawned-stdio":
+            ownership = "bridge-child"
+        else:
+            ownership = "unknown"
+        return {
+            "connected": connected,
+            "ready": connected and bool(getattr(self.client, "initialized", False)),
+            "status": "connected" if connected else "disconnected",
+            "mode": mode,
+            "ownership": ownership,
+            "transport": "unknown",
+            "endpoint": "(unknown)",
+            "connection_epoch": int(getattr(self.client, "connection_epoch", 0) or 0),
+            "reconnect_enabled": self.prefers_native_recovery(),
+        }
+
     async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
         route = self.store.get_pending_request(request_id)
         if route is None or route.transport_request_id is None:

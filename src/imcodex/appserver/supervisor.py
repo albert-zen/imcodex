@@ -220,6 +220,10 @@ class AppServerSupervisor:
         return self._target.endpoint
 
     @property
+    def display_connection_target(self) -> str:
+        return _safe_url_label(self._target.endpoint)
+
+    @property
     def supports_background_reconnect(self) -> bool:
         return self._target.preserves_server_state
 

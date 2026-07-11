@@ -1447,8 +1447,13 @@ async def test_status_command_returns_status_message_when_backend_read_fails() -
         )
     )
 
-    assert messages[0].message_type == "status"
-    assert "could not be queried from Codex right now" in messages[0].text
+    assert messages[0].message_type == "command_result"
+    assert "State: Unavailable" in messages[0].text
+    assert "App Server: Connected" in messages[0].text
+    assert "Ownership: Bridge child (compatibility)" in messages[0].text
+    assert "Transport: stdio JSONL" in messages[0].text
+    assert "Endpoint: stdio://" in messages[0].text
+    assert "Connection epoch: 1" in messages[0].text
 
 
 @pytest.mark.asyncio
@@ -1478,9 +1483,42 @@ async def test_status_command_hides_oversized_upstream_error_details() -> None:
         )
     )
 
-    assert messages[0].message_type == "status"
+    assert messages[0].message_type == "command_result"
+    assert "State: Unavailable" in messages[0].text
+    assert "App Server: Connected" in messages[0].text
     assert "<html>" not in messages[0].text
-    assert "unexpected upstream error" in messages[0].text.lower()
+    assert "x" * 100 not in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_status_command_bounds_native_queries_and_still_reports_connection_facts(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("imcodex.bridge.thread_views._STATUS_QUERY_TIMEOUT_S", 0.01)
+    process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "State: Unavailable" in messages[0].text
+    assert "App Server: Connected" in messages[0].text
+    assert "Connection epoch: 1" in messages[0].text
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -2442,6 +2480,11 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
 
     assert "Status" in status_messages[0].text
     assert "CWD: D:\\work\\alpha" in status_messages[0].text
+    assert "App Server: Connected" in status_messages[0].text
+    assert "Ownership: Bridge child (compatibility)" in status_messages[0].text
+    assert "Transport: stdio JSONL" in status_messages[0].text
+    assert "Endpoint: stdio://" in status_messages[0].text
+    assert "Connection epoch: 1" in status_messages[0].text
     assert "Model: gpt-5.4" in status_messages[0].text
     assert "Reasoning: high" in status_messages[0].text
     assert "Fast mode: Fast" in status_messages[0].text
@@ -2449,6 +2492,83 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
     assert "Bridge visibility: Standard" in status_messages[0].text
     assert "Workspace: alpha" in thread_messages[0].text
     assert "Source: appServer" in thread_messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_an_independently_managed_unix_app_server() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "config/read": [{"id": 3, "result": {}}],
+            "thread/read": [
+                {
+                    "id": 4,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", "/work/alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    supervisor = AppServerSupervisor(
+        codex_bin="codex",
+        app_server_url="unix://",
+        unix_websocket_factory=lambda *_args, **_kwargs: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        outbound_sink=sink,
+    )
+    client.add_notification_handler(service.handle_notification)
+    client.add_server_request_handler(service.handle_server_request)
+    client.add_connection_reset_handler(service.handle_connection_reset)
+    client.add_connection_ready_handler(service.handle_connection_ready)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+
+    assert "App Server: Connected" in messages[0].text
+    assert "Ownership: Externally managed" in messages[0].text
+    assert "Transport: Unix WebSocket" in messages[0].text
+    assert "Endpoint: unix://" in messages[0].text
+    assert "Connection epoch: 1" in messages[0].text
     await client.close()
 
 

@@ -213,6 +213,37 @@ class AppServerClient:
     def preserves_server_state(self) -> bool:
         return self._supervisor.target.preserves_server_state
 
+    def connection_facts(self) -> JsonDict:
+        transport = self._transport
+        transport_open = transport is not None and not transport.is_closed()
+        ready = transport_open and self.initialized
+        reconnect_task = self._reconnect_task
+        if ready:
+            status = "connected"
+        elif reconnect_task is not None and not reconnect_task.done():
+            status = "reconnecting"
+        elif transport_open:
+            status = "initializing"
+        else:
+            status = "disconnected"
+        target = self._supervisor.target
+        return {
+            "connected": transport_open,
+            "ready": ready,
+            "status": status,
+            "mode": self.connection_mode,
+            "ownership": target.ownership,
+            "transport": target.transport,
+            "endpoint": self._supervisor.display_connection_target,
+            "connection_epoch": self.connection_epoch,
+            "reconnect_enabled": self._supervisor.supports_background_reconnect,
+        }
+
+    def _mark_appserver_health(self, **changes: Any) -> None:
+        payload = self.connection_facts()
+        payload.update(changes)
+        mark_appserver_health(**payload)
+
     @contextlib.asynccontextmanager
     async def _owned_initialize_lock(self) -> AsyncIterator[None]:
         async with self._initialize_lock:
@@ -287,7 +318,7 @@ class AppServerClient:
                     self._initialize_owner_transport = None
             self.initialized = True
             self._has_been_ready = True
-            mark_appserver_health(
+            self._mark_appserver_health(
                 connected=True,
                 mode=self.connection_mode,
                 status="connected",
@@ -571,7 +602,11 @@ class AppServerClient:
                 message="Failed to prepare app-server connection",
                 data={"error_type": type(exc).__name__},
             )
-            mark_appserver_health(connected=False, mode="disconnected", error_type=type(exc).__name__)
+            self._mark_appserver_health(
+                connected=False,
+                mode="disconnected",
+                error_type=type(exc).__name__,
+            )
             raise AppServerError(str(exc) or "failed to prepare app-server connection") from exc
         if self._closing:
             if websocket is not None:
@@ -591,21 +626,12 @@ class AppServerClient:
                 event="appserver.connect.websocket_succeeded",
                 message=f"Connected to {websocket_mode} app-server",
             )
-            mark_appserver_health(
-                connected=True,
-                mode=websocket_mode,
-                status="initializing",
-                error_type=None,
-                health_ok=None,
-                health_status_code=None,
-                health_error_type=None,
-            )
         else:
             if not self._supervisor.spawns_stdio:
                 target = self._connection_target()
                 diagnostic = getattr(self._supervisor, "last_connect_diagnostic", None) or {}
                 display_target = str(diagnostic.get("url") or target)
-                mark_appserver_health(
+                self._mark_appserver_health(
                     connected=False,
                     mode="disconnected",
                     target=display_target,
@@ -625,15 +651,6 @@ class AppServerClient:
             if self._closing:
                 await self._supervisor.stop()
                 raise AppServerError("app-server client is closed")
-            mark_appserver_health(
-                connected=True,
-                mode=SPAWNED_STDIO_CONNECTION_MODE,
-                status="initializing",
-                error_type=None,
-                health_ok=None,
-                health_status_code=None,
-                health_error_type=None,
-            )
         self.connection_epoch += 1
         epoch = self.connection_epoch
         queue: asyncio.Queue[JsonDict] = asyncio.Queue()
@@ -644,6 +661,15 @@ class AppServerClient:
         self._protocol_initialized = False
         self.initialized = False
         self._initialize_result = None
+        self._mark_appserver_health(
+            connected=True,
+            mode=self.connection_mode,
+            status="initializing",
+            error_type=None,
+            health_ok=None,
+            health_status_code=None,
+            health_error_type=None,
+        )
 
     async def _ensure_ready(self) -> None:
         current_task = asyncio.current_task()
@@ -1010,7 +1036,7 @@ class AppServerClient:
                 message="App-server connection closed",
             )
             if should_reconnect:
-                mark_appserver_health(
+                self._mark_appserver_health(
                     connected=False,
                     mode=reset_mode,
                     status="reconnecting",
@@ -1018,7 +1044,7 @@ class AppServerClient:
                     retry_delay_s=0.0,
                 )
             else:
-                mark_appserver_health(
+                self._mark_appserver_health(
                     connected=False,
                     mode="disconnected",
                     status="disconnected",
@@ -1033,7 +1059,7 @@ class AppServerClient:
         task = self._reconnect_task
         if self._closing or (task is not None and not task.done()):
             return
-        mark_appserver_health(
+        self._mark_appserver_health(
             connected=False,
             mode=self.last_connection_mode,
             status="reconnecting",
@@ -1061,7 +1087,7 @@ class AppServerClient:
                         message="Retrying persistent app-server connection",
                         data={"attempt": attempt, "delay_s": round(delay_s, 3)},
                     )
-                    mark_appserver_health(
+                    self._mark_appserver_health(
                         connected=False,
                         mode=self.last_connection_mode,
                         status="reconnecting",
@@ -1083,7 +1109,7 @@ class AppServerClient:
                         message=str(exc) or "Persistent app-server reconnect failed",
                         data={"attempt": attempt, "error_type": type(exc).__name__},
                     )
-                    mark_appserver_health(
+                    self._mark_appserver_health(
                         connected=False,
                         mode=self.last_connection_mode,
                         status="reconnecting",
@@ -1100,7 +1126,7 @@ class AppServerClient:
                     message="Persistent app-server connection restored",
                     data={"attempt": attempt, "connection_epoch": self.connection_epoch},
                 )
-                mark_appserver_health(
+                self._mark_appserver_health(
                     connected=True,
                     mode=self.connection_mode,
                     status="connected",
