@@ -72,6 +72,37 @@ On Linux, run:
 ./scripts/start.sh
 ```
 
+### Native App Server daemon
+
+On macOS and Linux, a recent standalone Codex CLI can own a long-lived local
+App Server daemon. IMCodex provides a thin delegate for its lifecycle:
+
+```bash
+python -m imcodex app-server start
+python -m imcodex app-server status
+python -m imcodex app-server restart
+python -m imcodex app-server stop
+```
+
+`start`, `restart`, and `stop` map directly to the same native daemon commands;
+`status` maps to `codex app-server daemon version`. Native stdout, stderr, and
+exit status are preserved, and IMCodex does not keep a PID or daemon manifest.
+`IMCODEX_CODEX_BIN` selects the CLI used to issue the command; the native daemon
+itself launches Codex from the standalone managed install reported by `status`.
+
+On macOS/Linux, connect the bridge to that independently owned daemon with:
+
+```bash
+export IMCODEX_CORE_MODE=shared-ws
+export IMCODEX_APP_SERVER_URL=unix://
+python -m imcodex
+```
+
+This workflow is capability-gated by `codex app-server daemon --help` and was
+verified with `codex-cli 0.144.1`. Native daemon lifecycle management is
+currently Unix-only. On Windows, use the existing independent TCP websocket
+`core`, explicit `spawned-stdio`, or WSL path; there is no automatic fallback.
+
 ## Native-First State
 
 `imcodex` now treats native Codex source code and native protocol behavior as

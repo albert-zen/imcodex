@@ -1,4 +1,4 @@
 from .main import run
 
 
-run()
+raise SystemExit(run())

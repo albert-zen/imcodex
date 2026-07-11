@@ -48,6 +48,14 @@ def _env_float(name: str, default: float, dotenv: dict[str, str]) -> float:
     return float(_env(name, str(default), dotenv))
 
 
+def _codex_bin(dotenv: dict[str, str]) -> str:
+    return _env("IMCODEX_CODEX_BIN", "codex", dotenv)
+
+
+def load_codex_bin(dotenv_path: Path = Path(".env")) -> str:
+    return _codex_bin(_read_dotenv(dotenv_path))
+
+
 @dataclass(slots=True)
 class Settings:
     data_dir: Path
@@ -162,7 +170,7 @@ class Settings:
         return cls(
             data_dir=Path(_env("IMCODEX_DATA_DIR", ".imcodex", dotenv)),
             run_dir=Path(_env("IMCODEX_RUN_DIR", ".imcodex-run", dotenv)),
-            codex_bin=_env("IMCODEX_CODEX_BIN", "codex", dotenv),
+            codex_bin=_codex_bin(dotenv),
             app_server_url=_env("IMCODEX_APP_SERVER_URL", "", dotenv) or None,
             app_server_experimental_api_enabled=_env_bool("IMCODEX_APP_SERVER_EXPERIMENTAL_API", False, dotenv),
             core_mode=_env("IMCODEX_CORE_MODE", "spawned-stdio", dotenv),

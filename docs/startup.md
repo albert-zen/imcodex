@@ -161,16 +161,17 @@ pwsh -File .\scripts\start.ps1
 Use this mode when the websocket server lifecycle is not owned by `imcodex`
 itself.
 
-#### Native local Unix control socket (connect only)
+#### Native local Unix control socket and daemon
 
-On macOS or Linux, an independently managed Codex App Server can expose its
-native local control socket. Start the App Server in its own terminal or service:
+On macOS or Linux, Codex can own an independently managed App Server daemon on
+its native local control socket. Start it through the project entry point:
 
 ```bash
-codex app-server --listen unix://
+python -m imcodex app-server start
+python -m imcodex app-server status
 ```
 
-Then start only the bridge in another terminal:
+Then start only the bridge:
 
 ```bash
 export IMCODEX_CORE_MODE=shared-ws
@@ -186,13 +187,26 @@ set). Codex also accepts an explicit absolute path such as
 directory such as `unix://run/codex.sock`. The suffix is a native file path, not
 a URL path.
 
-This release connects to that socket but does not start or stop its App Server.
-The connection still carries standard WebSocket frames, so initialization,
-connection epochs, native rehydration, and background reconnect are identical
-to persistent TCP WebSocket connections. Unix sockets do not expose HTTP
-`/readyz` or `/healthz`; a successful WebSocket Upgrade is the availability
-check. Native Windows fails this endpoint explicitly; use WSL, an explicit
-`ws://` endpoint, or `spawned-stdio` there.
+The project commands are deliberately thin delegates:
+
+- `app-server start` -> `codex app-server daemon start`
+- `app-server restart` -> `codex app-server daemon restart`
+- `app-server stop` -> `codex app-server daemon stop`
+- `app-server status` -> `codex app-server daemon version`
+
+They use `IMCODEX_CODEX_BIN` and preserve native output and exit status. IMCodex
+does not track a daemon PID or write a second lifecycle manifest. In particular,
+`status` returns the native nonzero result when no daemon is reachable instead
+of inventing a local status value. This workflow was verified with
+`codex-cli 0.142.2`; a build or installation that does not support the native
+daemon reports its own error unchanged.
+
+The connection carries standard WebSocket frames, so initialization, connection
+epochs, native rehydration, and background reconnect are identical to persistent
+TCP WebSocket connections. Unix sockets do not expose HTTP `/readyz` or
+`/healthz`; a successful WebSocket Upgrade is the availability check. Native
+Windows fails this bridge endpoint explicitly; use WSL, an explicit `ws://`
+endpoint, or `spawned-stdio` there.
 
 The upstream transport contract is documented in the
 [Codex App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
@@ -226,6 +240,13 @@ pwsh -File .\scripts\start.ps1
 ## Stop
 
 If the bridge is running in the current terminal, press `Ctrl+C`.
+
+Stopping the bridge does not stop an independently managed native App Server.
+Stop that daemon explicitly when intended:
+
+```bash
+python -m imcodex app-server stop
+```
 
 If it is running in the background, find the process that owns the configured HTTP port:
 

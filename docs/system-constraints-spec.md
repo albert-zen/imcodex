@@ -263,6 +263,12 @@ configuration and MUST NOT be copied into bridge-owned process or PID state.
 TCP `ws://`/`wss://` remains a compatibility carrier while upstream documents
 that listener as experimental.
 
+The project App Server lifecycle CLI MUST delegate to `codex app-server daemon`
+and preserve its stdout, stderr, and exit status. Native Codex owns daemon
+identity, PID, socket cleanup, version compatibility, installation checks, and
+updates. The bridge MUST NOT add a second daemon manifest or infer lifecycle
+state by probing a PID or arbitrary TCP port.
+
 The rewrite MUST assume that:
 
 - websocket notification volume can exceed what a slow bridge consumer can safely absorb

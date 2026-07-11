@@ -5,6 +5,7 @@ import sys
 import uvicorn
 
 from .application import create_application
+from .app_server_cli import run_app_server_cli
 from .config import Settings
 from .channels_cli import run_channels_cli
 from .core_cli import run_core_cli
@@ -18,6 +19,8 @@ def run(argv: list[str] | None = None) -> int | None:
         return run_debug_cli(argv[1:])
     if argv and argv[0] == "core":
         return run_core_cli(argv[1:])
+    if argv and argv[0] == "app-server":
+        return run_app_server_cli(argv[1:])
     if argv and argv[0] == "ops":
         return run_ops_cli(argv[1:])
     if argv and argv[0] == "channels":
@@ -32,4 +35,4 @@ def run(argv: list[str] | None = None) -> int | None:
 
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(run())
