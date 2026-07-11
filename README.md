@@ -202,7 +202,9 @@ Codex version requirement:
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
 - `IMCODEX_RUN_DIR`: observability and runtime snapshot directory, default `.imcodex-run`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
-- `IMCODEX_APP_SERVER_URL`: optional websocket URL for a shared Codex app-server
+- `IMCODEX_APP_SERVER_URL`: optional endpoint for a shared Codex app-server;
+  accepts `ws://`/`wss://`, or `unix://` on macOS/Linux for Codex's default
+  local control socket
 - `IMCODEX_APP_SERVER_EXPERIMENTAL_API`: opt into experimental native app-server capabilities, default `false`
 - `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE`: optional file containing the websocket bearer token
 - `IMCODEX_APP_SERVER_AUTH_TOKEN`: optional websocket bearer token; takes precedence over the token file and is not written to launch snapshots
@@ -212,7 +214,7 @@ Codex version requirement:
 - `IMCODEX_APP_SERVER_RETRY_MAX_DELAY`: maximum retry delay in seconds, default `2.0`
 - `IMCODEX_APP_SERVER_RETRY_JITTER`: retry jitter fraction, default `0.25`
 - `IMCODEX_APP_SERVER_CONNECT_TIMEOUT`: websocket open timeout in seconds, default `3.0`
-- `IMCODEX_APP_SERVER_HEALTH_TIMEOUT`: `/readyz`/`/healthz` probe timeout in seconds, default `1.0`
+- `IMCODEX_APP_SERVER_HEALTH_TIMEOUT`: TCP `/readyz`/`/healthz` probe timeout in seconds, default `1.0`; Unix sockets use the WebSocket handshake itself
 - `IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY`: first background reconnect delay after an immediate retry fails, default `0.5`
 - `IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`: maximum background reconnect delay, default `30.0`
 - `IMCODEX_APP_SERVER_RECONNECT_JITTER`: background reconnect jitter fraction, default `0.25`
@@ -221,7 +223,8 @@ Reconnect delays must be positive, the maximum must be at least the initial
 delay, and jitter must be between `0` and `1`.
 
 - `IMCODEX_CORE_MODE`: Codex core mode, default `spawned-stdio`
-- `IMCODEX_CORE_URL`: optional dedicated Codex core websocket URL
+- `IMCODEX_CORE_URL`: optional dedicated Codex core endpoint; accepts the same
+  `ws://`/`wss://`/`unix://` forms as `IMCODEX_APP_SERVER_URL`
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command
 - `IMCODEX_DEBUG_API_ENABLED`: enable debug HTTP routes, default `false`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`

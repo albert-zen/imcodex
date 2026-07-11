@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
+import websockets
 
 from imcodex.appserver import (
     AppServerClient,
@@ -14,7 +16,15 @@ from imcodex.appserver import (
 )
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
 from imcodex.appserver.retry import RetryBackoff
-from imcodex.appserver.supervisor import HealthProbeResult, derive_health_probe_urls
+from imcodex.appserver.supervisor import (
+    DEFAULT_UNIX_WEBSOCKET_URI,
+    WS_MAX_SIZE,
+    HealthProbeResult,
+    UnsupportedUnixSocketError,
+    default_app_server_control_socket,
+    derive_health_probe_urls,
+    resolve_unix_socket_path,
+)
 from imcodex.store import ConversationStore
 
 
@@ -1081,6 +1091,346 @@ def test_health_probe_urls_are_derived_from_ws_and_http_endpoints() -> None:
         "https://core.example.test/readyz",
         "https://core.example.test/healthz",
     ]
+    assert derive_health_probe_urls("unix:///tmp/app-server-control.sock") == []
+
+
+def test_unix_socket_endpoint_resolves_native_default_and_absolute_custom_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    custom = tmp_path / "control.sock"
+
+    assert default_app_server_control_socket() == (
+        codex_home / "app-server-control" / "app-server-control.sock"
+    )
+    assert resolve_unix_socket_path("unix://") == default_app_server_control_socket()
+    assert resolve_unix_socket_path(f"unix://{custom.as_posix()}") == custom
+
+
+def test_unix_socket_endpoint_preserves_native_raw_path_semantics(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert resolve_unix_socket_path("unix://relative.sock") == tmp_path / "relative.sock"
+    assert resolve_unix_socket_path("unix://control%20socket.sock") == (
+        tmp_path / "control%20socket.sock"
+    )
+    assert resolve_unix_socket_path("unix://control.sock?raw#path") == (
+        tmp_path / "control.sock?raw#path"
+    )
+    with pytest.raises(ValueError, match="not a unix app-server endpoint"):
+        resolve_unix_socket_path("UNIX:///tmp/control.sock")
+
+
+def test_default_unix_socket_requires_an_existing_configured_codex_home(tmp_path) -> None:
+    missing = tmp_path / "missing-codex-home"
+
+    with pytest.raises(FileNotFoundError, match="CODEX_HOME does not exist"):
+        default_app_server_control_socket(missing)
+
+    not_a_directory = tmp_path / "codex-home-file"
+    not_a_directory.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(NotADirectoryError, match="CODEX_HOME is not a directory"):
+        default_app_server_control_socket(not_a_directory)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
+async def test_default_unix_connector_performs_a_real_websocket_upgrade(tmp_path) -> None:
+    socket_path = tmp_path / "app-server-control.sock"
+
+    async def handler(websocket) -> None:
+        await websocket.wait_closed()
+
+    async with websockets.unix_serve(handler, str(socket_path)):
+        supervisor = AppServerSupervisor(
+            core_mode="shared-ws",
+            app_server_url=f"unix://{socket_path.as_posix()}",
+        )
+        connection = await supervisor.connect_shared()
+
+        assert connection is not None
+        assert supervisor.connection_mode == "shared-ws"
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_unix_connect_failure_does_not_run_an_http_health_probe(tmp_path) -> None:
+    health_probe_called = False
+
+    async def unix_websocket_factory(_path: str, **_kwargs):
+        raise FileNotFoundError("control socket unavailable")
+
+    async def health_probe(_urls, _headers, _timeout_s):
+        nonlocal health_probe_called
+        health_probe_called = True
+        raise AssertionError("Unix sockets do not expose HTTP health endpoints")
+
+    supervisor = AppServerSupervisor(
+        core_mode="shared-ws",
+        app_server_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
+        unix_websocket_factory=unix_websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        health_probe=health_probe,
+    )
+
+    assert await supervisor.connect_shared() is None
+    assert health_probe_called is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("core_mode", ["dedicated-ws", "shared-ws"])
+async def test_persistent_modes_connect_to_unix_websocket_without_changing_mode_label(
+    core_mode: str,
+    tmp_path,
+) -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/list": [{"result": {"threads": []}}],
+        }
+    )
+    socket_path = tmp_path / "app-server-control.sock"
+    endpoint = f"unix://{socket_path.as_posix()}"
+    captured: dict[str, object] = {}
+
+    async def unix_websocket_factory(path: str, **kwargs):
+        captured["path"] = path
+        captured.update(kwargs)
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        core_mode=core_mode,
+        core_url=endpoint,
+        app_server_url=endpoint,
+        app_server_auth_token="local-token",
+        websocket_open_timeout_s=0.75,
+        unix_websocket_factory=unix_websocket_factory,
+        websocket_factory=lambda _url: (_ for _ in ()).throw(
+            AssertionError("TCP websocket connector must not be used for unix endpoints")
+        ),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    assert await client.list_threads() == {"threads": []}
+    assert captured == {
+        "path": str(socket_path),
+        "uri": DEFAULT_UNIX_WEBSOCKET_URI,
+        "compression": None,
+        "max_size": WS_MAX_SIZE,
+        "open_timeout": 0.75,
+        "additional_headers": {"Authorization": "Bearer local-token"},
+    }
+    assert client.connection_mode == core_mode
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_persistent_unix_websocket_reconnects_through_the_same_socket(tmp_path) -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    sockets = iter([first, second])
+    connected_paths: list[str] = []
+    ready_epochs: list[int] = []
+    socket_path = tmp_path / "app-server-control.sock"
+
+    async def unix_websocket_factory(path: str, **_kwargs):
+        connected_paths.append(path)
+        return next(sockets)
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url=f"unix://{socket_path.as_posix()}",
+        unix_websocket_factory=unix_websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        sleep=lambda _delay_s: None,
+    )
+    client.add_connection_ready_handler(lambda epoch: ready_epochs.append(epoch))
+
+    await client.initialize()
+    first_listener = client._listener_task
+    assert first_listener is not None
+    first.messages.put_nowait(ConnectionError("control socket restarted"))
+    await asyncio.wait_for(first_listener, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert connected_paths == [str(socket_path), str(socket_path)]
+    assert ready_epochs == [1, 2]
+    assert client.connection_epoch == 2
+    assert client.connection_mode == "dedicated-ws"
+    assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_unix_success_keeps_native_recovery_without_background_reconnect(
+    tmp_path,
+) -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    unix_attempts = 0
+
+    async def unix_websocket_factory(_path: str, **_kwargs):
+        nonlocal unix_attempts
+        unix_attempts += 1
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        core_mode="auto",
+        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
+        unix_websocket_factory=unix_websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    backend = CodexBackend(
+        client=client,
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex",
+    )
+
+    await client.initialize()
+    listener_task = client._listener_task
+    assert listener_task is not None
+    websocket.messages.put_nowait(ConnectionError("control socket closed"))
+    await asyncio.wait_for(listener_task, timeout=1)
+
+    assert unix_attempts == 1
+    assert client.last_connection_mode == "shared-ws"
+    assert backend.prefers_native_recovery() is True
+    assert client._reconnect_task is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_unix_failure_preserves_existing_stdio_fallback(tmp_path) -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/list": [{"result": {"threads": []}}],
+        }
+    )
+    unix_attempts = 0
+
+    async def unix_websocket_factory(_path: str, **_kwargs):
+        nonlocal unix_attempts
+        unix_attempts += 1
+        raise OSError("control socket unavailable")
+
+    supervisor = AppServerSupervisor(
+        core_mode="auto",
+        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
+        unix_websocket_factory=unix_websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        spawn_process=lambda *_args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    assert await client.list_threads() == {"threads": []}
+    assert unix_attempts == 1
+    assert client.connection_mode == "spawned-stdio"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_invalid_unix_endpoint_configuration_does_not_fall_back_to_stdio() -> None:
+    spawned = False
+
+    async def spawn_process(*_args):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("invalid unix configuration must fail explicitly")
+
+    supervisor = AppServerSupervisor(
+        core_mode="auto",
+        core_url="UNIX:///tmp/app-server-control.sock",
+        spawn_process=spawn_process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    with pytest.raises(AppServerError, match="must use the lowercase unix:// prefix"):
+        await client.connect()
+
+    assert spawned is False
+
+
+@pytest.mark.asyncio
+async def test_spawned_stdio_ignores_configured_unix_endpoint(tmp_path) -> None:
+    process = ScriptedProcess({"initialize": [{"result": {"ok": True}}]})
+    unix_attempted = False
+
+    async def unix_websocket_factory(_path: str, **_kwargs):
+        nonlocal unix_attempted
+        unix_attempted = True
+        raise AssertionError("spawned stdio mode must not connect to unix endpoints")
+
+    supervisor = AppServerSupervisor(
+        core_mode="spawned-stdio",
+        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
+        unix_websocket_factory=unix_websocket_factory,
+        spawn_process=lambda *_args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    await client.initialize()
+    assert unix_attempted is False
+    assert client.connection_mode == "spawned-stdio"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unix_endpoint_fails_explicitly_on_native_windows(monkeypatch) -> None:
+    unix_attempted = False
+    spawned = False
+
+    async def unix_websocket_factory(_path: str, **_kwargs):
+        nonlocal unix_attempted
+        unix_attempted = True
+        raise AssertionError("unsupported platform must fail before opening unix socket")
+
+    async def spawn_process(*_args):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("dedicated mode must not fall back to stdio")
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="unix:///tmp/app-server-control.sock",
+        unix_websocket_factory=unix_websocket_factory,
+        spawn_process=spawn_process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    monkeypatch.setattr("imcodex.appserver.supervisor.os.name", "nt")
+
+    with pytest.raises(AppServerError, match="not supported on native Windows") as exc_info:
+        await client.list_threads()
+
+    assert isinstance(exc_info.value.__cause__, UnsupportedUnixSocketError)
+    assert unix_attempted is False
+    assert spawned is False
 
 
 @pytest.mark.asyncio

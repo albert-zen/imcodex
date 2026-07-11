@@ -19,10 +19,64 @@ from .retry import RetryBackoff
 
 SpawnProcess = Callable[..., Awaitable[Any] | Any]
 ConnectWebSocket = Callable[..., Awaitable[Any] | Any]
+ConnectUnixWebSocket = Callable[..., Awaitable[Any] | Any]
 Sleep = Callable[[float], Awaitable[None] | None]
 STDIO_STREAM_LIMIT = 1024 * 1024
 WS_MAX_SIZE = 16 * 1024 * 1024
 DEFAULT_HEALTH_PATHS = ("/readyz", "/healthz")
+DEFAULT_UNIX_WEBSOCKET_URI = "ws://localhost/rpc"
+UNIX_ENDPOINT_PREFIX = "unix://"
+
+
+class UnsupportedUnixSocketError(OSError):
+    pass
+
+
+def default_app_server_control_socket(codex_home: str | os.PathLike[str] | None = None) -> Path:
+    configured_home = os.fspath(codex_home) if codex_home is not None else os.getenv("CODEX_HOME")
+    if configured_home:
+        home = Path(configured_home)
+        if not home.exists():
+            raise FileNotFoundError(f"CODEX_HOME does not exist: {home}")
+        if not home.is_dir():
+            raise NotADirectoryError(f"CODEX_HOME is not a directory: {home}")
+        home = home.resolve(strict=True)
+    else:
+        home = Path.home() / ".codex"
+    return home / "app-server-control" / "app-server-control.sock"
+
+
+def resolve_unix_socket_path(
+    endpoint_url: str,
+    *,
+    codex_home: str | os.PathLike[str] | None = None,
+) -> Path:
+    if not endpoint_url.startswith(UNIX_ENDPOINT_PREFIX):
+        raise ValueError(f"not a unix app-server endpoint: {endpoint_url}")
+    raw_path = endpoint_url[len(UNIX_ENDPOINT_PREFIX) :]
+    if not raw_path:
+        return default_app_server_control_socket(codex_home)
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def _is_unix_endpoint(endpoint_url: str) -> bool:
+    return endpoint_url.startswith(UNIX_ENDPOINT_PREFIX)
+
+
+def _validate_unix_endpoint(endpoint_url: str) -> None:
+    if endpoint_url.lower().startswith(UNIX_ENDPOINT_PREFIX) and not _is_unix_endpoint(endpoint_url):
+        raise ValueError("unix app-server endpoints must use the lowercase unix:// prefix")
+    if not _is_unix_endpoint(endpoint_url):
+        return
+    if os.name == "nt":
+        raise UnsupportedUnixSocketError(
+            "unix app-server endpoints are not supported on native Windows; "
+            "use an explicit ws:// endpoint or WSL"
+        )
+    resolve_unix_socket_path(endpoint_url)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +174,7 @@ class AppServerSupervisor:
     health_probe_timeout_s: float = 1.0
     spawn_process: SpawnProcess | None = None
     websocket_factory: ConnectWebSocket | None = None
+    unix_websocket_factory: ConnectUnixWebSocket | None = None
     health_probe: HealthProbe | None = None
     sleep: Sleep | None = None
     random_float: Callable[[], float] | None = None
@@ -160,6 +215,14 @@ class AppServerSupervisor:
         headers = self.websocket_headers()
         connect = self.websocket_factory or _default_connect
         for url in self._shared_candidates():
+            try:
+                _validate_unix_endpoint(url)
+            except (ValueError, OSError) as exc:
+                self._last_connect_diagnostic = {
+                    "url": _safe_url_label(url),
+                    "error_type": type(exc).__name__,
+                }
+                raise
             connection = await self._connect_with_retries(connect, url, headers)
             if connection is None:
                 if self._should_probe_health():
@@ -296,6 +359,18 @@ class AppServerSupervisor:
         url: str,
         headers: dict[str, str],
     ) -> Awaitable[Any] | Any:
+        if _is_unix_endpoint(url):
+            path = resolve_unix_socket_path(url)
+            connect_unix = self.unix_websocket_factory or websockets.unix_connect
+            kwargs: dict[str, Any] = {
+                "uri": DEFAULT_UNIX_WEBSOCKET_URI,
+                "compression": None,
+                "max_size": WS_MAX_SIZE,
+                "open_timeout": self.websocket_open_timeout_s,
+            }
+            if headers:
+                kwargs["additional_headers"] = headers
+            return connect_unix(str(path), **kwargs)
         if self.websocket_factory is None:
             kwargs: dict[str, Any] = {
                 "max_size": WS_MAX_SIZE,
@@ -386,6 +461,8 @@ async def _default_connect(url: str, **kwargs: Any) -> Any:
 
 
 def _safe_url_label(url: str) -> str:
+    if _is_unix_endpoint(url):
+        return url
     parsed = urlsplit(url)
     if not parsed.scheme or not parsed.netloc:
         return url

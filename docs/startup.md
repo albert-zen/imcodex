@@ -161,6 +161,42 @@ pwsh -File .\scripts\start.ps1
 Use this mode when the websocket server lifecycle is not owned by `imcodex`
 itself.
 
+#### Native local Unix control socket (connect only)
+
+On macOS or Linux, an independently managed Codex App Server can expose its
+native local control socket. Start the App Server in its own terminal or service:
+
+```bash
+codex app-server --listen unix://
+```
+
+Then start only the bridge in another terminal:
+
+```bash
+export IMCODEX_CORE_MODE=shared-ws
+export IMCODEX_APP_SERVER_URL=unix://
+./scripts/start.sh
+```
+
+Here `unix://` means
+`$CODEX_HOME/app-server-control/app-server-control.sock` (or
+`~/.codex/app-server-control/app-server-control.sock` when `CODEX_HOME` is not
+set). Codex also accepts an explicit absolute path such as
+`unix:///tmp/codex-app-server.sock`, or a path relative to the process working
+directory such as `unix://run/codex.sock`. The suffix is a native file path, not
+a URL path.
+
+This release connects to that socket but does not start or stop its App Server.
+The connection still carries standard WebSocket frames, so initialization,
+connection epochs, native rehydration, and background reconnect are identical
+to persistent TCP WebSocket connections. Unix sockets do not expose HTTP
+`/readyz` or `/healthz`; a successful WebSocket Upgrade is the availability
+check. Native Windows fails this endpoint explicitly; use WSL, an explicit
+`ws://` endpoint, or `spawned-stdio` there.
+
+The upstream transport contract is documented in the
+[Codex App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+
 ### Supported: bridge-managed core
 
 The helper script can still start the bridge by itself:

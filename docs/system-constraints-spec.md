@@ -255,6 +255,14 @@ Codex App Server transport behavior is a real system constraint, not an implemen
 Current upstream websocket transport uses bounded outbound queues.
 If the bridge becomes a slow consumer and the websocket writer queue fills, App Server may disconnect that websocket client instead of waiting forever.
 
+For a local independently managed App Server, `unix://` is the native control
+socket carrier. It uses the same WebSocket protocol as TCP and therefore MUST
+use the same initialization, connection-epoch, reconnect, and native
+rehydration rules. The socket path and server lifecycle remain native Codex
+configuration and MUST NOT be copied into bridge-owned process or PID state.
+TCP `ws://`/`wss://` remains a compatibility carrier while upstream documents
+that listener as experimental.
+
 The rewrite MUST assume that:
 
 - websocket notification volume can exceed what a slow bridge consumer can safely absorb
