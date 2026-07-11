@@ -496,6 +496,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 await self.backend.reply_to_transport_request(
                     transport_request_id,
                     {"currentTimeAt": int(self.store.clock())},
+                    connection_epoch=self._connection_epoch(request),
                 )
                 self.store.update_native_appserver_event(journal_entry.sequence, outcome="resolved")
             else:
@@ -527,6 +528,16 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if isinstance(params, dict) and params.get("_transport_request_id") is not None:
             return params["_transport_request_id"]
         return request.get("id")
+
+    def _connection_epoch(self, request: dict) -> int | None:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            return None
+        try:
+            epoch = int(params.get("_connection_epoch") or 0)
+        except (TypeError, ValueError):
+            return None
+        return epoch or None
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)

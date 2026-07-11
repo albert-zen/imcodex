@@ -64,6 +64,12 @@ def test_observability_runtime_creates_instance_archive_and_current_metadata(tmp
     assert archived["git_branch"] == "main"
     assert archived["git_commit"] == "abc1234"
     assert archived["http_port"] == 8000
+    health = json.loads(runtime.paths.current_health_path.read_text(encoding="utf-8"))
+    assert health["appserver"] == {
+        "connected": False,
+        "mode": None,
+        "status": "disconnected",
+    }
     runtime.stop()
 
 

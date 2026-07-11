@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import inspect
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol
 
 from .diagnostics import summarize_text, summarize_transport_message
@@ -31,6 +31,7 @@ DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
     "thread/realtime/transcript/delta",
     "thread/realtime/outputAudio/delta",
 )
+_WEBSOCKET_CONNECTION_MODES = frozenset({"dedicated-ws", "shared-ws"})
 
 
 class AppServerError(RuntimeError):
@@ -143,6 +144,7 @@ class AppServerClient:
         experimental_api_enabled: bool = False,
         request_timeout_s: float = 15.0,
         request_retry_policy: RetryBackoff | None = None,
+        reconnect_retry_policy: RetryBackoff | None = None,
         sleep: Callable[[float], Awaitable[None] | None] | None = None,
         random_float: Callable[[], float] | None = None,
     ) -> None:
@@ -151,6 +153,7 @@ class AppServerClient:
         self._experimental_api_enabled = experimental_api_enabled
         self._request_timeout_s = request_timeout_s
         self._request_retry_policy = request_retry_policy or RetryBackoff()
+        self._reconnect_retry_policy = reconnect_retry_policy or RetryBackoff()
         self._sleep = sleep or asyncio.sleep
         self._random_float = random_float
         self._transport: AppServerTransport | None = None
@@ -160,8 +163,19 @@ class AppServerClient:
         self._stderr_task: asyncio.Task[None] | None = None
         self._resetting = False
         self._reset_owner_task: asyncio.Task | None = None
+        self._connect_lock = asyncio.Lock()
+        self._initialize_lock = asyncio.Lock()
+        self._initialize_lock_owner_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._closing = False
+        self._protocol_initialized = False
+        self._initialize_owner_task: asyncio.Task | None = None
+        self._initialize_owner_epoch: int | None = None
+        self._initialize_owner_transport: AppServerTransport | None = None
+        self._initialize_result: JsonDict | None = None
+        self._has_been_ready = False
         self._next_request_id = 1
-        self._pending_futures: dict[int, asyncio.Future[JsonDict]] = {}
+        self._pending_futures: dict[int, tuple[int, asyncio.Future[JsonDict]]] = {}
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
         self._connection_reset_handlers: list[ConnectionResetHandler] = []
@@ -175,7 +189,15 @@ class AppServerClient:
         await self._ensure_connected()
 
     async def close(self) -> None:
-        await self._reset_connection(notify_handlers=False)
+        self._closing = True
+        reconnect_task = self._reconnect_task
+        self._reconnect_task = None
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            reconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await reconnect_task
+        async with self._connect_lock:
+            await self._reset_connection(notify_handlers=False)
 
     def add_notification_handler(self, handler: NotificationHandler) -> None:
         self._notification_handlers.append(handler)
@@ -189,22 +211,92 @@ class AppServerClient:
     def add_connection_ready_handler(self, handler: ConnectionReadyHandler) -> None:
         self._connection_ready_handlers.append(handler)
 
+    @contextlib.asynccontextmanager
+    async def _owned_initialize_lock(self) -> AsyncIterator[None]:
+        async with self._initialize_lock:
+            current_task = asyncio.current_task()
+            self._initialize_lock_owner_task = current_task
+            try:
+                yield
+            finally:
+                if self._initialize_lock_owner_task is current_task:
+                    self._initialize_lock_owner_task = None
+
     async def initialize(self) -> JsonDict:
-        await self._ensure_connected()
-        result = await self._request_without_initialize(
-            "initialize",
-            {
-                "clientInfo": self._client_info,
-                "capabilities": self._initialize_capabilities(),
-            },
-        )
-        await self._notify("initialized", {})
-        self.initialized = True
-        for handler in list(self._connection_ready_handlers):
-            ready = handler(self.connection_epoch)
-            if inspect.isawaitable(ready):
-                await ready
-        return result
+        async with self._owned_initialize_lock():
+            if self._closing:
+                raise AppServerError("app-server client is closed")
+            if self.initialized:
+                return dict(self._initialize_result or {})
+            await self._ensure_connected()
+            initialize_epoch = self.connection_epoch
+            initialize_transport = self._transport
+            if initialize_transport is None:
+                raise AppServerError("transport is not connected")
+            if not self._protocol_initialized:
+                try:
+                    result = await self._request_without_initialize(
+                        "initialize",
+                        {
+                            "clientInfo": self._client_info,
+                            "capabilities": self._initialize_capabilities(),
+                        },
+                    )
+                    await self._send_json(
+                        {"method": "initialized", "params": {}},
+                        transport=initialize_transport,
+                    )
+                    self._require_initializing_connection(
+                        initialize_epoch,
+                        initialize_transport,
+                        require_protocol_initialized=False,
+                    )
+                except BaseException:
+                    if self.connection_epoch == initialize_epoch and self._transport is initialize_transport:
+                        await self._reset_connection()
+                    raise
+                self._protocol_initialized = True
+                self._initialize_result = dict(result)
+            else:
+                result = dict(self._initialize_result or {})
+            current_task = asyncio.current_task()
+            self._initialize_owner_task = current_task
+            self._initialize_owner_epoch = initialize_epoch
+            self._initialize_owner_transport = initialize_transport
+            try:
+                for handler in list(self._connection_ready_handlers):
+                    self._require_initializing_connection(initialize_epoch, initialize_transport)
+                    ready = handler(initialize_epoch)
+                    if inspect.isawaitable(ready):
+                        await ready
+                self._require_initializing_connection(initialize_epoch, initialize_transport)
+            except asyncio.CancelledError:
+                self.initialized = False
+                if self.connection_epoch == initialize_epoch and self._transport is initialize_transport:
+                    await self._reset_connection()
+                raise
+            except Exception:
+                self.initialized = False
+                raise
+            finally:
+                if self._initialize_owner_task is current_task:
+                    self._initialize_owner_task = None
+                    self._initialize_owner_epoch = None
+                    self._initialize_owner_transport = None
+            self.initialized = True
+            self._has_been_ready = True
+            mark_appserver_health(
+                connected=True,
+                mode=self.connection_mode,
+                status="connected",
+                retry_attempt=None,
+                retry_delay_s=None,
+                error_type=None,
+                health_ok=None,
+                health_status_code=None,
+                health_error_type=None,
+            )
+            return result
 
     async def call(self, method: str, params: JsonDict | None = None) -> JsonDict:
         return await self._request(method, dict(params or {}))
@@ -359,10 +451,23 @@ class AppServerClient:
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
         return await self._request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
 
-    async def reply_to_transport_request(self, transport_request_id: str | int, result: JsonDict) -> JsonDict:
+    async def reply_to_transport_request(
+        self,
+        transport_request_id: str | int,
+        result: JsonDict,
+        *,
+        expected_connection_epoch: int | None = None,
+    ) -> JsonDict:
         await self._ensure_connected()
+        transport = self._reply_transport(expected_connection_epoch)
+        reply_epoch = self.connection_epoch
         payload = {"id": transport_request_id, "result": result}
-        await self._send_json(payload)
+        try:
+            await self._send_json(payload, transport=transport)
+        except Exception:
+            if self.connection_epoch == reply_epoch and self._transport is transport:
+                await self._reset_connection()
+            raise
         return payload
 
     async def reply_error_to_transport_request(
@@ -372,86 +477,205 @@ class AppServerClient:
         code: int,
         message: str,
         data: Any | None = None,
+        expected_connection_epoch: int | None = None,
     ) -> JsonDict:
         await self._ensure_connected()
+        transport = self._reply_transport(expected_connection_epoch)
+        reply_epoch = self.connection_epoch
         error: JsonDict = {"code": code, "message": message}
         if data is not None:
             error["data"] = data
         payload = {"id": transport_request_id, "error": error}
-        await self._send_json(payload)
+        try:
+            await self._send_json(payload, transport=transport)
+        except Exception:
+            if self.connection_epoch == reply_epoch and self._transport is transport:
+                await self._reset_connection()
+            raise
         return payload
 
+    def _reply_transport(self, expected_connection_epoch: int | None) -> AppServerTransport:
+        transport = self._transport
+        if transport is None:
+            raise AppServerError("transport is not connected")
+        if (
+            expected_connection_epoch is not None
+            and expected_connection_epoch > 0
+            and self.connection_epoch != expected_connection_epoch
+        ):
+            raise AppServerError(
+                "server request belongs to an expired app-server connection "
+                f"(expected epoch {expected_connection_epoch}, current epoch {self.connection_epoch})"
+            )
+        return transport
+
     async def _ensure_connected(self) -> None:
-        await self._wait_for_connection_reset()
-        if self._listener_task is not None and self._listener_task.done():
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._listener_task
-            self._listener_task = None
-            await self._reset_connection()
-        if self._transport is not None and self._transport.is_closed():
-            await self._reset_connection()
-        if self._transport is None:
+        current_task = asyncio.current_task()
+        if (
+            self._resetting
+            and self._reset_owner_task is current_task
+            and self._initialize_lock.locked()
+            and self._initialize_lock_owner_task is not current_task
+        ):
+            raise AppServerError("app-server connection reset during initialization")
+        if self._initialize_owner_task is current_task:
+            owner_epoch = self._initialize_owner_epoch
+            owner_transport = self._initialize_owner_transport
+            if owner_epoch is None or owner_transport is None:
+                raise AppServerError("app-server initialization context is unavailable")
+            self._require_initializing_connection(owner_epoch, owner_transport)
+            return
+        while True:
+            if self._closing:
+                raise AppServerError("app-server client is closed")
+            await self._wait_for_connection_reset()
+            listener_task = self._listener_task
+            if listener_task is not None and listener_task.done():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await listener_task
+                if self._listener_task is listener_task:
+                    self._listener_task = None
+                await self._reset_connection()
+                continue
+            if self._transport is not None and self._transport.is_closed():
+                await self._reset_connection()
+                continue
+            if self._transport is not None:
+                return
+            async with self._connect_lock:
+                await self._wait_for_connection_reset()
+                if self._closing:
+                    raise AppServerError("app-server client is closed")
+                if self._transport is not None:
+                    if self._transport.is_closed():
+                        continue
+                    return
+                await self._open_connection()
+                return
+
+    async def _open_connection(self) -> None:
+        emit_event(
+            component="appserver.client",
+            event="appserver.connect.started",
+            message="Connecting to app-server",
+        )
+        try:
+            websocket = await self._supervisor.connect_shared()
+        except Exception as exc:
             emit_event(
                 component="appserver.client",
-                event="appserver.connect.started",
-                message="Connecting to app-server",
+                event="appserver.connect.failed",
+                level="ERROR",
+                message="Failed to prepare app-server connection",
+                data={"error_type": type(exc).__name__},
             )
-            try:
-                websocket = await self._supervisor.connect_shared()
-            except Exception as exc:
-                emit_event(
-                    component="appserver.client",
-                    event="appserver.connect.failed",
-                    level="ERROR",
-                    message="Failed to prepare app-server connection",
-                    data={"error_type": type(exc).__name__},
-                )
-                mark_appserver_health(connected=False, mode="disconnected", error_type=type(exc).__name__)
-                raise AppServerError(str(exc) or "failed to prepare app-server connection") from exc
+            mark_appserver_health(connected=False, mode="disconnected", error_type=type(exc).__name__)
+            raise AppServerError(str(exc) or "failed to prepare app-server connection") from exc
+        if self._closing:
             if websocket is not None:
-                self._transport = WebSocketAppServerTransport(websocket)
-                websocket_mode = self._supervisor.connection_mode or "shared-ws"
-                self.connection_mode = websocket_mode
-                self.connection_epoch += 1
-                emit_event(
-                    component="appserver.client",
-                    event="appserver.connect.websocket_succeeded",
-                    message=f"Connected to {websocket_mode} app-server",
+                close = getattr(websocket, "close", None)
+                if callable(close):
+                    result = close()
+                    if inspect.isawaitable(result):
+                        with contextlib.suppress(Exception):
+                            await result
+            raise AppServerError("app-server client is closed")
+        if websocket is not None:
+            transport: AppServerTransport = WebSocketAppServerTransport(websocket)
+            websocket_mode = self._supervisor.connection_mode or "shared-ws"
+            self.connection_mode = websocket_mode
+            emit_event(
+                component="appserver.client",
+                event="appserver.connect.websocket_succeeded",
+                message=f"Connected to {websocket_mode} app-server",
+            )
+            mark_appserver_health(
+                connected=True,
+                mode=websocket_mode,
+                status="initializing",
+                error_type=None,
+                health_ok=None,
+                health_status_code=None,
+                health_error_type=None,
+            )
+        else:
+            if not self._supervisor.allow_spawn_fallback:
+                target = self._connection_target()
+                diagnostic = getattr(self._supervisor, "last_connect_diagnostic", None) or {}
+                display_target = str(diagnostic.get("url") or target)
+                mark_appserver_health(
+                    connected=False,
+                    mode="disconnected",
+                    target=display_target,
+                    error_type=diagnostic.get("error_type"),
+                    health_ok=diagnostic.get("health_ok"),
                 )
-                mark_appserver_health(connected=True, mode=websocket_mode)
-            else:
-                if not self._supervisor.allow_spawn_fallback:
-                    target = self._connection_target()
-                    diagnostic = getattr(self._supervisor, "last_connect_diagnostic", None) or {}
-                    display_target = str(diagnostic.get("url") or target)
-                    mark_appserver_health(
-                        connected=False,
-                        mode="disconnected",
-                        target=display_target,
-                        error_type=diagnostic.get("error_type"),
-                        health_ok=diagnostic.get("health_ok"),
-                    )
-                    raise AppServerError(self._unavailable_message(display_target, diagnostic))
-                process = await self._supervisor.start()
-                self._transport = StdioAppServerTransport(process)
-                self.connection_mode = "spawned-stdio"
-                self.connection_epoch += 1
-                self._stderr_task = asyncio.create_task(self._drain_process_stderr(process))
-                emit_event(
-                    component="appserver.client",
-                    event="appserver.connect.spawn_stdio_succeeded",
-                    message="Connected to spawned stdio app-server",
-                )
-                mark_appserver_health(connected=True, mode="spawned-stdio")
-            self._dispatch_queue = asyncio.Queue()
-            self._dispatcher_task = asyncio.create_task(self._dispatch_loop())
-            self._listener_task = asyncio.create_task(self._receive_loop())
-            self.initialized = False
+                raise AppServerError(self._unavailable_message(display_target, diagnostic))
+            process = await self._supervisor.start()
+            transport = StdioAppServerTransport(process)
+            self.connection_mode = "spawned-stdio"
+            self._stderr_task = asyncio.create_task(self._drain_process_stderr(process))
+            emit_event(
+                component="appserver.client",
+                event="appserver.connect.spawn_stdio_succeeded",
+                message="Connected to spawned stdio app-server",
+            )
+            if self._closing:
+                await self._supervisor.stop()
+                raise AppServerError("app-server client is closed")
+            mark_appserver_health(
+                connected=True,
+                mode="spawned-stdio",
+                status="initializing",
+                error_type=None,
+                health_ok=None,
+                health_status_code=None,
+                health_error_type=None,
+            )
+        self.connection_epoch += 1
+        epoch = self.connection_epoch
+        queue: asyncio.Queue[JsonDict] = asyncio.Queue()
+        self._transport = transport
+        self._dispatch_queue = queue
+        self._dispatcher_task = asyncio.create_task(self._dispatch_loop(queue, epoch))
+        self._listener_task = asyncio.create_task(self._receive_loop(transport, queue, epoch))
+        self._protocol_initialized = False
+        self.initialized = False
+        self._initialize_result = None
 
     async def _ensure_ready(self) -> None:
+        current_task = asyncio.current_task()
+        if self._initialize_owner_task is current_task:
+            owner_epoch = self._initialize_owner_epoch
+            owner_transport = self._initialize_owner_transport
+            if owner_epoch is None or owner_transport is None:
+                raise AppServerError("app-server initialization context is unavailable")
+            self._require_initializing_connection(owner_epoch, owner_transport)
+            return
         await self._ensure_connected()
+        if self.initialized:
+            return
         if not self.initialized:
             await self.initialize()
+
+    def _require_initializing_connection(
+        self,
+        epoch: int,
+        transport: AppServerTransport,
+        *,
+        require_protocol_initialized: bool = True,
+    ) -> None:
+        if self._closing:
+            raise AppServerError("app-server client is closed")
+        current_task = asyncio.current_task()
+        if self._resetting and self._reset_owner_task is not current_task:
+            raise AppServerError("app-server connection reset during initialization")
+        if (
+            self.connection_epoch != epoch
+            or self._transport is not transport
+            or (require_protocol_initialized and not self._protocol_initialized)
+        ):
+            raise AppServerError("app-server connection changed during initialization")
 
     async def _request(self, method: str, params: JsonDict | None) -> JsonDict:
         await self._ensure_ready()
@@ -459,9 +683,17 @@ class AppServerClient:
 
     async def _request_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
         await self._ensure_connected()
+        request_epoch = self.connection_epoch
+        request_transport = self._transport
+        if request_transport is None:
+            raise AppServerError("transport is not connected")
         attempts = self._request_retry_policy.attempts
         attempt = 1
         while True:
+            if self.connection_epoch != request_epoch or self._transport is not request_transport:
+                raise AppServerError(
+                    f"{method} retry was cancelled because the app-server connection changed"
+                )
             response = await self._request_once_without_initialize(method, params)
             if "error" not in response:
                 return self._normalize_result(method, response["result"])
@@ -491,17 +723,28 @@ class AppServerClient:
     async def _request_once_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
         request_id = self._next_request_id
         self._next_request_id += 1
+        request_epoch = self.connection_epoch
+        transport = self._transport
+        if transport is None:
+            raise AppServerError("transport is not connected")
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
-        self._pending_futures[request_id] = future
+        self._pending_futures[request_id] = (request_epoch, future)
         payload: JsonDict = {"id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
-        await self._send_json(payload)
         try:
+            await self._send_json(payload, transport=transport)
             response = await asyncio.wait_for(future, timeout=self._request_timeout_s)
         except asyncio.TimeoutError as exc:
-            await self._reset_connection()
+            if self.connection_epoch == request_epoch and self._transport is transport:
+                await self._reset_connection()
             raise AppServerError(f"{method} timed out after {self._request_timeout_s:.1f}s") from exc
+        except Exception:
+            if not future.done():
+                future.cancel()
+            if self.connection_epoch == request_epoch and self._transport is transport:
+                await self._reset_connection()
+            raise
         finally:
             self._pending_futures.pop(request_id, None)
         return response
@@ -549,26 +792,30 @@ class AppServerClient:
         details = f" ({', '.join(detail_parts)})" if detail_parts else ""
         return f"{label} app-server at `{target}` is unavailable{details}"
 
-    async def _notify(self, method: str, params: JsonDict) -> None:
-        await self._send_json({"method": method, "params": params})
-
-    async def _send_json(self, payload: JsonDict) -> None:
-        if self._transport is None:
+    async def _send_json(self, payload: JsonDict, *, transport: AppServerTransport | None = None) -> None:
+        selected_transport = transport or self._transport
+        if selected_transport is None:
             raise AppServerError("transport is not connected")
+        if transport is not None and self._transport is not transport:
+            raise AppServerError("app-server connection changed before request could be sent")
         self._trace_protocol_message(stage="sent", payload=payload)
-        await self._transport.send_json(payload)
+        await selected_transport.send_json(payload)
 
-    async def _receive_loop(self) -> None:
+    async def _receive_loop(
+        self,
+        transport: AppServerTransport,
+        queue: asyncio.Queue[JsonDict],
+        epoch: int,
+    ) -> None:
         error: Exception | None = None
         cancelled = False
         try:
-            while self._transport is not None:
-                message = await self._transport.receive_json()
+            while self._transport is transport and self.connection_epoch == epoch:
+                message = await transport.receive_json()
                 self._trace_protocol_message(stage="received", payload=message)
-                if self._dispatch_response(message):
+                if self._dispatch_response(message, epoch):
                     continue
-                if self._dispatch_queue is not None:
-                    self._dispatch_queue.put_nowait(message)
+                queue.put_nowait(message)
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -576,21 +823,28 @@ class AppServerClient:
             error = exc
         finally:
             if error is not None:
-                for future in self._pending_futures.values():
-                    if not future.done():
-                        future.set_exception(error)
-            self.initialized = False
-            if error is not None and not cancelled:
+                self._fail_pending_futures(epoch, error)
+            if self.connection_epoch == epoch and self._transport is transport:
+                self._protocol_initialized = False
+                self.initialized = False
+            if (
+                error is not None
+                and not cancelled
+                and self.connection_epoch == epoch
+                and self._transport is transport
+            ):
                 await self._reset_connection()
 
-    async def _dispatch_loop(self) -> None:
-        queue = self._dispatch_queue
-        if queue is None:
-            return
-        while True:
+    async def _dispatch_loop(self, queue: asyncio.Queue[JsonDict], epoch: int) -> None:
+        current_task = asyncio.current_task()
+        while (
+            self._dispatch_queue is queue
+            and self.connection_epoch == epoch
+            and self._dispatcher_task is current_task
+        ):
             message = await queue.get()
             try:
-                await self._dispatch(message)
+                await self._dispatch(message, epoch)
             except Exception as exc:
                 emit_event(
                     component="appserver.client",
@@ -602,15 +856,18 @@ class AppServerClient:
             finally:
                 queue.task_done()
 
-    def _dispatch_response(self, message: JsonDict) -> bool:
+    def _dispatch_response(self, message: JsonDict, epoch: int) -> bool:
         if "id" not in message or ("result" not in message and "error" not in message):
             return False
-        future = self._pending_futures.get(int(message["id"]))
-        if future is not None and not future.done():
+        pending = self._pending_futures.get(int(message["id"]))
+        if pending is None:
+            return True
+        pending_epoch, future = pending
+        if pending_epoch == epoch and not future.done():
             future.set_result(message)
         return True
 
-    async def _dispatch(self, message: JsonDict) -> None:
+    async def _dispatch(self, message: JsonDict, epoch: int) -> None:
         if "id" in message and "method" in message:
             request_id = str(message["id"])
             params = message.get("params")
@@ -627,7 +884,7 @@ class AppServerClient:
                     **request_params,
                     "_request_id": request_id,
                     "_transport_request_id": message["id"],
-                    "_connection_epoch": self.connection_epoch,
+                    "_connection_epoch": epoch,
                 },
             }
             for handler in list(self._server_request_handlers):
@@ -642,64 +899,223 @@ class AppServerClient:
                 if inspect.isawaitable(result):
                     await result
 
+    def _fail_pending_futures(self, epoch: int, error: Exception) -> None:
+        for pending_epoch, future in self._pending_futures.values():
+            if pending_epoch == epoch and not future.done():
+                future.set_exception(error)
+
     async def _reset_connection(self, *, notify_handlers: bool = True) -> None:
-        current_task = asyncio.current_task()
-        if self._resetting and self._reset_owner_task is not current_task:
+        initiating_task = asyncio.current_task()
+        if self._resetting:
+            if self._reset_owner_task is initiating_task:
+                return
             await self._wait_for_connection_reset()
             return
         self._resetting = True
-        self._reset_owner_task = current_task
-        reset_epoch = self.connection_epoch
+        cleanup_task = asyncio.create_task(
+            self._reset_connection_impl(
+                notify_handlers=notify_handlers,
+                initiating_task=initiating_task,
+            )
+        )
+        self._reset_owner_task = cleanup_task
+        cancelled = False
         try:
-            if self.connection_mode != "disconnected":
-                self.last_connection_mode = self.connection_mode
-            listener_task = self._listener_task
-            self._listener_task = None
-            if listener_task is not None and listener_task is not current_task:
-                if not listener_task.done():
-                    listener_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await listener_task
-            dispatcher_task = self._dispatcher_task
-            self._dispatcher_task = None
-            self._dispatch_queue = None
-            if dispatcher_task is not None and dispatcher_task is not current_task:
-                if not dispatcher_task.done():
-                    dispatcher_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await dispatcher_task
-            stderr_task = self._stderr_task
-            self._stderr_task = None
-            if stderr_task is not None and stderr_task is not current_task:
-                if not stderr_task.done():
-                    stderr_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await stderr_task
-            transport = self._transport
-            self._transport = None
-            if transport is not None:
-                with contextlib.suppress(Exception):
-                    await transport.close()
-            self.initialized = False
-            self.connection_mode = "disconnected"
-            await self._supervisor.stop()
-            if notify_handlers and reset_epoch > 0:
-                for handler in list(self._connection_reset_handlers):
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            try:
+                cleanup_task.result()
+            except Exception:
+                if not cancelled:
+                    raise
+        finally:
+            if self._reset_owner_task is cleanup_task:
+                self._resetting = False
+                self._reset_owner_task = None
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _reset_connection_impl(
+        self,
+        *,
+        notify_handlers: bool,
+        initiating_task: asyncio.Task | None,
+    ) -> None:
+        reset_epoch = self.connection_epoch
+        reset_mode = self.connection_mode
+        should_reconnect = (
+            notify_handlers
+            and self._has_been_ready
+            and reset_epoch > 0
+            and reset_mode in _WEBSOCKET_CONNECTION_MODES
+            and bool(getattr(self._supervisor, "supports_background_reconnect", False))
+            and not self._closing
+        )
+        if self.connection_mode != "disconnected":
+            self.last_connection_mode = self.connection_mode
+        listener_task = self._listener_task
+        self._listener_task = None
+        if listener_task is not None and listener_task is not initiating_task:
+            if not listener_task.done():
+                listener_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await listener_task
+        dispatcher_task = self._dispatcher_task
+        self._dispatcher_task = None
+        self._dispatch_queue = None
+        if dispatcher_task is not None and dispatcher_task is not initiating_task:
+            if not dispatcher_task.done():
+                dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await dispatcher_task
+        stderr_task = self._stderr_task
+        self._stderr_task = None
+        if stderr_task is not None and stderr_task is not initiating_task:
+            if not stderr_task.done():
+                stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await stderr_task
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                await transport.close()
+        self._fail_pending_futures(reset_epoch, AppServerError("app-server connection reset"))
+        self._protocol_initialized = False
+        self.initialized = False
+        self._initialize_result = None
+        self.connection_mode = "disconnected"
+        await self._supervisor.stop()
+        if notify_handlers and reset_epoch > 0:
+            for handler in list(self._connection_reset_handlers):
+                try:
                     result = handler(reset_epoch)
                     if inspect.isawaitable(result):
                         await result
-            if self._transport is None:
-                self.connection_mode = "disconnected"
+                except Exception as exc:
+                    emit_event(
+                        component="appserver.client",
+                        event="appserver.connection_reset_handler.failed",
+                        level="ERROR",
+                        message=str(exc) or "Connection reset handler failed",
+                        data={"connection_epoch": reset_epoch, "error_type": type(exc).__name__},
+                    )
+        if self._transport is None:
+            self.connection_mode = "disconnected"
+            emit_event(
+                component="appserver.client",
+                event="appserver.connection.closed",
+                message="App-server connection closed",
+            )
+            if should_reconnect:
+                mark_appserver_health(
+                    connected=False,
+                    mode=reset_mode,
+                    status="reconnecting",
+                    retry_attempt=1,
+                    retry_delay_s=0.0,
+                )
+            else:
+                mark_appserver_health(
+                    connected=False,
+                    mode="disconnected",
+                    status="disconnected",
+                    retry_attempt=None,
+                    retry_delay_s=None,
+                    error_type=None,
+                )
+        if should_reconnect and self._transport is None and not self._closing:
+            self._schedule_background_reconnect()
+
+    def _schedule_background_reconnect(self) -> None:
+        task = self._reconnect_task
+        if self._closing or (task is not None and not task.done()):
+            return
+        mark_appserver_health(
+            connected=False,
+            mode=self.last_connection_mode,
+            status="reconnecting",
+            retry_attempt=1,
+            retry_delay_s=0.0,
+        )
+        self._reconnect_task = asyncio.create_task(self._background_reconnect_loop())
+
+    async def _background_reconnect_loop(self) -> None:
+        current_task = asyncio.current_task()
+        attempt = 1
+        try:
+            while not self._closing:
+                if attempt > 1:
+                    failed_attempt = min(attempt - 1, 63)
+                    delay_s = self._reconnect_retry_policy.delay_after_failure(
+                        failed_attempt,
+                        random_float=self._random_float,
+                        downward_jitter=True,
+                    )
+                    emit_event(
+                        component="appserver.client",
+                        event="appserver.reconnect.scheduled",
+                        level="WARNING",
+                        message="Retrying persistent app-server connection",
+                        data={"attempt": attempt, "delay_s": round(delay_s, 3)},
+                    )
+                    mark_appserver_health(
+                        connected=False,
+                        mode=self.last_connection_mode,
+                        status="reconnecting",
+                        retry_attempt=attempt,
+                        retry_delay_s=round(delay_s, 3),
+                    )
+                    await self._sleep_for_retry(delay_s)
+                if self._closing:
+                    return
+                try:
+                    await self._ensure_ready()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    emit_event(
+                        component="appserver.client",
+                        event="appserver.reconnect.failed",
+                        level="WARNING",
+                        message=str(exc) or "Persistent app-server reconnect failed",
+                        data={"attempt": attempt, "error_type": type(exc).__name__},
+                    )
+                    mark_appserver_health(
+                        connected=False,
+                        mode=self.last_connection_mode,
+                        status="reconnecting",
+                        retry_attempt=attempt,
+                        error_type=type(exc).__name__,
+                    )
+                    if self._transport is not None:
+                        await self._reset_connection()
+                    attempt += 1
+                    continue
                 emit_event(
                     component="appserver.client",
-                    event="appserver.connection.closed",
-                    message="App-server connection closed",
+                    event="appserver.reconnect.succeeded",
+                    message="Persistent app-server connection restored",
+                    data={"attempt": attempt, "connection_epoch": self.connection_epoch},
                 )
-                mark_appserver_health(connected=False, mode="disconnected")
+                mark_appserver_health(
+                    connected=True,
+                    mode=self.connection_mode,
+                    status="connected",
+                    retry_attempt=None,
+                    retry_delay_s=None,
+                    error_type=None,
+                    health_ok=None,
+                    health_status_code=None,
+                    health_error_type=None,
+                )
+                return
         finally:
-            if self._reset_owner_task is current_task:
-                self._resetting = False
-                self._reset_owner_task = None
+            if self._reconnect_task is current_task:
+                self._reconnect_task = None
 
     async def _wait_for_connection_reset(self) -> None:
         current_task = asyncio.current_task()

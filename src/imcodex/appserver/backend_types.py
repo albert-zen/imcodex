@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from ..models import NativeThreadSnapshot
 
 
-ACTIVE_THREAD_STATUSES = {"inprogress", "in_progress", "running", "working"}
+ACTIVE_THREAD_STATUSES = {"active", "inprogress", "in_progress", "running", "working"}
 
 
 class StaleThreadBindingError(RuntimeError):

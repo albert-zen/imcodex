@@ -46,6 +46,11 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         },
         experimental_api_enabled=settings.app_server_experimental_api_enabled,
         request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
+        reconnect_retry_policy=RetryBackoff(
+            initial_delay_s=settings.app_server_reconnect_initial_delay_s,
+            max_delay_s=settings.app_server_reconnect_max_delay_s,
+            jitter_fraction=settings.app_server_reconnect_jitter_fraction,
+        ),
     )
     service = BridgeService(
         store=store,
@@ -96,6 +101,11 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_APP_SERVER_RETRY_JITTER": str(settings.app_server_retry_jitter_fraction),
             "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(settings.app_server_connect_timeout_s),
             "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
+            "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(
+                settings.app_server_reconnect_initial_delay_s
+            ),
+            "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(settings.app_server_reconnect_max_delay_s),
+            "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(settings.app_server_reconnect_jitter_fraction),
             "IMCODEX_RESTART_EXECUTOR": settings.restart_executor or "",
             "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
             "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",

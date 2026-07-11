@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from imcodex.config import Settings
 
 
@@ -228,6 +230,9 @@ def test_settings_reads_app_server_auth_and_retry_settings(monkeypatch, tmp_path
     monkeypatch.setenv("IMCODEX_APP_SERVER_RETRY_JITTER", "0.2")
     monkeypatch.setenv("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", "1.25")
     monkeypatch.setenv("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", "0.75")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY", "0.6")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY", "45.0")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_RECONNECT_JITTER", "0.15")
 
     settings = Settings.from_env()
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
@@ -241,3 +246,40 @@ def test_settings_reads_app_server_auth_and_retry_settings(monkeypatch, tmp_path
     assert settings.app_server_retry_jitter_fraction == 0.2
     assert settings.app_server_connect_timeout_s == 1.25
     assert settings.app_server_health_timeout_s == 0.75
+    assert settings.app_server_reconnect_initial_delay_s == 0.6
+    assert settings.app_server_reconnect_max_delay_s == 45.0
+    assert settings.app_server_reconnect_jitter_fraction == 0.15
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        (
+            "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
+            "0",
+            "initial delay must be greater than zero",
+        ),
+        (
+            "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY",
+            "0.1",
+            "max delay must be at least the initial delay",
+        ),
+        (
+            "IMCODEX_APP_SERVER_RECONNECT_JITTER",
+            "1.1",
+            "jitter must be between zero and one",
+        ),
+    ],
+)
+def test_settings_rejects_invalid_background_reconnect_policy(
+    monkeypatch,
+    tmp_path,
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=message):
+        Settings.from_env()

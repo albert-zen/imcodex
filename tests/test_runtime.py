@@ -209,6 +209,9 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_client_secret="",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=False,
+        app_server_reconnect_initial_delay_s=0.6,
+        app_server_reconnect_max_delay_s=45.0,
+        app_server_reconnect_jitter_fraction=0.15,
     )
 
     runtime = build_runtime(settings)
@@ -220,6 +223,9 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client._supervisor.core_url == "ws://127.0.0.1:8765"
     assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
     assert runtime.client._experimental_api_enabled is False
+    assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
+    assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
+    assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
 
 
 @pytest.mark.asyncio
@@ -250,6 +256,9 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         feishu_app_secret="do-not-persist",
         inbound_webhook_token="do-not-persist",
         outbound_webhook_token="do-not-persist",
+        app_server_reconnect_initial_delay_s=0.6,
+        app_server_reconnect_max_delay_s=45.0,
+        app_server_reconnect_jitter_fraction=0.15,
     )
     runtime = build_runtime(settings)
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
@@ -271,6 +280,9 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert "IMCODEX_FEISHU_APP_SECRET" not in launch["env"]
     assert "IMCODEX_INBOUND_WEBHOOK_TOKEN" not in launch["env"]
     assert "IMCODEX_OUTBOUND_WEBHOOK_TOKEN" not in launch["env"]
+    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY"] == "0.6"
+    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY"] == "45.0"
+    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_JITTER"] == "0.15"
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 

@@ -78,6 +78,9 @@ class Settings:
     app_server_retry_jitter_fraction: float = 0.25
     app_server_connect_timeout_s: float = 3.0
     app_server_health_timeout_s: float = 1.0
+    app_server_reconnect_initial_delay_s: float = 0.5
+    app_server_reconnect_max_delay_s: float = 30.0
+    app_server_reconnect_jitter_fraction: float = 0.25
     qq_allowed_user_ids: str = ""
     qq_allowed_conversation_ids: str = ""
     telegram_enabled: bool = False
@@ -103,6 +106,14 @@ class Settings:
     weixin_poll_timeout_ms: int = 35_000
     outbound_webhook_token: str = ""
     inbound_webhook_token: str = ""
+
+    def __post_init__(self) -> None:
+        if self.app_server_reconnect_initial_delay_s <= 0:
+            raise ValueError("app-server reconnect initial delay must be greater than zero")
+        if self.app_server_reconnect_max_delay_s < self.app_server_reconnect_initial_delay_s:
+            raise ValueError("app-server reconnect max delay must be at least the initial delay")
+        if not 0 <= self.app_server_reconnect_jitter_fraction <= 1:
+            raise ValueError("app-server reconnect jitter must be between zero and one")
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -179,6 +190,21 @@ class Settings:
             app_server_retry_jitter_fraction=_env_float("IMCODEX_APP_SERVER_RETRY_JITTER", 0.25, dotenv),
             app_server_connect_timeout_s=_env_float("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv),
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
+            app_server_reconnect_initial_delay_s=_env_float(
+                "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
+                0.5,
+                dotenv,
+            ),
+            app_server_reconnect_max_delay_s=_env_float(
+                "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY",
+                30.0,
+                dotenv,
+            ),
+            app_server_reconnect_jitter_fraction=_env_float(
+                "IMCODEX_APP_SERVER_RECONNECT_JITTER",
+                0.25,
+                dotenv,
+            ),
             qq_allowed_user_ids=_env("IMCODEX_QQ_ALLOWED_USER_IDS", "", dotenv),
             qq_allowed_conversation_ids=_env("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv),
             telegram_enabled=_env_bool("IMCODEX_TELEGRAM_ENABLED", False, dotenv),

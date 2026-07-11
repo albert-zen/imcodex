@@ -27,15 +27,24 @@ class RetryBackoff:
             jitter_fraction=self.jitter_fraction,
         )
 
-    def delay_after_failure(self, failed_attempt: int, *, random_float: RandomFloat | None = None) -> float:
+    def delay_after_failure(
+        self,
+        failed_attempt: int,
+        *,
+        random_float: RandomFloat | None = None,
+        downward_jitter: bool = False,
+    ) -> float:
         if failed_attempt < 1:
             return 0.0
         initial = max(0.0, float(self.initial_delay_s))
         maximum = max(initial, float(self.max_delay_s))
         if initial == 0.0 or maximum == 0.0:
             return 0.0
-        base = min(maximum, initial * (2 ** (failed_attempt - 1)))
+        exponent = min(failed_attempt - 1, 63)
+        base = min(maximum, initial * (2**exponent))
         jitter_fraction = max(0.0, float(self.jitter_fraction))
         jitter_source = random_float or random.random
         jitter = base * jitter_fraction * max(0.0, min(1.0, float(jitter_source())))
+        if downward_jitter:
+            return max(0.0, base - min(base, jitter))
         return min(maximum, base + jitter)

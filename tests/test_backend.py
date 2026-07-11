@@ -120,20 +120,22 @@ class InterruptStaleClient:
 
 
 class RehydrateClient:
-    def __init__(self, *, status: str = "idle") -> None:
+    def __init__(self, *, status: object = "idle", turns: list[dict] | None = None) -> None:
         self.resume_calls: list[dict] = []
         self.status = status
+        self.turns = turns
 
     async def resume_thread(self, **params):
         self.resume_calls.append(params)
-        return {
-            "thread": {
-                "id": params["thread_id"],
-                "cwd": r"D:\desktop\imcodex",
-                "preview": "Recovered thread",
-                "status": self.status,
-            }
+        thread = {
+            "id": params["thread_id"],
+            "cwd": r"D:\desktop\imcodex",
+            "preview": "Recovered thread",
+            "status": self.status,
         }
+        if self.turns is not None:
+            thread["turns"] = list(self.turns)
+        return {"thread": thread}
 
 
 class AttachClient:
@@ -500,12 +502,90 @@ async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["inProgress", "in_progress", "running", "working"])
-async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_active(status: str) -> None:
+async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_binding() -> None:
+    class FailingRehydrateClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError("temporarily unavailable")
+
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
     store.note_active_turn("thr_1", "turn_1", "inProgress")
-    client = RehydrateClient(status=status)
+    backend = CodexBackend(
+        client=FailingRehydrateClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") is None
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "thread_payload",
+    [
+        None,
+        {"id": "thr_1", "turns": [{"id": "turn_1", "status": "inProgress"}]},
+        {
+            "id": "thr_other",
+            "status": "inProgress",
+            "turns": [{"id": "turn_1", "status": "inProgress"}],
+        },
+        {"id": "thr_1", "status": {"type": "active"}, "turns": []},
+    ],
+)
+async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(thread_payload) -> None:
+    class UnverifiableClient:
+        async def resume_thread(self, **_params):
+            return {"thread": thread_payload}
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    backend = CodexBackend(
+        client=UnverifiableClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") is None
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_replaces_cached_turn_with_verified_native_active_turn() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_old", "inProgress")
+    client = RehydrateClient(
+        status="inProgress",
+        turns=[{"id": "turn_native", "status": "inProgress"}],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") == ("turn_native", "inProgress")
+    assert store.is_turn_suppressed("thr_1", "turn_old") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["inProgress", "in_progress", "running", "working", {"type": "active", "activeFlags": []}],
+)
+async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_active(status: object) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client = RehydrateClient(
+        status=status,
+        turns=[{"id": "turn_1", "status": "inProgress"}],
+    )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     await backend.rehydrate_bound_threads()

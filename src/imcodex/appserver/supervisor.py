@@ -143,6 +143,10 @@ class AppServerSupervisor:
     def last_connect_diagnostic(self) -> dict[str, Any] | None:
         return dict(self._last_connect_diagnostic or {}) or None
 
+    @property
+    def supports_background_reconnect(self) -> bool:
+        return self.core_mode in {"dedicated-ws", "shared-ws"}
+
     def websocket_headers(self) -> dict[str, str]:
         token = self._resolve_bearer_token()
         if not token:

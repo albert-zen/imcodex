@@ -294,6 +294,13 @@ class CodexThreadBackendMixin:
                     service_name=self.service_name,
                 )
             except AppServerError as exc:
+                failed_thread_id = binding.thread_id
+                stale_thread = self._is_stale_thread_error(exc)
+                had_active_turn = self.store.get_active_turn(failed_thread_id) is not None
+                if stale_thread:
+                    self.store.clear_thread_binding(binding.channel_id, binding.conversation_id)
+                elif had_active_turn:
+                    self.store.clear_active_turn(failed_thread_id)
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.failed",
@@ -302,15 +309,17 @@ class CodexThreadBackendMixin:
                     data={
                         "channel_id": binding.channel_id,
                         "conversation_id": binding.conversation_id,
-                        "thread_id": binding.thread_id,
+                        "thread_id": failed_thread_id,
                         "error_type": type(exc).__name__,
+                        "cleared_active_turn": had_active_turn,
                     },
                 )
-                if self._is_stale_thread_error(exc):
-                    self.store.clear_thread_binding(binding.channel_id, binding.conversation_id)
                 continue
             payload = result.get("thread")
             if not isinstance(payload, dict):
+                had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
+                if had_active_turn:
+                    self.store.clear_active_turn(binding.thread_id)
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.empty",
@@ -320,6 +329,28 @@ class CodexThreadBackendMixin:
                         "channel_id": binding.channel_id,
                         "conversation_id": binding.conversation_id,
                         "thread_id": binding.thread_id,
+                        "cleared_active_turn": had_active_turn,
+                    },
+                )
+                continue
+            returned_thread_id = str(payload.get("id") or payload.get("threadId") or "")
+            native_thread_status = self._native_status(payload.get("status"))
+            if returned_thread_id != binding.thread_id or native_thread_status is None:
+                had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
+                if had_active_turn:
+                    self.store.clear_active_turn(binding.thread_id)
+                emit_event(
+                    component="appserver.backend",
+                    event="bridge.thread_rehydrate.unverified",
+                    level="WARNING",
+                    message="Thread resume returned unverifiable native state",
+                    data={
+                        "channel_id": binding.channel_id,
+                        "conversation_id": binding.conversation_id,
+                        "thread_id": binding.thread_id,
+                        "returned_thread_id": returned_thread_id,
+                        "has_native_status": native_thread_status is not None,
+                        "cleared_active_turn": had_active_turn,
                     },
                 )
                 continue
@@ -330,9 +361,17 @@ class CodexThreadBackendMixin:
                 snapshot.thread_id,
                 snapshot.cwd,
             )
-            active = self.store.get_active_turn(snapshot.thread_id)
-            if active is not None and snapshot.status.strip().lower() not in ACTIVE_THREAD_STATUSES:
-                self.store.suppress_turn(snapshot.thread_id, active[0])
+            cached_active = self.store.get_active_turn(snapshot.thread_id)
+            native_active = self._native_active_turn(payload)
+            if (
+                native_thread_status.strip().lower() in ACTIVE_THREAD_STATUSES
+                and native_active is not None
+            ):
+                if cached_active is not None and cached_active[0] != native_active[0]:
+                    self.store.suppress_turn(snapshot.thread_id, cached_active[0])
+                self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
+            elif cached_active is not None:
+                self.store.suppress_turn(snapshot.thread_id, cached_active[0])
                 self.store.clear_active_turn(snapshot.thread_id)
             emit_event(
                 component="appserver.backend",
@@ -347,9 +386,7 @@ class CodexThreadBackendMixin:
             )
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
-        status = payload.get("status")
-        if isinstance(status, dict):
-            status = status.get("type") or status.get("status")
+        status = self._native_status(payload.get("status"))
         thread_id = str(payload.get("id") or payload.get("threadId") or "")
         previous = self.store.get_thread_snapshot(thread_id)
         snapshot = NativeThreadSnapshot(
@@ -375,6 +412,27 @@ class CodexThreadBackendMixin:
         )
         self.store.note_thread_snapshot(snapshot)
         return snapshot
+
+    def _native_active_turn(self, payload: dict) -> tuple[str, str] | None:
+        turns = payload.get("turns")
+        if not isinstance(turns, list):
+            return None
+        for turn in reversed(turns):
+            if not isinstance(turn, dict):
+                continue
+            turn_id = str(turn.get("id") or turn.get("turnId") or "")
+            status = self._native_status(turn.get("status"))
+            if turn_id and status is not None and status.strip().lower() in ACTIVE_THREAD_STATUSES:
+                return turn_id, status
+        return None
+
+    def _native_status(self, value: object) -> str | None:
+        if isinstance(value, dict):
+            value = value.get("type") or value.get("status")
+        if value is None:
+            return None
+        status = str(value).strip()
+        return status or None
 
     def _prioritize_threads(
         self,

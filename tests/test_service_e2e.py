@@ -76,6 +76,36 @@ class ScriptedProcess:
         return response
 
 
+class ScriptedWebSocket:
+    def __init__(self, scripts: dict[str, list[dict]]) -> None:
+        self.scripts = scripts
+        self.inputs: list[dict] = []
+        self.messages: asyncio.Queue[str | Exception] = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, raw: str) -> None:
+        payload = json.loads(raw)
+        self.inputs.append(payload)
+        method = payload.get("method")
+        if method == "initialized" or method is None:
+            return
+        for message in self.scripts.get(method, []):
+            response = dict(message)
+            if "method" not in response and "id" in payload:
+                response["id"] = payload["id"]
+            await self.messages.put(json.dumps(response))
+
+    async def recv(self) -> str:
+        message = await self.messages.get()
+        if isinstance(message, Exception):
+            self.closed = True
+            raise message
+        return message
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class CapturingSink:
     def __init__(self) -> None:
         self.messages: list[OutboundMessage] = []
@@ -1100,6 +1130,123 @@ async def test_connection_ready_in_websocket_mode_clears_stale_active_turn_after
             "serviceName": "imcodex-test",
         }
     ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_background_websocket_reconnect_rehydrates_stale_turn_without_new_inbound() -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                        }
+                    }
+                }
+            ],
+        }
+    )
+    sockets = iter([first, second])
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        outbound_sink=CapturingSink(),
+    )
+    client.add_connection_reset_handler(service.handle_connection_reset)
+    client.add_connection_ready_handler(service.handle_connection_ready)
+
+    await client.initialize()
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    first_listener = client._listener_task
+    assert first_listener is not None
+
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(first_listener, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert store.get_active_turn("thr_1") is None
+    assert client.connection_epoch == 2
+    assert client.initialized is True
+    assert [payload["method"] for payload in second.inputs] == [
+        "initialize",
+        "initialized",
+        "thread/resume",
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_background_reconnect_discards_active_turn_when_rehydrate_cannot_verify_it() -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/resume": [
+                {"error": {"code": -32000, "message": "temporarily unavailable"}}
+            ],
+        }
+    )
+    sockets = iter([first, second])
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+        outbound_sink=CapturingSink(),
+    )
+    client.add_connection_reset_handler(service.handle_connection_reset)
+    client.add_connection_ready_handler(service.handle_connection_ready)
+
+    await client.initialize()
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    first_listener = client._listener_task
+    assert first_listener is not None
+
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(first_listener, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert store.get_active_turn("thr_1") is None
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+    assert client.connection_epoch == 2
+    assert client.initialized is True
     await client.close()
 
 

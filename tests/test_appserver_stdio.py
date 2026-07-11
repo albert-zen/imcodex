@@ -5,10 +5,17 @@ import json
 
 import pytest
 
-from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, summarize_transport_message
+from imcodex.appserver import (
+    AppServerClient,
+    AppServerError,
+    AppServerSupervisor,
+    CodexBackend,
+    summarize_transport_message,
+)
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
 from imcodex.appserver.retry import RetryBackoff
 from imcodex.appserver.supervisor import HealthProbeResult, derive_health_probe_urls
+from imcodex.store import ConversationStore
 
 
 class FakeStdout:
@@ -142,7 +149,7 @@ class ScriptedWebSocket:
     def __init__(self, scripts: dict[str, list[dict]]) -> None:
         self.scripts = scripts
         self.sent: list[dict] = []
-        self.messages: asyncio.Queue[str] = asyncio.Queue()
+        self.messages: asyncio.Queue[str | Exception] = asyncio.Queue()
         self.closed = False
 
     async def send(self, data: str) -> None:
@@ -157,7 +164,11 @@ class ScriptedWebSocket:
             await self.messages.put(json.dumps(self._prepare_scripted_message(payload, message)))
 
     async def recv(self) -> str:
-        return await self.messages.get()
+        message = await self.messages.get()
+        if isinstance(message, Exception):
+            self.closed = True
+            raise message
+        return message
 
     async def close(self) -> None:
         self.closed = True
@@ -764,7 +775,17 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
     assert sent[0]["data"]["method"] == "initialize"
     assert received[-1]["data"]["response_id"] == 2
     assert received[-1]["data"]["transport_shape"] == "response"
-    assert observed_health[-1] == {"connected": True, "mode": "shared-ws"}
+    assert observed_health[-1] == {
+        "connected": True,
+        "mode": "shared-ws",
+        "status": "connected",
+        "retry_attempt": None,
+        "retry_delay_s": None,
+        "error_type": None,
+        "health_ok": None,
+        "health_status_code": None,
+        "health_error_type": None,
+    }
     await client.close()
 
 
@@ -814,7 +835,17 @@ async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connecti
         "appserver.connect.started",
         "appserver.connect.websocket_succeeded",
     ]
-    assert observed_health[-1] == {"connected": True, "mode": "dedicated-ws"}
+    assert observed_health[-1] == {
+        "connected": True,
+        "mode": "dedicated-ws",
+        "status": "connected",
+        "retry_attempt": None,
+        "retry_delay_s": None,
+        "error_type": None,
+        "health_ok": None,
+        "health_status_code": None,
+        "health_error_type": None,
+    }
     await client.close()
 
 
@@ -1130,6 +1161,13 @@ async def test_websocket_connection_retries_with_bounded_backoff() -> None:
     await client.close()
 
 
+def test_retry_backoff_clamps_large_attempts_and_jitters_below_the_cap() -> None:
+    retry = RetryBackoff(initial_delay_s=0.5, max_delay_s=30.0, jitter_fraction=0.25)
+
+    assert retry.delay_after_failure(10_000, random_float=lambda: 0.0, downward_jitter=True) == 30.0
+    assert retry.delay_after_failure(10_000, random_float=lambda: 1.0, downward_jitter=True) == 22.5
+
+
 @pytest.mark.asyncio
 async def test_client_retries_native_overload_with_bounded_backoff() -> None:
     process = OverloadThenOkProcess()
@@ -1156,6 +1194,55 @@ async def test_client_retries_native_overload_with_bounded_backoff() -> None:
     assert result == {"threads": []}
     assert process.thread_list_attempts == 2
     assert sleeps == [0.25]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_overload_retry_does_not_replay_a_request_on_a_new_connection_epoch() -> None:
+    first = ScriptedWebSocket(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/list": [
+                {"error": {"code": -32001, "message": "Server overloaded; retry later"}}
+            ],
+        }
+    )
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    sockets = iter([first, second])
+    first_listener: asyncio.Task[None] | None = None
+
+    async def sleep(_delay_s: float) -> None:
+        assert first_listener is not None
+        first.messages.put_nowait(ConnectionError("socket closed during overload backoff"))
+        await asyncio.wait_for(first_listener, timeout=1)
+        reconnect_task = client._reconnect_task
+        if reconnect_task is not None:
+            await asyncio.wait_for(reconnect_task, timeout=1)
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        request_retry_policy=RetryBackoff(
+            max_attempts=2,
+            initial_delay_s=0.25,
+            max_delay_s=1.0,
+            jitter_fraction=0.0,
+        ),
+        sleep=sleep,
+    )
+    await client.initialize()
+    first_listener = client._listener_task
+
+    with pytest.raises(AppServerError, match="retry was cancelled because.*connection changed"):
+        await client.list_threads()
+
+    assert client.connection_epoch == 2
+    assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
     await client.close()
 
 
@@ -1265,7 +1352,17 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
 
     assert client.connection_mode == "spawned-stdio"
     assert client.initialized is True
-    assert observed_health[-1] == {"connected": True, "mode": "spawned-stdio"}
+    assert observed_health[-1] == {
+        "connected": True,
+        "mode": "spawned-stdio",
+        "status": "connected",
+        "retry_attempt": None,
+        "retry_delay_s": None,
+        "error_type": None,
+        "health_ok": None,
+        "health_status_code": None,
+        "health_error_type": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1293,6 +1390,770 @@ async def test_idle_reader_disconnect_notifies_reset_handlers() -> None:
     assert reset_epochs == [1]
     assert client.connection_mode == "disconnected"
     assert client._listener_task is None
+    assert client._reconnect_task is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("core_mode", ["dedicated-ws", "shared-ws"])
+async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound_work(
+    core_mode: str,
+    monkeypatch,
+) -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    websocket_attempts = 0
+    sleeps: list[float] = []
+    ready_epochs: list[int] = []
+    reset_epochs: list[int] = []
+    observed_health: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.mark_appserver_health",
+        lambda **payload: observed_health.append(payload),
+    )
+
+    async def websocket_factory(_url: str):
+        nonlocal websocket_attempts
+        websocket_attempts += 1
+        if websocket_attempts == 1:
+            return first
+        if websocket_attempts == 2:
+            raise OSError("app-server is restarting")
+        return second
+
+    async def health_probe(_urls, _headers, _timeout_s) -> HealthProbeResult:
+        return HealthProbeResult(ok=False, error_type="ConnectionRefusedError")
+
+    async def sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+
+    supervisor = AppServerSupervisor(
+        core_mode=core_mode,
+        core_url="ws://127.0.0.1:9001",
+        app_server_url="ws://127.0.0.1:9001",
+        websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        health_probe=health_probe,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        reconnect_retry_policy=RetryBackoff(
+            initial_delay_s=0.5,
+            max_delay_s=30.0,
+            jitter_fraction=0.0,
+        ),
+        sleep=sleep,
+        random_float=lambda: 0.0,
+    )
+    client.add_connection_ready_handler(lambda epoch: ready_epochs.append(epoch))
+    client.add_connection_reset_handler(lambda epoch: reset_epochs.append(epoch))
+
+    await client.initialize()
+    first_listener = client._listener_task
+    assert first_listener is not None
+
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(first_listener, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert websocket_attempts == 3
+    assert sleeps == [0.5]
+    assert reset_epochs == [1]
+    assert ready_epochs == [1, 2]
+    assert client.connection_epoch == 2
+    assert client.connection_mode == core_mode
+    assert client.initialized is True
+    assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
+    statuses = [payload.get("status") for payload in observed_health]
+    assert "reconnecting" in statuses
+    last_initializing = len(statuses) - 1 - statuses[::-1].index("initializing")
+    assert "connected" in statuses[last_initializing + 1 :]
+    assert statuses[-1] == "connected"
+    assert any(
+        payload.get("retry_attempt") == 2 and payload.get("retry_delay_s") == 0.5
+        for payload in observed_health
+    )
+    assert observed_health[-1] == {
+        "connected": True,
+        "mode": core_mode,
+        "status": "connected",
+        "retry_attempt": None,
+        "retry_delay_s": None,
+        "error_type": None,
+        "health_ok": None,
+        "health_status_code": None,
+        "health_error_type": None,
+    }
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_websocket_preserves_native_recovery_without_background_reconnect() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    supervisor = AppServerSupervisor(
+        core_mode="auto",
+        app_server_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    backend = CodexBackend(
+        client=client,
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex",
+    )
+
+    await client.initialize()
+    listener_task = client._listener_task
+    assert listener_task is not None
+    websocket.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(listener_task, timeout=1)
+
+    assert client.last_connection_mode == "shared-ws"
+    assert backend.prefers_native_recovery() is True
+    assert client._reconnect_task is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_a_sleeping_background_reconnect() -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    websocket_attempts = 0
+    sleep_started = asyncio.Event()
+    sleep_cancelled = asyncio.Event()
+    never_resume = asyncio.Event()
+
+    async def websocket_factory(_url: str):
+        nonlocal websocket_attempts
+        websocket_attempts += 1
+        if websocket_attempts == 1:
+            return first
+        raise OSError("app-server is offline")
+
+    async def health_probe(_urls, _headers, _timeout_s) -> HealthProbeResult:
+        return HealthProbeResult(ok=False, error_type="ConnectionRefusedError")
+
+    async def sleep(_delay_s: float) -> None:
+        sleep_started.set()
+        try:
+            await never_resume.wait()
+        except asyncio.CancelledError:
+            sleep_cancelled.set()
+            raise
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=websocket_factory,
+        websocket_retry_policy=RetryBackoff(max_attempts=1),
+        health_probe=health_probe,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        reconnect_retry_policy=RetryBackoff(initial_delay_s=0.5, max_delay_s=30.0),
+        sleep=sleep,
+    )
+
+    await client.initialize()
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(sleep_started.wait(), timeout=1)
+    await client.close()
+
+    assert sleep_cancelled.is_set()
+    assert client._reconnect_task is None
+    assert client._transport is None
+
+
+@pytest.mark.asyncio
+async def test_connect_finishing_after_close_does_not_install_a_transport() -> None:
+    websocket = ScriptedWebSocket({})
+    connect_started = asyncio.Event()
+    release_connect = asyncio.Event()
+
+    async def websocket_factory(_url: str):
+        connect_started.set()
+        await release_connect.wait()
+        return websocket
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=websocket_factory,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    connect_task = asyncio.create_task(client.connect())
+    await asyncio.wait_for(connect_started.wait(), timeout=1)
+    close_task = asyncio.create_task(client.close())
+    await asyncio.sleep(0)
+    release_connect.set()
+
+    with pytest.raises(AppServerError, match="client is closed"):
+        await connect_task
+    await close_task
+
+    assert websocket.closed is True
+    assert client._transport is None
+    assert client._listener_task is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_serializes_callers_but_ready_owner_can_issue_requests() -> None:
+    websocket = ScriptedWebSocket(
+        {
+            "initialize": [{"result": {"ok": True}}],
+            "thread/list": [{"result": {"threads": []}}],
+            "model/list": [{"result": {"models": []}}],
+        }
+    )
+    handler_rpc_finished = asyncio.Event()
+    release_handler = asyncio.Event()
+
+    async def ready_handler(_epoch: int) -> None:
+        assert await client.list_threads() == {"threads": []}
+        handler_rpc_finished.set()
+        await release_handler.wait()
+
+    supervisor = AppServerSupervisor(
+        app_server_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(ready_handler)
+
+    initialize_task = asyncio.create_task(client.initialize())
+    await asyncio.wait_for(handler_rpc_finished.wait(), timeout=1)
+    concurrent_call = asyncio.create_task(client.list_models())
+    await asyncio.sleep(0)
+
+    assert [payload["method"] for payload in websocket.sent].count("initialize") == 1
+    assert not any(payload.get("method") == "model/list" for payload in websocket.sent)
+
+    release_handler.set()
+    await initialize_task
+    assert await concurrent_call == {"models": []}
+    assert [payload["method"] for payload in websocket.sent].count("initialize") == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connection_change_during_ready_handler_fails_fast_without_false_ready() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+
+    async def ready_handler(_epoch: int) -> None:
+        await client._reset_connection(notify_handlers=False)
+        with pytest.raises(AppServerError, match="connection changed"):
+            await client.list_threads()
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(ready_handler)
+
+    with pytest.raises(AppServerError, match="connection changed"):
+        await asyncio.wait_for(client.initialize(), timeout=1)
+
+    assert client.initialized is False
+    assert client.connection_mode == "disconnected"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ready_owner_fails_while_another_task_is_resetting_the_connection() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    handler_started = asyncio.Event()
+    let_handler_issue_request = asyncio.Event()
+    handler_failed_fast = asyncio.Event()
+    dispatcher_cancelled = asyncio.Event()
+    release_dispatcher = asyncio.Event()
+
+    async def ready_handler(_epoch: int) -> None:
+        handler_started.set()
+        await let_handler_issue_request.wait()
+        with pytest.raises(AppServerError, match="reset during initialization"):
+            await client.list_threads()
+        handler_failed_fast.set()
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(ready_handler)
+
+    initialize_task = asyncio.create_task(client.initialize())
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+    original_dispatcher = client._dispatcher_task
+    assert original_dispatcher is not None
+    original_dispatcher.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await original_dispatcher
+
+    async def gated_dispatcher() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            dispatcher_cancelled.set()
+            await release_dispatcher.wait()
+            raise
+
+    client._dispatcher_task = asyncio.create_task(gated_dispatcher())
+    listener_task = client._listener_task
+    assert listener_task is not None
+    websocket.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(dispatcher_cancelled.wait(), timeout=1)
+
+    let_handler_issue_request.set()
+    await asyncio.wait_for(handler_failed_fast.wait(), timeout=1)
+    assert not any(payload.get("method") == "thread/list" for payload in websocket.sent)
+
+    release_dispatcher.set()
+    with pytest.raises(AppServerError, match="reset during initialization|connection changed"):
+        await asyncio.wait_for(initialize_task, timeout=1)
+    await asyncio.wait_for(listener_task, timeout=1)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_throwing_reset_handler_does_not_stop_background_reconnect(monkeypatch) -> None:
+    observed_events: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.emit_event",
+        lambda **payload: observed_events.append(payload),
+    )
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    sockets = iter([first, second])
+
+    def failing_reset_handler(_epoch: int) -> None:
+        raise RuntimeError("local cleanup failed")
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_reset_handler(failing_reset_handler)
+
+    await client.initialize()
+    listener_task = client._listener_task
+    assert listener_task is not None
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(listener_task, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert client.connection_epoch == 2
+    assert client.initialized is True
+    assert any(
+        event["event"] == "appserver.connection_reset_handler.failed"
+        for event in observed_events
+    )
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_ready_epoch_is_reset_before_the_next_reconnect_attempt() -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    third = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    sockets = iter([first, second, third])
+    ready_epochs: list[int] = []
+    reset_epochs: list[int] = []
+
+    async def ready_handler(epoch: int) -> None:
+        ready_epochs.append(epoch)
+        if epoch == 2:
+            raise RuntimeError("rehydration failed")
+
+    async def sleep(_delay_s: float) -> None:
+        return None
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        reconnect_retry_policy=RetryBackoff(initial_delay_s=0.5, max_delay_s=30.0),
+        sleep=sleep,
+    )
+    client.add_connection_ready_handler(ready_handler)
+    client.add_connection_reset_handler(lambda epoch: reset_epochs.append(epoch))
+
+    await client.initialize()
+    listener_task = client._listener_task
+    assert listener_task is not None
+    first.messages.put_nowait(ConnectionError("socket closed"))
+    await asyncio.wait_for(listener_task, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert ready_epochs == [1, 2, 3]
+    assert reset_epochs == [1, 2]
+    assert second.closed is True
+    assert client.connection_epoch == 3
+    assert client.initialized is True
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_repeatedly_cancelling_reset_waits_for_transport_close_to_finish() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def gated_close() -> None:
+        close_started.set()
+        await release_close.wait()
+        websocket.closed = True
+
+    websocket.close = gated_close  # type: ignore[method-assign]
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    await client.initialize()
+
+    reset_task = asyncio.create_task(client._reset_connection())
+    client._reconnect_task = reset_task
+    await asyncio.wait_for(close_started.wait(), timeout=1)
+    close_task = asyncio.create_task(client.close())
+    await asyncio.sleep(0)
+    reset_task.cancel()
+    await asyncio.sleep(0)
+    release_close.set()
+    await asyncio.wait_for(close_task, timeout=1)
+
+    assert reset_task.cancelled()
+    assert websocket.closed is True
+    assert client._transport is None
+    assert client._listener_task is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_rejects_cached_success_after_close_begins() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def gated_close() -> None:
+        close_started.set()
+        await release_close.wait()
+        websocket.closed = True
+
+    websocket.close = gated_close  # type: ignore[method-assign]
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    await client.initialize()
+
+    close_task = asyncio.create_task(client.close())
+    await asyncio.wait_for(close_started.wait(), timeout=1)
+    with pytest.raises(AppServerError, match="client is closed"):
+        await client.initialize()
+    release_close.set()
+    await asyncio.wait_for(close_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_cancelling_ready_handlers_resets_the_half_ready_transport() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    handler_started = asyncio.Event()
+
+    async def ready_handler(_epoch: int) -> None:
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(ready_handler)
+
+    initialize_task = asyncio.create_task(client.initialize())
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+    initialize_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await initialize_task
+
+    assert websocket.closed is True
+    assert client._transport is None
+    assert client.initialized is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_handlers_cannot_reenter_client_while_initialize_owns_its_lock() -> None:
+    process = ScriptedProcess({"initialize": [{"result": {"ok": True}}]})
+    handler_started = asyncio.Event()
+    reset_handler_finished = asyncio.Event()
+    process_starts = 0
+
+    def spawn_process(*_args):
+        nonlocal process_starts
+        process_starts += 1
+        return process
+
+    async def ready_handler(_epoch: int) -> None:
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    async def reset_handler(_epoch: int) -> None:
+        with pytest.raises(AppServerError, match="reset during initialization"):
+            await client.list_threads()
+        reset_handler_finished.set()
+
+    supervisor = AppServerSupervisor(
+        core_mode="spawned-stdio",
+        spawn_process=spawn_process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(ready_handler)
+    client.add_connection_reset_handler(reset_handler)
+
+    initialize_task = asyncio.create_task(client.initialize())
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+    initialize_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(initialize_task, timeout=1)
+
+    assert reset_handler_finished.is_set()
+    assert process_starts == 1
+    assert client._initialize_lock.locked() is False
+    assert client._resetting is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reset_handler_reentry_fails_if_another_initialize_takes_the_lock_late() -> None:
+    first = ScriptedProcess({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedProcess({"initialize": [{"result": {"ok": True}}]})
+    processes = iter([first, second])
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    handler_failed_fast = asyncio.Event()
+
+    async def reset_handler(_epoch: int) -> None:
+        handler_started.set()
+        await release_handler.wait()
+        with pytest.raises(AppServerError, match="reset during initialization"):
+            await client.list_threads()
+        handler_failed_fast.set()
+
+    supervisor = AppServerSupervisor(
+        core_mode="spawned-stdio",
+        spawn_process=lambda *_args: next(processes),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    await client.initialize()
+    client.add_connection_reset_handler(reset_handler)
+
+    reset_task = asyncio.create_task(client._reset_connection())
+    await asyncio.wait_for(handler_started.wait(), timeout=1)
+    initialize_task = asyncio.create_task(client.initialize())
+    for _ in range(20):
+        if client._initialize_lock_owner_task is initialize_task:
+            break
+        await asyncio.sleep(0)
+    assert client._initialize_lock_owner_task is initialize_task
+
+    release_handler.set()
+    await asyncio.wait_for(handler_failed_fast.wait(), timeout=1)
+    await asyncio.wait_for(reset_task, timeout=1)
+    await asyncio.wait_for(initialize_task, timeout=1)
+
+    assert client.connection_epoch == 2
+    assert client.initialized is True
+    assert client._initialize_lock.locked() is False
+    assert client._resetting is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_that_initiates_reset_exits_with_its_connection_epoch() -> None:
+    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    reset_finished = asyncio.Event()
+
+    async def reset_from_dispatcher(_request: dict) -> None:
+        await client._reset_connection(notify_handlers=False)
+        reset_finished.set()
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_server_request_handler(reset_from_dispatcher)
+    await client.initialize()
+    old_dispatcher = client._dispatcher_task
+    assert old_dispatcher is not None
+
+    websocket.messages.put_nowait(
+        json.dumps(
+            {
+                "id": 91,
+                "method": "item/tool/requestUserInput",
+                "params": {"threadId": "thr_1", "turnId": "turn_1"},
+            }
+        )
+    )
+    await asyncio.wait_for(reset_finished.wait(), timeout=1)
+    await asyncio.wait_for(old_dispatcher, timeout=1)
+
+    assert old_dispatcher.done()
+    assert client._dispatcher_task is None
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_server_reply_resets_and_reconnects_without_replaying_the_reply() -> None:
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    original_send = first.send
+    reply_failed = asyncio.Event()
+    sockets = iter([first, second])
+
+    async def fail_response_frame(raw: str) -> None:
+        payload = json.loads(raw)
+        if payload.get("id") == 91 and "result" in payload:
+            raise ConnectionError("socket write failed")
+        await original_send(raw)
+
+    first.send = fail_response_frame  # type: ignore[method-assign]
+
+    async def reply_from_dispatcher(request: dict) -> None:
+        try:
+            await client.reply_to_transport_request(
+                request["params"]["_transport_request_id"],
+                {"decision": "accept"},
+                expected_connection_epoch=request["params"]["_connection_epoch"],
+            )
+        except ConnectionError:
+            reply_failed.set()
+
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: next(sockets),
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_server_request_handler(reply_from_dispatcher)
+    await client.initialize()
+    old_dispatcher = client._dispatcher_task
+    assert old_dispatcher is not None
+
+    first.messages.put_nowait(
+        json.dumps(
+            {
+                "id": 91,
+                "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": "thr_1", "turnId": "turn_1"},
+            }
+        )
+    )
+    await asyncio.wait_for(reply_failed.wait(), timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+    await asyncio.wait_for(old_dispatcher, timeout=1)
+
+    assert client.connection_epoch == 2
+    assert client.initialized is True
+    assert old_dispatcher.done()
+    assert not any(payload.get("id") == 91 for payload in second.sent)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_old_epoch_response_and_server_reply_cannot_cross_connections() -> None:
+    websocket = ScriptedWebSocket({})
+    supervisor = AppServerSupervisor(
+        core_mode="dedicated-ws",
+        core_url="ws://127.0.0.1:9001",
+        websocket_factory=lambda _url: websocket,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    await client.connect()
+    client.connection_epoch = 2
+    future = asyncio.get_running_loop().create_future()
+    client._pending_futures[77] = (2, future)
+
+    assert client._dispatch_response({"id": 77, "result": {"from": "old"}}, 1) is True
+    assert future.done() is False
+    assert client._dispatch_response({"id": 77, "result": {"from": "current"}}, 2) is True
+    assert await future == {"id": 77, "result": {"from": "current"}}
+
+    with pytest.raises(AppServerError, match="expired app-server connection"):
+        await client.reply_to_transport_request(
+            91,
+            {"decision": "accept"},
+            expected_connection_epoch=1,
+        )
+    assert not any(payload.get("id") == 91 for payload in websocket.sent)
+    client._pending_futures.pop(77, None)
     await client.close()
 
 

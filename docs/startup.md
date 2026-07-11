@@ -59,6 +59,9 @@ IMCODEX_APP_SERVER_RETRY_MAX_DELAY=2.0
 IMCODEX_APP_SERVER_RETRY_JITTER=0.25
 IMCODEX_APP_SERVER_CONNECT_TIMEOUT=3.0
 IMCODEX_APP_SERVER_HEALTH_TIMEOUT=1.0
+IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY=0.5
+IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY=30.0
+IMCODEX_APP_SERVER_RECONNECT_JITTER=0.25
 ```
 
 Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
@@ -78,6 +81,22 @@ to launch snapshots. Websocket connect failures and native overload responses
 use bounded exponential retry with jitter; dedicated/shared websocket modes also
 probe derived `/readyz` then `/healthz` HTTP endpoints before reporting the core
 as unavailable.
+
+Initial startup stays bounded by `IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS` and
+fails explicitly when the configured core is unavailable. After a
+`dedicated-ws` or `shared-ws` connection has completed initialization once, an
+unexpected disconnect starts an independent background recovery loop. The loop
+retries until the bridge shuts down, with delay capped by
+`IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`; `spawned-stdio` and `auto` do not use
+this background loop. Shutdown cancels any pending retry.
+
+A transport connection is not considered fully restored on its own. Each new
+connection epoch reruns native `initialize`, permission defaults, and bound
+thread rehydration before health reports `appserver.status=connected`. During
+recovery, `health.json` reports `appserver.status=reconnecting` together with
+the current retry attempt and delay. Recovery does not wait for another IM
+message. Reconnect delays must be positive, the maximum must be at least the
+initial delay, and jitter must be between `0` and `1`.
 
 ### Recommended: dedicated core + bridge
 
@@ -115,6 +134,10 @@ Protocol troubleshooting data is written under `.imcodex-run/current/`:
 bridge. The summaries include transport shape, method names, request ids,
 thread and turn ids, and short previews for diagnostic fields, but they avoid
 recording full native payloads.
+
+Reconnect history is recorded as `appserver.reconnect.scheduled`,
+`appserver.reconnect.failed`, and `appserver.reconnect.succeeded` events with
+attempt, delay, error type, and restored connection epoch where applicable.
 
 Managed IM channels reconnect in the background. QQ and Feishu use websocket
 connections; Telegram and experimental Weixin use cancellable long polling.

@@ -213,6 +213,13 @@ Codex version requirement:
 - `IMCODEX_APP_SERVER_RETRY_JITTER`: retry jitter fraction, default `0.25`
 - `IMCODEX_APP_SERVER_CONNECT_TIMEOUT`: websocket open timeout in seconds, default `3.0`
 - `IMCODEX_APP_SERVER_HEALTH_TIMEOUT`: `/readyz`/`/healthz` probe timeout in seconds, default `1.0`
+- `IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY`: first background reconnect delay after an immediate retry fails, default `0.5`
+- `IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`: maximum background reconnect delay, default `30.0`
+- `IMCODEX_APP_SERVER_RECONNECT_JITTER`: background reconnect jitter fraction, default `0.25`
+
+Reconnect delays must be positive, the maximum must be at least the initial
+delay, and jitter must be between `0` and `1`.
+
 - `IMCODEX_CORE_MODE`: Codex core mode, default `spawned-stdio`
 - `IMCODEX_CORE_URL`: optional dedicated Codex core websocket URL
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command

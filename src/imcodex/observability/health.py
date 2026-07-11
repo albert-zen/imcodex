@@ -27,7 +27,7 @@ class HealthWriter:
             "status": "starting",
             "http": {"listening": False, "host": context.http_host, "port": context.http_port},
             "channels": {},
-            "appserver": {"connected": False, "mode": None},
+            "appserver": {"connected": False, "mode": None, "status": "disconnected"},
             "updated_at": self.clock().astimezone().isoformat(),
         }
         self._write_payload(copy.deepcopy(self._state))

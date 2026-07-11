@@ -30,11 +30,25 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         route = self.store.get_pending_request(request_id)
         if route is None or route.transport_request_id is None:
             raise AppServerError(f"unknown pending request: {request_id}")
-        await self.reply_to_transport_request(route.transport_request_id, decision_or_answers)
+        await self.reply_to_transport_request(
+            route.transport_request_id,
+            decision_or_answers,
+            connection_epoch=route.connection_epoch,
+        )
         self.store.remove_pending_request(request_id)
 
-    async def reply_to_transport_request(self, transport_request_id: str | int, result: dict) -> None:
-        await self.client.reply_to_transport_request(transport_request_id, result)
+    async def reply_to_transport_request(
+        self,
+        transport_request_id: str | int,
+        result: dict,
+        *,
+        connection_epoch: int | None = None,
+    ) -> None:
+        await self.client.reply_to_transport_request(
+            transport_request_id,
+            result,
+            expected_connection_epoch=connection_epoch,
+        )
 
     async def reply_error_to_server_request(
         self,
@@ -52,6 +66,7 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
             code=code,
             message=message,
             data=data,
+            expected_connection_epoch=route.connection_epoch,
         )
         self.store.remove_pending_request(request_id)
 
@@ -62,10 +77,12 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         code: int,
         message: str,
         data: object | None = None,
+        connection_epoch: int | None = None,
     ) -> None:
         await self.client.reply_error_to_transport_request(
             transport_request_id,
             code=code,
             message=message,
             data=data,
+            expected_connection_epoch=connection_epoch,
         )

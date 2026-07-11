@@ -43,6 +43,7 @@ class NativeRequestPolicy:
                     "method": event.method,
                     "requestId": event.request_id,
                 },
+                connection_epoch=self._connection_epoch(request),
             )
         emit_event(
             component="bridge",
@@ -78,3 +79,13 @@ class NativeRequestPolicy:
             if transport_request_id is not None:
                 return transport_request_id
         return request.get("id")
+
+    def _connection_epoch(self, request: dict) -> int | None:
+        params = request.get("params")
+        if not isinstance(params, dict):
+            return None
+        try:
+            epoch = int(params.get("_connection_epoch") or 0)
+        except (TypeError, ValueError):
+            return None
+        return epoch or None
