@@ -11,13 +11,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_SCRIPT = REPO_ROOT / "scripts" / "doctor.ps1"
 
 
-def test_windows_doctor_matches_launcher_interpreter_and_core_defaults() -> None:
+def test_windows_doctor_matches_launcher_interpreter_and_target_model() -> None:
     script = DOCTOR_SCRIPT.read_text(encoding="utf-8")
 
     assert ".venv\\Scripts\\python.exe" in script
     assert ".venv/bin/python" in script
-    assert 'Get-Setting "IMCODEX_CORE_MODE" "dedicated-ws"' in script
-    assert "ws://127.0.0.1:$corePort" in script
+    assert "from imcodex.config import load_app_server_target" in script
+    assert 'Get-Setting "IMCODEX_DATA_DIR" ".imcodex"' in script
+    assert "Unix control sockets require WSL/macOS/Linux" in script
+    assert "python -m imcodex channels doctor" in script
     assert "??" not in script
     assert "shared-ws probe + stdio fallback" not in script
 

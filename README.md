@@ -11,9 +11,8 @@ The codebase now follows a simple three-layer shape plus a thin wiring root:
 - `imcodex.bridge`
   Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
 - `imcodex.appserver`
-  Owns native Codex `app-server` integration across the supported runtime modes:
-  dedicated websocket cores, externally managed websocket cores, and
-  bridge-managed local `stdio` supervision.
+  Owns native Codex `app-server` integration for external Unix/TCP endpoints
+  and the explicit bridge-child `stdio` compatibility target.
 
 Supporting modules:
 
@@ -43,9 +42,17 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 
 ## Run
 
-```powershell
+On macOS/Linux, start the native App Server first, then the bridge:
+
+```bash
+python -m imcodex app-server start
+export IMCODEX_APP_SERVER_URL=unix://
 python -m imcodex
 ```
+
+On native Windows, use the launcher below or explicitly choose
+`IMCODEX_APP_SERVER_URL=stdio://`; the Python Unix connector is unavailable
+outside WSL.
 
 Helper scripts:
 
@@ -93,7 +100,6 @@ itself launches Codex from the standalone managed install reported by `status`.
 On macOS/Linux, connect the bridge to that independently owned daemon with:
 
 ```bash
-export IMCODEX_CORE_MODE=shared-ws
 export IMCODEX_APP_SERVER_URL=unix://
 python -m imcodex
 ```
@@ -134,24 +140,23 @@ Persisted bridge state is intentionally small:
 - channel reply context
 - pending native request routing
 
-## Runtime Modes
+## App Server Target
 
-`imcodex` intentionally supports more than one Codex-core runtime shape.
+Normal operation no longer has separate `dedicated-ws` and `shared-ws` modes.
+From the bridge's perspective both were the same external, persistent App
+Server. Configure the target directly:
 
-- `dedicated-ws`
-  Recommended for day-to-day IM use. Run a long-lived Codex core separately and
-  point the bridge at it.
-- `shared-ws`
-  Supported when another process already manages a websocket Codex core and the
-  bridge should attach to it.
-- `spawned-stdio`
-  Supported as a bridge-managed compatibility mode for local checks, fallback,
-  and some test paths.
+- `unix://` or `unix:///absolute/path`: external Unix WebSocket, preferred locally
+- `ws://` or `wss://`: external TCP WebSocket compatibility
+- `stdio://`: explicit bridge-child compatibility target
 
-We do **not** currently treat dedicated core as the only valid mode. The
-bridge must stay clear about which mode it is using, and changes should not
-silently remove support for the other documented paths without an explicit
-follow-up decision.
+External targets preserve native App Server state across bridge restarts and
+use background reconnect. `stdio://` lives and dies with the bridge and never
+acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
+accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
+rejected because it silently changed which App Server owned a request. Native
+Windows cannot use the Unix connector; configure `stdio://`, WSL, or an explicit
+TCP WebSocket endpoint there.
 
 ## Channels
 
@@ -233,9 +238,9 @@ Codex version requirement:
 - `IMCODEX_DATA_DIR`: state directory, default `.imcodex`
 - `IMCODEX_RUN_DIR`: observability and runtime snapshot directory, default `.imcodex-run`
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
-- `IMCODEX_APP_SERVER_URL`: optional endpoint for a shared Codex app-server;
-  accepts `ws://`/`wss://`, or `unix://` on macOS/Linux for Codex's default
-  local control socket
+- `IMCODEX_APP_SERVER_URL`: App Server target; accepts external
+  `unix://`/`ws://`/`wss://` endpoints or explicit compatibility `stdio://`;
+  defaults to `unix://`
 - `IMCODEX_APP_SERVER_EXPERIMENTAL_API`: opt into experimental native app-server capabilities, default `false`
 - `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE`: optional file containing the websocket bearer token
 - `IMCODEX_APP_SERVER_AUTH_TOKEN`: optional websocket bearer token; takes precedence over the token file and is not written to launch snapshots
@@ -253,9 +258,9 @@ Codex version requirement:
 Reconnect delays must be positive, the maximum must be at least the initial
 delay, and jitter must be between `0` and `1`.
 
-- `IMCODEX_CORE_MODE`: Codex core mode, default `spawned-stdio`
-- `IMCODEX_CORE_URL`: optional dedicated Codex core endpoint; accepts the same
-  `ws://`/`wss://`/`unix://` forms as `IMCODEX_APP_SERVER_URL`
+- `IMCODEX_CORE_MODE`: deprecated compatibility alias; `dedicated-ws` and
+  `shared-ws` mean external, `spawned-stdio` means `stdio://`, and `auto` is rejected
+- `IMCODEX_CORE_URL`: deprecated alias for `IMCODEX_APP_SERVER_URL`
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command
 - `IMCODEX_DEBUG_API_ENABLED`: enable debug HTTP routes, default `false`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`

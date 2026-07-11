@@ -188,6 +188,7 @@ class ThreadOpsClient:
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
+        ("external", True),
         ("dedicated-ws", True),
         ("shared-ws", True),
         ("spawned-stdio", False),

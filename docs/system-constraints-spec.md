@@ -282,7 +282,8 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
 - default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
 - reconnect and rehydrate logic MUST reconcile native thread state before trusting any previously cached local `active_turn`
-- an established external websocket mode explicitly configured to preserve App Server state (`dedicated-ws` or `shared-ws`) MUST reconnect in the background after an unexpected disconnect; a new inbound IM message MUST NOT be the recovery trigger
+- an established external App Server target MUST reconnect in the background after an unexpected disconnect; a new inbound IM message MUST NOT be the recovery trigger
+- an external connection failure MUST NOT silently spawn or select another App Server; `stdio://` is an explicit bridge-child compatibility target only
 - background reconnect delay MUST be capped and jittered, while retrying until recovery succeeds or bridge shutdown begins
 - connect and initialize work MUST be serialized so that each connection epoch has at most one handshake
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch

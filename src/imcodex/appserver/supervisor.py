@@ -15,6 +15,11 @@ import websockets
 
 from ..observability.runtime import emit_event
 from .retry import RetryBackoff
+from ..app_server_target import (
+    SPAWNED_STDIO_CONNECTION_MODE,
+    AppServerTarget,
+    resolve_app_server_target,
+)
 
 
 SpawnProcess = Callable[..., Awaitable[Any] | Any]
@@ -165,7 +170,7 @@ def _default_health_probe_sync(
 class AppServerSupervisor:
     codex_bin: str = "codex"
     app_server_url: str | None = None
-    core_mode: str = "auto"
+    core_mode: str | None = None
     core_url: str | None = None
     app_server_auth_token: str | None = None
     app_server_auth_token_file: str | os.PathLike[str] | None = None
@@ -178,10 +183,18 @@ class AppServerSupervisor:
     health_probe: HealthProbe | None = None
     sleep: Sleep | None = None
     random_float: Callable[[], float] | None = None
-    shared_app_server_url: str = "ws://127.0.0.1:8765"
     _process: Any = None
     _connection_mode: str = "disconnected"
     _last_connect_diagnostic: dict[str, Any] | None = None
+    _target: AppServerTarget = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._target = resolve_app_server_target(
+            app_server_url=self.app_server_url,
+            core_url=self.core_url,
+            core_mode=self.core_mode,
+        )
+        self.app_server_url = self._target.endpoint
 
     def build_command(self) -> list[str]:
         return [self.codex_bin, "app-server", "--listen", "stdio://"]
@@ -199,8 +212,20 @@ class AppServerSupervisor:
         return dict(self._last_connect_diagnostic or {}) or None
 
     @property
+    def target(self) -> AppServerTarget:
+        return self._target
+
+    @property
+    def connection_target(self) -> str:
+        return self._target.endpoint
+
+    @property
     def supports_background_reconnect(self) -> bool:
-        return self.core_mode in {"dedicated-ws", "shared-ws"}
+        return self._target.preserves_server_state
+
+    @property
+    def spawns_stdio(self) -> bool:
+        return not self._target.is_external
 
     def websocket_headers(self) -> dict[str, str]:
         token = self._resolve_bearer_token()
@@ -208,44 +233,41 @@ class AppServerSupervisor:
             return {}
         return {"Authorization": f"Bearer {token}"}
 
-    async def connect_shared(self) -> Any | None:
+    async def connect_external(self) -> Any | None:
         self._last_connect_diagnostic = None
-        if self.core_mode == "spawned-stdio":
+        if not self._target.is_external:
             return None
         headers = self.websocket_headers()
         connect = self.websocket_factory or _default_connect
-        for url in self._shared_candidates():
-            try:
-                _validate_unix_endpoint(url)
-            except (ValueError, OSError) as exc:
-                self._last_connect_diagnostic = {
-                    "url": _safe_url_label(url),
-                    "error_type": type(exc).__name__,
-                }
-                raise
-            connection = await self._connect_with_retries(connect, url, headers)
-            if connection is None:
-                if self._should_probe_health():
-                    await self._probe_health(url, headers)
-                continue
-            self._connection_mode = self._websocket_connection_mode()
-            return connection
-        return None
-
-    @property
-    def allow_spawn_fallback(self) -> bool:
-        return self.core_mode in {"spawned-stdio", "auto"}
+        url = self._target.endpoint
+        try:
+            _validate_unix_endpoint(url)
+        except (ValueError, OSError) as exc:
+            self._last_connect_diagnostic = {
+                "url": _safe_url_label(url),
+                "error_type": type(exc).__name__,
+            }
+            raise
+        connection = await self._connect_with_retries(connect, url, headers)
+        if connection is None:
+            if self._should_probe_health():
+                await self._probe_health(url, headers)
+            return None
+        self._connection_mode = self._target.connection_mode
+        return connection
 
     async def start(self) -> Any:
+        if not self.spawns_stdio:
+            raise RuntimeError("external App Server lifecycle is not owned by the bridge")
         if self._process is not None and getattr(self._process, "returncode", None) is None:
-            self._connection_mode = "spawned-stdio"
+            self._connection_mode = SPAWNED_STDIO_CONNECTION_MODE
             return self._process
         spawn = self.spawn_process or self._default_spawn
         process = spawn(*self.build_command())
         if inspect.isawaitable(process):
             process = await process
         self._process = process
-        self._connection_mode = "spawned-stdio"
+        self._connection_mode = SPAWNED_STDIO_CONNECTION_MODE
         return process
 
     async def stop(self) -> None:
@@ -300,22 +322,6 @@ class AppServerSupervisor:
         if resolved:
             return (resolved, *command[1:])
         return command
-
-    def _shared_candidates(self) -> list[str]:
-        if self.core_mode == "dedicated-ws":
-            return [self.core_url or self.app_server_url or self.shared_app_server_url]
-        if self.core_mode == "shared-ws":
-            return [self.app_server_url or self.core_url or self.shared_app_server_url]
-        if self.core_mode == "auto":
-            if self.core_url or self.app_server_url:
-                return [self.core_url or self.app_server_url or self.shared_app_server_url]
-            return [self.shared_app_server_url]
-        return []
-
-    def _websocket_connection_mode(self) -> str:
-        if self.core_mode == "dedicated-ws":
-            return "dedicated-ws"
-        return "shared-ws"
 
     async def _connect_with_retries(
         self,
@@ -453,7 +459,7 @@ class AppServerSupervisor:
         return token
 
     def _should_probe_health(self) -> bool:
-        return self.core_mode in {"dedicated-ws", "shared-ws"}
+        return self._target.transport == "tcp-websocket"
 
 
 async def _default_connect(url: str, **kwargs: Any) -> Any:

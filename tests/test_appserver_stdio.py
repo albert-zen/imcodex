@@ -733,7 +733,7 @@ async def test_client_uses_explicit_websocket_app_server_before_spawning() -> No
     assert result == {"threads": []}
     assert captured_urls == ["ws://127.0.0.1:9999"]
     assert spawned is False
-    assert client.connection_mode == "shared-ws"
+    assert client.connection_mode == "external"
     assert websocket.sent[0]["method"] == "initialize"
     assert websocket.sent[0]["params"]["capabilities"]["optOutNotificationMethods"] == list(
         DEFAULT_OPT_OUT_NOTIFICATION_METHODS
@@ -787,7 +787,7 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
     assert received[-1]["data"]["transport_shape"] == "response"
     assert observed_health[-1] == {
         "connected": True,
-        "mode": "shared-ws",
+        "mode": "external",
         "status": "connected",
         "retry_attempt": None,
         "retry_delay_s": None,
@@ -800,7 +800,7 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
 
 
 @pytest.mark.asyncio
-async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connection(monkeypatch) -> None:
+async def test_legacy_dedicated_mode_reports_canonical_external_connection(monkeypatch) -> None:
     observed_events: list[dict] = []
     observed_health: list[dict] = []
 
@@ -839,7 +839,7 @@ async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connecti
     await client.list_threads()
 
     assert captured_urls == ["ws://127.0.0.1:9001"]
-    assert client.connection_mode == "dedicated-ws"
+    assert client.connection_mode == "external"
     event_names = [event["event"] for event in observed_events]
     assert event_names[:2] == [
         "appserver.connect.started",
@@ -847,7 +847,7 @@ async def test_client_reports_dedicated_ws_mode_for_dedicated_websocket_connecti
     ]
     assert observed_health[-1] == {
         "connected": True,
-        "mode": "dedicated-ws",
+        "mode": "external",
         "status": "connected",
         "retry_attempt": None,
         "retry_delay_s": None,
@@ -1149,10 +1149,10 @@ async def test_default_unix_connector_performs_a_real_websocket_upgrade(tmp_path
             core_mode="shared-ws",
             app_server_url=f"unix://{socket_path.as_posix()}",
         )
-        connection = await supervisor.connect_shared()
+        connection = await supervisor.connect_external()
 
         assert connection is not None
-        assert supervisor.connection_mode == "shared-ws"
+        assert supervisor.connection_mode == "external"
         await connection.close()
 
 
@@ -1176,13 +1176,13 @@ async def test_unix_connect_failure_does_not_run_an_http_health_probe(tmp_path) 
         health_probe=health_probe,
     )
 
-    assert await supervisor.connect_shared() is None
+    assert await supervisor.connect_external() is None
     assert health_probe_called is False
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("core_mode", ["dedicated-ws", "shared-ws"])
-async def test_persistent_modes_connect_to_unix_websocket_without_changing_mode_label(
+async def test_legacy_websocket_modes_collapse_to_external_on_unix(
     core_mode: str,
     tmp_path,
 ) -> None:
@@ -1226,7 +1226,7 @@ async def test_persistent_modes_connect_to_unix_websocket_without_changing_mode_
         "open_timeout": 0.75,
         "additional_headers": {"Authorization": "Bearer local-token"},
     }
-    assert client.connection_mode == core_mode
+    assert client.connection_mode == "external"
     await client.close()
 
 
@@ -1268,133 +1268,8 @@ async def test_persistent_unix_websocket_reconnects_through_the_same_socket(tmp_
     assert connected_paths == [str(socket_path), str(socket_path)]
     assert ready_epochs == [1, 2]
     assert client.connection_epoch == 2
-    assert client.connection_mode == "dedicated-ws"
+    assert client.connection_mode == "external"
     assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_auto_unix_success_keeps_native_recovery_without_background_reconnect(
-    tmp_path,
-) -> None:
-    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
-    unix_attempts = 0
-
-    async def unix_websocket_factory(_path: str, **_kwargs):
-        nonlocal unix_attempts
-        unix_attempts += 1
-        return websocket
-
-    supervisor = AppServerSupervisor(
-        core_mode="auto",
-        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
-        unix_websocket_factory=unix_websocket_factory,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
-    )
-    backend = CodexBackend(
-        client=client,
-        store=ConversationStore(clock=lambda: 1.0),
-        service_name="imcodex",
-    )
-
-    await client.initialize()
-    listener_task = client._listener_task
-    assert listener_task is not None
-    websocket.messages.put_nowait(ConnectionError("control socket closed"))
-    await asyncio.wait_for(listener_task, timeout=1)
-
-    assert unix_attempts == 1
-    assert client.last_connection_mode == "shared-ws"
-    assert backend.prefers_native_recovery() is True
-    assert client._reconnect_task is None
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_auto_unix_failure_preserves_existing_stdio_fallback(tmp_path) -> None:
-    process = ScriptedProcess(
-        {
-            "initialize": [{"result": {"ok": True}}],
-            "thread/list": [{"result": {"threads": []}}],
-        }
-    )
-    unix_attempts = 0
-
-    async def unix_websocket_factory(_path: str, **_kwargs):
-        nonlocal unix_attempts
-        unix_attempts += 1
-        raise OSError("control socket unavailable")
-
-    supervisor = AppServerSupervisor(
-        core_mode="auto",
-        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
-        unix_websocket_factory=unix_websocket_factory,
-        websocket_retry_policy=RetryBackoff(max_attempts=1),
-        spawn_process=lambda *_args: process,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
-    )
-
-    assert await client.list_threads() == {"threads": []}
-    assert unix_attempts == 1
-    assert client.connection_mode == "spawned-stdio"
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_invalid_unix_endpoint_configuration_does_not_fall_back_to_stdio() -> None:
-    spawned = False
-
-    async def spawn_process(*_args):
-        nonlocal spawned
-        spawned = True
-        raise AssertionError("invalid unix configuration must fail explicitly")
-
-    supervisor = AppServerSupervisor(
-        core_mode="auto",
-        core_url="UNIX:///tmp/app-server-control.sock",
-        spawn_process=spawn_process,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
-    )
-
-    with pytest.raises(AppServerError, match="must use the lowercase unix:// prefix"):
-        await client.connect()
-
-    assert spawned is False
-
-
-@pytest.mark.asyncio
-async def test_spawned_stdio_ignores_configured_unix_endpoint(tmp_path) -> None:
-    process = ScriptedProcess({"initialize": [{"result": {"ok": True}}]})
-    unix_attempted = False
-
-    async def unix_websocket_factory(_path: str, **_kwargs):
-        nonlocal unix_attempted
-        unix_attempted = True
-        raise AssertionError("spawned stdio mode must not connect to unix endpoints")
-
-    supervisor = AppServerSupervisor(
-        core_mode="spawned-stdio",
-        core_url=f"unix://{(tmp_path / 'control.sock').as_posix()}",
-        unix_websocket_factory=unix_websocket_factory,
-        spawn_process=lambda *_args: process,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
-    )
-
-    await client.initialize()
-    assert unix_attempted is False
-    assert client.connection_mode == "spawned-stdio"
     await client.close()
 
 
@@ -1597,22 +1472,25 @@ async def test_overload_retry_does_not_replay_a_request_on_a_new_connection_epoc
 
 
 @pytest.mark.asyncio
-async def test_client_probes_default_websocket_app_server_before_spawning() -> None:
+async def test_client_defaults_to_the_native_unix_app_server(monkeypatch, tmp_path) -> None:
     websocket = ScriptedWebSocket(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
             "thread/list": [{"id": 2, "result": {"threads": []}}],
         }
     )
-    captured_urls: list[str] = []
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    captured_paths: list[str] = []
 
-    async def websocket_factory(url: str):
-        captured_urls.append(url)
+    async def unix_websocket_factory(path: str, **_kwargs):
+        captured_paths.append(path)
         return websocket
 
     supervisor = AppServerSupervisor(
         codex_bin="codex",
-        websocket_factory=websocket_factory,
+        unix_websocket_factory=unix_websocket_factory,
     )
     client = AppServerClient(
         supervisor=supervisor,
@@ -1622,45 +1500,44 @@ async def test_client_probes_default_websocket_app_server_before_spawning() -> N
     result = await client.list_threads()
 
     assert result == {"threads": []}
-    assert captured_urls == ["ws://127.0.0.1:8765"]
-    assert client.connection_mode == "shared-ws"
+    assert captured_paths == [
+        str(codex_home / "app-server-control" / "app-server-control.sock")
+    ]
+    assert client.connection_mode == "external"
     await client.close()
 
 
 @pytest.mark.asyncio
-async def test_client_falls_back_to_stdio_when_websocket_connection_fails() -> None:
-    process = ScriptedProcess(
-        {
-            "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/list": [{"id": 2, "result": {"threads": []}}],
-        }
-    )
+async def test_external_connection_failure_never_falls_back_to_stdio() -> None:
     captured_urls: list[str] = []
+    spawned = False
 
     async def websocket_factory(url: str):
         captured_urls.append(url)
         raise OSError("connection refused")
 
+    async def spawn_process(*_args):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("external connection failure must not spawn another App Server")
+
     supervisor = AppServerSupervisor(
         codex_bin="codex",
+        app_server_url="ws://127.0.0.1:8765",
         websocket_factory=websocket_factory,
         websocket_retry_policy=RetryBackoff(max_attempts=1),
-        spawn_process=lambda *args: process,
+        spawn_process=spawn_process,
     )
     client = AppServerClient(
         supervisor=supervisor,
         client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
     )
 
-    result = await client.list_threads()
+    with pytest.raises(AppServerError, match="external app-server"):
+        await client.list_threads()
 
-    assert result == {"threads": []}
     assert captured_urls == ["ws://127.0.0.1:8765"]
-    assert client.connection_mode == "spawned-stdio"
-    assert process.sent[0]["method"] == "initialize"
-    assert process.sent[0]["params"]["capabilities"]["optOutNotificationMethods"] == list(
-        DEFAULT_OPT_OUT_NOTIFICATION_METHODS
-    )
+    assert spawned is False
     await client.close()
 
 
@@ -1814,7 +1691,7 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
     assert reset_epochs == [1]
     assert ready_epochs == [1, 2]
     assert client.connection_epoch == 2
-    assert client.connection_mode == core_mode
+    assert client.connection_mode == "external"
     assert client.initialized is True
     assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
     statuses = [payload.get("status") for payload in observed_health]
@@ -1828,7 +1705,7 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
     )
     assert observed_health[-1] == {
         "connected": True,
-        "mode": core_mode,
+        "mode": "external",
         "status": "connected",
         "retry_attempt": None,
         "retry_delay_s": None,
@@ -1837,36 +1714,6 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
         "health_status_code": None,
         "health_error_type": None,
     }
-    await client.close()
-
-
-@pytest.mark.asyncio
-async def test_auto_websocket_preserves_native_recovery_without_background_reconnect() -> None:
-    websocket = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
-    supervisor = AppServerSupervisor(
-        core_mode="auto",
-        app_server_url="ws://127.0.0.1:9001",
-        websocket_factory=lambda _url: websocket,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
-    )
-    backend = CodexBackend(
-        client=client,
-        store=ConversationStore(clock=lambda: 1.0),
-        service_name="imcodex",
-    )
-
-    await client.initialize()
-    listener_task = client._listener_task
-    assert listener_task is not None
-    websocket.messages.put_nowait(ConnectionError("socket closed"))
-    await asyncio.wait_for(listener_task, timeout=1)
-
-    assert client.last_connection_mode == "shared-ws"
-    assert backend.prefers_native_recovery() is True
-    assert client._reconnect_task is None
     await client.close()
 
 
@@ -2537,7 +2384,7 @@ async def test_dedicated_ws_mode_does_not_fallback_to_spawned_stdio() -> None:
         client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
     )
 
-    with pytest.raises(AppServerError, match="dedicated app-server"):
+    with pytest.raises(AppServerError, match="external app-server"):
         await client.list_threads()
 
     assert spawned is False

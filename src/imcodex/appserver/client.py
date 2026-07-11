@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from .diagnostics import summarize_text, summarize_transport_message
 from .retry import RetryBackoff
+from ..app_server_target import EXTERNAL_CONNECTION_MODE, SPAWNED_STDIO_CONNECTION_MODE
 from ..observability.runtime import emit_event, mark_appserver_health
 
 
@@ -31,9 +32,6 @@ DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
     "thread/realtime/transcript/delta",
     "thread/realtime/outputAudio/delta",
 )
-_WEBSOCKET_CONNECTION_MODES = frozenset({"dedicated-ws", "shared-ws"})
-
-
 class AppServerError(RuntimeError):
     def __init__(self, message: str, *, code: int | None = None, data: Any | None = None) -> None:
         super().__init__(message)
@@ -210,6 +208,10 @@ class AppServerClient:
 
     def add_connection_ready_handler(self, handler: ConnectionReadyHandler) -> None:
         self._connection_ready_handlers.append(handler)
+
+    @property
+    def preserves_server_state(self) -> bool:
+        return self._supervisor.target.preserves_server_state
 
     @contextlib.asynccontextmanager
     async def _owned_initialize_lock(self) -> AsyncIterator[None]:
@@ -560,7 +562,7 @@ class AppServerClient:
             message="Connecting to app-server",
         )
         try:
-            websocket = await self._supervisor.connect_shared()
+            websocket = await self._supervisor.connect_external()
         except Exception as exc:
             emit_event(
                 component="appserver.client",
@@ -582,7 +584,7 @@ class AppServerClient:
             raise AppServerError("app-server client is closed")
         if websocket is not None:
             transport: AppServerTransport = WebSocketAppServerTransport(websocket)
-            websocket_mode = self._supervisor.connection_mode or "shared-ws"
+            websocket_mode = self._supervisor.connection_mode or EXTERNAL_CONNECTION_MODE
             self.connection_mode = websocket_mode
             emit_event(
                 component="appserver.client",
@@ -599,7 +601,7 @@ class AppServerClient:
                 health_error_type=None,
             )
         else:
-            if not self._supervisor.allow_spawn_fallback:
+            if not self._supervisor.spawns_stdio:
                 target = self._connection_target()
                 diagnostic = getattr(self._supervisor, "last_connect_diagnostic", None) or {}
                 display_target = str(diagnostic.get("url") or target)
@@ -613,7 +615,7 @@ class AppServerClient:
                 raise AppServerError(self._unavailable_message(display_target, diagnostic))
             process = await self._supervisor.start()
             transport = StdioAppServerTransport(process)
-            self.connection_mode = "spawned-stdio"
+            self.connection_mode = SPAWNED_STDIO_CONNECTION_MODE
             self._stderr_task = asyncio.create_task(self._drain_process_stderr(process))
             emit_event(
                 component="appserver.client",
@@ -625,7 +627,7 @@ class AppServerClient:
                 raise AppServerError("app-server client is closed")
             mark_appserver_health(
                 connected=True,
-                mode="spawned-stdio",
+                mode=SPAWNED_STDIO_CONNECTION_MODE,
                 status="initializing",
                 error_type=None,
                 health_ok=None,
@@ -775,11 +777,9 @@ class AppServerClient:
             await result
 
     def _connection_target(self) -> str:
-        return self._supervisor.core_url or self._supervisor.app_server_url or self._supervisor.shared_app_server_url
+        return self._supervisor.connection_target
 
     def _unavailable_message(self, target: str, diagnostic: dict[str, Any]) -> str:
-        mode = getattr(self._supervisor, "core_mode", "")
-        label = "shared" if mode == "shared-ws" else "dedicated"
         detail_parts: list[str] = []
         error_type = diagnostic.get("error_type")
         if error_type:
@@ -790,7 +790,7 @@ class AppServerClient:
         elif diagnostic.get("health_error_type"):
             detail_parts.append(f"health_error={diagnostic['health_error_type']}")
         details = f" ({', '.join(detail_parts)})" if detail_parts else ""
-        return f"{label} app-server at `{target}` is unavailable{details}"
+        return f"external app-server at `{target}` is unavailable{details}"
 
     async def _send_json(self, payload: JsonDict, *, transport: AppServerTransport | None = None) -> None:
         selected_transport = transport or self._transport
@@ -950,7 +950,6 @@ class AppServerClient:
             notify_handlers
             and self._has_been_ready
             and reset_epoch > 0
-            and reset_mode in _WEBSOCKET_CONNECTION_MODES
             and bool(getattr(self._supervisor, "supports_background_reconnect", False))
             and not self._closing
         )

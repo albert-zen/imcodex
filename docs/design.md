@@ -67,11 +67,11 @@ Transport credentials and cursors are not native Codex state. A channel may
 persist them only when its platform protocol requires them, using private files
 that never enter launch snapshots or normal user-visible diagnostics.
 
-## Runtime Mode Direction
+## App Server Runtime Direction
 
 The preferred runtime shape for day-to-day IM use is:
 
-- a long-lived dedicated Codex core
+- a long-lived native Codex App Server
 - a separately restartable IM bridge
 - native recovery first, local cleanup only as a fallback
 
@@ -79,16 +79,15 @@ This direction is preferred over bridge-managed private cores because it keeps
 native thread and approval state alive across bridge restarts and makes
 observability clearer.
 
-However, this repository intentionally still supports multiple runtime modes:
+The normal product shape has one external App Server target. Unix and TCP are
+transport facts, not different ownership modes, and the bridge cannot observe a
+meaningful difference between the old `dedicated-ws` and `shared-ws` labels.
+The target URL is therefore the canonical configuration.
 
-- dedicated websocket cores managed for `imcodex`
-- externally managed websocket cores that `imcodex` attaches to
-- bridge-managed local `stdio` cores for compatibility, fallback, and test
-  coverage
-
-The current decision is to keep those modes explicit rather than collapsing the
-product into dedicated-only behavior. Runtime-mode support is therefore part of
-the bridge contract and must be documented when changed.
+`stdio://` remains an explicit bridge-child compatibility target for tests,
+native Windows, and older installations. It MUST NOT be selected as a fallback
+after an external target fails. Legacy mode names are accepted only at the
+configuration boundary and are normalized before runtime behavior begins.
 
 See also:
 

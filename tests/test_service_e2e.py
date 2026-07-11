@@ -1058,8 +1058,7 @@ async def test_connection_reset_evicts_stale_pending_requests_and_interrupts_tur
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("connection_mode", ["dedicated-ws", "shared-ws"])
-async def test_connection_reset_in_websocket_mode_evicts_projection_without_interrupting_turn(connection_mode: str) -> None:
+async def test_connection_reset_for_external_server_preserves_native_turn() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
@@ -1078,7 +1077,7 @@ async def test_connection_reset_in_websocket_mode_evicts_projection_without_inte
     )
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
-    client.last_connection_mode = connection_mode
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
 
     await service.handle_connection_reset(1)
 
@@ -1090,10 +1089,7 @@ async def test_connection_reset_in_websocket_mode_evicts_projection_without_inte
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("connection_mode", ["dedicated-ws", "shared-ws"])
-async def test_connection_ready_in_websocket_mode_clears_stale_active_turn_after_rehydrate(
-    connection_mode: str,
-) -> None:
+async def test_connection_ready_for_external_server_clears_stale_active_turn_after_rehydrate() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],

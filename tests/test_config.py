@@ -15,6 +15,17 @@ def test_settings_reads_optional_app_server_url_from_env(monkeypatch, tmp_path) 
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
 
     assert settings.app_server_url == "ws://127.0.0.1:8765"
+    assert settings.app_server_target.connection_mode == "external"
+
+
+def test_settings_defaults_to_the_native_unix_app_server(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    settings = Settings.from_env()
+
+    assert settings.core_mode is None
+    assert settings.app_server_target.endpoint == "unix://"
+    assert settings.app_server_target.ownership == "external"
 
 
 def test_settings_disables_app_server_experimental_api_by_default(monkeypatch, tmp_path) -> None:
@@ -215,8 +226,90 @@ def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) ->
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
 
     assert settings.core_mode == "dedicated-ws"
+    assert settings.app_server_url is None
     assert settings.core_url == "ws://127.0.0.1:9001"
+    assert settings.app_server_target.connection_mode == "external"
     assert settings.restart_executor == "scripts/restart-imcodex.ps1"
+
+
+def test_process_legacy_endpoint_overrides_dotenv_canonical_endpoint(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "IMCODEX_APP_SERVER_URL=ws://127.0.0.1:8765\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("IMCODEX_CORE_URL", "ws://127.0.0.1:9001")
+
+    settings = Settings.from_env()
+
+    assert settings.app_server_target.endpoint == "ws://127.0.0.1:9001"
+
+
+def test_empty_process_endpoint_alias_does_not_hide_dotenv_canonical_endpoint(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("IMCODEX_APP_SERVER_URL=unix://\n", encoding="utf-8")
+    monkeypatch.setenv("IMCODEX_CORE_URL", "")
+
+    assert Settings.from_env().app_server_target.endpoint == "unix://"
+
+
+@pytest.mark.parametrize("dotenv_mode", ["spawned-stdio", "auto"])
+def test_process_canonical_target_ignores_lower_layer_legacy_mode(
+    monkeypatch,
+    tmp_path,
+    dotenv_mode: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        f"IMCODEX_CORE_MODE={dotenv_mode}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "unix://")
+
+    target = Settings.from_env().app_server_target
+
+    assert target.endpoint == "unix://"
+    assert target.ownership == "external"
+
+
+def test_process_legacy_mode_ignores_lower_layer_canonical_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("IMCODEX_APP_SERVER_URL=unix://\n", encoding="utf-8")
+    monkeypatch.setenv("IMCODEX_CORE_MODE", "spawned-stdio")
+
+    target = Settings.from_env().app_server_target
+
+    assert target.endpoint == "stdio://"
+    assert target.ownership == "bridge-child"
+
+
+def test_settings_rejects_conflicting_endpoint_names_in_the_same_layer(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "unix://")
+    monkeypatch.setenv("IMCODEX_CORE_URL", "ws://127.0.0.1:8765")
+
+    with pytest.raises(ValueError, match="configure only one endpoint"):
+        Settings.from_env()
+
+
+def test_settings_rejects_auto_mode_instead_of_silently_falling_back(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_CORE_MODE", "auto")
+
+    with pytest.raises(ValueError, match="silently changes App Server lifecycle"):
+        Settings.from_env()
 
 
 def test_settings_reads_app_server_auth_and_retry_settings(monkeypatch, tmp_path) -> None:

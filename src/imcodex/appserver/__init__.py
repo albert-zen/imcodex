@@ -10,12 +10,20 @@ from .schema_drift import (
     load_server_request_schema,
 )
 from .supervisor import AppServerSupervisor
+from ..app_server_target import (
+    AppServerTarget,
+    AppServerTargetConfigError,
+    parse_app_server_target,
+    resolve_app_server_target,
+)
 
 __all__ = [
     "AppServerClient",
     "AppServerError",
     "AppServerEvent",
     "AppServerSupervisor",
+    "AppServerTarget",
+    "AppServerTargetConfigError",
     "CodexBackend",
     "ServerRequestSchemaDriftReport",
     "StaleThreadBindingError",
@@ -26,6 +34,8 @@ __all__ = [
     "extract_server_request_methods",
     "load_server_request_schema",
     "normalize_appserver_message",
+    "parse_app_server_target",
+    "resolve_app_server_target",
     "summarize_text",
     "summarize_transport_message",
 ]

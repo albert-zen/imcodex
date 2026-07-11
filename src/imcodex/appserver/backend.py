@@ -21,10 +21,13 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         self.service_name = service_name
 
     def prefers_native_recovery(self) -> bool:
+        preserves_server_state = getattr(self.client, "preserves_server_state", None)
+        if preserves_server_state is not None:
+            return bool(preserves_server_state)
         mode = getattr(self.client, "connection_mode", "") or getattr(self.client, "last_connection_mode", "")
         if mode == "disconnected":
             mode = getattr(self.client, "last_connection_mode", "")
-        return mode in {"dedicated-ws", "shared-ws"}
+        return mode in {"external", "dedicated-ws", "shared-ws"}
 
     async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
         route = self.store.get_pending_request(request_id)

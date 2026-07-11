@@ -11,22 +11,18 @@ be investigated, implemented, reviewed, and closed.
 
 ## Recommended Runtime Workflow
 
-For day-to-day work, prefer the dedicated core path described in
+For day-to-day work, prefer the external native App Server path described in
 [startup.md](startup.md):
 
-1. start a long-lived dedicated Codex core
-2. start the IM bridge against that core
+1. start the native App Server daemon
+2. start the IM bridge against its `unix://` control socket
 3. debug bridge behavior without replacing native thread/turn truth
 
 This keeps the bridge restartable while leaving the native core alive.
 
-That recommendation does not mean the repository is dedicated-only. When
-working on startup, supervision, or reconnect logic, preserve the documented
-support for:
-
-- dedicated websocket cores
-- externally managed websocket cores
-- bridge-managed local `stdio` cores
+When working on startup, supervision, or reconnect logic, preserve the explicit
+`stdio://` compatibility target without turning it into a fallback. Treat Unix
+and TCP WebSocket as transports of the same external ownership model.
 
 ## Agent-Led Change Loop
 

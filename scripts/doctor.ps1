@@ -132,55 +132,71 @@ $envFileOk = Test-Path $dotenvPath
 Write-Check ".env" $envFileOk ($dotenvPath)
 
 $httpPort = [int](Get-Setting "IMCODEX_HTTP_PORT" "8000")
-$appServerUrl = Get-Setting "IMCODEX_APP_SERVER_URL"
-$coreMode = Get-Setting "IMCODEX_CORE_MODE" "dedicated-ws"
-$coreUrl = Get-Setting "IMCODEX_CORE_URL"
-$corePort = Get-Setting "IMCODEX_CORE_PORT"
 $dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex"
-
-if (-not $corePort -and $coreUrl -match "^ws://(127\.0\.0\.1|localhost):([0-9]+)$") {
-    $corePort = $Matches[2]
-}
-if (-not $corePort) {
-    $corePort = "8765"
-}
-if (-not $coreUrl) {
-    $coreUrl = "ws://127.0.0.1:$corePort"
-}
-
-$supportedCoreModes = @("dedicated-ws", "shared-ws", "spawned-stdio")
-Write-Check "Core mode" ($coreMode -in $supportedCoreModes) $coreMode
-
-if ($coreMode -eq "dedicated-ws") {
-    Write-Check "Core target" $true "$coreUrl (the launcher will start or reuse it)"
-} elseif ($coreMode -eq "shared-ws") {
-    $sharedCoreUrl = if ($appServerUrl) { $appServerUrl } else { $coreUrl }
-    Write-Check "Core target" $true "$sharedCoreUrl (externally managed)"
-} elseif ($coreMode -eq "spawned-stdio") {
-    Write-Check "Core target" $true "stdio:// (bridge-managed)"
-}
 
 Write-Check "HTTP port" $true $httpPort
 Write-Check "Data dir" $true $dataDir
+
+$targetOutput = @(& $python -c "import json; from imcodex.config import load_app_server_target; t = load_app_server_target(); print(json.dumps({'endpoint': t.endpoint, 'ownership': t.ownership, 'transport': t.transport}))" 2>&1)
+$target = $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Check "App-server target" $false (($targetOutput -join " ").Trim())
+}
+else {
+    try {
+        $target = ($targetOutput -join "") | ConvertFrom-Json
+        Write-Check "App-server target" $true ("{0} ({1}, {2})" -f $target.endpoint, $target.ownership, $target.transport)
+    }
+    catch {
+        Write-Check "App-server target" $false ("invalid target resolver output: {0}" -f ($targetOutput -join " "))
+    }
+}
 
 $httpListeners = Get-NetTCPConnection -LocalPort $httpPort -ErrorAction SilentlyContinue
 
 $httpPortDetail = if ($httpListeners) { "occupied" } else { "free" }
 Write-Check "HTTP port free" ($null -eq $httpListeners) $httpPortDetail
 
-if ($coreMode -eq "shared-ws") {
-    $sharedCoreUrl = if ($appServerUrl) { $appServerUrl } else { $coreUrl }
-    try {
-        $uri = [Uri]$sharedCoreUrl
-        if ($uri.Scheme -in @("ws", "wss") -and $uri.Host -in @("127.0.0.1", "localhost") -and $uri.Port -gt 0) {
-            $appListeners = Get-NetTCPConnection -LocalPort $uri.Port -ErrorAction SilentlyContinue
-            $appPortDetail = if ($appListeners) { "listening" } else { "not listening" }
-            Write-Check "Shared app-server listener" ($null -ne $appListeners) ("{0}:{1} {2}" -f $uri.Host, $uri.Port, $appPortDetail)
-        } else {
-            Write-Check "Shared app-server listener" $true "skipped non-local websocket check"
+if ($null -ne $target) {
+    if ($target.transport -eq "tcp-websocket") {
+        try {
+            $uri = [Uri]$target.endpoint
+            if ($uri.Host -in @("127.0.0.1", "localhost") -and $uri.Port -gt 0) {
+                $appListeners = Get-NetTCPConnection -LocalPort $uri.Port -ErrorAction SilentlyContinue
+                $appPortDetail = if ($appListeners) { "listening" } else { "not listening" }
+                Write-Check "App-server listener" ($null -ne $appListeners) ("{0}:{1} {2}" -f $uri.Host, $uri.Port, $appPortDetail)
+            }
+            else {
+                Write-Check "App-server listener" $true "skipped non-local TCP WebSocket check"
+            }
         }
-    } catch {
-        Write-Check "Shared app-server listener" $false ("invalid shared core URL: {0}" -f $sharedCoreUrl)
+        catch {
+            Write-Check "App-server listener" $false ("invalid TCP WebSocket endpoint: {0}" -f $target.endpoint)
+        }
+    }
+    elseif ($target.transport -eq "unix-websocket") {
+        if ($env:OS -eq "Windows_NT") {
+            Write-Check "App-server listener" $false "Unix control sockets require WSL/macOS/Linux; configure stdio:// or an explicit ws:// endpoint"
+        }
+        else {
+            $rawSocketPath = $target.endpoint.Substring("unix://".Length)
+            if (-not $rawSocketPath) {
+                $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+                $socketPath = Join-Path $codexHome "app-server-control/app-server-control.sock"
+            }
+            elseif ([IO.Path]::IsPathRooted($rawSocketPath)) {
+                $socketPath = $rawSocketPath
+            }
+            else {
+                $socketPath = Join-Path $repoRoot $rawSocketPath
+            }
+            $socketExists = Test-Path $socketPath
+            $socketDetail = if ($socketExists) { "exists at $socketPath" } else { "is not available at $socketPath" }
+            Write-Check "App-server listener" $socketExists ("Unix socket {0}" -f $socketDetail)
+        }
+    }
+    elseif ($target.transport -eq "stdio-jsonl") {
+        Write-Check "App-server listener" $true "bridge-child App Server will start with the bridge"
     }
 }
 

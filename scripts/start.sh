@@ -107,6 +107,7 @@ fi
 core_mode="${IMCODEX_CORE_MODE:-dedicated-ws}"
 core_url="${IMCODEX_CORE_URL:-}"
 core_port="${IMCODEX_CORE_PORT:-}"
+app_server_url="${IMCODEX_APP_SERVER_URL:-}"
 
 if [[ -z "${core_port}" && "${core_url}" =~ ^ws://(127\.0\.0\.1|localhost):([0-9]+)$ ]]; then
     core_port="${BASH_REMATCH[2]}"
@@ -117,9 +118,13 @@ core_url="${core_url:-ws://127.0.0.1:${core_port}}"
 
 echo "Starting imcodex from ${repo_root}"
 echo "Using Python: ${python}"
-echo "Core mode: ${core_mode}"
+if [[ -n "${app_server_url}" ]]; then
+    echo "App Server target: ${app_server_url}"
+else
+    echo "Legacy core mode: ${core_mode}"
+fi
 
-if [[ "${core_mode}" == "dedicated-ws" ]]; then
+if [[ -z "${app_server_url}" && "${core_mode}" == "dedicated-ws" ]]; then
     export IMCODEX_CORE_MODE="${core_mode}"
     export IMCODEX_CORE_URL="${core_url}"
 

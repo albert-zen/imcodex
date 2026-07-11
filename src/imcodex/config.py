@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .app_server_target import AppServerTarget, resolve_app_server_target
+
 
 def _read_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
@@ -56,6 +58,38 @@ def load_codex_bin(dotenv_path: Path = Path(".env")) -> str:
     return _codex_bin(_read_dotenv(dotenv_path))
 
 
+def _optional_setting(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _app_server_config_from_env(
+    dotenv: dict[str, str],
+) -> tuple[str | None, str | None, str | None]:
+    names = ("IMCODEX_APP_SERVER_URL", "IMCODEX_CORE_URL", "IMCODEX_CORE_MODE")
+    process_values = (
+        _optional_setting(os.getenv(names[0])),
+        _optional_setting(os.getenv(names[1])),
+        _optional_setting(os.getenv(names[2])),
+    )
+    if any(value is not None for value in process_values):
+        return process_values
+    return (
+        _optional_setting(dotenv.get(names[0])),
+        _optional_setting(dotenv.get(names[1])),
+        _optional_setting(dotenv.get(names[2])),
+    )
+
+
+def load_app_server_target(dotenv_path: Path = Path(".env")) -> AppServerTarget:
+    app_server_url, core_url, core_mode = _app_server_config_from_env(_read_dotenv(dotenv_path))
+    return resolve_app_server_target(
+        app_server_url=app_server_url,
+        core_url=core_url,
+        core_mode=core_mode,
+    )
+
+
 @dataclass(slots=True)
 class Settings:
     data_dir: Path
@@ -63,7 +97,7 @@ class Settings:
     codex_bin: str
     app_server_url: str | None
     app_server_experimental_api_enabled: bool
-    core_mode: str
+    core_mode: str | None
     core_url: str | None
     restart_executor: str | None
     debug_api_enabled: bool
@@ -116,6 +150,11 @@ class Settings:
     inbound_webhook_token: str = ""
 
     def __post_init__(self) -> None:
+        resolve_app_server_target(
+            app_server_url=self.app_server_url,
+            core_url=self.core_url,
+            core_mode=self.core_mode,
+        )
         if self.app_server_reconnect_initial_delay_s <= 0:
             raise ValueError("app-server reconnect initial delay must be greater than zero")
         if self.app_server_reconnect_max_delay_s < self.app_server_reconnect_initial_delay_s:
@@ -164,17 +203,26 @@ class Settings:
             },
         }
 
+    @property
+    def app_server_target(self) -> AppServerTarget:
+        return resolve_app_server_target(
+            app_server_url=self.app_server_url,
+            core_url=self.core_url,
+            core_mode=self.core_mode,
+        )
+
     @classmethod
     def from_env(cls) -> "Settings":
         dotenv = _read_dotenv(Path(".env"))
+        app_server_url, core_url, core_mode = _app_server_config_from_env(dotenv)
         return cls(
             data_dir=Path(_env("IMCODEX_DATA_DIR", ".imcodex", dotenv)),
             run_dir=Path(_env("IMCODEX_RUN_DIR", ".imcodex-run", dotenv)),
             codex_bin=_codex_bin(dotenv),
-            app_server_url=_env("IMCODEX_APP_SERVER_URL", "", dotenv) or None,
+            app_server_url=app_server_url,
             app_server_experimental_api_enabled=_env_bool("IMCODEX_APP_SERVER_EXPERIMENTAL_API", False, dotenv),
-            core_mode=_env("IMCODEX_CORE_MODE", "spawned-stdio", dotenv),
-            core_url=_env("IMCODEX_CORE_URL", _env("IMCODEX_APP_SERVER_URL", "", dotenv), dotenv) or None,
+            core_mode=core_mode,
+            core_url=core_url,
             restart_executor=_env("IMCODEX_RESTART_EXECUTOR", "", dotenv) or None,
             debug_api_enabled=_env_bool("IMCODEX_DEBUG_API_ENABLED", False, dotenv),
             log_level=_env("IMCODEX_LOG_LEVEL", "INFO", dotenv),

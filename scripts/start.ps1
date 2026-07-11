@@ -128,6 +128,7 @@ $python = Resolve-ImcodexPython
 $coreMode = if ($env:IMCODEX_CORE_MODE) { $env:IMCODEX_CORE_MODE } else { "dedicated-ws" }
 $coreUrl = if ($env:IMCODEX_CORE_URL) { $env:IMCODEX_CORE_URL } else { "" }
 $corePort = if ($env:IMCODEX_CORE_PORT) { $env:IMCODEX_CORE_PORT } else { "" }
+$appServerUrl = if ($env:IMCODEX_APP_SERVER_URL) { $env:IMCODEX_APP_SERVER_URL } else { "" }
 
 if (-not $corePort -and $coreUrl -match "^ws://(127\.0\.0\.1|localhost):([0-9]+)$") {
     $corePort = $Matches[2]
@@ -142,9 +143,14 @@ if (-not $coreUrl) {
 
 Write-Host "Starting imcodex from $repoRoot"
 Write-Host "Using Python: $python"
-Write-Host "Core mode: $coreMode"
+if ($appServerUrl) {
+    Write-Host "App Server target: $appServerUrl"
+}
+else {
+    Write-Host "Legacy core mode: $coreMode"
+}
 
-if ($coreMode -eq "dedicated-ws") {
+if (-not $appServerUrl -and $coreMode -eq "dedicated-ws") {
     $env:IMCODEX_CORE_MODE = $coreMode
     $env:IMCODEX_CORE_URL = $coreUrl
 

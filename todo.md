@@ -64,8 +64,8 @@ That means:
   content identity
 - ordinary user text now steers an in-progress native turn instead of
   implicitly interrupting it, while `/stop` remains the explicit interrupt path
-- dedicated websocket health/status reporting now distinguishes
-  `dedicated-ws` from externally managed `shared-ws`
+- external App Server targets now share one ownership model across Unix and TCP
+  transports; legacy dedicated/shared labels normalize at configuration input
 
 ## Now: Remove The Last Legacy State And Routing Paths
 
@@ -75,14 +75,13 @@ That means:
   - pending approvals still resolve through `/approve`, `/deny`, `/cancel`
   - plain text during pending approvals should continue the explicit
     approval-resolution behavior already chosen for IM
-- Keep user-visible runtime modes explicit while making the dedicated-core path
-  the easiest normal path:
-  - avoid status/help wording that implies the bridge is dedicated-only
-  - avoid status/help wording that labels dedicated websocket core as `shared-ws`
-  - keep `spawned-stdio` clearly framed as compatibility/fallback rather than
-    the recommended IM path
-- Add a single development command that starts both the dedicated core and the
-  bridge together, similar to a one-shot `dev` entrypoint.
+- Keep the App Server target explicit rather than exposing artificial runtime
+  modes:
+  - prefer native daemon + `unix://` for local persistent operation
+  - keep `stdio://` clearly framed as bridge-child compatibility, never fallback
+  - remove legacy core aliases after the migration window
+- Keep the native daemon and bridge independently operable while providing a
+  convenient launcher that ensures the daemon before starting the bridge.
 - Investigate and stabilize the "tool call appears to hang until the user sends
   another message" failure mode observed in the local Codex runtime.
 - Clarify observability around context pressure / compaction so it is easier to

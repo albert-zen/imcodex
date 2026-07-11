@@ -219,8 +219,8 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.observability is not None
     assert runtime.observability.run_root == settings.run_dir
     assert runtime.observability.service_name == settings.service_name
-    assert runtime.client._supervisor.core_mode == "dedicated-ws"
-    assert runtime.client._supervisor.core_url == "ws://127.0.0.1:8765"
+    assert runtime.client._supervisor.target.connection_mode == "external"
+    assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
     assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
     assert runtime.client._experimental_api_enabled is False
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
@@ -271,7 +271,8 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert launch["command"] == ["python", "-m", "imcodex"]
     assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
     assert launch["env"]["IMCODEX_APP_SERVER_EXPERIMENTAL_API"] == "0"
-    assert launch["env"]["IMCODEX_CORE_MODE"] == "dedicated-ws"
+    assert launch["env"]["IMCODEX_APP_SERVER_URL"] == "ws://127.0.0.1:8765"
+    assert launch["env"]["IMCODEX_CORE_MODE"] == "shared-ws"
     assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
     assert launch["env"]["IMCODEX_APP_SERVER_AUTH_TOKEN_FILE"] == ""
     assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]

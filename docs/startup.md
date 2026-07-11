@@ -6,8 +6,8 @@ This document covers the local operator path for starting and stopping `imcodex`
 
 From the repository root:
 
-`imcodex` currently supports multiple runtime shapes. Dedicated core is the
-recommended day-to-day path, but it is not the only supported mode.
+Normal operation connects the bridge to one external App Server target. The
+explicit `stdio://` bridge-child target remains available for compatibility.
 
 ### Platform quick start
 
@@ -28,7 +28,8 @@ open scripts/start.command
 The Windows launcher delegates to `scripts/start.ps1`; the macOS launcher
 delegates to `scripts/start.sh`. By default, both start or reuse a dedicated
 Codex core on `ws://127.0.0.1:8765`, export `IMCODEX_CORE_MODE=dedicated-ws`,
-and then start the bridge.
+and then start the bridge. This is a temporary legacy launcher path; the runtime
+normalizes that configuration to one external App Server.
 
 If `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS/Linux
 exists, the launcher uses it automatically. Set `IMCODEX_PYTHON` only when you
@@ -47,6 +48,8 @@ Optional environment controls:
 ```env
 IMCODEX_CONDA_ENV=imcodex
 IMCODEX_PYTHON=/path/to/python
+IMCODEX_APP_SERVER_URL=unix://
+# Legacy launcher-only controls:
 IMCODEX_CORE_PORT=8765
 IMCODEX_CORE_MODE=dedicated-ws
 IMCODEX_CORE_START_TIMEOUT=30
@@ -78,17 +81,17 @@ For websocket cores that require bearer auth, set
 set `IMCODEX_APP_SERVER_AUTH_TOKEN` directly in the process environment. The
 direct token takes precedence when both are set and is intentionally not written
 to launch snapshots. Websocket connect failures and native overload responses
-use bounded exponential retry with jitter; dedicated/shared websocket modes also
-probe derived `/readyz` then `/healthz` HTTP endpoints before reporting the core
-as unavailable.
+use bounded exponential retry with jitter; external TCP WebSocket targets also
+probe derived `/readyz` then `/healthz` HTTP endpoints before reporting the App
+Server as unavailable.
 
 Initial startup stays bounded by `IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS` and
-fails explicitly when the configured core is unavailable. After a
-`dedicated-ws` or `shared-ws` connection has completed initialization once, an
-unexpected disconnect starts an independent background recovery loop. The loop
+fails explicitly when the configured App Server is unavailable. After an
+external connection has completed initialization once, an unexpected disconnect
+starts an independent background recovery loop. The loop
 retries until the bridge shuts down, with delay capped by
-`IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`; `spawned-stdio` and `auto` do not use
-this background loop. Shutdown cancels any pending retry.
+`IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`; explicit `stdio://` does not use this
+background loop, and `auto` is rejected. Shutdown cancels any pending retry.
 
 A transport connection is not considered fully restored on its own. Each new
 connection epoch reruns native `initialize`, permission defaults, and bound
@@ -98,11 +101,10 @@ the current retry attempt and delay. Recovery does not wait for another IM
 message. Reconnect delays must be positive, the maximum must be at least the
 initial delay, and jitter must be between `0` and `1`.
 
-### Recommended: dedicated core + bridge
+### Legacy compatibility: TCP core + bridge
 
-For day-to-day IM use, prefer running a long-lived Codex core separately and
-then starting the IM bridge against it. This keeps the native agent core alive
-across bridge restarts.
+The old launcher can still run a separate TCP WebSocket core. It is retained for
+rollback and Windows compatibility while the native daemon path settles:
 
 ```powershell
 $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
@@ -119,10 +121,7 @@ After startup, check `.imcodex-run/current/health.json`:
 - `status` should be `healthy`
 - `http.listening` should be `true`
 - `appserver.connected` should be `true`
-- `appserver.mode` should be `dedicated-ws`
-
-If `appserver.mode` reports `shared-ws`, the bridge is attached to an
-externally managed websocket core rather than the dedicated-core path.
+- `appserver.mode` should be `external`
 
 Protocol troubleshooting data is written under `.imcodex-run/current/`:
 
@@ -146,22 +145,21 @@ HTTP/app-server path available while channel health reports the retry. Check
 `.imcodex-run/current/health.json` under `channels.<channel-id>` for status,
 retry delay, and the latest connection error type.
 
-### Supported: externally managed websocket core
+### External TCP WebSocket compatibility
 
 If another process already owns a websocket Codex core, point the bridge at it
 explicitly:
 
 ```powershell
 $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
-$env:IMCODEX_CORE_MODE="shared-ws"
 $env:IMCODEX_APP_SERVER_URL="ws://127.0.0.1:8765"
-pwsh -File .\scripts\start.ps1
+& $env:IMCODEX_PYTHON -m imcodex
 ```
 
-Use this mode when the websocket server lifecycle is not owned by `imcodex`
-itself.
+The bridge treats this as the same external ownership shape as Unix. TCP
+WebSocket remains an upstream experimental/unsupported compatibility carrier.
 
-#### Native local Unix control socket and daemon
+### Recommended: native local Unix control socket and daemon
 
 On macOS or Linux, Codex can own an independently managed App Server daemon on
 its native local control socket. Start it through the project entry point:
@@ -174,9 +172,8 @@ python -m imcodex app-server status
 Then start only the bridge:
 
 ```bash
-export IMCODEX_CORE_MODE=shared-ws
 export IMCODEX_APP_SERVER_URL=unix://
-./scripts/start.sh
+python -m imcodex
 ```
 
 Here `unix://` means
@@ -206,7 +203,7 @@ epochs, native rehydration, and background reconnect are identical to persistent
 TCP WebSocket connections. Unix sockets do not expose HTTP `/readyz` or
 `/healthz`; a successful WebSocket Upgrade is the availability check. Native
 Windows fails this bridge endpoint explicitly; use WSL, an explicit `ws://`
-endpoint, or `spawned-stdio` there.
+endpoint, or `stdio://` there.
 
 The upstream transport contract is documented in the
 [Codex App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
@@ -220,11 +217,12 @@ pwsh -File .\scripts\doctor.ps1
 pwsh -File .\scripts\start.ps1
 ```
 
-Set `IMCODEX_CORE_MODE=spawned-stdio` to use the bridge-managed stdio path:
+Set the App Server target to `stdio://` to use the bridge-managed compatibility
+path explicitly:
 
 ```powershell
-$env:IMCODEX_CORE_MODE="spawned-stdio"
-pwsh -File .\scripts\start.ps1
+$env:IMCODEX_APP_SERVER_URL="stdio://"
+python -m imcodex
 ```
 
 This remains useful for quick local checks, but it is not the preferred
@@ -303,11 +301,12 @@ By default:
 - Runtime and observability snapshots live under `.imcodex-run`
 - The current launch snapshot is written under `.imcodex-run/current/launch.json`
 
-## Mode Summary
+## Target Summary
 
-- `dedicated-ws`: recommended long-lived IM setup
-- `shared-ws`: supported attach-to-existing websocket setup
-- `spawned-stdio`: supported bridge-managed compatibility setup
+- `unix://`: recommended external native App Server
+- `ws://` or `wss://`: external TCP WebSocket compatibility
+- `stdio://`: explicit bridge-child compatibility target
 
-When changing startup behavior, update this document and keep the supported
-modes explicit. Do not silently collapse multiple runtime modes into one.
+Legacy `dedicated-ws` and `shared-ws` normalize to external ownership;
+`spawned-stdio` normalizes to `stdio://`. Connection failure never switches the
+configured target.

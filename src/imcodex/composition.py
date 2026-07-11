@@ -20,6 +20,7 @@ from .store import ConversationStore
 
 def build_runtime(settings: Settings | None = None) -> AppRuntime:
     settings = settings or Settings.from_env()
+    app_server_target = settings.app_server_target
     store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
     retry_backoff = RetryBackoff(
         initial_delay_s=settings.app_server_retry_initial_delay_s,
@@ -28,9 +29,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     )
     supervisor = AppServerSupervisor(
         codex_bin=settings.codex_bin,
-        app_server_url=settings.app_server_url,
-        core_mode=settings.core_mode,
-        core_url=settings.core_url,
+        app_server_url=app_server_target.endpoint,
         app_server_auth_token=settings.app_server_auth_token,
         app_server_auth_token_file=settings.app_server_auth_token_file,
         websocket_retry_policy=retry_backoff.with_max_attempts(settings.app_server_connect_max_attempts),
@@ -78,7 +77,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         log_level=settings.log_level,
         http_host=settings.http_host,
         http_port=settings.http_port,
-        app_server_url=settings.core_url or settings.app_server_url,
+        app_server_url=app_server_target.endpoint,
         cwd=Path.cwd(),
     )
     observability.write_launch_snapshot(
@@ -91,8 +90,9 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_HTTP_PORT": str(settings.http_port),
             "IMCODEX_CODEX_BIN": settings.codex_bin,
             "IMCODEX_APP_SERVER_EXPERIMENTAL_API": "1" if settings.app_server_experimental_api_enabled else "0",
-            "IMCODEX_CORE_MODE": settings.core_mode,
-            "IMCODEX_CORE_URL": settings.core_url or "",
+            "IMCODEX_APP_SERVER_URL": app_server_target.endpoint,
+            "IMCODEX_CORE_MODE": "shared-ws" if app_server_target.is_external else "spawned-stdio",
+            "IMCODEX_CORE_URL": app_server_target.endpoint if app_server_target.is_external else "",
             "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE": str(settings.app_server_auth_token_file or ""),
             "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS": str(settings.app_server_connect_max_attempts),
             "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS": str(settings.app_server_request_max_attempts),
