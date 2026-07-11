@@ -27,7 +27,6 @@ class CodexThreadBackendMixin:
                 result = await self.client.resume_thread(
                     thread_id=binding.thread_id,
                     service_name=self.service_name,
-                    personality="friendly",
                 )
             except AppServerError as exc:
                 if self._is_stale_thread_error(exc):
@@ -41,7 +40,6 @@ class CodexThreadBackendMixin:
         result = await self.client.start_thread(
             cwd=binding.bootstrap_cwd,
             service_name=self.service_name,
-            personality="friendly",
         )
         snapshot = self._remember_snapshot(result.get("thread") or {})
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
@@ -51,7 +49,6 @@ class CodexThreadBackendMixin:
         result = await self.client.resume_thread(
             thread_id=thread_id,
             service_name=self.service_name,
-            personality="friendly",
         )
         payload = result.get("thread")
         if not isinstance(payload, dict):
@@ -295,7 +292,6 @@ class CodexThreadBackendMixin:
                 result = await self.client.resume_thread(
                     thread_id=binding.thread_id,
                     service_name=self.service_name,
-                    personality="friendly",
                 )
             except AppServerError as exc:
                 emit_event(

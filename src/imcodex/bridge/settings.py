@@ -41,18 +41,52 @@ def render_models(payload: dict) -> str:
 def render_reasoning_effort(payload: dict) -> str:
     config = effective_config(payload)
     current = current_reasoning_label(config)
+    lines = ["Reasoning Effort", "", f"Current: {current}"]
+    model = str(payload.get("selectedModelDisplayName") or payload.get("selectedModel") or "").strip()
+    if model:
+        lines.append(f"Model: {model}")
+    lines.extend(["", "Available:"])
+    default_effort = str(payload.get("defaultReasoningEffort") or "").strip().lower()
+    efforts = payload.get("reasoningEfforts")
+    if isinstance(efforts, list) and efforts:
+        for item in efforts:
+            if not isinstance(item, dict):
+                continue
+            effort = str(item.get("reasoningEffort") or "").strip()
+            if not effort:
+                continue
+            details: list[str] = []
+            description = str(item.get("description") or "").strip()
+            if description:
+                details.append(description)
+            if effort.lower() == default_effort:
+                details.append("model default")
+            suffix = f": {'; '.join(details)}" if details else ""
+            lines.append(f"- /think {effort}{suffix}")
+    else:
+        lines.append("- No configurable effort advertised by this model")
+    lines.append("- /think default")
+    if payload.get("reasoningOptionsSource") == "fallback":
+        lines.extend(["", "Using compatibility effort choices because the native model metadata was unavailable."])
+    lines.extend(["", "This is the configured default; an already-loaded thread may retain its native settings."])
+    return "\n".join(lines)
+
+
+def render_personality(payload: dict) -> str:
+    config = effective_config(payload)
+    current = current_personality_label(config)
     return "\n".join(
         [
-            "Reasoning Effort",
+            "Personality",
             "",
             f"Current: {current}",
             "",
-            "- /think minimal",
-            "- /think low",
-            "- /think medium",
-            "- /think high",
-            "- /think xhigh",
-            "- /think default",
+            "- /personality default",
+            "- /personality none",
+            "- /personality friendly",
+            "- /personality pragmatic",
+            "",
+            "This is the configured default; an already-loaded thread may retain its native settings.",
         ]
     )
 
@@ -159,10 +193,30 @@ def render_permission_modes(payload: dict) -> str:
 def render_permission_set_result(payload: dict) -> str:
     mode = str(payload.get("mode") or "").strip()
     label = _PERMISSION_MODE_LABELS.get(mode, mode or "requested mode")
-    lines = [f"Permission mode set to {label}."]
+    if native_config_write_was_overridden(payload):
+        return (
+            f"Permission preference {label} was saved, but a higher-priority native Codex configuration "
+            "remains effective."
+        )
+    lines = [f"Native permission preference set to {label}."]
+    lines.append("It applies to new or cold-loaded threads; already-loaded threads keep their native settings.")
     if payload.get("fallback"):
         lines.append("Used compatibility config because native permission profiles are unavailable.")
     return "\n".join(lines)
+
+
+def render_native_config_write_result(payload: dict, success_text: str, *, setting_label: str) -> str:
+    if native_config_write_was_overridden(payload):
+        return (
+            f"{setting_label} preference was saved, but a higher-priority native Codex configuration "
+            "remains effective."
+        )
+    return success_text
+
+
+def native_config_write_was_overridden(payload: dict) -> bool:
+    status = str(payload.get("status") or "").strip().lower().replace("_", "").replace("-", "")
+    return "overridden" in status or payload.get("overriddenMetadata") is not None
 
 
 def model_label(item: dict) -> str:
@@ -187,6 +241,19 @@ def current_reasoning_label(config: dict) -> str:
     return str(effort)
 
 
+def current_personality_label(config: dict) -> str:
+    personality = _first_config_value(config, "personality")
+    if not personality:
+        return "Default"
+    labels = {
+        "none": "None",
+        "friendly": "Friendly",
+        "pragmatic": "Pragmatic",
+    }
+    value = str(personality)
+    return labels.get(value.lower(), value)
+
+
 def fast_mode_label(config: dict) -> str:
     tier = str(_first_config_value(config, "service_tier", "serviceTier") or "").strip().lower()
     features = _first_config_value(config, "features")
@@ -207,7 +274,7 @@ def fast_mode_label(config: dict) -> str:
 
 
 def permission_mode_label(config: dict) -> str:
-    profile = _first_config_value(config, "default_permissions", "permissions", "permissionProfile")
+    profile = _first_config_value(config, "default_permissions", "permissionProfile")
     if profile:
         return _permission_profile_label(str(profile))
     active_profile = config.get("activePermissionProfile") or config.get("active_permission_profile")

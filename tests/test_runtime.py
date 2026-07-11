@@ -42,6 +42,38 @@ class _FakeService:
         return None
 
 
+class _ReadyBackend:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def ensure_default_permission_mode(self, _connection_epoch: int) -> None:
+        self.calls.append("backend.ensure_default_permission_mode")
+
+
+class _ReadyService(_FakeService):
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+        self.backend = _ReadyBackend(calls)
+
+    async def handle_connection_ready(self, *_args, **_kwargs) -> None:
+        self.calls.append("service.handle_connection_ready")
+
+
+class _InvokingReadyClient(_FakeClient):
+    def __init__(self, calls: list[str]) -> None:
+        super().__init__(calls)
+        self.ready_handlers = []
+
+    def add_connection_ready_handler(self, handler) -> None:
+        self.calls.append(f"client.add_ready:{handler.__name__}")
+        self.ready_handlers.append(handler)
+
+    async def initialize(self) -> None:
+        self.calls.append("client.initialize")
+        for handler in self.ready_handlers:
+            await handler(1)
+
+
 class _FakeChannel:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -105,6 +137,29 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
         "obs.health",
         "obs.event:bridge:bridge.stopped",
         "obs.stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_initializes_native_permission_default_before_thread_rehydration() -> None:
+    calls: list[str] = []
+    runtime = AppRuntime(
+        client=_InvokingReadyClient(calls),
+        service=_ReadyService(calls),
+        managed_channels=[_FakeChannel(calls)],
+    )
+
+    await runtime.start()
+
+    assert calls == [
+        "client.add_notification_handler",
+        "client.add_server_request_handler",
+        "client.add_ready:ensure_default_permission_mode",
+        "client.add_ready:handle_connection_ready",
+        "client.initialize",
+        "backend.ensure_default_permission_mode",
+        "service.handle_connection_ready",
+        "channel.start",
     ]
 
 

@@ -329,7 +329,6 @@ async def test_attach_thread_resumes_selected_thread() -> None:
         {
             "thread_id": "thr_attached",
             "service_name": "imcodex-test",
-            "personality": "friendly",
         }
     ]
     assert store.get_binding("qq", "conv-1").thread_id == "thr_attached"
@@ -422,6 +421,9 @@ async def test_submit_text_reuses_fresh_thread_without_resume() -> None:
     assert thread_id == "thr_new"
     assert submission.thread_id == "thr_new"
     assert submission.turn_id == "turn_1"
+    assert client.start_thread_calls == [
+        {"cwd": r"D:\desktop\imcodex", "service_name": "imcodex-test"},
+    ]
     assert client.resume_calls == []
     assert client.start_turn_calls == [{"thread_id": "thr_new", "text": "hi", "summary": "concise"}]
 
@@ -442,7 +444,6 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
         {
             "thread_id": "thr_old",
             "service_name": "imcodex-test",
-            "personality": "friendly",
         }
     ]
     assert client.start_turn_calls == [
@@ -478,8 +479,8 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
     await backend.rehydrate_bound_threads()
 
     assert client.resume_calls == [
-        {"thread_id": "thr_1", "service_name": "imcodex-test", "personality": "friendly"},
-        {"thread_id": "thr_2", "service_name": "imcodex-test", "personality": "friendly"},
+        {"thread_id": "thr_1", "service_name": "imcodex-test"},
+        {"thread_id": "thr_2", "service_name": "imcodex-test"},
     ]
     assert store.get_thread_snapshot("thr_1").preview == "Recovered thread"
     assert store.get_thread_snapshot("thr_2").preview == "Recovered thread"
@@ -510,3 +511,318 @@ async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_a
     await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") == ("turn_1", "inProgress")
+
+
+class SettingsClient:
+    def __init__(
+        self,
+        *,
+        config: dict | None = None,
+        models: list[dict] | None = None,
+        profiles: list[dict] | None = None,
+        requirements: dict | None = None,
+        layers: list[dict] | None = None,
+    ) -> None:
+        self.config = dict(config or {})
+        self.models = list(models or [])
+        self.profiles = list(
+            profiles
+            or [
+                {"id": ":workspace", "allowed": True},
+                {"id": ":read-only", "allowed": True},
+                {"id": ":danger-full-access", "allowed": True},
+            ]
+        )
+        self.requirements = requirements
+        self.layers = list(layers or [])
+        self.read_calls: list[dict] = []
+        self.batch_calls: list[dict] = []
+        self.profile_calls: list[dict] = []
+        self.model_calls: list[dict] = []
+
+    async def read_config(self, *, include_layers: bool = False, cwd: str | None = None):
+        self.read_calls.append({"include_layers": include_layers, "cwd": cwd})
+        return {
+            "config": dict(self.config),
+            "origins": {},
+            "layers": list(self.layers) if include_layers else None,
+        }
+
+    async def list_models(self, params: dict | None = None):
+        self.model_calls.append(dict(params or {}))
+        return {"data": list(self.models), "nextCursor": None}
+
+    async def list_permission_profiles(self, params: dict):
+        self.profile_calls.append(params)
+        return {"data": list(self.profiles), "nextCursor": None}
+
+    async def read_config_requirements(self):
+        return {"requirements": self.requirements}
+
+    async def batch_write_config(
+        self,
+        *,
+        edits: list[dict],
+        reload_user_config: bool = False,
+        expected_version: str | None = None,
+        file_path: str | None = None,
+    ):
+        call = {"edits": edits, "reload_user_config": reload_user_config}
+        if expected_version is not None:
+            call["expected_version"] = expected_version
+        if file_path is not None:
+            call["file_path"] = file_path
+        self.batch_calls.append(call)
+        return {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_options_follow_selected_native_model_and_reload_config_stack() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-current"},
+        models=[
+            {
+                "id": "gpt-current",
+                "displayName": "GPT Current",
+                "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "low", "description": "Fast"},
+                    {"reasoningEffort": "ultra", "description": "Deep"},
+                ],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+    await backend.set_reasoning_effort("qq", "conv-1", "ultra")
+
+    assert options["reasoningOptionsSource"] == "native"
+    assert options["selectedModel"] == "gpt-current"
+    assert options["reasoningEfforts"] == [
+        {"reasoningEffort": "low", "description": "Fast"},
+        {"reasoningEffort": "ultra", "description": "Deep"},
+    ]
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": "ultra",
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reload_user_config": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_write_rejects_effort_not_advertised_by_selected_model() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        models=[
+            {
+                "id": "gpt-default",
+                "isDefault": True,
+                "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+            }
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="available efforts: medium"):
+        await backend.set_reasoning_effort("qq", "conv-1", "minimal")
+
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_personality_write_reloads_native_config_stack() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.set_default_personality("pragmatic")
+
+    assert client.batch_calls == [
+        {
+            "edits": [{"keyPath": "personality", "value": "pragmatic", "mergeStrategy": "replace"}],
+            "reload_user_config": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permission_bootstrap_seeds_documented_full_access_only_when_unset() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        layers=[
+            {
+                "name": {"type": "user", "file": "/tmp/codex/config.toml"},
+                "version": "user-v1",
+                "config": {},
+            }
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.ensure_default_permission_mode(1)
+
+    assert result["changed"] is True
+    assert client.read_calls == [{"include_layers": True, "cwd": None}]
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {
+                    "keyPath": "default_permissions",
+                    "value": ":danger-full-access",
+                    "mergeStrategy": "replace",
+                },
+                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": None, "mergeStrategy": "replace"},
+            ],
+            "reload_user_config": True,
+            "expected_version": "user-v1",
+            "file_path": "/tmp/codex/config.toml",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"default_permissions": ":workspace"},
+        {"approval_policy": "on-request"},
+        {"sandbox_mode": "read-only"},
+    ],
+)
+async def test_permission_bootstrap_preserves_any_existing_native_permission_choice(config: dict) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(config=config)
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.ensure_default_permission_mode(1)
+
+    assert result["changed"] is False
+    assert client.profile_calls == []
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_permission_bootstrap_preserves_managed_default_and_restrictions() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        requirements={
+            "defaultPermissions": ":read-only",
+            "allowedPermissionProfiles": {":read-only": True, ":danger-full-access": False},
+        },
+        profiles=[
+            {"id": ":read-only", "allowed": True},
+            {"id": ":danger-full-access", "allowed": False},
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.ensure_default_permission_mode(1)
+
+    assert result == {
+        "changed": False,
+        "reason": "Codex requirements define the permission default :read-only",
+    }
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_permission_profile_definitions_do_not_count_as_a_selected_permission_mode() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(config={"permissions": {"team": {"sandbox": "read-only"}}})
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.ensure_default_permission_mode(1)
+
+    assert result["changed"] is True
+    assert client.batch_calls[0]["edits"][0]["value"] == ":danger-full-access"
+
+
+class FailingModelCatalogClient(SettingsClient):
+    async def list_models(self, params: dict | None = None):
+        self.model_calls.append(dict(params or {}))
+        raise AppServerError("model catalog unavailable")
+
+
+@pytest.mark.asyncio
+async def test_reasoning_fallback_rejects_values_outside_compatibility_choices() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = FailingModelCatalogClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="available efforts"):
+        await backend.set_reasoning_effort("qq", "conv-1", "banana")
+
+    assert client.batch_calls == []
+
+
+class PaginatedModelCatalogClient(SettingsClient):
+    async def list_models(self, params: dict | None = None):
+        params = dict(params or {})
+        self.model_calls.append(params)
+        if params.get("cursor") == "page-2":
+            return {
+                "data": [
+                    {
+                        "id": "gpt-selected",
+                        "displayName": "GPT Selected",
+                        "supportedReasoningEfforts": [{"reasoningEffort": "ultra", "description": "Deep"}],
+                        "defaultReasoningEffort": "ultra",
+                    }
+                ],
+                "nextCursor": None,
+            }
+        return {
+            "data": [
+                {
+                    "id": "gpt-first",
+                    "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+                }
+            ],
+            "nextCursor": "page-2",
+        }
+
+
+@pytest.mark.asyncio
+async def test_reasoning_catalog_follows_pagination_to_find_selected_model() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = PaginatedModelCatalogClient(config={"model": "gpt-selected"})
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert client.model_calls == [{}, {"cursor": "page-2"}]
+    assert options["selectedModel"] == "gpt-selected"
+    assert options["reasoningEfforts"] == [
+        {"reasoningEffort": "ultra", "description": "Deep"},
+    ]
+
+
+class RepeatingPermissionCursorClient(SettingsClient):
+    async def list_permission_profiles(self, params: dict):
+        self.profile_calls.append(params)
+        return {
+            "data": [{"id": ":workspace", "allowed": True}],
+            "nextCursor": "same-cursor",
+        }
+
+
+@pytest.mark.asyncio
+async def test_permission_profile_catalog_rejects_repeated_pagination_cursor() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = RepeatingPermissionCursorClient(config={"default_permissions": ":workspace"})
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="repeated pagination cursor"):
+        await backend.read_permission_options("qq", "conv-1")
+
+    assert client.profile_calls == [{}, {"cursor": "same-cursor"}]

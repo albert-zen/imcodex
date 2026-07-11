@@ -5,12 +5,16 @@ from datetime import timezone
 
 from imcodex.bridge.settings import _rate_limit_window_label
 from imcodex.bridge.settings import current_model_label
+from imcodex.bridge.settings import current_personality_label
 from imcodex.bridge.settings import current_reasoning_label
 from imcodex.bridge.settings import fast_mode_label
 from imcodex.bridge.settings import permission_mode_label
 from imcodex.bridge.settings import render_credits
+from imcodex.bridge.settings import render_native_config_write_result
 from imcodex.bridge.settings import render_permission_modes
 from imcodex.bridge.settings import render_permission_set_result
+from imcodex.bridge.settings import render_personality
+from imcodex.bridge.settings import render_reasoning_effort
 
 
 def test_rate_limit_window_label_shows_remaining_percent_and_local_reset_time() -> None:
@@ -178,12 +182,68 @@ def test_settings_labels_accept_native_camel_case_effective_config() -> None:
     assert permission_mode_label(config) == "Read Only"
 
 
+def test_render_reasoning_effort_uses_native_model_catalog_options() -> None:
+    text = render_reasoning_effort(
+        {
+            "config": {"model_reasoning_effort": "high"},
+            "selectedModel": "gpt-5.5",
+            "selectedModelDisplayName": "GPT-5.5",
+            "defaultReasoningEffort": "medium",
+            "reasoningOptionsSource": "native",
+            "reasoningEfforts": [
+                {"reasoningEffort": "low", "description": "Faster answers"},
+                {"reasoningEffort": "medium", "description": "Balanced"},
+                {"reasoningEffort": "ultra", "description": "Deepest reasoning"},
+            ],
+        }
+    )
+
+    assert "Current: high" in text
+    assert "Model: GPT-5.5" in text
+    assert "/think low: Faster answers" in text
+    assert "/think medium: Balanced; model default" in text
+    assert "/think ultra: Deepest reasoning" in text
+    assert "/think minimal" not in text
+
+
+def test_render_personality_defaults_to_native_default_and_lists_choices() -> None:
+    text = render_personality({"config": {"personality": None}})
+
+    assert "Current: Default" in text
+    assert "/personality default" in text
+    assert "/personality none" in text
+    assert current_personality_label({"personality": "pragmatic"}) == "Pragmatic"
+
+
 def test_permission_mode_label_falls_back_to_legacy_config() -> None:
     assert permission_mode_label({"approval_policy": "on-request", "sandbox_mode": "workspace-write"}) == "Default"
+
+
+def test_permission_profile_definitions_are_not_rendered_as_the_selected_profile() -> None:
+    assert permission_mode_label({"permissions": {"team": {"sandbox": "read-only"}}}) == "Custom"
 
 
 def test_render_permission_set_result_marks_compatibility_fallback() -> None:
     text = render_permission_set_result({"mode": "read-only", "fallback": True})
 
-    assert "Permission mode set to Read Only." in text
+    assert "Native permission preference set to Read Only." in text
+    assert "new or cold-loaded threads" in text
     assert "compatibility config" in text
+
+
+def test_native_config_write_renderers_do_not_claim_overridden_values_are_effective() -> None:
+    payload = {"status": "okOverridden", "overriddenMetadata": {"source": "commandLine"}}
+
+    personality = render_native_config_write_result(
+        payload,
+        "Native personality preference set to pragmatic.",
+        setting_label="Personality",
+    )
+    permission = render_permission_set_result({**payload, "mode": "full-access"})
+
+    assert personality == (
+        "Personality preference was saved, but a higher-priority native Codex configuration remains effective."
+    )
+    assert permission == (
+        "Permission preference Full Access was saved, but a higher-priority native Codex configuration remains effective."
+    )

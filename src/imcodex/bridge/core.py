@@ -18,8 +18,10 @@ from .settings import (
     render_credits,
     render_fast_mode,
     render_models,
+    render_native_config_write_result,
     render_permission_modes,
     render_permission_set_result,
+    render_personality,
     render_reasoning_effort,
 )
 from .thread_history import render_thread_history
@@ -179,8 +181,19 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_permission_modes(result))]
         if response.action == "settings.reasoning.read":
-            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            try:
+                result = await self.backend.read_reasoning_options(message.channel_id, message.conversation_id)
+            except AppServerError as exc:
+                text = f"Reasoning effort could not be queried from Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_reasoning_effort(result))]
+        if response.action == "settings.personality.read":
+            try:
+                result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            except AppServerError as exc:
+                text = f"Personality could not be queried from Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            return [self._message(message, "command_result", render_personality(result))]
         if response.action == "settings.fast.read":
             result = await self.backend.read_config(message.channel_id, message.conversation_id)
             return [self._message(message, "command_result", render_fast_mode(result))]
@@ -273,11 +286,26 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             return [self._message(message, "status", response.text)]
         if response.action == "settings.reasoning.write":
             payload = response.payload or {}
-            await self.backend.write_config_value(
-                key_path="model_reasoning_effort",
-                value=payload.get("effort"),
-            )
-            return [self._message(message, "status", response.text)]
+            try:
+                result = await self.backend.set_reasoning_effort(
+                    message.channel_id,
+                    message.conversation_id,
+                    payload.get("effort"),
+                )
+            except AppServerError as exc:
+                text = f"Reasoning effort could not be set in Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            text = render_native_config_write_result(result, response.text, setting_label="Reasoning effort")
+            return [self._message(message, "status", text)]
+        if response.action == "settings.personality.write":
+            payload = response.payload or {}
+            try:
+                result = await self.backend.set_default_personality(payload.get("personality"))
+            except AppServerError as exc:
+                text = f"Personality could not be set in Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            text = render_native_config_write_result(result, response.text, setting_label="Personality")
+            return [self._message(message, "status", text)]
         if response.action == "settings.fast.write":
             payload = response.payload or {}
             edits = [
@@ -537,6 +565,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             "settings.visibility",
             "settings.model",
             "settings.reasoning.write",
+            "settings.personality.write",
             "settings.fast.write",
             "settings.permission.write",
             "goal.set",

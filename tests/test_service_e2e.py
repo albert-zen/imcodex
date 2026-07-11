@@ -1097,7 +1097,6 @@ async def test_connection_ready_in_websocket_mode_clears_stale_active_turn_after
         {
             "threadId": "thr_1",
             "serviceName": "imcodex-test",
-            "personality": "friendly",
         }
     ]
     await client.close()
@@ -1632,9 +1631,29 @@ async def test_think_command_writes_native_reasoning_effort_config() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "config/value/write": [
+            "config/read": [{"id": 2, "result": {"config": {"model": "gpt-5.5"}}}],
+            "model/list": [
                 {
-                    "id": 2,
+                    "id": 3,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.5",
+                                "displayName": "GPT-5.5",
+                                "supportedReasoningEfforts": [
+                                    {"reasoningEffort": "low", "description": "Fast"},
+                                    {"reasoningEffort": "high", "description": "Deep"},
+                                ],
+                                "defaultReasoningEffort": "low",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+            "config/batchWrite": [
+                {
+                    "id": 4,
                     "result": {
                         "status": "updated",
                         "version": "v3",
@@ -1660,8 +1679,104 @@ async def test_think_command_writes_native_reasoning_effort_config() -> None:
     )
 
     assert messages[0].message_type == "status"
-    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
-    assert payloads == [{"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"}]
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
+    assert payloads == [
+        {
+            "edits": [
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": "high",
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reloadUserConfig": True,
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_personality_commands_read_and_reload_native_config_for_future_threads() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [{"id": 2, "result": {"config": {"personality": None}}}],
+            "config/batchWrite": [{"id": 3, "result": {"status": "updated"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    current = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/personality",
+        )
+    )
+    updated = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/personality pragmatic",
+        )
+    )
+
+    assert "Personality" in current[0].text
+    assert "Current: Default" in current[0].text
+    assert "Native personality preference set to pragmatic." in updated[0].text
+    assert "new or cold-loaded threads" in updated[0].text
+    payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
+    assert payloads == [
+        {
+            "edits": [
+                {"keyPath": "personality", "value": "pragmatic", "mergeStrategy": "replace"},
+            ],
+            "reloadUserConfig": True,
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "scripts", "expected"),
+    [
+        (
+            "/personality",
+            {"config/read": [{"id": 2, "error": {"code": -32000, "message": "config unavailable"}}]},
+            "Personality could not be queried from Codex",
+        ),
+        (
+            "/personality pragmatic",
+            {"config/batchWrite": [{"id": 2, "error": {"code": -32000, "message": "config locked"}}]},
+            "Personality could not be set in Codex",
+        ),
+    ],
+)
+async def test_personality_commands_render_native_config_errors(command: str, scripts: dict, expected: str) -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}], **scripts})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text=command,
+        )
+    )
+
+    assert messages[0].message_type == "status"
+    assert expected in messages[0].text
     await client.close()
 
 
@@ -1891,6 +2006,26 @@ async def test_think_and_fast_without_args_read_native_config() -> None:
                     },
                 },
             ],
+            "model/list": [
+                {
+                    "id": 4,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.5",
+                                "displayName": "GPT-5.5",
+                                "isDefault": True,
+                                "supportedReasoningEfforts": [
+                                    {"reasoningEffort": "low", "description": "Fast"},
+                                    {"reasoningEffort": "high", "description": "Deep"},
+                                ],
+                                "defaultReasoningEffort": "high",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -1918,6 +2053,7 @@ async def test_think_and_fast_without_args_read_native_config() -> None:
 
     assert "Reasoning Effort" in think_messages[0].text
     assert "Current: high" in think_messages[0].text
+    assert "/think low: Fast" in think_messages[0].text
     assert "Fast Mode" in fast_messages[0].text
     assert "Current: Fast" in fast_messages[0].text
     await client.close()
@@ -2662,7 +2798,7 @@ async def test_permission_command_selects_native_permission_profile() -> None:
                 }
             ],
             "configRequirements/read": [{"id": 4, "result": {"requirements": None}}],
-            "config/value/write": [{"id": 5, "result": {"status": "updated"}}],
+            "config/batchWrite": [{"id": 5, "result": {"status": "updated"}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -2681,17 +2817,25 @@ async def test_permission_command_selects_native_permission_profile() -> None:
     )
 
     assert messages[0].message_type == "status"
-    assert "Permission mode set to Full Access." in messages[0].text
+    assert "Native permission preference set to Full Access." in messages[0].text
+    assert "new or cold-loaded threads" in messages[0].text
     profile_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "permissionProfile/list"]
     assert profile_payloads == [{"cwd": r"D:\work\alpha"}]
     requirement_payloads = [payload for payload in process.inputs if payload.get("method") == "configRequirements/read"]
     assert requirement_payloads == [{"id": 4, "method": "configRequirements/read"}]
-    value_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
+    value_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
     assert value_payloads == [
         {
-            "keyPath": "default_permissions",
-            "value": ":danger-full-access",
-            "mergeStrategy": "replace",
+            "edits": [
+                {
+                    "keyPath": "default_permissions",
+                    "value": ":danger-full-access",
+                    "mergeStrategy": "replace",
+                },
+                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": None, "mergeStrategy": "replace"},
+            ],
+            "reloadUserConfig": True,
         }
     ]
     await client.close()
@@ -2727,7 +2871,7 @@ async def test_permission_command_falls_back_to_legacy_config_for_old_codex() ->
     )
 
     assert messages[0].message_type == "status"
-    assert "Permission mode set to Read Only." in messages[0].text
+    assert "Native permission preference set to Read Only." in messages[0].text
     assert "compatibility config" in messages[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
     assert payloads == [
@@ -2736,9 +2880,9 @@ async def test_permission_command_falls_back_to_legacy_config_for_old_codex() ->
                 {"keyPath": "approval_policy", "value": "on-request", "mergeStrategy": "replace"},
                 {"keyPath": "sandbox_mode", "value": "read-only", "mergeStrategy": "replace"},
             ],
-            "reloadUserConfig": False,
-        }
-    ]
+                "reloadUserConfig": True,
+            }
+        ]
     await client.close()
 
 

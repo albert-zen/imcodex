@@ -322,13 +322,20 @@ class AppServerClient:
         *,
         edits: list[JsonDict],
         reload_user_config: bool = False,
+        expected_version: str | None = None,
+        file_path: str | None = None,
     ) -> JsonDict:
+        payload: JsonDict = {
+            "edits": edits,
+            "reloadUserConfig": reload_user_config,
+        }
+        if expected_version is not None:
+            payload["expectedVersion"] = expected_version
+        if file_path is not None:
+            payload["filePath"] = file_path
         return await self._request(
             "config/batchWrite",
-            {
-                "edits": edits,
-                "reloadUserConfig": reload_user_config,
-            },
+            payload,
         )
 
     async def start_turn(self, thread_id: str, text: str, **kwargs: Any) -> JsonDict:

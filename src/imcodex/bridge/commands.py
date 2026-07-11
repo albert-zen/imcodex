@@ -10,7 +10,7 @@ from ..store import ConversationStore
 
 
 _PERMISSION_MODES = {"default", "read-only", "full-access"}
-_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+_PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
 
 
@@ -348,24 +348,46 @@ class CommandRouter:
         if len(command.args) != 1:
             return CommandResponse(
                 action="settings.reasoning.invalid",
-                text="Usage: /think [minimal|low|medium|high|xhigh|default]",
+                text="Usage: /think [effort|default]",
             )
         effort = command.args[0].lower()
         if effort == "default":
             return CommandResponse(
                 action="settings.reasoning.write",
-                text="Native reasoning effort cleared.",
+                text="Native reasoning effort preference cleared. It applies to new or cold-loaded threads.",
                 payload={"effort": None},
-            )
-        if effort not in _REASONING_EFFORTS:
-            return CommandResponse(
-                action="settings.reasoning.invalid",
-                text="Usage: /think [minimal|low|medium|high|xhigh|default]",
             )
         return CommandResponse(
             action="settings.reasoning.write",
-            text=f"Native reasoning effort set to {effort}.",
+            text=f"Native reasoning effort preference set to {effort}. It applies to new or cold-loaded threads.",
             payload={"effort": effort},
+        )
+
+    def _handle_personality(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="settings.personality.read", text="")
+        if len(command.args) != 1:
+            return CommandResponse(
+                action="settings.personality.invalid",
+                text="Usage: /personality [default|none|friendly|pragmatic]",
+            )
+        personality = command.args[0].lower()
+        if personality == "default":
+            return CommandResponse(
+                action="settings.personality.write",
+                text="Native personality preference reset to default. It applies to new or cold-loaded threads.",
+                payload={"personality": None},
+            )
+        if personality not in _PERSONALITIES:
+            return CommandResponse(
+                action="settings.personality.invalid",
+                text="Usage: /personality [default|none|friendly|pragmatic]",
+            )
+        return CommandResponse(
+            action="settings.personality.write",
+            text=f"Native personality preference set to {personality}. It applies to new or cold-loaded threads.",
+            payload={"personality": personality},
         )
 
     def _handle_fast(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -630,6 +652,8 @@ class CommandRouter:
                     "Browse or switch model.",
                     "/think [effort]",
                     "Set reasoning effort.",
+                    "/personality [style]",
+                    "Browse or switch personality.",
                     "/fast [on|off|status]",
                     "Toggle fast mode.",
                     "/permission [mode]",

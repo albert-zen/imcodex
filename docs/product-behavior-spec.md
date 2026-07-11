@@ -127,6 +127,7 @@ Settings:
 
 - `/model [model-id]`
 - `/think [effort]`
+- `/personality [style]`
 - `/fast [on|off|status]`
 - `/permission [mode]`
 
@@ -332,26 +333,37 @@ Behavior:
 
 ### `/think`
 
-`/think` without arguments shows the current reasoning effort and supported command choices.
+`/think` without arguments shows the current reasoning effort and the choices advertised by the selected native model.
 
 `/think <effort>` sets the native default reasoning effort.
 
 `/think default` clears the reasoning-effort override.
 
-Supported product choices:
-
-- `minimal`
-- `low`
-- `medium`
-- `high`
-- `xhigh`
-- `default`
-
 Behavior:
 
 - reasoning-effort changes are written to native Codex config
+- choices and descriptions come from `model/list[].supportedReasoningEfforts`
+- the model's `defaultReasoningEffort` is identified in the command output
+- if native model metadata is unavailable, the bridge may expose a compatibility list instead
+- a non-default effort is rejected when the selected native model does not advertise it
+- config changes reload the native user-config stack and apply to new or cold-loaded threads
+- already-loaded threads retain their native thread settings; the command output must not claim an immediate live-thread change
 - the bridge does not maintain a second reasoning-effort truth
-- model-specific support and clamping remain native Codex behavior
+
+### `/personality`
+
+`/personality` without arguments shows the current native personality configuration.
+
+`/personality none`, `/personality friendly`, and `/personality pragmatic` select a native personality.
+
+`/personality default` clears the override and returns personality selection to native Codex defaults.
+
+Behavior:
+
+- new, attached, resumed, and rehydrated threads omit thread-level personality overrides; native Codex applies any explicit global configuration
+- personality changes reload native Codex config for new or cold-loaded threads
+- already-loaded threads retain their native thread settings; changing them immediately would require an experimental native thread-settings operation
+- the bridge does not force `friendly` or maintain a second personality truth
 
 ### `/fast`
 
@@ -387,6 +399,12 @@ Behavior:
 - older Codex versions that do not expose native permission profiles may use the legacy approval/sandbox config fallback for the same product presets
 - `full-access` maps to native full access behavior
 - `full-access` means native `approvalPolicy = never` plus native `sandbox = danger-full-access`
+- when no native permission choice exists at startup, the bridge initializes the native user config to `default_permissions = ":danger-full-access"` and `approval_policy = "never"`
+- an existing native, legacy, or managed permission choice is preserved and remains authoritative
+- managed defaults and requirements take precedence; if they disallow full access, startup preserves the managed behavior instead of bypassing it or failing the bridge
+- bootstrap writes use the native user-config layer version so a concurrent user or administrator update cannot be silently overwritten
+- permission config changes reload the native config stack for new or cold-loaded threads rather than adding thread-level permission overrides
+- already-loaded threads retain their native permission settings until they are cold-loaded again
 - the bridge does not maintain a second permission truth
 
 ### Approval Commands

@@ -149,18 +149,26 @@ When a thread switch succeeds:
 
 ## Configuration Rules
 
-Model, permission, and reasoning-effort changes MUST be expressed through native Codex configuration or native thread-level operations.
+Model, permission, reasoning-effort, and personality changes MUST be expressed through native Codex configuration or native thread-level operations.
 
 The default operating configuration MUST align to native Codex settings:
 
 - `approvalPolicy = never`
 - `sandbox = danger-full-access`
 
+At connection initialization, if native Codex has no effective modern or legacy permission choice, the bridge MUST seed the native user config with:
+
+- `default_permissions = ":danger-full-access"`
+- `approval_policy = "never"`
+
+That seed MUST use native config operations and reload the native user-config stack. It MUST use the native user-layer version for optimistic concurrency, preserve managed defaults and restrictions, and MUST NOT be repeated over an existing native permission choice. It MUST NOT be expressed as a thread start, resume, or turn override. Already-loaded threads may retain their native thread settings until they are cold-loaded again.
+
 The bridge MUST NOT maintain separate long-term per-conversation defaults for:
 
 - model
 - permission mode
 - reasoning effort
+- personality
 
 If the product allows these settings to be changed from IM, the bridge is only a translation layer for native Codex operations.
 

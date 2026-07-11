@@ -110,6 +110,7 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     assert "/credits" in response.text
     assert "/model [model-id]" in response.text
     assert "/think [effort]" in response.text
+    assert "/personality [style]" in response.text
     assert "/fast [on|off|status]" in response.text
     assert "native reasoning effort" not in response.text
     assert "native Codex Fast mode" not in response.text
@@ -277,6 +278,16 @@ def test_think_with_effort_builds_native_reasoning_payload() -> None:
     assert response.payload == {"effort": "xhigh"}
 
 
+def test_think_accepts_native_catalog_values_without_a_bridge_allowlist() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/think ultra")
+
+    assert response.action == "settings.reasoning.write"
+    assert response.payload == {"effort": "ultra"}
+
+
 def test_think_default_clears_native_reasoning_payload() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
@@ -285,6 +296,37 @@ def test_think_default_clears_native_reasoning_payload() -> None:
 
     assert response.action == "settings.reasoning.write"
     assert response.payload == {"effort": None}
+
+
+def test_personality_without_args_reads_native_config() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/personality")
+
+    assert response.action == "settings.personality.read"
+
+
+def test_personality_builds_native_config_payload_and_default_clears_it() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    pragmatic = router.handle("qq", "conv-1", "/personality pragmatic")
+    default = router.handle("qq", "conv-1", "/personality default")
+
+    assert pragmatic.action == "settings.personality.write"
+    assert pragmatic.payload == {"personality": "pragmatic"}
+    assert default.action == "settings.personality.write"
+    assert default.payload == {"personality": None}
+
+
+def test_personality_rejects_values_outside_the_native_enum() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/personality cheerful")
+
+    assert response.action == "settings.personality.invalid"
 
 
 def test_fast_on_builds_native_fast_mode_payload() -> None:

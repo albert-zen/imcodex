@@ -23,9 +23,14 @@ class AppRuntime:
             if callable(reset_hook):
                 reset_hook(self.service.handle_connection_reset)
             ready_hook = getattr(self.client, "add_connection_ready_handler", None)
+            backend = getattr(self.service, "backend", None)
+            ensure_permission_defaults = getattr(backend, "ensure_default_permission_mode", None)
             service_ready = getattr(self.service, "handle_connection_ready", None)
-            if callable(ready_hook) and callable(service_ready):
-                ready_hook(service_ready)
+            if callable(ready_hook):
+                if callable(ensure_permission_defaults):
+                    ready_hook(ensure_permission_defaults)
+                if callable(service_ready):
+                    ready_hook(service_ready)
             await self.client.initialize()
             for channel in self.managed_channels:
                 await channel.start()
