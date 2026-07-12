@@ -152,8 +152,8 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
         "client.add_notification_handler",
         "client.add_server_request_handler",
         "client.add_connection_ready_handler",
-        "client.initialize",
         "channel.start",
+        "client.initialize",
         "obs.health",
         "obs.event:bridge:bridge.started",
         "obs.event:bridge:bridge.stopping",
@@ -181,10 +181,10 @@ async def test_app_runtime_initializes_native_permission_default_before_thread_r
         "client.add_server_request_handler",
         "client.add_ready:ensure_default_permission_mode",
         "client.add_ready:handle_connection_ready",
+        "channel.start",
         "client.initialize",
         "backend.ensure_default_permission_mode",
         "service.handle_connection_ready",
-        "channel.start",
     ]
 
 
@@ -272,8 +272,8 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
     assert launch["env"]["IMCODEX_APP_SERVER_EXPERIMENTAL_API"] == "0"
     assert launch["env"]["IMCODEX_APP_SERVER_URL"] == "ws://127.0.0.1:8765"
-    assert launch["env"]["IMCODEX_CORE_MODE"] == "shared-ws"
-    assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
+    assert launch["env"]["IMCODEX_CORE_MODE"] == ""
+    assert launch["env"]["IMCODEX_CORE_URL"] == ""
     assert launch["env"]["IMCODEX_APP_SERVER_AUTH_TOKEN_FILE"] == ""
     assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]
     assert "IMCODEX_QQ_CLIENT_SECRET" not in launch["env"]
@@ -394,7 +394,7 @@ async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_s
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_closes_unstarted_channels_when_client_initialize_fails() -> None:
+async def test_app_runtime_stops_prepared_channels_when_client_initialize_fails() -> None:
     calls: list[str] = []
     duplicate = _NamedChannel("duplicate", calls)
     runtime = AppRuntime(
@@ -410,8 +410,8 @@ async def test_app_runtime_closes_unstarted_channels_when_client_initialize_fail
     with pytest.raises(RuntimeError, match="boom"):
         await runtime.start()
 
-    assert "first.start" not in calls
-    assert "duplicate.start" not in calls
+    assert calls.count("first.start") == 1
+    assert calls.count("duplicate.start") == 1
     assert calls.count("duplicate.stop") == 1
     assert calls[-3:] == ["duplicate.stop", "first.stop", "client.close"]
 

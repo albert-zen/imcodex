@@ -789,7 +789,7 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
                     "params": {
                         "requestId": "native-request-abc",
                         "threadId": "thr_1",
-                        "turnId": "turn_1",
+                        "turnId": "turn_new",
                         "command": "Get-Date",
                         "cwd": r"D:\work\alpha",
                         "availableDecisions": ["accept", "cancel"],
@@ -802,7 +802,8 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
                             "id": "thr_1",
                             "cwd": r"D:\work\alpha",
                             "preview": "Recovered thread",
-                            "status": "idle",
+                            "status": {"type": "active"},
+                            "turns": [{"id": "turn_new", "status": "inProgress"}],
                         }
                     },
                 },
@@ -812,6 +813,7 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_old", "inProgress")
     sink = CapturingSink()
     client, service = _build_service(store, process, sink)
     service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
@@ -820,6 +822,8 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
 
     pending = store.list_pending_requests("qq", "conv-1", kind="approval")
     assert [route.request_id for route in pending] == ["native-request-abc"]
+    assert store.get_active_turn("thr_1") == ("turn_new", "inProgress")
+    assert not any(payload.get("id") == 91 and "error" in payload for payload in process.inputs)
 
     messages = await service.handle_inbound(
         InboundMessage(
@@ -839,6 +843,61 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
         if "result" in payload and payload.get("id") == 91
     ]
     assert reply_payloads == [{"id": 91, "result": {"decision": "accept"}}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_connection_ready_delivers_terminal_result_completed_during_disconnect() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                            "turns": [
+                                {
+                                    "id": "turn_1",
+                                    "status": "completed",
+                                    "items": [
+                                        {
+                                            "type": "agentMessage",
+                                            "phase": "final_answer",
+                                            "text": "Finished while the bridge was offline.",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+    service.projector.message_pump.record_delta(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        delta="partial",
+        emit_progress=False,
+    )
+
+    await client.initialize()
+
+    recovered = [message for message in sink.messages if message.message_type == "turn_result"]
+    assert [message.text for message in recovered] == ["Finished while the bridge was offline."]
+    assert recovered[0].metadata["delivery_id"].startswith("imcodex:native:")
+    assert ("thr_1", "turn_1") not in service.projector.message_pump._turns
     await client.close()
 
 
@@ -965,6 +1024,53 @@ async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling
     assert "rejected" in events[0].text
     assert "77" in events[0].text
     assert "ABC-123" not in events[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery_failure", ["raise", "hang"])
+async def test_server_request_delivery_failure_is_bounded_and_rejected(delivery_failure: str) -> None:
+    class FailingSink:
+        async def send_message(self, _message: OutboundMessage) -> None:
+            if delivery_failure == "raise":
+                raise RuntimeError("channel unavailable")
+            await asyncio.Event().wait()
+
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    client, service = _build_service(store, process, FailingSink())
+    service.server_request_delivery_timeout_s = 0.01
+
+    projected = await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "command": "Get-Date",
+                "cwd": r"D:\work\alpha",
+            },
+        }
+    )
+
+    assert projected == []
+    assert store.list_pending_requests("qq", "conv-1") == []
+    assert [payload for payload in process.inputs if payload.get("id") == 91] == [
+        {
+            "id": 91,
+            "error": {
+                "code": -32603,
+                "message": "IMCodex could not deliver this native request to the IM channel",
+                "data": {
+                    "reason": "imDeliveryFailed",
+                    "method": "item/commandExecution/requestApproval",
+                    "requestId": "91",
+                },
+            },
+        }
+    ]
     await client.close()
 
 

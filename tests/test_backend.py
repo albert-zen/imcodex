@@ -508,7 +508,11 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
     ]
     assert store.get_thread_snapshot("thr_1").preview == "Recovered thread"
     assert store.get_thread_snapshot("thr_2").preview == "Recovered thread"
-    assert summary == {"total": 2, "succeeded": 2, "failed": 0, "unverified": 0}
+    assert summary == {
+        "summary": {"total": 2, "succeeded": 2, "failed": 0, "unverified": 0},
+        "recoveredTurns": [],
+        "discardedTurns": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -522,7 +526,35 @@ async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_
     summary = await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") is None
-    assert summary == {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0}
+    assert summary == {
+        "summary": {"total": 1, "succeeded": 0, "failed": 0, "unverified": 1},
+        "recoveredTurns": [],
+        "discardedTurns": [{"threadId": "thr_1", "turnId": "turn_1"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_bound_threads_returns_terminal_turn_completed_during_disconnect() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    terminal_turn = {
+        "id": "turn_1",
+        "status": "completed",
+        "items": [{"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}],
+    }
+    client = RehydrateClient(status="idle", turns=[terminal_turn])
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") is None
+    assert store.is_turn_suppressed("thr_1", "turn_1") is True
+    assert result == {
+        "summary": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+        "recoveredTurns": [{"threadId": "thr_1", "turn": terminal_turn}],
+        "discardedTurns": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -544,7 +576,11 @@ async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_bindi
 
     assert store.get_active_turn("thr_1") is None
     assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
-    assert summary == {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0}
+    assert summary == {
+        "summary": {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0},
+        "recoveredTurns": [],
+        "discardedTurns": [{"threadId": "thr_1", "turnId": "turn_1"}],
+    }
 
 
 @pytest.mark.asyncio
@@ -579,14 +615,11 @@ async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(thread
 
     assert store.get_active_turn("thr_1") is None
     assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
-    if (
-        isinstance(thread_payload, dict)
-        and thread_payload.get("id") == "thr_1"
-        and thread_payload.get("status") is not None
-    ):
-        assert summary == {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0}
-    else:
-        assert summary == {"total": 1, "succeeded": 0, "failed": 0, "unverified": 1}
+    assert summary == {
+        "summary": {"total": 1, "succeeded": 0, "failed": 0, "unverified": 1},
+        "recoveredTurns": [],
+        "discardedTurns": [{"threadId": "thr_1", "turnId": "turn_1"}],
+    }
 
 
 @pytest.mark.asyncio

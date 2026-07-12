@@ -15,6 +15,9 @@ from .backend_types import (
 from .client import AppServerError
 
 
+_TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
+
+
 class CodexThreadBackendMixin:
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.store.clear_thread_binding(channel_id, conversation_id)
@@ -274,12 +277,20 @@ class CodexThreadBackendMixin:
         self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
 
-    async def rehydrate_bound_threads(self) -> dict[str, int]:
+    async def rehydrate_bound_threads(self) -> dict:
         summary = {"total": 0, "succeeded": 0, "failed": 0, "unverified": 0}
+        recovered_turns: list[dict] = []
+        discarded_turns: list[dict[str, str]] = []
         for binding in self.store.iter_bindings():
             if not binding.thread_id:
                 continue
             summary["total"] += 1
+            cached_active = self.store.get_active_turn(binding.thread_id)
+            if cached_active is not None:
+                # Cached turn state is not authoritative across a transport
+                # epoch. Clear it before resume so a replayed native request
+                # cannot be rejected as belonging to a different local turn.
+                self.store.clear_active_turn(binding.thread_id)
             emit_event(
                 component="appserver.backend",
                 event="bridge.thread_rehydrate.started",
@@ -304,11 +315,13 @@ class CodexThreadBackendMixin:
                 summary["failed"] += 1
                 failed_thread_id = binding.thread_id
                 stale_thread = self._is_stale_thread_error(exc)
-                had_active_turn = self.store.get_active_turn(failed_thread_id) is not None
+                had_active_turn = cached_active is not None
+                if cached_active is not None:
+                    discarded_turns.append(
+                        {"threadId": failed_thread_id, "turnId": cached_active[0]}
+                    )
                 if stale_thread:
                     self.store.clear_thread_binding(binding.channel_id, binding.conversation_id)
-                elif had_active_turn:
-                    self.store.clear_active_turn(failed_thread_id)
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.failed",
@@ -326,9 +339,11 @@ class CodexThreadBackendMixin:
             payload = result.get("thread")
             if not isinstance(payload, dict):
                 summary["unverified"] += 1
-                had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
-                if had_active_turn:
-                    self.store.clear_active_turn(binding.thread_id)
+                had_active_turn = cached_active is not None
+                if cached_active is not None:
+                    discarded_turns.append(
+                        {"threadId": binding.thread_id, "turnId": cached_active[0]}
+                    )
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.empty",
@@ -346,9 +361,11 @@ class CodexThreadBackendMixin:
             native_thread_status = self._native_status(payload.get("status"))
             if returned_thread_id != binding.thread_id or native_thread_status is None:
                 summary["unverified"] += 1
-                had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
-                if had_active_turn:
-                    self.store.clear_active_turn(binding.thread_id)
+                had_active_turn = cached_active is not None
+                if cached_active is not None:
+                    discarded_turns.append(
+                        {"threadId": binding.thread_id, "turnId": cached_active[0]}
+                    )
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.unverified",
@@ -371,18 +388,59 @@ class CodexThreadBackendMixin:
                 snapshot.thread_id,
                 snapshot.cwd,
             )
-            cached_active = self.store.get_active_turn(snapshot.thread_id)
             native_active = self._native_active_turn(payload)
-            if (
+            native_thread_is_active = (
                 native_thread_status.strip().lower() in ACTIVE_THREAD_STATUSES
-                and native_active is not None
-            ):
+            )
+            if native_thread_is_active and native_active is None:
+                summary["unverified"] += 1
+                if cached_active is not None:
+                    discarded_turns.append(
+                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
+                    )
+                emit_event(
+                    component="appserver.backend",
+                    event="bridge.thread_rehydrate.active_turn_unverified",
+                    level="WARNING",
+                    message="Active native thread did not expose a verifiable active turn",
+                    data={
+                        "channel_id": binding.channel_id,
+                        "conversation_id": binding.conversation_id,
+                        "thread_id": snapshot.thread_id,
+                    },
+                )
+                continue
+            if native_active is not None:
                 if cached_active is not None and cached_active[0] != native_active[0]:
                     self.store.suppress_turn(snapshot.thread_id, cached_active[0])
+                    discarded_turns.append(
+                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
+                    )
                 self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
             elif cached_active is not None:
+                terminal_turn = self._turn_by_id(payload, cached_active[0])
+                if terminal_turn is None or not self._turn_is_terminal(terminal_turn):
+                    summary["unverified"] += 1
+                    discarded_turns.append(
+                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
+                    )
+                    emit_event(
+                        component="appserver.backend",
+                        event="bridge.thread_rehydrate.cached_turn_unverified",
+                        level="WARNING",
+                        message="Native resume did not verify the cached active turn",
+                        data={
+                            "channel_id": binding.channel_id,
+                            "conversation_id": binding.conversation_id,
+                            "thread_id": snapshot.thread_id,
+                            "turn_id": cached_active[0],
+                        },
+                    )
+                    continue
                 self.store.suppress_turn(snapshot.thread_id, cached_active[0])
-                self.store.clear_active_turn(snapshot.thread_id)
+                recovered_turns.append(
+                    {"threadId": snapshot.thread_id, "turn": terminal_turn}
+                )
             emit_event(
                 component="appserver.backend",
                 event="bridge.thread_rehydrate.succeeded",
@@ -395,7 +453,11 @@ class CodexThreadBackendMixin:
                 },
             )
             summary["succeeded"] += 1
-        return summary
+        return {
+            "summary": summary,
+            "recoveredTurns": recovered_turns,
+            "discardedTurns": discarded_turns,
+        }
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = self._native_status(payload.get("status"))
@@ -437,6 +499,22 @@ class CodexThreadBackendMixin:
             if turn_id and status is not None and status.strip().lower() in ACTIVE_THREAD_STATUSES:
                 return turn_id, status
         return None
+
+    def _turn_by_id(self, payload: dict, turn_id: str) -> dict | None:
+        turns = payload.get("turns")
+        if not isinstance(turns, list):
+            return None
+        for turn in reversed(turns):
+            if not isinstance(turn, dict):
+                continue
+            candidate = str(turn.get("id") or turn.get("turnId") or "")
+            if candidate == turn_id:
+                return turn
+        return None
+
+    def _turn_is_terminal(self, turn: dict) -> bool:
+        status = self._native_status(turn.get("status"))
+        return status is not None and status.strip().lower() in _TERMINAL_TURN_STATUSES
 
     def _native_status(self, value: object) -> str | None:
         if isinstance(value, dict):

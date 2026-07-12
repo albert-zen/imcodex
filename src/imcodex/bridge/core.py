@@ -4,7 +4,12 @@ import asyncio
 import hashlib
 import json
 
-from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
+from ..appserver import (
+    AppServerError,
+    StaleThreadBindingError,
+    ThreadSelectionError,
+    normalize_appserver_message,
+)
 from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
@@ -32,6 +37,9 @@ from .thread_views import ThreadViewMixin
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
 _SYSTEM_PREFIX = "[System] "
+_SERVER_REQUEST_DELIVERY_TIMEOUT_S = 10.0
+_RECOVERY_DELIVERY_TIMEOUT_S = 10.0
+_DELIVERY_FAILED_REQUEST_CODE = -32603
 
 
 class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
@@ -43,12 +51,17 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         command_router,
         projector,
         outbound_sink=None,
+        server_request_delivery_timeout_s: float = _SERVER_REQUEST_DELIVERY_TIMEOUT_S,
     ) -> None:
         self.store = store
         self.backend = backend
         self.command_router = command_router
         self.projector = projector
         self.outbound_sink = outbound_sink
+        self.server_request_delivery_timeout_s = max(
+            0.01,
+            float(server_request_delivery_timeout_s),
+        )
         self._rehydration_lock = asyncio.Lock()
         self.native_requests = NativeRequestPolicy(store=store, backend=backend)
 
@@ -508,8 +521,30 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             return []
         message = self.projector.project_notification(request, self.store)
         self._attach_native_delivery_id(message, request, namespace="request")
-        outbound = await self._emit(message)
+        event = normalize_appserver_message(request)
+        routed = bool(
+            event.request_id
+            and self.store.get_pending_request(event.request_id) is not None
+            and message is not None
+        )
+        if routed:
+            try:
+                outbound = await asyncio.wait_for(
+                    self._emit(message),
+                    timeout=self.server_request_delivery_timeout_s,
+                )
+            except Exception as exc:
+                await self._reject_failed_server_request_delivery(request, event, exc)
+                self.store.update_native_appserver_event(
+                    journal_entry.sequence,
+                    outcome="rejected",
+                    note="IM delivery failed for native server request",
+                )
+                return []
+            self.store.update_native_appserver_event(journal_entry.sequence, outcome="pending")
+            return outbound
         rejection = await self.native_requests.reject_unrouted(request)
+        outbound: list[OutboundMessage] = []
         if rejection is not None:
             self._attach_native_delivery_id(rejection, request, namespace="rejection")
             self.store.update_native_appserver_event(
@@ -519,9 +554,41 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             )
             outbound.extend(await self._emit(rejection))
         else:
-            outcome = "pending" if message is not None and journal_entry.direction == "server_request" else "ingested"
-            self.store.update_native_appserver_event(journal_entry.sequence, outcome=outcome)
+            self.store.update_native_appserver_event(journal_entry.sequence, outcome="ingested")
         return outbound
+
+    async def _reject_failed_server_request_delivery(self, request: dict, event, exc: Exception) -> None:
+        if event.request_id:
+            self.store.remove_pending_request(event.request_id)
+        transport_request_id = self._transport_request_id(request)
+        if transport_request_id is not None:
+            try:
+                await self.backend.reply_error_to_transport_request(
+                    transport_request_id,
+                    code=_DELIVERY_FAILED_REQUEST_CODE,
+                    message="IMCodex could not deliver this native request to the IM channel",
+                    data={
+                        "reason": "imDeliveryFailed",
+                        "method": event.method,
+                        "requestId": event.request_id,
+                    },
+                    connection_epoch=self._connection_epoch(request),
+                )
+            except AppServerError:
+                pass
+        emit_event(
+            component="bridge",
+            event="bridge.server_request.delivery_failed",
+            level="ERROR",
+            message=str(exc) or "Native server request IM delivery failed",
+            data={
+                "method": event.method,
+                "request_id": event.request_id,
+                "thread_id": event.thread_id,
+                "turn_id": event.turn_id,
+                "error_type": type(exc).__name__,
+            },
+        )
 
     def _transport_request_id(self, request: dict) -> str | int | None:
         params = request.get("params")
@@ -566,8 +633,65 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if not self.backend.prefers_native_recovery():
             return None
         async with self._rehydration_lock:
-            summary = await self.backend.rehydrate_bound_threads()
-        degraded = summary.get("failed", 0) + summary.get("unverified", 0)
+            result = await self.backend.rehydrate_bound_threads()
+        summary = dict(result.get("summary") or {})
+        for discarded in result.get("discardedTurns") or []:
+            if not isinstance(discarded, dict):
+                continue
+            self.projector.discard_recovered_turn(
+                thread_id=str(discarded.get("threadId") or ""),
+                turn_id=str(discarded.get("turnId") or ""),
+            )
+        delivery_failed = 0
+        for recovered in result.get("recoveredTurns") or []:
+            if not isinstance(recovered, dict) or not isinstance(recovered.get("turn"), dict):
+                continue
+            thread_id = str(recovered.get("threadId") or "")
+            turn = recovered["turn"]
+            message = self.projector.project_recovered_turn(
+                thread_id=thread_id,
+                turn=turn,
+                store=self.store,
+            )
+            if message is None:
+                continue
+            self._attach_native_delivery_id(
+                message,
+                {
+                    "method": "bridge/recoveredTurn",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": turn.get("id") or turn.get("turnId"),
+                        "status": turn.get("status"),
+                    },
+                },
+                namespace="recovery",
+            )
+            try:
+                await asyncio.wait_for(
+                    self._emit(message),
+                    timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
+                )
+            except Exception as exc:
+                delivery_failed += 1
+                emit_event(
+                    component="bridge",
+                    event="bridge.thread_rehydrate.delivery_failed",
+                    level="ERROR",
+                    message=str(exc) or "Recovered turn delivery failed",
+                    data={
+                        "thread_id": thread_id,
+                        "turn_id": turn.get("id") or turn.get("turnId"),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+        if delivery_failed:
+            summary["deliveryFailed"] = delivery_failed
+        degraded = (
+            summary.get("failed", 0)
+            + summary.get("unverified", 0)
+            + summary.get("deliveryFailed", 0)
+        )
         return {
             "status": "degraded" if degraded else "connected",
             "rehydration": summary,

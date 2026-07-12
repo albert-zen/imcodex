@@ -117,6 +117,56 @@ class MessagePump:
     def discard_turn(self, *, thread_id: str, turn_id: str) -> None:
         self._turns.pop((thread_id, turn_id), None)
 
+    def recover_turn(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        status: str,
+        items: list[dict],
+    ) -> OutboundMessage | None:
+        buffer = self._turns.pop((thread_id, turn_id), None)
+        if buffer is not None and buffer.final_visible:
+            return None
+        final_text = ""
+        changed_files: list[str] = []
+        for item in items:
+            item_type = str(item.get("type") or "")
+            if item_type == "agentMessage" and str(item.get("text") or "").strip():
+                final_text = str(item.get("text") or "")
+            elif item_type == "fileChange":
+                changed_files.extend(
+                    str(change.get("path"))
+                    for change in item.get("changes", [])
+                    if isinstance(change, dict) and change.get("path")
+                )
+        if not final_text and buffer is not None:
+            final_text = buffer.final_text or "".join(buffer.deltas)
+        if buffer is not None:
+            changed_files.extend(buffer.changed_files)
+            if not final_text and buffer.command_summaries:
+                final_text = "\n".join(buffer.command_summaries)
+        normalized_status = status.strip().lower()
+        if normalized_status == "completed":
+            text = final_text
+        elif normalized_status == "interrupted":
+            text = "\n".join(part for part in ("Turn interrupted.", final_text) if part)
+        else:
+            text = "\n".join(part for part in ("Turn failed.", final_text) if part)
+        if changed_files:
+            changes = "\n".join(
+                ["Changed files:", *(f"- {path}" for path in dict.fromkeys(changed_files))]
+            )
+            text = "\n".join(part for part in (text, changes) if part)
+        if not text:
+            return None
+        return OutboundMessage(
+            channel_id="",
+            conversation_id="",
+            message_type="turn_result",
+            text=text,
+        )
+
     def _buffer(self, thread_id: str, turn_id: str) -> TurnBuffer:
         key = (thread_id, turn_id)
         buffer = self._turns.get(key)

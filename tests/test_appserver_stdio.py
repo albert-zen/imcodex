@@ -579,6 +579,46 @@ async def test_server_request_dispatch_is_not_blocked_by_slow_notifications() ->
 
 
 @pytest.mark.asyncio
+async def test_server_request_resolution_preserves_wire_order_with_its_request() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+    resolution_seen = asyncio.Event()
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    async def slow_request(_request: dict) -> None:
+        request_started.set()
+        await release_request.wait()
+
+    def capture_notification(notification: dict) -> None:
+        if notification.get("method") == "serverRequest/resolved":
+            resolution_seen.set()
+
+    client.add_server_request_handler(slow_request)
+    client.add_notification_handler(capture_notification)
+    await client.initialize()
+    process.stdout.lines.put_nowait(
+        b'{"id":91,"method":"item/commandExecution/requestApproval","params":{}}\n'
+    )
+    await asyncio.wait_for(request_started.wait(), timeout=1)
+    process.stdout.lines.put_nowait(
+        b'{"method":"serverRequest/resolved","params":{"requestId":"91"}}\n'
+    )
+
+    await asyncio.sleep(0)
+    assert resolution_seen.is_set() is False
+    release_request.set()
+    await asyncio.wait_for(resolution_seen.wait(), timeout=1)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_notification_queue_overflow_resets_instead_of_growing_unbounded(monkeypatch) -> None:
     observed_events: list[dict] = []
     monkeypatch.setattr(
@@ -1067,13 +1107,12 @@ async def test_connection_facts_do_not_report_a_closed_transport_as_ready() -> N
     await client.close()
 
 
-def test_display_connection_target_removes_userinfo_query_and_fragment() -> None:
-    supervisor = AppServerSupervisor(
-        codex_bin="codex",
-        app_server_url="wss://bridge-user:bridge-secret@example.com/rpc?token=secret#debug",
-    )
-
-    assert supervisor.display_connection_target == "wss://example.com/rpc"
+def test_app_server_target_rejects_embedded_url_credentials() -> None:
+    with pytest.raises(ValueError, match="AUTH_TOKEN"):
+        AppServerSupervisor(
+            codex_bin="codex",
+            app_server_url="wss://bridge-user:bridge-secret@example.com/rpc?token=secret#debug",
+        )
 
 
 @pytest.mark.asyncio

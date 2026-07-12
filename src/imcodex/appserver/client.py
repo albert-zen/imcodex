@@ -20,6 +20,7 @@ ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
 ConnectionReadyHandler = Callable[[int], Awaitable[JsonDict | None] | JsonDict | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
+_SERVER_REQUEST_LANE_NOTIFICATION_METHODS = frozenset({"serverRequest/resolved"})
 DEFAULT_NOTIFICATION_QUEUE_SIZE = 1024
 DEFAULT_SERVER_REQUEST_QUEUE_SIZE = 64
 DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
@@ -903,7 +904,7 @@ class AppServerClient:
                 self._trace_protocol_message(stage="received", payload=message)
                 if self._dispatch_response(message, epoch):
                     continue
-                if self._is_server_request(message):
+                if self._uses_server_request_lane(message):
                     self._enqueue_dispatch_message(
                         server_request_queue,
                         message,
@@ -973,8 +974,10 @@ class AppServerClient:
             )
 
     @staticmethod
-    def _is_server_request(message: JsonDict) -> bool:
-        return "id" in message and "method" in message
+    def _uses_server_request_lane(message: JsonDict) -> bool:
+        if "id" in message and "method" in message:
+            return True
+        return message.get("method") in _SERVER_REQUEST_LANE_NOTIFICATION_METHODS
 
     def _enqueue_dispatch_message(
         self,

@@ -40,9 +40,13 @@ class AppRuntime:
                     ready_hook(ensure_permission_defaults)
                 if callable(service_ready):
                     ready_hook(service_ready)
-            await self.client.initialize()
-            for channel in self.managed_channels:
+            for channel in self._managed_channels_in_order():
                 await channel.start()
+            # Outbound adapters must be prepared before native rehydration can
+            # replay approvals or recover a terminal result. Inbound work that
+            # arrives during this short window shares the client's serialized
+            # initialize path.
+            await self.client.initialize()
             if self.observability is not None:
                 self._observe(mark_http_health, listening=True)
                 self._observe(self.observability.update_health, status="healthy")
@@ -136,6 +140,17 @@ class AppRuntime:
         channels: list[object] = []
         seen: set[int] = set()
         for channel in reversed(self.managed_channels):
+            identity = id(channel)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            channels.append(channel)
+        return channels
+
+    def _managed_channels_in_order(self) -> list[object]:
+        channels: list[object] = []
+        seen: set[int] = set()
+        for channel in self.managed_channels:
             identity = id(channel)
             if identity in seen:
                 continue

@@ -147,6 +147,24 @@ class MessageProjector:
             )
         return None
 
+    def discard_recovered_turn(self, *, thread_id: str, turn_id: str) -> None:
+        self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
+
+    def project_recovered_turn(self, *, thread_id: str, turn: dict, store) -> OutboundMessage | None:
+        turn_id = str(turn.get("id") or turn.get("turnId") or "")
+        status_value = turn.get("status")
+        if isinstance(status_value, dict):
+            status_value = status_value.get("type") or status_value.get("status")
+        status = str(status_value or "failed")
+        items = turn.get("items")
+        message = self.message_pump.recover_turn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            status=status,
+            items=[item for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+        )
+        return self._attach_to_thread(thread_id, store, message)
+
     def _capture_item_completed(self, params: dict, store) -> OutboundMessage | None:
         item = params.get("item") or {}
         thread_id = str(params.get("threadId") or "")
