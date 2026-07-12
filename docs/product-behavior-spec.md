@@ -48,6 +48,11 @@ Product behavior:
 - topic/thread identifiers are part of the IM conversation identity so two
   platform topics do not silently share one native Codex thread
 - rejected messages never reach bridge commands or the Codex execution path
+- outbound projection rechecks the current admission policy using the stable
+  sender ID retained as IM routing context; removing an identity revokes later
+  delivery after restart/reconciliation as well as new inbound use
+- admitted identities are full operators for this personal bridge, not
+  low-privilege chat participants
 
 The Weixin iLink adapter is an experimental direct-text transport. QR login
 sets the scanning user's stable iLink ID as the default owner. Enterprise

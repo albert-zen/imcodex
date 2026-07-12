@@ -48,7 +48,9 @@ python -m imcodex channels doctor
 
 Run the doctor again after changing `.env`. It reports whether an enabled
 adapter is missing credentials, an optional dependency, or an admission list;
-it never prints secret values.
+it never prints secret values. During the one-message ID discovery step below,
+an empty allowlist is expected to make doctor report “not ready”; add the owner
+ID and rerun doctor before normal use.
 
 ## Admission Is Deny-by-Default
 
@@ -64,9 +66,10 @@ sender and should normally be used only for a short, supervised diagnostic.
 Optional `*_ALLOWED_CONVERSATION_IDS` settings can narrow an admitted user to
 specific private chats, groups, or topics.
 
-When a sender is denied, `.imcodex-run/current/events.jsonl` records
+When a sender is denied, `.imcodex-run/current/events.jsonl` samples
 `message.inbound.access_denied` with the stable `user_id` and normalized
-`conversation_id`. A safe discovery loop is:
+`conversation_id`. Repeated denials are rate-limited so a public bot cannot
+grow logs without bound. A safe discovery loop is:
 
 1. Start with an empty allowlist.
 2. Send one message to the bot from the intended owner account.
@@ -74,6 +77,9 @@ When a sender is denied, `.imcodex-run/current/events.jsonl` records
 4. Copy that stable ID into `.env` and restart the bridge.
 
 Do not use display names as identities. Names can change and may not be unique.
+Every admitted identity is an operator, not a low-privilege chat user: it can
+use commands such as `/cwd`, `/config`, and `/native` and can reach the native
+threads visible to this Codex account. Do not use `*` for a public bot.
 
 ## QQ
 
@@ -100,6 +106,11 @@ that is actually configured in the QQ sandbox:
 IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com
 ```
 
+Existing QQ installations must add `IMCODEX_QQ_ALLOWED_USER_IDS` when upgrading
+to this release. The adapter logs an explicit warning and denies all inbound
+messages until a stable owner openid is configured; it never silently migrates
+an old conversation binding into an authorization rule.
+
 ## Telegram
 
 1. Open [BotFather](https://t.me/BotFather) and create a bot.
@@ -114,6 +125,11 @@ IMCODEX_TELEGRAM_BOT_TOKEN_FILE=.telegram-bot-token
 IMCODEX_TELEGRAM_ALLOWED_USER_IDS=123456789
 IMCODEX_TELEGRAM_REQUIRE_MENTION=1
 ```
+
+On POSIX, create the token file with mode `0600`; imcodex rejects a symlink or
+a file readable by group/other users. The recommended `.telegram-bot-token`
+path is ignored by this repository. On Windows, keep it under the intended
+user profile and verify the inherited NTFS ACL.
 
 The adapter uses the official Bot API `getUpdates` long-poll flow. Telegram
 does not allow `getUpdates` and an active webhook to consume the same bot at
@@ -131,8 +147,14 @@ Group messages must mention the bot, reply to it, or be a bot command when
 `IMCODEX_TELEGRAM_REQUIRE_MENTION=1`.
 
 Telegram responses are sent as plain text in chunks of at most 4,000
-characters. Rate limits honor the platform's `retry_after` value, and transient
-server errors use bounded retries.
+characters. Polling rate limits honor the platform's `retry_after` value and
+connection failures use bounded exponential backoff. Outbound `sendMessage`
+does not automatically retry an ambiguous timeout or 5xx response, because the
+first request may already have been delivered; a 429 response is safe to retry
+after the platform-supplied delay. Poll offsets are bound to the current bot ID
+and expire before Telegram's long-idle update-ID randomization window. An
+existing corrupt offset file fails startup explicitly; inspect it before
+removing it to reset polling, because a blind reset can replay queued commands.
 
 ## Feishu and Lark
 
@@ -168,7 +190,11 @@ The adapter uses the official
 [`lark-channel-sdk`](https://github.com/larksuite/channel-sdk-python), whose
 background lifecycle supports readiness, disconnect, and reconnect. SDK
 message batching and per-chat agent queues are disabled: imcodex receives each
-normalized text message and remains the only bridge layer.
+normalized text message and remains the only bridge layer. imcodex enables the
+SDK's strict websocket security, bounds websocket fragments and handler
+concurrency, then feeds admitted messages through its own bounded FIFO worker.
+This keeps callbacks fast while preventing two messages from racing the same
+bridge state.
 
 Routes are `chat:<chat_id>` and `chat:<chat_id>:thread:<thread_id>`. Group and
 topic messages require a bot mention by default.
@@ -208,8 +234,10 @@ After login:
 IMCODEX_WEIXIN_ENABLED=1
 ```
 
-The scanning user's iLink ID becomes the default owner allowlist. You can
-override or extend it explicitly:
+The scanning user's iLink ID becomes the default owner only when no explicit
+user allowlist is configured. Setting `IMCODEX_WEIXIN_ALLOWED_USER_IDS`
+replaces that default, so include the scanning owner explicitly if it should
+remain admitted:
 
 ```env
 IMCODEX_WEIXIN_ALLOWED_USER_IDS=owner@im.wechat
@@ -218,13 +246,19 @@ IMCODEX_WEIXIN_ALLOWED_USER_IDS=owner@im.wechat
 Each iLink reply requires the latest `context_token` received from that user.
 The user must message the bot at least once before imcodex can send a reply.
 If health reports `auth_required` with error `-14`, run the login command
-again.
+again, then restart the bridge so it loads the new credential. Login and logout
+commands print the same restart reminder. If a state file is corrupt or has
+unsafe POSIX permissions, startup fails explicitly instead of resetting the
+cursor and risking command replay; use logout plus a fresh login to reset it.
 
 Remove local credentials and protocol state with:
 
 ```powershell
 python -m imcodex channels logout weixin
 ```
+
+Stop or restart an already running bridge after logout, because that process
+may still hold the old credential in memory until shutdown.
 
 Media, groups, proactive directory lookup, and local-file delivery are not in
 this first version. In particular, imcodex does not let agent output name an
@@ -255,8 +289,56 @@ Content-Type: application/json
 
 Use TLS at the reverse proxy; the built-in HTTP server does not terminate TLS.
 The webhook caller is a trusted adapter and chooses `channel_id`, stable sender
-ID, conversation ID, and message ID. Do not expose this endpoint as an
-unauthenticated public WeChat gateway.
+ID, conversation ID, and message ID. Authentication runs before JSON parsing,
+and the endpoint rejects bodies over 64 KiB and text over 32 KiB. Generic
+callers cannot claim the reserved `qq`, `telegram`, `feishu`, or `weixin`
+channel IDs; choose a dedicated namespace such as `wecom-gateway`. The bridge
+persists the most recent 1,024 committed `message_id` values per conversation
+and drops retries in that bounded window. A gateway must retain its own
+longer-term idempotency history when delayed replay is possible. To keep bridge
+state bounded, only the most recent 32 immediate response bodies are retained.
+If an older ID is still inside the dedupe window but its response body has been
+evicted, imcodex returns an explicit `cached_response_expired` error message
+instead of silently acknowledging it with an empty response.
+
+The HTTP response contains any immediate command/status messages:
+
+```json
+{"messages":[{"channel_id":"wecom-gateway","conversation_id":"conv-1","message_type":"accepted","text":"Accepted","request_id":null,"metadata":{"delivery_id":"imcodex:..."}}]}
+```
+
+Normal Codex prompts usually finish asynchronously. Set both
+`IMCODEX_OUTBOUND_URL=https://gateway.example/outbound` and a separate
+`IMCODEX_OUTBOUND_WEBHOOK_TOKEN`; imcodex POSTs immediate messages and later
+native results to that URL using this payload. The deterministic
+`metadata.delivery_id` is attached to both replayable immediate replies and
+native projections so callback retries remain safe to deduplicate.
+
+```json
+{
+  "channel_id": "wecom-gateway",
+  "conversation_id": "conv-1",
+  "message_type": "turn_result",
+  "text": "...",
+  "request_id": null,
+  "metadata": {"delivery_id": "imcodex:native:..."}
+}
+```
+
+The gateway must return a 2xx response. Non-2xx responses are surfaced as
+delivery failures instead of being silently treated as sent. It must verify
+`Authorization: Bearer <IMCODEX_OUTBOUND_WEBHOOK_TOKEN>`. Treat this callback
+as the canonical delivery path; the inbound HTTP response also contains a
+convenience copy of immediate messages. Recent committed retries replay the
+cached immediate response and retry failed callback delivery without executing
+the command again. Immediate callbacks are therefore at-least-once while the
+gateway keeps retrying inside the documented cache window. Native projections
+use bounded in-process callback retries, not a second durable bridge outbox; if
+all attempts fail, recover the result from the native Codex thread. Every
+callback retry carries the same deterministic `metadata.delivery_id`, so the
+gateway must deduplicate by that value. Plain HTTP and a missing token are
+accepted only for a loopback outbound URL. Do not expose the inbound endpoint
+as an unauthenticated public WeChat gateway.
 
 ## Health and Recovery
 
@@ -271,7 +353,9 @@ Useful files:
 - `.imcodex-run/current/bridge.log`
 
 Tokens, app secrets, Weixin context tokens, and inbound webhook credentials are
-not written to the launch snapshot. Do not paste credential files into issue
+not written to the launch snapshot. Dependency wire loggers stay at WARNING
+even when `IMCODEX_LOG_LEVEL=DEBUG`, preventing Bot API URLs and websocket auth
+frames from entering bridge logs. Do not paste credential files into issue
 reports.
 
 ## Windows Notes

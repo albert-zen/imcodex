@@ -53,6 +53,8 @@ as:
 - channel and conversation bindings
 - bootstrap context before a native thread exists
 - reply context needed by a transport adapter
+- the last admitted stable sender ID needed to recheck current channel policy
+  before projecting later native output
 - IM-only visibility preferences
 - minimal request routing needed to complete native flows
 - platform transport cursors and reply tokens required to resume an IM

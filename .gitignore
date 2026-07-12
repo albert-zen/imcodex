@@ -3,6 +3,7 @@ __pycache__/
 .agentkit/
 .env
 .imcodex-appserver-token
+.telegram-bot-token
 .imcodex/
 .imcodex-data/
 .imcodex-run/

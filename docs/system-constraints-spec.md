@@ -39,8 +39,15 @@ It MUST:
 - keep stable sender identity separate from conversation identity
 - apply channel admission before an inbound message reaches bridge commands or
   Codex execution
-- hand normalized input off promptly so network callbacks and socket readers
-  never wait for Codex turn work
+- bind the admitted stable sender ID to IM reply context and recheck it before
+  platform delivery; a stale native binding must not bypass a revoked channel
+  allowlist
+- hand normalized input off promptly from platform-owned callback threads so
+  socket readers never wait for Codex turn work
+- allow a bridge-owned long-poll loop to wait for native acceptance and reply
+  commit before advancing its platform cursor; this preserves at-least-once
+  recovery without adding a second durable message queue, and must not wait for
+  asynchronous native turn completion
 
 It MUST NOT:
 

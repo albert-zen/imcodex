@@ -66,6 +66,12 @@ On macOS, double-click `scripts/start.command` in Finder, or run:
 open scripts/start.command
 ```
 
+On Linux, run:
+
+```bash
+./scripts/start.sh
+```
+
 ## Native-First State
 
 `imcodex` now treats native Codex source code and native protocol behavior as
@@ -156,6 +162,15 @@ The endpoint accepts unauthenticated requests only from loopback. To call it
 through a remote gateway, set `IMCODEX_INBOUND_WEBHOOK_TOKEN` and send
 `Authorization: Bearer <token>` over HTTPS.
 
+Generic callers must use a dedicated channel ID such as `wecom-gateway`; the
+built-in `qq`, `telegram`, `feishu`, and `weixin` IDs are reserved. Configure
+`IMCODEX_OUTBOUND_URL` as well, because normal prompt results arrive
+asynchronously and are POSTed back to that gateway. Remote callbacks also
+require `IMCODEX_OUTBOUND_WEBHOOK_TOKEN`, which the gateway verifies as a
+Bearer token. See
+[Channel setup and security](docs/channels.md#generic-inbound-webhook) for the
+full two-way payload, size limits, and idempotency behavior.
+
 Example body:
 
 ```json
@@ -206,6 +221,7 @@ Codex version requirement:
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target
+- `IMCODEX_OUTBOUND_WEBHOOK_TOKEN`: Bearer token used to authenticate remote outbound callbacks; never written to launch snapshots
 - `IMCODEX_INBOUND_WEBHOOK_TOKEN`: bearer token required for non-loopback inbound webhook callers; never written to launch snapshots
 - `IMCODEX_SERVICE_NAME`: client name sent to app-server, default `imcodex`
 - `IMCODEX_QQ_ENABLED`: enable QQ bot adapter, default `false`
