@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+from .config import Settings
 from .core_manager import DedicatedCoreManager
 
 
@@ -21,7 +22,13 @@ def run_core_cli(argv: list[str], *, stdout=None, manager: DedicatedCoreManager 
     subparsers.add_parser("status")
 
     args = parser.parse_args(argv)
-    manager = manager or DedicatedCoreManager(root=Path(args.root), repo_root=Path.cwd())
+    if manager is None:
+        codex_bin = Settings.from_env().codex_bin if args.command == "start" else "codex"
+        manager = DedicatedCoreManager(
+            root=Path(args.root),
+            repo_root=Path.cwd(),
+            codex_bin=codex_bin,
+        )
 
     if args.command == "start":
         manifest = manager.start(port=args.port)

@@ -13,6 +13,12 @@ from typing import Callable
 
 
 Launcher = Callable[..., object]
+WINDOWS_CREATE_NEW_PROCESS_GROUP = getattr(
+    subprocess,
+    "CREATE_NEW_PROCESS_GROUP",
+    0x00000200,
+)
+WINDOWS_DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
 
 
 @dataclass(slots=True)
@@ -88,23 +94,25 @@ class DedicatedCoreManager:
             stdout_log=str(stdout_log),
             stderr_log=str(stderr_log),
         )
-        self.manifest_path.write_text(json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        self.manifest_path.write_text(
+            json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+        )
         return manifest
 
     def stop(self) -> DedicatedCoreManifest:
         manifest = self.status()
         process = self._process
         if process is not None:
-            terminate = getattr(process, "terminate", None)
-            if callable(terminate):
-                terminate()
+            self._terminate_running_process(process, manifest.pid)
             wait = getattr(process, "wait", None)
             if callable(wait):
                 wait(timeout=10)
         else:
             self._terminate_pid(manifest.pid)
         manifest.status = "stopped"
-        self.manifest_path.write_text(json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+        self.manifest_path.write_text(
+            json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+        )
         self._process = None
         return manifest
 
@@ -130,9 +138,17 @@ class DedicatedCoreManager:
                 resolved,
                 cwd=str(cwd),
                 env=env,
+                stdin=subprocess.DEVNULL,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
+                **self._detached_launcher_kwargs(),
             )
+
+    @staticmethod
+    def _detached_launcher_kwargs() -> dict[str, object]:
+        if os.name == "nt":
+            return {"creationflags": (WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_DETACHED_PROCESS)}
+        return {"start_new_session": True}
 
     def _default_now(self) -> str:
         from datetime import datetime, timezone
@@ -140,10 +156,16 @@ class DedicatedCoreManager:
         return datetime.now(timezone.utc).astimezone().isoformat()
 
     def _terminate_pid(self, pid: int) -> None:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
+        if os.name == "nt":
+            self._terminate_windows_process_tree(pid)
             return
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                return
         deadline = time.time() + 10
         while time.time() < deadline:
             try:
@@ -151,6 +173,65 @@ class DedicatedCoreManager:
             except OSError:
                 return
             time.sleep(0.1)
+        raise RuntimeError(f"Dedicated Codex core process group for PID {pid} did not stop")
+
+    def _terminate_running_process(self, process: object, pid: int) -> None:
+        if os.name == "nt":
+            self._terminate_windows_process_tree(pid)
+            return
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            return
+        except OSError:
+            pass
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            terminate()
+
+    @staticmethod
+    def _terminate_windows_process_tree(pid: int) -> None:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return
+        try:
+            process_exists = DedicatedCoreManager._windows_process_exists(pid)
+        except OSError as exc:
+            raise RuntimeError(f"Could not verify dedicated Codex core process tree for PID {pid}") from exc
+        if not process_exists:
+            return
+        raise RuntimeError(f"Could not terminate dedicated Codex core process tree for PID {pid}")
+
+    @staticmethod
+    def _windows_process_exists(pid: int) -> bool:
+        """Query a Windows PID without using os.kill(), which terminates there."""
+
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        error_access_denied = 5
+        error_invalid_parameter = 87
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        error = ctypes.get_last_error()
+        if error == error_invalid_parameter:
+            return False
+        if error == error_access_denied:
+            return True
+        raise OSError(error, f"OpenProcess failed for PID {pid}")
 
     def _resolve_command(self, command: list[str]) -> list[str]:
         if os.name != "nt" or not command:

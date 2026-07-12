@@ -4,12 +4,15 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$python = if ($env:IMCODEX_PYTHON) { $env:IMCODEX_PYTHON } else { "python" }
 $minimumCodexVersion = [Version]"0.120.0"
+$script:hasFailures = $false
 
 function Write-Check([string]$Label, [bool]$Ok, [string]$Detail) {
     $status = if ($Ok) { "OK" } else { "FAIL" }
     Write-Host ("[{0}] {1}: {2}" -f $status, $Label, $Detail)
+    if (-not $Ok) {
+        $script:hasFailures = $true
+    }
 }
 
 $dotenvPath = Join-Path $repoRoot ".env"
@@ -35,13 +38,42 @@ function Get-Setting([string]$Name, [string]$Default = "") {
     return $Default
 }
 
+function Resolve-ImcodexPython {
+    $configuredPython = Get-Setting "IMCODEX_PYTHON"
+    if ($configuredPython) {
+        return $configuredPython
+    }
+
+    $windowsVenvPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+    $posixVenvPython = Join-Path $repoRoot ".venv/bin/python"
+    if (Test-Path $windowsVenvPython) {
+        return $windowsVenvPython
+    }
+    if (Test-Path $posixVenvPython) {
+        return $posixVenvPython
+    }
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return "python"
+    }
+    if (Get-Command python3 -ErrorAction SilentlyContinue) {
+        return "python3"
+    }
+    return "python"
+}
+
+$python = Resolve-ImcodexPython
+
 Write-Host "IMCodex doctor"
 Write-Host "Repo: $repoRoot"
+Write-Host "Python: $python"
 Write-Host ""
 
 try {
     $pythonVersion = & $python -c "import sys; print(sys.version)"
-    Write-Check "Python" $true $pythonVersion.Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python exited with code $LASTEXITCODE"
+    }
+    Write-Check "Python" $true (($pythonVersion -join " ").Trim())
 } catch {
     Write-Check "Python" $false $_.Exception.Message
     exit 1
@@ -49,6 +81,9 @@ try {
 
 try {
     & $python -c "import imcodex; print('import ok')" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python package import exited with code $LASTEXITCODE"
+    }
     Write-Check "Python package" $true "imcodex import ok"
 } catch {
     Write-Check "Python package" $false $_.Exception.Message
@@ -56,11 +91,19 @@ try {
 
 $codexBin = Get-Setting "IMCODEX_CODEX_BIN" "codex"
 $codexCommand = Get-Command $codexBin -ErrorAction SilentlyContinue
-Write-Check "Codex binary" ($null -ne $codexCommand) ($codexCommand.Path ?? "not found")
+$codexCommandDetail = if ($null -ne $codexCommand -and $codexCommand.Path) {
+    $codexCommand.Path
+} else {
+    "not found"
+}
+Write-Check "Codex binary" ($null -ne $codexCommand) $codexCommandDetail
 
 if ($null -ne $codexCommand) {
     try {
         $codexVersionText = (& $codexBin --version | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Codex version command exited with code $LASTEXITCODE"
+        }
         $codexVersionMatch = [regex]::Match($codexVersionText, '(\d+\.\d+\.\d+)')
         if ($codexVersionMatch.Success) {
             $codexVersion = [Version]$codexVersionMatch.Groups[1].Value
@@ -76,6 +119,9 @@ if ($null -ne $codexCommand) {
 
     try {
         & $codexBin app-server --help | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Codex app-server help exited with code $LASTEXITCODE"
+        }
         Write-Check "Codex app-server" $true "app-server command is available"
     } catch {
         Write-Check "Codex app-server" $false $_.Exception.Message
@@ -87,10 +133,34 @@ Write-Check ".env" $envFileOk ($dotenvPath)
 
 $httpPort = [int](Get-Setting "IMCODEX_HTTP_PORT" "8000")
 $appServerUrl = Get-Setting "IMCODEX_APP_SERVER_URL"
-$dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex-data"
+$coreMode = Get-Setting "IMCODEX_CORE_MODE" "dedicated-ws"
+$coreUrl = Get-Setting "IMCODEX_CORE_URL"
+$corePort = Get-Setting "IMCODEX_CORE_PORT"
+$dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex"
+
+if (-not $corePort -and $coreUrl -match "^ws://(127\.0\.0\.1|localhost):([0-9]+)$") {
+    $corePort = $Matches[2]
+}
+if (-not $corePort) {
+    $corePort = "8765"
+}
+if (-not $coreUrl) {
+    $coreUrl = "ws://127.0.0.1:$corePort"
+}
+
+$supportedCoreModes = @("dedicated-ws", "shared-ws", "spawned-stdio")
+Write-Check "Core mode" ($coreMode -in $supportedCoreModes) $coreMode
+
+if ($coreMode -eq "dedicated-ws") {
+    Write-Check "Core target" $true "$coreUrl (the launcher will start or reuse it)"
+} elseif ($coreMode -eq "shared-ws") {
+    $sharedCoreUrl = if ($appServerUrl) { $appServerUrl } else { $coreUrl }
+    Write-Check "Core target" $true "$sharedCoreUrl (externally managed)"
+} elseif ($coreMode -eq "spawned-stdio") {
+    Write-Check "Core target" $true "stdio:// (bridge-managed)"
+}
 
 Write-Check "HTTP port" $true $httpPort
-Write-Check "App-server URL" $true ($(if ($appServerUrl) { $appServerUrl } else { "not configured (shared-ws probe + stdio fallback)" }))
 Write-Check "Data dir" $true $dataDir
 
 $httpListeners = Get-NetTCPConnection -LocalPort $httpPort -ErrorAction SilentlyContinue
@@ -98,9 +168,10 @@ $httpListeners = Get-NetTCPConnection -LocalPort $httpPort -ErrorAction Silently
 $httpPortDetail = if ($httpListeners) { "occupied" } else { "free" }
 Write-Check "HTTP port free" ($null -eq $httpListeners) $httpPortDetail
 
-if ($appServerUrl) {
+if ($coreMode -eq "shared-ws") {
+    $sharedCoreUrl = if ($appServerUrl) { $appServerUrl } else { $coreUrl }
     try {
-        $uri = [Uri]$appServerUrl
+        $uri = [Uri]$sharedCoreUrl
         if ($uri.Scheme -in @("ws", "wss") -and $uri.Host -in @("127.0.0.1", "localhost") -and $uri.Port -gt 0) {
             $appListeners = Get-NetTCPConnection -LocalPort $uri.Port -ErrorAction SilentlyContinue
             $appPortDetail = if ($appListeners) { "listening" } else { "not listening" }
@@ -109,7 +180,7 @@ if ($appServerUrl) {
             Write-Check "Shared app-server listener" $true "skipped non-local websocket check"
         }
     } catch {
-        Write-Check "Shared app-server listener" $false ("invalid IMCODEX_APP_SERVER_URL: {0}" -f $appServerUrl)
+        Write-Check "Shared app-server listener" $false ("invalid shared core URL: {0}" -f $sharedCoreUrl)
     }
 }
 
@@ -139,3 +210,8 @@ try {
     Write-Check "Channel configuration" $false $_.Exception.Message
     exit 1
 }
+
+if ($script:hasFailures) {
+    exit 1
+}
+exit 0
