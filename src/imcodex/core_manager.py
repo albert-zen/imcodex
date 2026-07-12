@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
 import time
-import shutil
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -119,15 +120,75 @@ class DedicatedCoreManager:
     def status(self) -> DedicatedCoreManifest:
         return DedicatedCoreManifest.from_dict(json.loads(self.manifest_path.read_text(encoding="utf-8")))
 
+    def verify(self, *, port: int) -> DedicatedCoreManifest:
+        expected_url = f"ws://127.0.0.1:{port}"
+        try:
+            manifest = self.status()
+        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Port {port} is occupied, but no valid IMCodex core manifest owns it"
+            ) from exc
+        command_matches = bool(
+            manifest.command
+            and len(manifest.command) >= 4
+            and manifest.command[-3:] == ["app-server", "--listen", expected_url]
+        )
+        if (
+            manifest.status != "running"
+            or manifest.port != port
+            or manifest.url != expected_url
+            or not command_matches
+        ):
+            raise RuntimeError(
+                f"Port {port} is occupied, but the IMCodex core manifest does not match it"
+            )
+        if not self._process_exists(manifest.pid):
+            raise RuntimeError(
+                f"Port {port} is occupied, but the recorded IMCodex core PID {manifest.pid} is not running"
+            )
+        if not self._port_is_listening(port):
+            raise RuntimeError(f"Recorded IMCodex core on port {port} is not listening")
+        if not self._health_is_ready(port):
+            raise RuntimeError(
+                f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
+            )
+        return manifest
+
     def wait_until_ready(self, *, port: int, timeout_s: float = 30.0) -> None:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(0.5)
-                if sock.connect_ex(("127.0.0.1", port)) == 0:
-                    return
+            if self._port_is_listening(port):
+                return
             time.sleep(0.2)
         raise TimeoutError(f"Dedicated core on port {port} did not become ready within {timeout_s:.1f}s")
+
+    @staticmethod
+    def _port_is_listening(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+
+    @staticmethod
+    def _process_exists(pid: int) -> bool:
+        if os.name == "nt":
+            return DedicatedCoreManager._windows_process_exists(pid)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _health_is_ready(port: int) -> bool:
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(
+                f"http://127.0.0.1:{port}/readyz",
+                timeout=1.0,
+            ) as response:
+                return 200 <= int(response.status) < 400
+        except Exception:
+            return False
 
     def _default_launcher(self, *, command: list[str], cwd: Path, env: dict[str, str]) -> object:
         resolved = self._resolve_command(command)

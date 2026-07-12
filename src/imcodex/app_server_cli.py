@@ -115,7 +115,11 @@ def run_app_server_cli(
         )
     except FileNotFoundError as exc:
         destination = stderr or sys.stderr
-        destination.write(f"imcodex: Codex executable was not found: {exc}\n")
+        destination.write(
+            f"imcodex: Codex executable was not found: {exc}. "
+            "Install the standalone Codex CLI and place it on PATH, or set "
+            "IMCODEX_CODEX_BIN explicitly.\n"
+        )
         return 127
     except OSError as exc:
         destination = stderr or sys.stderr

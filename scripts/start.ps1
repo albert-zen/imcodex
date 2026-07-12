@@ -59,6 +59,11 @@ function Set-TargetEnvironmentValue([string] $Name, $Value) {
     }
 }
 
+function Get-SafeTargetLabel([string] $Value) {
+    $label = ($Value -split '[?#]', 2)[0]
+    return ($label -replace '^(wss?://)[^/@]*@', '$1')
+}
+
 function Resolve-TargetEnvironment {
     if ($script:PreActivationTargetConfigured) {
         foreach ($targetKey in $script:TargetEnvironmentKeys) {
@@ -213,7 +218,7 @@ if (-not $appServerUrl -and -not $legacyCoreConfigured) {
 Write-Host "Starting imcodex from $repoRoot"
 Write-Host "Using Python: $python"
 if ($appServerUrl) {
-    Write-Host "App Server target: $appServerUrl"
+    Write-Host ("App Server target: {0}" -f (Get-SafeTargetLabel $appServerUrl))
 }
 else {
     Write-Host "Legacy core mode: $coreMode"
@@ -226,7 +231,11 @@ if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and
     }
 
     if (Test-PortListening -Port ([int] $corePort)) {
-        Write-Host "Dedicated App Server already appears to be listening on $coreUrl"
+        Write-Host "Verifying the existing IMCodex App Server on $coreUrl"
+        & $python -m imcodex core verify --port $corePort
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
     }
     else {
         Write-Host "Starting dedicated Codex App Server on $coreUrl"

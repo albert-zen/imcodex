@@ -38,6 +38,38 @@ function Get-Setting([string]$Name, [string]$Default = "") {
     return $Default
 }
 
+function Test-PortListening([string]$HostName, [int]$Port) {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $asyncResult = $client.BeginConnect($HostName, $Port, $null, $null)
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne(500)) {
+            return $false
+        }
+        $client.EndConnect($asyncResult)
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $client.Close()
+    }
+}
+
+function Test-PortAvailable([int]$Port) {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+    try {
+        $listener.Start()
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $listener.Stop()
+    }
+}
+
 function Resolve-ImcodexPython {
     $configuredPython = Get-Setting "IMCODEX_PYTHON"
     if ($configuredPython) {
@@ -133,6 +165,18 @@ Write-Check ".env" $envFileOk ($dotenvPath)
 
 $httpPort = [int](Get-Setting "IMCODEX_HTTP_PORT" "8000")
 $dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex"
+$targetConfigured = $false
+foreach ($targetName in @(
+    "IMCODEX_APP_SERVER_URL",
+    "IMCODEX_CORE_URL",
+    "IMCODEX_CORE_MODE",
+    "IMCODEX_CORE_PORT"
+)) {
+    if (-not [string]::IsNullOrWhiteSpace((Get-Setting $targetName))) {
+        $targetConfigured = $true
+        break
+    }
+}
 
 Write-Check "HTTP port" $true $httpPort
 Write-Check "Data dir" $true $dataDir
@@ -156,19 +200,25 @@ else {
     }
 }
 
-$httpListeners = Get-NetTCPConnection -LocalPort $httpPort -ErrorAction SilentlyContinue
-
-$httpPortDetail = if ($httpListeners) { "occupied" } else { "free" }
-Write-Check "HTTP port free" ($null -eq $httpListeners) $httpPortDetail
+$httpPortAvailable = Test-PortAvailable -Port $httpPort
+$httpPortDetail = if ($httpPortAvailable) { "free" } else { "occupied" }
+Write-Check "HTTP port free" $httpPortAvailable $httpPortDetail
 
 if ($null -ne $target) {
     if ($target.transport -eq "tcp-websocket") {
         try {
             $uri = [Uri]$target.endpoint
             if ($uri.Host -in @("127.0.0.1", "localhost") -and $uri.Port -gt 0) {
-                $appListeners = Get-NetTCPConnection -LocalPort $uri.Port -ErrorAction SilentlyContinue
-                $appPortDetail = if ($appListeners) { "listening" } else { "not listening" }
-                Write-Check "App-server listener" ($null -ne $appListeners) ("{0}:{1} {2}" -f $uri.Host, $uri.Port, $appPortDetail)
+                $appListening = Test-PortListening -HostName $uri.Host -Port $uri.Port
+                if ($appListening) {
+                    Write-Check "App-server listener" $true ("{0}:{1} listening" -f $uri.Host, $uri.Port)
+                }
+                elseif (-not $targetConfigured) {
+                    Write-Check "App-server listener" $true ("{0}:{1} will be started by scripts/start.ps1" -f $uri.Host, $uri.Port)
+                }
+                else {
+                    Write-Check "App-server listener" $false ("{0}:{1} not listening (explicit targets are connect-only)" -f $uri.Host, $uri.Port)
+                }
             }
             else {
                 Write-Check "App-server listener" $true "skipped non-local TCP WebSocket check"
@@ -195,8 +245,15 @@ if ($null -ne $target) {
                 $socketPath = Join-Path $repoRoot $rawSocketPath
             }
             $socketExists = Test-Path $socketPath
-            $socketDetail = if ($socketExists) { "exists at $socketPath" } else { "is not available at $socketPath" }
-            Write-Check "App-server listener" $socketExists ("Unix socket {0}" -f $socketDetail)
+            if ($socketExists) {
+                Write-Check "App-server listener" $true ("Unix socket exists at {0}" -f $socketPath)
+            }
+            elseif (-not $targetConfigured) {
+                Write-Check "App-server listener" $true ("Unix socket will be ensured by scripts/start.sh at {0}" -f $socketPath)
+            }
+            else {
+                Write-Check "App-server listener" $false ("Unix socket is not available at {0} (explicit targets are connect-only)" -f $socketPath)
+            }
         }
     }
     elseif ($target.transport -eq "stdio-jsonl") {

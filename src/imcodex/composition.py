@@ -91,8 +91,11 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_CODEX_BIN": settings.codex_bin,
             "IMCODEX_APP_SERVER_EXPERIMENTAL_API": "1" if settings.app_server_experimental_api_enabled else "0",
             "IMCODEX_APP_SERVER_URL": app_server_target.endpoint,
-            "IMCODEX_CORE_MODE": "shared-ws" if app_server_target.is_external else "spawned-stdio",
-            "IMCODEX_CORE_URL": app_server_target.endpoint if app_server_target.is_external else "",
+            # Canonical target configuration is sufficient for restart. Keep
+            # legacy aliases empty instead of regenerating a runtime mode that
+            # was already normalized away.
+            "IMCODEX_CORE_MODE": "",
+            "IMCODEX_CORE_URL": "",
             "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE": str(settings.app_server_auth_token_file or ""),
             "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS": str(settings.app_server_connect_max_attempts),
             "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS": str(settings.app_server_request_max_attempts),

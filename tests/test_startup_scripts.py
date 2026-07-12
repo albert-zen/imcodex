@@ -383,7 +383,7 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
     repo_root = Path(__file__).resolve().parents[1]
     script = (repo_root / "scripts" / "start.ps1").read_text(encoding="utf-8")
 
-    assert 'Write-Host "App Server target: $appServerUrl"' in script
+    assert "Get-SafeTargetLabel $appServerUrl" in script
     assert '$appServerUrl = $coreUrl' in script
     assert '$env:IMCODEX_APP_SERVER_URL = $appServerUrl' in script
     assert '$ensureDedicatedCore = $true' in script
@@ -391,6 +391,7 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
     assert "Resolve-TargetEnvironment" in script
     assert "Import-DotEnv\nEnable-CondaEnv\nResolve-TargetEnvironment" in script
     assert '$ensureDedicatedCore -or (-not $appServerUrl' in script
+    assert "core verify --port $corePort" in script
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
@@ -420,7 +421,12 @@ def test_start_ps1_executes_target_precedence_matrix(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert invocations == ["-m imcodex"]
+    expected_invocations = (
+        ["-m imcodex core verify --port 8765", "-m imcodex"]
+        if expected_target == "ws://127.0.0.1:8765|||"
+        else ["-m imcodex"]
+    )
+    assert invocations == expected_invocations
     assert target_environment == expected_target
 
 
@@ -465,3 +471,6 @@ def test_doctor_uses_the_canonical_target_resolver_without_claiming_fallback() -
     assert "shared-ws probe + stdio fallback" not in script
     assert '$env:IMCODEX_APP_SERVER_URL = "stdio://"' not in script
     assert "$selectedCoreModeNormalized" not in script
+    assert "Get-NetTCPConnection" not in script
+    assert "will be started by scripts/start.ps1" in script
+    assert "will be ensured by scripts/start.sh" in script

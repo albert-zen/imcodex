@@ -59,6 +59,44 @@ def test_core_manager_start_writes_manifest_and_uses_ws_listener(tmp_path: Path)
     assert (tmp_path / "core-lab" / "core.stderr.log").exists()
 
 
+def test_core_manager_verifies_manifest_pid_command_and_listener(monkeypatch, tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    started = manager.start(port=8765)
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_health_is_ready", lambda _port: True)
+
+    verified = manager.verify(port=8765)
+
+    assert verified == started
+
+
+def test_core_manager_rejects_unknown_process_on_occupied_port(tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
+
+    with pytest.raises(RuntimeError, match="no valid IMCodex core manifest"):
+        manager.verify(port=8765)
+
+
+def test_core_manager_rejects_listener_that_fails_app_server_health(monkeypatch, tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    manager.start(port=8765)
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_health_is_ready", lambda _port: False)
+
+    with pytest.raises(RuntimeError, match="readiness probe"):
+        manager.verify(port=8765)
+
+
 def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:
     process = _FakeProcess(pid=42001)
 

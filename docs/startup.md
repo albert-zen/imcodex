@@ -9,6 +9,11 @@ From the repository root:
 Normal operation connects the bridge to one external App Server target. The
 explicit `stdio://` bridge-child target remains available for compatibility.
 
+Install the standalone Codex CLI first and keep `codex` on `PATH`, or set
+`IMCODEX_CODEX_BIN` to that standalone executable. IMCodex deliberately does
+not guess a Codex/ChatGPT desktop bundle path: native daemon lifecycle depends
+on the standalone managed installation it reports through `app-server status`.
+
 ### Platform quick start
 
 On Windows, double-click `scripts\start.cmd`, or run this from the repository
@@ -96,7 +101,8 @@ For websocket cores that require bearer auth, set
 `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` to a local file containing the token, or
 set `IMCODEX_APP_SERVER_AUTH_TOKEN` directly in the process environment. The
 direct token takes precedence when both are set and is intentionally not written
-to launch snapshots. Websocket connect failures and native overload responses
+to launch snapshots. Userinfo, query, and fragment credentials in the target
+URL are rejected. Websocket connect failures and native overload responses
 use bounded exponential retry with jitter; external TCP WebSocket targets also
 probe derived `/readyz` then `/healthz` HTTP endpoints before reporting the App
 Server as unavailable.
@@ -126,11 +132,17 @@ must be between `0` and `1`.
 
 JSON-RPC responses are handled on the socket read fast path. Native server
 requests such as approvals use a separate bounded dispatcher so a slow ordinary
-notification cannot starve them. If either dispatch queue fills, the bridge
+notification cannot starve them, while `serverRequest/resolved` stays on that
+same ordered lane. IM channel delivery for a native request is bounded; failure
+removes its local route and sends a JSON-RPC error so the turn does not hang. If
+either dispatch queue fills, the bridge
 records `appserver.dispatch.overflow`, resets that connection epoch, and lets
 normal reconnect reconciliation recover from native state. WebSocket frame
 size is not capped by the bridge because native `thread/resume` may return a
-legitimate full thread in one response.
+legitimate full thread in one response. Rehydration clears cached active-turn
+authority before resume, reports an active thread without an active turn as
+unverified, and projects a terminal turn result that completed while the
+transport was disconnected.
 
 ### Native Windows: independent TCP App Server + bridge
 
@@ -138,7 +150,10 @@ Because native Codex daemon lifecycle is currently Unix-only, the Windows
 launcher keeps the same two-process ownership model with a detached local TCP
 App Server. With no target configured, `scripts/start.ps1` starts or reuses it
 on port `8765`, exports the canonical websocket target, and then starts the
-bridge. The equivalent explicit workflow is:
+bridge. Reuse is accepted only when the core manifest, PID, command, listener,
+and App Server `/readyz` probe match; an unrelated process occupying that port
+fails explicitly.
+The equivalent explicit workflow is:
 
 ```powershell
 $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
@@ -277,10 +292,18 @@ pwsh -File .\scripts\start.ps1
 If the bridge is running in the current terminal, press `Ctrl+C`.
 
 Stopping the bridge does not stop an independently managed native App Server.
-Stop that daemon explicitly when intended:
+On macOS/Linux, stop the native daemon explicitly when intended:
 
 ```bash
 python -m imcodex app-server stop
+```
+
+On native Windows, the platform launcher owns the detached TCP compatibility
+process instead. Inspect and stop that project-owned process with:
+
+```powershell
+python -m imcodex core status
+python -m imcodex core stop
 ```
 
 If it is running in the background, find the process that owns the configured HTTP port:

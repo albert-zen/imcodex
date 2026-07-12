@@ -18,12 +18,15 @@ def run_core_cli(argv: list[str], *, stdout=None, manager: DedicatedCoreManager 
     start = subparsers.add_parser("start")
     start.add_argument("--port", type=int, default=8765)
 
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--port", type=int, default=8765)
+
     subparsers.add_parser("stop")
     subparsers.add_parser("status")
 
     args = parser.parse_args(argv)
     if manager is None:
-        codex_bin = Settings.from_env().codex_bin if args.command == "start" else "codex"
+        codex_bin = Settings.from_env().codex_bin if args.command in {"start", "verify"} else "codex"
         manager = DedicatedCoreManager(
             root=Path(args.root),
             repo_root=Path.cwd(),
@@ -32,6 +35,8 @@ def run_core_cli(argv: list[str], *, stdout=None, manager: DedicatedCoreManager 
 
     if args.command == "start":
         manifest = manager.start(port=args.port)
+    elif args.command == "verify":
+        manifest = manager.verify(port=args.port)
     elif args.command == "stop":
         manifest = manager.stop()
     elif args.command == "status":

@@ -12,6 +12,16 @@ is_nonblank() {
     [[ -n "${value}" ]]
 }
 
+safe_target_label() {
+    local value="${1:-}"
+    value="${value%%#*}"
+    value="${value%%\?*}"
+    if [[ "${value}" =~ ^(wss?://)([^/@]*@)(.*)$ ]]; then
+        value="${BASH_REMATCH[1]}${BASH_REMATCH[3]}"
+    fi
+    printf '%s' "${value}"
+}
+
 pre_activation_app_server_url="${IMCODEX_APP_SERVER_URL-}"
 pre_activation_core_url="${IMCODEX_CORE_URL-}"
 pre_activation_core_mode="${IMCODEX_CORE_MODE-}"
@@ -211,7 +221,7 @@ core_url="${core_url:-ws://127.0.0.1:${core_port}}"
 echo "Starting imcodex from ${repo_root}"
 echo "Using Python: ${python}"
 if [[ -n "${app_server_url}" ]]; then
-    echo "App Server target: ${app_server_url}"
+    echo "App Server target: $(safe_target_label "${app_server_url}")"
 else
     echo "Legacy core mode: ${core_mode}"
 fi
@@ -226,7 +236,8 @@ if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core
     export IMCODEX_CORE_URL="${core_url}"
 
     if port_is_listening "${core_port}"; then
-        echo "Dedicated core already appears to be listening on ${IMCODEX_CORE_URL}"
+        echo "Verifying the existing IMCodex core on ${IMCODEX_CORE_URL}"
+        "${python}" -m imcodex core verify --port "${core_port}"
     else
         echo "Starting dedicated Codex core on ${IMCODEX_CORE_URL}"
         "${python}" -m imcodex core start --port "${core_port}"

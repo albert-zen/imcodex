@@ -13,6 +13,7 @@ class _StubCoreManager:
     def __init__(self, manifest: DedicatedCoreManifest) -> None:
         self.manifest = manifest
         self.started: list[int] = []
+        self.verified: list[int] = []
         self.stopped = False
 
     def start(self, *, port: int) -> DedicatedCoreManifest:
@@ -21,6 +22,10 @@ class _StubCoreManager:
 
     def stop(self) -> DedicatedCoreManifest:
         self.stopped = True
+        return self.manifest
+
+    def verify(self, *, port: int) -> DedicatedCoreManifest:
+        self.verified.append(port)
         return self.manifest
 
     def status(self) -> DedicatedCoreManifest:
@@ -47,6 +52,17 @@ def test_core_cli_start_writes_manifest_json() -> None:
     assert exit_code == 0
     assert manager.started == [8765]
     assert body["url"] == "ws://127.0.0.1:8765"
+
+
+def test_core_cli_verify_checks_project_owned_listener() -> None:
+    output = io.StringIO()
+    manager = _StubCoreManager(_manifest())
+
+    exit_code = run_core_cli(["verify", "--port", "8765"], stdout=output, manager=manager)
+
+    assert exit_code == 0
+    assert manager.verified == [8765]
+    assert json.loads(output.getvalue())["pid"] == 42001
 
 
 def test_core_cli_stop_and_status() -> None:

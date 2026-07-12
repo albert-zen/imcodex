@@ -66,6 +66,16 @@ def parse_app_server_target(endpoint: str) -> AppServerTarget:
         )
     parsed = urlsplit(normalized)
     if parsed.scheme.lower() in {"ws", "wss"} and parsed.netloc:
+        if parsed.username is not None or parsed.password is not None:
+            raise AppServerTargetConfigError(
+                "App Server URLs must not contain userinfo credentials; use "
+                "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE or IMCODEX_APP_SERVER_AUTH_TOKEN"
+            )
+        if parsed.query or parsed.fragment:
+            raise AppServerTargetConfigError(
+                "App Server URLs must not contain query or fragment credentials; use "
+                "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE or IMCODEX_APP_SERVER_AUTH_TOKEN"
+            )
         return AppServerTarget(
             endpoint=normalized,
             ownership="external",

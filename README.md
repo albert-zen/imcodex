@@ -42,6 +42,11 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 
 ## Run
 
+Install the standalone Codex CLI first and keep `codex` on `PATH`, or set
+`IMCODEX_CODEX_BIN` to that standalone executable. The ChatGPT desktop bundle
+is not treated as a substitute for this prerequisite: native daemon lifecycle
+ultimately owns and updates its standalone managed Codex installation.
+
 On macOS/Linux, the launcher ensures the native daemon is running and then
 connects the bridge over its Unix control socket:
 
@@ -109,6 +114,8 @@ python -m imcodex app-server stop
 exit status are preserved, and IMCodex does not keep a PID or daemon manifest.
 `IMCODEX_CODEX_BIN` selects the CLI used to issue the command; the native daemon
 itself launches Codex from the standalone managed install reported by `status`.
+If the command is missing, IMCodex fails with standalone-install guidance
+instead of guessing a desktop application bundle path.
 
 On macOS/Linux, connect the bridge to that independently owned daemon with:
 
@@ -168,13 +175,21 @@ use background reconnect. A restored connection is reported as `degraded`
 when native thread rehydration cannot verify every binding. Native server
 requests such as approvals are isolated from ordinary notification work, and
 bounded dispatch overflow resets the connection so recovery can reconcile
-native state explicitly. `stdio://` lives and dies with the bridge and never
+native state explicitly. Approvals that cannot be delivered to the IM channel
+within a bounded interval are explicitly rejected rather than leaving Codex
+stuck, and a terminal result produced during a disconnect is recovered from the
+native resume payload. `stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
 rejected because it silently changed which App Server owned a request. Native
 Windows cannot use the Unix connector; the launcher therefore defaults to the
 independent local TCP target. Configure `stdio://` only when bridge-child
 lifecycle is intentional, or use WSL for the native Unix daemon.
+
+WebSocket target URLs must not embed userinfo, query, or fragment credentials.
+Use `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` (preferred) or
+`IMCODEX_APP_SERVER_AUTH_TOKEN` so secrets never enter endpoint diagnostics or
+restart snapshots.
 
 ## Channels
 

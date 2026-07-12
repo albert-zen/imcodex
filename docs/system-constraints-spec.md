@@ -291,6 +291,8 @@ The bridge and App Server adapter MUST therefore follow these rules:
 
 - the socket read path MUST be kept fast and MUST NOT block on slow downstream projection or logging work
 - JSON-RPC responses MUST stay on the socket read fast path, while native server requests such as approvals MUST use a bounded dispatch path isolated from ordinary notifications
+- native request-resolution notifications MUST preserve wire order with the request they resolve
+- IM delivery for a native server request MUST be bounded; failure MUST explicitly reject the native request and remove its local route instead of starving later requests
 - dispatch queues MUST be bounded; overflow MUST reset and reconcile the connection explicitly instead of blocking the socket reader, dropping protocol messages silently, or growing memory without limit
 - protocol/event logging MUST NOT synchronously slow the transport read path under normal operation
 - high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
@@ -305,8 +307,14 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
+- cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
+- when a cached active turn completed during a disconnect, recovery SHOULD project its terminal native result and MUST discard any orphaned message-pump buffer
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
+
+WebSocket target URLs MUST NOT carry userinfo, query, or fragment credentials.
+Authentication belongs in the dedicated token or token-file settings so launch
+snapshots and diagnostics do not become secret stores.
 
 Managed IM adapters MUST also reconnect without blocking the App Server socket
 reader. Their stop path MUST cancel long polls/background connections promptly,
