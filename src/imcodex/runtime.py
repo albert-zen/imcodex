@@ -37,8 +37,8 @@ class AppRuntime:
             await self.client.initialize()
             client_initialized = True
             for channel in self.managed_channels:
-                await channel.start()
                 started_channels.append(channel)
+                await channel.start()
         except Exception as exc:
             for channel in reversed(started_channels):
                 with contextlib.suppress(Exception):

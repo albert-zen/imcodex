@@ -238,6 +238,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=True,
         telegram_bot_token="do-not-persist",
+        feishu_app_secret="do-not-persist",
     )
     runtime = build_runtime(settings)
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
@@ -256,6 +257,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
     assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]
     assert "IMCODEX_QQ_CLIENT_SECRET" not in launch["env"]
     assert "IMCODEX_TELEGRAM_BOT_TOKEN" not in launch["env"]
+    assert "IMCODEX_FEISHU_APP_SECRET" not in launch["env"]
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 
@@ -345,7 +347,13 @@ async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_s
     with pytest.raises(RuntimeError, match="second start failed"):
         await runtime.start()
 
-    assert calls[-4:] == ["first.start", "second.start", "first.stop", "client.close"]
+    assert calls[-5:] == [
+        "first.start",
+        "second.start",
+        "second.stop",
+        "first.stop",
+        "client.close",
+    ]
 
 
 @pytest.mark.asyncio
