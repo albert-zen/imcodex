@@ -263,17 +263,22 @@ configuration and MUST NOT be copied into bridge-owned process or PID state.
 TCP `ws://`/`wss://` remains a compatibility carrier while upstream documents
 that listener as experimental.
 
-The project App Server lifecycle CLI MUST delegate to `codex app-server daemon`
-and preserve its stdout, stderr, and exit status. Native Codex owns daemon
-identity, PID, socket cleanup, version compatibility, installation checks, and
-updates. The bridge MUST NOT add a second daemon manifest or infer lifecycle
-state by probing a PID or arbitrary TCP port.
+On Unix, the project App Server lifecycle CLI MUST delegate to
+`codex app-server daemon` and preserve its stdout, stderr, and exit status.
+Native Codex owns daemon identity, PID, socket cleanup, version compatibility,
+installation checks, and updates. The bridge MUST NOT add a second manifest for
+that native daemon. Native Windows is the explicit compatibility exception
+while Codex daemon lifecycle remains Unix-only: the existing project core
+manager may own one detached local TCP App Server process and its minimal
+recovery manifest.
 
 Launchers MUST treat an explicit canonical App Server target as connect-only
 and MUST NOT start or select another server. On POSIX, only a completely
 unconfigured launcher may ensure the native daemon and select `unix://`; native
-Windows may instead select explicit `stdio://` compatibility. Canonical and
-legacy target values from the entry process, conda activation, and `.env` MUST
+Windows MUST instead start or reuse the detached local TCP App Server and select
+its canonical `ws://` target. `stdio://` remains explicit compatibility only.
+Canonical and legacy target values from the entry process, conda activation,
+and `.env` MUST
 NOT be mixed across configuration layers; that is their precedence order.
 
 The rewrite MUST assume that:

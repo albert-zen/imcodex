@@ -187,11 +187,7 @@ $coreUrl = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_URL)) { "" } else 
 $corePort = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_PORT)) { "" } else { $env:IMCODEX_CORE_PORT.Trim() }
 $appServerUrl = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_APP_SERVER_URL)) { "" } else { $env:IMCODEX_APP_SERVER_URL.Trim() }
 $legacyCoreConfigured = [bool]($coreMode -or $coreUrl -or $corePort)
-
-if (-not $appServerUrl -and -not $legacyCoreConfigured) {
-    $appServerUrl = "stdio://"
-    $env:IMCODEX_APP_SERVER_URL = $appServerUrl
-}
+$ensureDedicatedCore = $false
 
 if (-not $coreMode) {
     $coreMode = "dedicated-ws"
@@ -208,6 +204,12 @@ if (-not $coreUrl) {
     $coreUrl = "ws://127.0.0.1:$corePort"
 }
 
+if (-not $appServerUrl -and -not $legacyCoreConfigured) {
+    $appServerUrl = $coreUrl
+    $env:IMCODEX_APP_SERVER_URL = $appServerUrl
+    $ensureDedicatedCore = $true
+}
+
 Write-Host "Starting imcodex from $repoRoot"
 Write-Host "Using Python: $python"
 if ($appServerUrl) {
@@ -217,15 +219,17 @@ else {
     Write-Host "Legacy core mode: $coreMode"
 }
 
-if (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws") {
-    $env:IMCODEX_CORE_MODE = $coreMode
-    $env:IMCODEX_CORE_URL = $coreUrl
+if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws")) {
+    if (-not $ensureDedicatedCore) {
+        $env:IMCODEX_CORE_MODE = $coreMode
+        $env:IMCODEX_CORE_URL = $coreUrl
+    }
 
     if (Test-PortListening -Port ([int] $corePort)) {
-        Write-Host "Dedicated core already appears to be listening on $env:IMCODEX_CORE_URL"
+        Write-Host "Dedicated App Server already appears to be listening on $coreUrl"
     }
     else {
-        Write-Host "Starting dedicated Codex core on $env:IMCODEX_CORE_URL"
+        Write-Host "Starting dedicated Codex App Server on $coreUrl"
         & $python -m imcodex core start --port $corePort
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE

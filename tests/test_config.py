@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,8 @@ def test_settings_defaults_to_the_native_unix_app_server(monkeypatch, tmp_path) 
     settings = Settings.from_env()
 
     assert settings.core_mode is None
-    assert settings.app_server_target.endpoint == "unix://"
+    expected_endpoint = "ws://127.0.0.1:8765" if os.name == "nt" else "unix://"
+    assert settings.app_server_target.endpoint == expected_endpoint
     assert settings.app_server_target.ownership == "external"
 
 
@@ -230,6 +232,27 @@ def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) ->
     assert settings.core_url == "ws://127.0.0.1:9001"
     assert settings.app_server_target.connection_mode == "external"
     assert settings.restart_executor == "scripts/restart-imcodex.ps1"
+
+
+def test_legacy_core_port_resolves_to_an_external_tcp_target(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_CORE_PORT", "9123")
+
+    settings = Settings.from_env()
+
+    assert settings.core_mode == "dedicated-ws"
+    assert settings.core_url == "ws://127.0.0.1:9123"
+    assert settings.app_server_target.endpoint == "ws://127.0.0.1:9123"
+    assert settings.app_server_target.ownership == "external"
+
+
+@pytest.mark.parametrize("core_port", ["0", "65536", "not-a-port"])
+def test_invalid_legacy_core_port_fails_explicitly(monkeypatch, tmp_path, core_port: str) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_CORE_PORT", core_port)
+
+    with pytest.raises(ValueError, match="IMCODEX_CORE_PORT"):
+        Settings.from_env()
 
 
 def test_process_legacy_endpoint_overrides_dotenv_canonical_endpoint(monkeypatch, tmp_path) -> None:

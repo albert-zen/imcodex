@@ -66,8 +66,23 @@ def run_app_server_cli(
     subparsers.add_parser("status", help="Print native CLI and running App Server versions")
     args = parser.parse_args(argv)
 
+    platform_name = os.name if os_name is None else os_name
+    if platform_name == "nt":
+        destination = stderr or sys.stderr
+        destination.write(
+            "imcodex: native Codex app-server daemon lifecycle is Unix-only; "
+            "on Windows use scripts/start.ps1 for an independent TCP App Server, "
+            "or configure stdio:// explicitly.\n"
+        )
+        return 2
+
     native_command = NATIVE_DAEMON_COMMANDS[args.command]
     executable = codex_bin or load_codex_bin()
+    capability_command = resolve_native_command(
+        [executable, "app-server", "daemon", "--help"],
+        os_name=os_name,
+        which=which,
+    )
     command = resolve_native_command(
         [executable, "app-server", "daemon", native_command],
         os_name=os_name,
@@ -75,6 +90,22 @@ def run_app_server_cli(
     )
     runner = process_runner or subprocess.run
     try:
+        capability = runner(
+            capability_command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if capability.returncode != 0:
+            destination = stderr or sys.stderr
+            destination.write(
+                "imcodex: this Codex installation does not provide native app-server daemon lifecycle; "
+                "install a current standalone Codex CLI or choose an explicit compatibility target.\n"
+            )
+            if capability.stderr:
+                destination.write(str(capability.stderr))
+            return int(capability.returncode or 2)
         completed = runner(
             command,
             check=False,

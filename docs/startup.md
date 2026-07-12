@@ -29,15 +29,17 @@ The Windows launcher delegates to `scripts/start.ps1`; the macOS launcher
 delegates to `scripts/start.sh`. With no App Server target configured,
 `start.sh` exports `IMCODEX_APP_SERVER_URL=unix://`, asks native Codex to start
 or reuse its App Server daemon, and then starts the bridge. Native Windows
-cannot use that Unix control socket, so `start.ps1` defaults explicitly to the
-bridge-child `stdio://` compatibility target.
+cannot use that Unix control socket or native daemon lifecycle, so `start.ps1`
+starts or reuses the project's detached TCP App Server and exports
+`IMCODEX_APP_SERVER_URL=ws://127.0.0.1:8765`.
 
 An explicit `IMCODEX_APP_SERVER_URL` is always connect-only: neither launcher
 starts another App Server. Explicit legacy `IMCODEX_CORE_MODE`,
 `IMCODEX_CORE_URL`, or `IMCODEX_CORE_PORT` values retain the old TCP core
 launcher behavior for rollback. Running `python -m imcodex` directly also does
-not manage an external App Server lifecycle; start the native daemon separately
-when relying on the runtime's default `unix://` target.
+not manage an external App Server lifecycle. Its default target is `unix://` on
+Unix and `ws://127.0.0.1:8765` on native Windows, so start the corresponding
+server first or use the platform launcher.
 
 If `.venv\Scripts\python.exe` on Windows or `.venv/bin/python` on macOS/Linux
 exists, the launcher uses it automatically. Set `IMCODEX_PYTHON` only when you
@@ -119,19 +121,20 @@ native thread read is temporarily unavailable. Recovery does not wait for
 another IM message. Reconnect delays must be positive, the maximum must be at
 least the initial delay, and jitter must be between `0` and `1`.
 
-### Legacy compatibility: TCP core + bridge
+### Native Windows: independent TCP App Server + bridge
 
-The launcher can still run a separate TCP WebSocket core when legacy target
-configuration is explicit. It is retained for rollback while the native daemon
-path settles:
+Because native Codex daemon lifecycle is currently Unix-only, the Windows
+launcher keeps the same two-process ownership model with a detached local TCP
+App Server. With no target configured, `scripts/start.ps1` starts or reuses it
+on port `8765`, exports the canonical websocket target, and then starts the
+bridge. The equivalent explicit workflow is:
 
 ```powershell
 $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
 
 & $env:IMCODEX_PYTHON -m imcodex core start --port 8765
 
-$env:IMCODEX_CORE_MODE="dedicated-ws"
-$env:IMCODEX_CORE_URL="ws://127.0.0.1:8765"
+$env:IMCODEX_APP_SERVER_URL="ws://127.0.0.1:8765"
 pwsh -File .\scripts\start.ps1
 ```
 
@@ -213,26 +216,27 @@ The project commands are deliberately thin delegates:
 - `app-server stop` -> `codex app-server daemon stop`
 - `app-server status` -> `codex app-server daemon version`
 
-They use `IMCODEX_CODEX_BIN` and preserve native output and exit status. IMCodex
-does not track a daemon PID or write a second lifecycle manifest. In particular,
-`status` returns the native nonzero result when no daemon is reachable instead
-of inventing a local status value. This workflow was verified with
-`codex-cli 0.142.2`; a build or installation that does not support the native
-daemon reports its own error unchanged.
+They use `IMCODEX_CODEX_BIN` to select the CLI issuing the command and preserve
+native output and exit status. The daemon itself launches the standalone managed
+Codex binary reported by `app-server status`; IMCodex does not track its PID or
+write a second lifecycle manifest. Capability is detected through
+`codex app-server daemon --help`, rather than a hard-coded minimum version. This
+workflow was verified with `codex-cli 0.144.1`. A build or installation without
+the daemon command reports its native error unchanged.
 
 The connection carries standard WebSocket frames, so initialization, connection
 epochs, native rehydration, and background reconnect are identical to persistent
 TCP WebSocket connections. Unix sockets do not expose HTTP `/readyz` or
 `/healthz`; a successful WebSocket Upgrade is the availability check. Native
-Windows fails this bridge endpoint explicitly; use WSL, an explicit `ws://`
-endpoint, or `stdio://` there.
+Windows fails this bridge endpoint explicitly; use the default detached TCP
+launcher, WSL, or explicit `stdio://` bridge-child compatibility there.
 
 The upstream transport contract is documented in the
 [Codex App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
 
-### Supported: bridge-managed core
+### Explicit bridge-child stdio compatibility
 
-The helper script can still start the bridge by itself:
+The platform helper scripts start the recommended independent App Server shape:
 
 ```powershell
 pwsh -File .\scripts\doctor.ps1
@@ -325,8 +329,9 @@ By default:
 
 ## Target Summary
 
-- `unix://`: recommended external native App Server
-- `ws://` or `wss://`: external TCP WebSocket compatibility
+- `unix://`: recommended external native App Server and Unix default
+- `ws://` or `wss://`: external TCP WebSocket; the native Windows launcher
+  defaults to `ws://127.0.0.1:8765` and owns that detached local process
 - `stdio://`: explicit bridge-child compatibility target
 
 Legacy `dedicated-ws` and `shared-ws` normalize to external ownership;

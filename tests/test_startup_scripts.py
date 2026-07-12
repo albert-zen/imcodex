@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -181,22 +182,36 @@ def _run_start_ps1(
     )
     environment.update(environment_overrides or {})
 
-    completed = subprocess.run(
-        [
-            _POWERSHELL,
-            "-NoLogo",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(scripts_dir / "start.ps1"),
-        ],
-        cwd=repo_root,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    listener: socket.socket | None = None
+    try:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 8765))
+        listener.listen()
+    except OSError:
+        if listener is not None:
+            listener.close()
+        listener = None
+    try:
+        completed = subprocess.run(
+            [
+                _POWERSHELL,
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(scripts_dir / "start.ps1"),
+            ],
+            cwd=repo_root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        if listener is not None:
+            listener.close()
     invocations = (
         capture_path.read_text(encoding="utf-8").splitlines()
         if capture_path.exists()
@@ -369,19 +384,20 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
     script = (repo_root / "scripts" / "start.ps1").read_text(encoding="utf-8")
 
     assert 'Write-Host "App Server target: $appServerUrl"' in script
-    assert '$appServerUrl = "stdio://"' in script
+    assert '$appServerUrl = $coreUrl' in script
     assert '$env:IMCODEX_APP_SERVER_URL = $appServerUrl' in script
+    assert '$ensureDedicatedCore = $true' in script
     assert '$script:PreActivationTargetConfigured' in script
     assert "Resolve-TargetEnvironment" in script
     assert "Import-DotEnv\nEnable-CondaEnv\nResolve-TargetEnvironment" in script
-    assert 'if (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws")' in script
+    assert '$ensureDedicatedCore -or (-not $appServerUrl' in script
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
 @pytest.mark.parametrize(
     ("dotenv", "environment_overrides", "expected_target"),
     [
-        ("", {}, "stdio://|||"),
+        ("", {}, "ws://127.0.0.1:8765|||"),
         ("", {"IMCODEX_APP_SERVER_URL": "unix://"}, "unix://|||"),
         ("", {"IMCODEX_CORE_MODE": "spawned-stdio"}, "||spawned-stdio|"),
         (
@@ -447,6 +463,5 @@ def test_doctor_uses_the_canonical_target_resolver_without_claiming_fallback() -
     assert '"unix-websocket"' in script
     assert '"stdio-jsonl"' in script
     assert "shared-ws probe + stdio fallback" not in script
-    assert '$env:IMCODEX_APP_SERVER_URL = "stdio://"' in script
-    assert '$selectedCoreModeNormalized -in @("", "dedicated-ws")' in script
-    assert '$env:IMCODEX_CORE_URL = "ws://127.0.0.1:$($selectedCorePort.Trim())"' in script
+    assert '$env:IMCODEX_APP_SERVER_URL = "stdio://"' not in script
+    assert "$selectedCoreModeNormalized" not in script

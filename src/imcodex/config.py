@@ -66,19 +66,27 @@ def _optional_setting(value: str | None) -> str | None:
 def _app_server_config_from_env(
     dotenv: dict[str, str],
 ) -> tuple[str | None, str | None, str | None]:
-    names = ("IMCODEX_APP_SERVER_URL", "IMCODEX_CORE_URL", "IMCODEX_CORE_MODE")
-    process_values = (
-        _optional_setting(os.getenv(names[0])),
-        _optional_setting(os.getenv(names[1])),
-        _optional_setting(os.getenv(names[2])),
+    names = (
+        "IMCODEX_APP_SERVER_URL",
+        "IMCODEX_CORE_URL",
+        "IMCODEX_CORE_MODE",
+        "IMCODEX_CORE_PORT",
     )
-    if any(value is not None for value in process_values):
-        return process_values
-    return (
-        _optional_setting(dotenv.get(names[0])),
-        _optional_setting(dotenv.get(names[1])),
-        _optional_setting(dotenv.get(names[2])),
+    process_values = tuple(_optional_setting(os.getenv(name)) for name in names)
+    values = process_values if any(value is not None for value in process_values) else tuple(
+        _optional_setting(dotenv.get(name)) for name in names
     )
+    app_server_url, core_url, core_mode, core_port = values
+    if core_port is not None and app_server_url is None and core_url is None:
+        try:
+            port = int(core_port)
+        except ValueError as exc:
+            raise ValueError("IMCODEX_CORE_PORT must be an integer between 1 and 65535") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("IMCODEX_CORE_PORT must be an integer between 1 and 65535")
+        core_url = f"ws://127.0.0.1:{port}"
+        core_mode = core_mode or "dedicated-ws"
+    return app_server_url, core_url, core_mode
 
 
 def load_app_server_target(dotenv_path: Path = Path(".env")) -> AppServerTarget:

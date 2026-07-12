@@ -35,9 +35,16 @@ def test_parse_app_server_target_reports_ownership_and_transport(
 
 
 def test_resolve_app_server_target_defaults_to_the_native_unix_control_socket() -> None:
-    target = resolve_app_server_target()
+    target = resolve_app_server_target(os_name="posix")
 
     assert target.endpoint == "unix://"
+    assert target.is_external is True
+
+
+def test_resolve_app_server_target_defaults_to_an_external_tcp_server_on_windows() -> None:
+    target = resolve_app_server_target(os_name="nt")
+
+    assert target.endpoint == "ws://127.0.0.1:8765"
     assert target.is_external is True
 
 

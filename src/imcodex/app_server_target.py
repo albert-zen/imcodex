@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
@@ -19,6 +20,15 @@ AppServerTransportKind = Literal["unix-websocket", "tcp-websocket", "stdio-jsonl
 
 class AppServerTargetConfigError(ValueError):
     pass
+
+
+def default_app_server_endpoint(*, os_name: str | None = None) -> str:
+    """Choose an external App Server target without changing lifecycle ownership."""
+
+    platform_name = os.name if os_name is None else os_name
+    if platform_name == "nt":
+        return LEGACY_WEBSOCKET_ENDPOINT
+    return DEFAULT_APP_SERVER_ENDPOINT
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +81,7 @@ def resolve_app_server_target(
     app_server_url: str | None = None,
     core_url: str | None = None,
     core_mode: str | None = None,
+    os_name: str | None = None,
 ) -> AppServerTarget:
     canonical_url = str(app_server_url or "").strip() or None
     legacy_url = str(core_url or "").strip() or None
@@ -100,7 +111,7 @@ def resolve_app_server_target(
         elif requested_mode in stdio_aliases:
             endpoint = STDIO_APP_SERVER_ENDPOINT
         else:
-            endpoint = DEFAULT_APP_SERVER_ENDPOINT
+            endpoint = default_app_server_endpoint(os_name=os_name)
 
     target = parse_app_server_target(endpoint)
     if requested_mode in external_aliases and not target.is_external:

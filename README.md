@@ -57,9 +57,10 @@ export IMCODEX_APP_SERVER_URL=unix://
 python -m imcodex
 ```
 
-On native Windows, `scripts/start.ps1` defaults explicitly to `stdio://`; the
-Python Unix connector is unavailable outside WSL. Configure a canonical target
-before launching to connect to an already-managed App Server instead.
+On native Windows, `scripts/start.ps1` starts or reuses the project's detached
+TCP App Server and connects the bridge to `ws://127.0.0.1:8765`. The Python Unix
+connector and native Codex daemon lifecycle are unavailable outside WSL;
+`stdio://` remains an explicit bridge-child compatibility choice.
 
 Helper scripts:
 
@@ -69,8 +70,9 @@ pwsh -File .\scripts\start.ps1
 ```
 
 An explicit `IMCODEX_APP_SERVER_URL` is connect-only on every platform. Running
-`python -m imcodex` directly never starts an external App Server; its unresolved
-runtime default is `unix://`, so start the native daemon first on that path.
+`python -m imcodex` directly never starts an external App Server. Its unresolved
+runtime default is `unix://` on Unix and `ws://127.0.0.1:8765` on native
+Windows, so start the corresponding server first or use the platform launcher.
 
 On Windows, double-click `scripts\start.cmd`, or run:
 
@@ -166,8 +168,9 @@ use background reconnect. `stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
 rejected because it silently changed which App Server owned a request. Native
-Windows cannot use the Unix connector; configure `stdio://`, WSL, or an explicit
-TCP WebSocket endpoint there.
+Windows cannot use the Unix connector; the launcher therefore defaults to the
+independent local TCP target. Configure `stdio://` only when bridge-child
+lifecycle is intentional, or use WSL for the native Unix daemon.
 
 ## Channels
 
@@ -251,7 +254,7 @@ Codex version requirement:
 - `IMCODEX_CODEX_BIN`: codex binary, default `codex`
 - `IMCODEX_APP_SERVER_URL`: App Server target; accepts external
   `unix://`/`ws://`/`wss://` endpoints or explicit compatibility `stdio://`;
-  defaults to `unix://`
+  defaults to `unix://` on Unix and `ws://127.0.0.1:8765` on native Windows
 - `IMCODEX_APP_SERVER_EXPERIMENTAL_API`: opt into experimental native app-server capabilities, default `false`
 - `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE`: optional file containing the websocket bearer token
 - `IMCODEX_APP_SERVER_AUTH_TOKEN`: optional websocket bearer token; takes precedence over the token file and is not written to launch snapshots
@@ -272,6 +275,7 @@ delay, and jitter must be between `0` and `1`.
 - `IMCODEX_CORE_MODE`: deprecated compatibility alias; `dedicated-ws` and
   `shared-ws` mean external, `spawned-stdio` means `stdio://`, and `auto` is rejected
 - `IMCODEX_CORE_URL`: deprecated alias for `IMCODEX_APP_SERVER_URL`
+- `IMCODEX_CORE_PORT`: deprecated launcher alias for a local external TCP target
 - `IMCODEX_RESTART_EXECUTOR`: optional bridge restart command
 - `IMCODEX_DEBUG_API_ENABLED`: enable debug HTTP routes, default `false`
 - `IMCODEX_LOG_LEVEL`: Python logging level, default `INFO`

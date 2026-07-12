@@ -84,10 +84,12 @@ transport facts, not different ownership modes, and the bridge cannot observe a
 meaningful difference between the old `dedicated-ws` and `shared-ws` labels.
 The target URL is therefore the canonical configuration.
 
-`stdio://` remains an explicit bridge-child compatibility target for tests,
-native Windows, and older installations. It MUST NOT be selected as a fallback
-after an external target fails. Legacy mode names are accepted only at the
-configuration boundary and are normalized before runtime behavior begins.
+`stdio://` remains an explicit bridge-child compatibility target for tests and
+older installations. It MUST NOT be selected as a fallback after an external
+target fails. Native Windows keeps an external two-process shape through the
+project-managed detached TCP App Server until native daemon lifecycle is
+available there. Legacy mode names are accepted only at the configuration
+boundary and are normalized before runtime behavior begins.
 
 See also:
 

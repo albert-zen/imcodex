@@ -45,10 +45,20 @@ def test_app_server_cli_delegates_to_the_native_daemon(
         stderr=stderr,
         codex_bin="custom-codex",
         process_runner=process_runner,
+        os_name="posix",
     )
 
     assert exit_code == 0
     assert calls == [
+        (
+            ["custom-codex", "app-server", "daemon", "--help"],
+            {
+                "check": False,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True,
+            },
+        ),
         (
             ["custom-codex", "app-server", "daemon", native_command],
             {
@@ -67,6 +77,8 @@ def test_app_server_status_preserves_native_failure_and_stderr() -> None:
     stderr = io.StringIO()
 
     def process_runner(command: list[str], **_kwargs):
+        if command[-1] == "--help":
+            return subprocess.CompletedProcess(command, 0, stdout="daemon help", stderr="")
         return subprocess.CompletedProcess(
             command,
             1,
@@ -80,6 +92,7 @@ def test_app_server_status_preserves_native_failure_and_stderr() -> None:
         stderr=stderr,
         codex_bin="codex",
         process_runner=process_runner,
+        os_name="posix",
     )
 
     assert exit_code == 1
@@ -101,8 +114,11 @@ def test_app_server_cli_reads_codex_bin_without_loading_unrelated_settings(
         captured.append(command)
         return subprocess.CompletedProcess(command, 0)
 
-    assert run_app_server_cli(["start"], process_runner=process_runner) == 0
-    assert captured == [["dotenv-codex", "app-server", "daemon", "start"]]
+    assert run_app_server_cli(["start"], process_runner=process_runner, os_name="posix") == 0
+    assert captured == [
+        ["dotenv-codex", "app-server", "daemon", "--help"],
+        ["dotenv-codex", "app-server", "daemon", "start"],
+    ]
     assert not (tmp_path / ".imcodex-core").exists()
     assert not (tmp_path / ".imcodex-run").exists()
 
@@ -133,6 +149,47 @@ def test_resolve_native_command_wraps_windows_cmd_shims() -> None:
     ) == [r"C:\tools\codex.exe", *command[1:]]
 
 
+def test_app_server_cli_rejects_native_daemon_lifecycle_on_windows() -> None:
+    stderr = io.StringIO()
+
+    def process_runner(_command: list[str], **_kwargs):
+        raise AssertionError("native daemon command must not run on Windows")
+
+    exit_code = run_app_server_cli(
+        ["start"],
+        stderr=stderr,
+        process_runner=process_runner,
+        os_name="nt",
+    )
+
+    assert exit_code == 2
+    assert "daemon lifecycle is Unix-only" in stderr.getvalue()
+    assert "scripts/start.ps1" in stderr.getvalue()
+
+
+def test_app_server_cli_reports_missing_daemon_capability() -> None:
+    stderr = io.StringIO()
+
+    def process_runner(command: list[str], **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            2,
+            stdout="",
+            stderr="unrecognized subcommand 'daemon'\n",
+        )
+
+    exit_code = run_app_server_cli(
+        ["start"],
+        stderr=stderr,
+        process_runner=process_runner,
+        os_name="posix",
+    )
+
+    assert exit_code == 2
+    assert "does not provide native app-server daemon lifecycle" in stderr.getvalue()
+    assert "unrecognized subcommand" in stderr.getvalue()
+
+
 @pytest.mark.parametrize(
     ("exception", "expected_code", "message"),
     [
@@ -155,6 +212,7 @@ def test_app_server_cli_reports_process_launch_failures(
         stderr=stderr,
         codex_bin="missing-codex",
         process_runner=process_runner,
+        os_name="posix",
     )
 
     assert exit_code == expected_code
@@ -188,5 +246,9 @@ def test_python_module_entrypoint_preserves_the_app_server_exit_code() -> None:
         check=False,
     )
 
-    assert completed.returncode == 127
-    assert "Codex executable was not found" in completed.stderr
+    if os.name == "nt":
+        assert completed.returncode == 2
+        assert "daemon lifecycle is Unix-only" in completed.stderr
+    else:
+        assert completed.returncode == 127
+        assert "Codex executable was not found" in completed.stderr
