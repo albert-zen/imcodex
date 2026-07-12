@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,7 @@ def test_core_manager_verifies_manifest_pid_command_and_listener(monkeypatch, tm
     started = manager.start(port=8765)
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: True)
     monkeypatch.setattr(manager, "_health_is_ready", lambda _port: True)
 
     verified = manager.verify(port=8765)
@@ -91,10 +93,73 @@ def test_core_manager_rejects_listener_that_fails_app_server_health(monkeypatch,
     manager.start(port=8765)
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: True)
     monkeypatch.setattr(manager, "_health_is_ready", lambda _port: False)
 
     with pytest.raises(RuntimeError, match="readiness probe"):
         manager.verify(port=8765)
+
+
+def test_core_manager_rejects_listener_outside_recorded_process_tree(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    manager.start(port=8765)
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: False)
+
+    with pytest.raises(RuntimeError, match="does not own the listener"):
+        manager.verify(port=8765)
+
+
+def test_core_manager_accepts_listener_owned_by_launcher_descendant() -> None:
+    assert DedicatedCoreManager._pid_is_same_or_descendant(
+        candidate_pid=42003,
+        root_pid=42001,
+        parent_by_pid={42003: 42002, 42002: 42001, 42001: 1},
+    )
+
+
+def test_core_manager_fails_explicitly_when_listener_ownership_is_unsupported(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(core_manager_module.os, "name", "posix")
+    monkeypatch.setattr(core_manager_module.sys, "platform", "unsupported-os")
+
+    with pytest.raises(RuntimeError, match="ownership verification is unsupported"):
+        DedicatedCoreManager._listener_is_owned_by_process_tree(42001, 8765)
+
+
+def test_core_manager_windows_ownership_accepts_cmd_shim_descendant(monkeypatch) -> None:
+    monkeypatch.setattr(core_manager_module.os, "name", "nt")
+    monkeypatch.setattr(
+        DedicatedCoreManager,
+        "_windows_tcp_listener_owner_pids",
+        staticmethod(lambda _port: {42003}),
+    )
+    monkeypatch.setattr(
+        DedicatedCoreManager,
+        "_windows_process_parent_map",
+        staticmethod(lambda: {42003: 42002, 42002: 42001, 42001: 1}),
+    )
+
+    assert DedicatedCoreManager._listener_is_owned_by_process_tree(42001, 8765) is True
+
+
+def test_core_manager_detects_current_process_loopback_listener(tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = int(listener.getsockname()[1])
+
+        assert manager._listener_is_owned_by_process_tree(os.getpid(), port) is True
 
 
 def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:

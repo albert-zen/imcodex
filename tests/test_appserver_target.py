@@ -14,6 +14,8 @@ from imcodex.appserver import (
     [
         ("unix://", "external", "unix-websocket", "external"),
         ("unix:///tmp/codex.sock", "external", "unix-websocket", "external"),
+        ("unix:///tmp/codex@local.sock", "external", "unix-websocket", "external"),
+        ("unix://run/codex@local.sock", "external", "unix-websocket", "external"),
         ("ws://127.0.0.1:8765", "external", "tcp-websocket", "external"),
         ("wss://codex.example.test/rpc", "external", "tcp-websocket", "external"),
         ("stdio://", "bridge-child", "stdio-jsonl", "spawned-stdio"),
@@ -91,6 +93,9 @@ def test_auto_mode_is_rejected_instead_of_falling_back_to_a_different_server() -
         {"app_server_url": "wss://user:secret@example.test/rpc"},
         {"app_server_url": "wss://example.test/rpc?token=secret"},
         {"app_server_url": "wss://example.test/rpc#debug"},
+        {"app_server_url": "unix://user:secret@run/codex.sock"},
+        {"app_server_url": "unix:///tmp/codex.sock?token=secret"},
+        {"app_server_url": "unix:///tmp/codex.sock#debug"},
         {"app_server_url": "UNIX:///tmp/codex.sock"},
         {"core_mode": "mystery"},
     ],

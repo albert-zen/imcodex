@@ -474,3 +474,7 @@ def test_doctor_uses_the_canonical_target_resolver_without_claiming_fallback() -
     assert "Get-NetTCPConnection" not in script
     assert "will be started by scripts/start.ps1" in script
     assert "will be ensured by scripts/start.sh" in script
+    assert "[Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT" in script
+    assert "if (-not $isNativeWindows)" in script
+    assert "app-server daemon --help" in script
+    assert 'Write-Check "Codex daemon lifecycle"' in script

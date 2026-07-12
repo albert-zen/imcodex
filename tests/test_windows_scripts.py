@@ -20,6 +20,9 @@ def test_windows_doctor_matches_launcher_interpreter_and_target_model() -> None:
     assert 'Get-Setting "IMCODEX_DATA_DIR" ".imcodex"' in script
     assert "Unix control sockets require WSL/macOS/Linux" in script
     assert "python -m imcodex channels doctor" in script
+    assert "[Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT" in script
+    assert "if (-not $isNativeWindows)" in script
+    assert "app-server daemon --help" in script
     assert "??" not in script
     assert "shared-ws probe + stdio fallback" not in script
 

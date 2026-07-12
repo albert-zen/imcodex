@@ -92,7 +92,10 @@ The App Server target variables are treated as one configuration group. Target
 precedence is the entry shell, then values injected by conda activation, then
 `.env`; values from those groups are never mixed into one target tuple.
 `doctor.ps1` does not activate conda itself, so run it from inside the selected
-environment when conda environment variables define the App Server target.
+environment when conda environment variables define the App Server target. On
+macOS/Linux it also verifies the native `app-server daemon` capability required
+by `start.sh`; native Windows checks only the `app-server` command used by its
+detached TCP launcher.
 
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.

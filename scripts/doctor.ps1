@@ -6,6 +6,7 @@ Set-Location $repoRoot
 
 $minimumCodexVersion = [Version]"0.120.0"
 $script:hasFailures = $false
+$isNativeWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 
 function Write-Check([string]$Label, [bool]$Ok, [string]$Detail) {
     $status = if ($Ok) { "OK" } else { "FAIL" }
@@ -158,6 +159,18 @@ if ($null -ne $codexCommand) {
     } catch {
         Write-Check "Codex app-server" $false $_.Exception.Message
     }
+
+    if (-not $isNativeWindows) {
+        try {
+            & $codexBin app-server daemon --help | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Codex app-server daemon help exited with code $LASTEXITCODE"
+            }
+            Write-Check "Codex daemon lifecycle" $true "app-server daemon command is available"
+        } catch {
+            Write-Check "Codex daemon lifecycle" $false $_.Exception.Message
+        }
+    }
 }
 
 $envFileOk = Test-Path $dotenvPath
@@ -229,7 +242,7 @@ if ($null -ne $target) {
         }
     }
     elseif ($target.transport -eq "unix-websocket") {
-        if ($env:OS -eq "Windows_NT") {
+        if ($isNativeWindows) {
             Write-Check "App-server listener" $false "Unix control sockets require WSL/macOS/Linux; configure stdio:// or an explicit ws:// endpoint"
         }
         else {

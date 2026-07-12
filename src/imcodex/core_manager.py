@@ -6,6 +6,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -148,6 +149,16 @@ class DedicatedCoreManager:
             )
         if not self._port_is_listening(port):
             raise RuntimeError(f"Recorded IMCodex core on port {port} is not listening")
+        try:
+            listener_is_owned = self._listener_is_owned_by_process_tree(manifest.pid, port)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not verify that recorded IMCodex core PID {manifest.pid} owns port {port}: {exc}"
+            ) from exc
+        if not listener_is_owned:
+            raise RuntimeError(
+                f"Recorded IMCodex core PID {manifest.pid} does not own the listener on port {port}"
+            )
         if not self._health_is_ready(port):
             raise RuntimeError(
                 f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
@@ -177,6 +188,277 @@ class DedicatedCoreManager:
         except OSError:
             return False
         return True
+
+    @staticmethod
+    def _listener_is_owned_by_process_tree(pid: int, port: int) -> bool:
+        if os.name == "nt":
+            owner_pids = DedicatedCoreManager._windows_tcp_listener_owner_pids(port)
+            parent_by_pid = DedicatedCoreManager._windows_process_parent_map()
+        elif sys.platform.startswith("linux"):
+            owner_pids = DedicatedCoreManager._linux_tcp_listener_owner_pids(port)
+            parent_by_pid = DedicatedCoreManager._linux_process_parent_map()
+        elif sys.platform == "darwin":
+            owner_pids = DedicatedCoreManager._macos_tcp_listener_owner_pids(port)
+            parent_by_pid = DedicatedCoreManager._macos_process_parent_map()
+        else:
+            raise RuntimeError(
+                f"listener ownership verification is unsupported on {sys.platform or os.name}"
+            )
+        return any(
+            DedicatedCoreManager._pid_is_same_or_descendant(owner_pid, pid, parent_by_pid)
+            for owner_pid in owner_pids
+        )
+
+    @staticmethod
+    def _pid_is_same_or_descendant(
+        candidate_pid: int,
+        root_pid: int,
+        parent_by_pid: dict[int, int],
+    ) -> bool:
+        current = candidate_pid
+        visited: set[int] = set()
+        while current > 0 and current not in visited:
+            if current == root_pid:
+                return True
+            visited.add(current)
+            current = parent_by_pid.get(current, 0)
+        return False
+
+    @staticmethod
+    def _linux_tcp_listener_owner_pids(port: int) -> set[int]:
+        proc_root = Path("/proc")
+        tcp_table = proc_root / "net" / "tcp"
+        if not tcp_table.is_file():
+            raise RuntimeError("Linux /proc/net/tcp is unavailable")
+        try:
+            rows = tcp_table.read_text(encoding="ascii").splitlines()[1:]
+        except OSError as exc:
+            raise RuntimeError(f"could not read Linux TCP listener table: {exc}") from exc
+
+        listener_inodes: set[str] = set()
+        for row in rows:
+            fields = row.split()
+            if len(fields) < 10 or fields[3] != "0A":
+                continue
+            try:
+                address_hex, port_hex = fields[1].split(":", 1)
+                row_port = int(port_hex, 16)
+            except (ValueError, IndexError):
+                continue
+            if address_hex == "0100007F" and row_port == port:
+                listener_inodes.add(fields[9])
+        if not listener_inodes:
+            return set()
+
+        owners: set[int] = set()
+        try:
+            process_dirs = list(proc_root.iterdir())
+        except OSError as exc:
+            raise RuntimeError(f"could not enumerate Linux processes: {exc}") from exc
+        for process_dir in process_dirs:
+            if not process_dir.name.isdigit():
+                continue
+            try:
+                descriptors = list((process_dir / "fd").iterdir())
+            except (FileNotFoundError, PermissionError, ProcessLookupError):
+                continue
+            except OSError:
+                continue
+            for descriptor in descriptors:
+                try:
+                    target = os.readlink(descriptor)
+                except (FileNotFoundError, PermissionError, ProcessLookupError):
+                    continue
+                except OSError:
+                    continue
+                if target.startswith("socket:[") and target[8:-1] in listener_inodes:
+                    owners.add(int(process_dir.name))
+                    break
+        return owners
+
+    @staticmethod
+    def _linux_process_parent_map() -> dict[int, int]:
+        proc_root = Path("/proc")
+        if not proc_root.is_dir():
+            raise RuntimeError("Linux /proc is unavailable")
+        parents: dict[int, int] = {}
+        try:
+            process_dirs = list(proc_root.iterdir())
+        except OSError as exc:
+            raise RuntimeError(f"could not enumerate Linux processes: {exc}") from exc
+        for process_dir in process_dirs:
+            if not process_dir.name.isdigit():
+                continue
+            try:
+                stat = (process_dir / "stat").read_text(encoding="ascii")
+                fields = stat[stat.rfind(")") + 1 :].split()
+                parents[int(process_dir.name)] = int(fields[1])
+            except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+                continue
+            except OSError:
+                continue
+        return parents
+
+    @staticmethod
+    def _macos_tcp_listener_owner_pids(port: int) -> set[int]:
+        lsof = shutil.which("lsof") or ("/usr/sbin/lsof" if Path("/usr/sbin/lsof").is_file() else None)
+        if lsof is None:
+            raise RuntimeError("macOS listener ownership verification requires lsof")
+        result = subprocess.run(
+            [
+                lsof,
+                "-nP",
+                f"-iTCP@127.0.0.1:{port}",
+                "-sTCP:LISTEN",
+                "-Fp",
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode not in {0, 1} or (result.returncode == 1 and result.stderr.strip()):
+            detail = result.stderr.strip() or f"lsof exited with code {result.returncode}"
+            raise RuntimeError(f"could not query macOS TCP listener ownership: {detail}")
+        return {
+            int(line[1:])
+            for line in result.stdout.splitlines()
+            if line.startswith("p") and line[1:].isdigit()
+        }
+
+    @staticmethod
+    def _macos_process_parent_map() -> dict[int, int]:
+        ps = shutil.which("ps") or ("/bin/ps" if Path("/bin/ps").is_file() else None)
+        if ps is None:
+            raise RuntimeError("macOS listener ownership verification requires ps")
+        result = subprocess.run(
+            [ps, "-axo", "pid=,ppid="],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or f"ps exited with code {result.returncode}"
+            raise RuntimeError(f"could not query macOS process ancestry: {detail}")
+        parents: dict[int, int] = {}
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            try:
+                child_pid, parent_pid = (int(value) for value in fields)
+            except ValueError:
+                continue
+            parents[child_pid] = parent_pid
+        return parents
+
+    @staticmethod
+    def _windows_tcp_listener_owner_pids(port: int) -> set[int]:
+        import ctypes
+        import struct
+        from ctypes import wintypes
+
+        class TcpRowOwnerPid(ctypes.Structure):
+            _fields_ = [
+                ("state", wintypes.DWORD),
+                ("local_address", wintypes.DWORD),
+                ("local_port", wintypes.DWORD),
+                ("remote_address", wintypes.DWORD),
+                ("remote_port", wintypes.DWORD),
+                ("owning_pid", wintypes.DWORD),
+            ]
+
+        af_inet = 2
+        table_owner_pid_listener = 3
+        error_insufficient_buffer = 122
+        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+        get_table = iphlpapi.GetExtendedTcpTable
+        get_table.argtypes = [
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.ULONG),
+            wintypes.BOOL,
+            wintypes.ULONG,
+            wintypes.ULONG,
+            wintypes.ULONG,
+        ]
+        get_table.restype = wintypes.ULONG
+
+        size = wintypes.ULONG(0)
+        result = get_table(None, ctypes.byref(size), False, af_inet, table_owner_pid_listener, 0)
+        if result not in {0, error_insufficient_buffer}:
+            raise OSError(result, "GetExtendedTcpTable size query failed")
+        buffer = ctypes.create_string_buffer(max(size.value, ctypes.sizeof(wintypes.DWORD)))
+        result = get_table(buffer, ctypes.byref(size), False, af_inet, table_owner_pid_listener, 0)
+        if result != 0:
+            raise OSError(result, "GetExtendedTcpTable failed")
+
+        count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+        rows_type = TcpRowOwnerPid * count
+        rows = rows_type.from_address(ctypes.addressof(buffer) + ctypes.sizeof(wintypes.DWORD))
+        owners: set[int] = set()
+        for row in rows:
+            local_address = socket.inet_ntoa(struct.pack("<L", row.local_address))
+            local_port = socket.ntohs(row.local_port & 0xFFFF)
+            if local_address == "127.0.0.1" and local_port == port:
+                owners.add(int(row.owning_pid))
+        return owners
+
+    @staticmethod
+    def _windows_process_parent_map() -> dict[int, int]:
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessEntry32W(ctypes.Structure):
+            _fields_ = [
+                ("size", wintypes.DWORD),
+                ("usage", wintypes.DWORD),
+                ("process_id", wintypes.DWORD),
+                ("default_heap_id", ctypes.c_size_t),
+                ("module_id", wintypes.DWORD),
+                ("threads", wintypes.DWORD),
+                ("parent_process_id", wintypes.DWORD),
+                ("priority_class_base", wintypes.LONG),
+                ("flags", wintypes.DWORD),
+                ("executable", wintypes.WCHAR * 260),
+            ]
+
+        snapshot_process = 0x00000002
+        invalid_handle = ctypes.c_void_p(-1).value
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(snapshot_process, 0)
+        if snapshot == invalid_handle:
+            error = ctypes.get_last_error()
+            raise OSError(error, "CreateToolhelp32Snapshot failed")
+        parents: dict[int, int] = {}
+        try:
+            entry = ProcessEntry32W()
+            entry.size = ctypes.sizeof(ProcessEntry32W)
+            if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                error = ctypes.get_last_error()
+                raise OSError(error, "Process32FirstW failed")
+            while True:
+                parents[int(entry.process_id)] = int(entry.parent_process_id)
+                entry.size = ctypes.sizeof(ProcessEntry32W)
+                if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    error = ctypes.get_last_error()
+                    if error != 18:  # ERROR_NO_MORE_FILES
+                        raise OSError(error, "Process32NextW failed")
+                    break
+        finally:
+            kernel32.CloseHandle(snapshot)
+        return parents
 
     @staticmethod
     def _health_is_ready(port: int) -> bool:
