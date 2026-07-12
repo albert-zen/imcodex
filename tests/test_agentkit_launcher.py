@@ -181,9 +181,53 @@ def test_bundled_agentkit_hook_uses_repository_launcher() -> None:
 
     command = hooks["hooks"]["Stop"][0]["hooks"][0]["command"]
     command_windows = hooks["hooks"]["Stop"][0]["hooks"][0]["commandWindows"]
-    assert command == (
-        'scripts/agentkit codex-stop-hook --log ".agentkit/codex-stop-hook.log"'
+    assert command == '"${PLUGIN_ROOT}/hooks/run-stop.sh"'
+    assert command_windows == 'call "${PLUGIN_ROOT}\\hooks\\run-stop.cmd"'
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_posix_agentkit_hook_finds_repo_launcher_from_nested_cwd(tmp_path: Path) -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    repo_root = tmp_path / "repo & tools"
+    nested = repo_root / "packages" / "feature"
+    scripts_dir = repo_root / "scripts"
+    nested.mkdir(parents=True)
+    scripts_dir.mkdir()
+    capture_path = tmp_path / "hook-args.json"
+    launcher = scripts_dir / "agentkit"
+    launcher.write_text(
+        "#!/usr/bin/env bash\n"
+        "python3 -c 'import json, os, sys; "
+        "open(os.environ[\"AGENTKIT_HOOK_CAPTURE\"], \"w\").write(json.dumps(sys.argv[1:]))' "
+        '"$@"\n',
+        encoding="utf-8",
     )
-    assert command_windows == (
-        'scripts\\agentkit.cmd codex-stop-hook --log ".agentkit\\codex-stop-hook.log"'
+    launcher.chmod(0o755)
+    environment = os.environ.copy()
+    environment["AGENTKIT_HOOK_CAPTURE"] = str(capture_path)
+
+    completed = subprocess.run(
+        ["bash", str(source_root / "plugins" / "agentkit" / "hooks" / "run-stop.sh")],
+        cwd=nested,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
     )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(capture_path.read_text(encoding="utf-8")) == [
+        "codex-stop-hook",
+        "--log",
+        str(repo_root / ".agentkit" / "codex-stop-hook.log"),
+    ]
+
+
+def test_windows_agentkit_hook_wrapper_searches_parent_directories() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (repo_root / "plugins" / "agentkit" / "hooks" / "run-stop.cmd").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if exist "%REPO_ROOT%\\scripts\\agentkit.cmd" goto run_hook' in source
+    assert 'call "%REPO_ROOT%\\scripts\\agentkit.cmd" codex-stop-hook' in source

@@ -5,8 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "scripts/agentkit codex-stop-hook --log \".agentkit/codex-stop-hook.log\"",
-            "commandWindows": "scripts\\agentkit.cmd codex-stop-hook --log \".agentkit\\codex-stop-hook.log\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-stop.sh\"",
+            "commandWindows": "call \"${PLUGIN_ROOT}\\hooks\\run-stop.cmd\"",
             "timeout": 30,
             "statusMessage": "Checking AgentKit task closeout"
           }

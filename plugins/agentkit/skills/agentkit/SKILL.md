@@ -115,8 +115,9 @@ For a local reminder loop, use:
 scripts/agentkit watch
 ```
 
-The bundled AgentKit plugin already wires Codex Stop-hook reminders through the
-repository launcher. Do not run `install-codex-watchdog --repo-local` in this
+The bundled AgentKit plugin already wires Codex Stop-hook reminders through
+plugin-owned wrappers that locate the repository launcher from nested working
+directories. Do not run `install-codex-watchdog --repo-local` in this
 repository: the current upstream installer generates a hook that calls a global
 `agentkit` executable and would reintroduce the shell `PATH` dependency that the
 launcher removes. If hook wiring must be restored manually, copy the Stop hook
