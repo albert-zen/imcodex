@@ -413,6 +413,70 @@ class BridgeRestartExecutor:
             return True
         except OSError:
             return False
+
+        # A zombie still has a PID, so kill(pid, 0) reports success even
+        # though it has already released its listener and cannot do any more
+        # shutdown work.  When the restart executor is also the process's
+        # parent (as in the live debug harness), observe that state without
+        # reaping it: the owner of the Popen handle must remain responsible
+        # for the eventual wait().
+        waitid = getattr(os, "waitid", None)
+        wait_nowait = getattr(os, "WNOWAIT", None)
+        if callable(waitid) and wait_nowait is not None:
+            wait_flags = os.WEXITED | os.WNOHANG | wait_nowait
+            try:
+                exited = waitid(os.P_PID, pid, wait_flags)
+            except (ChildProcessError, PermissionError):
+                # Most production restart executors are not the bridge's
+                # parent.  In that case the process supervisor will reap it
+                # and the normal kill(pid, 0) check remains authoritative.
+                pass
+            except OSError:
+                # WNOWAIT is not implemented by every POSIX runtime.  Fall
+                # back conservatively rather than reaping with waitpid().
+                pass
+            else:
+                if exited is not None:
+                    return False
+                return True
+
+        # If this executor is not the process's parent, waitid cannot inspect
+        # it.  POSIX ps exposes zombie state without changing parentage or
+        # consuming the exit status.  Use fixed system paths rather than the
+        # restart caller's PATH.
+        ps = next(
+            (
+                candidate
+                for candidate in (Path("/bin/ps"), Path("/usr/bin/ps"))
+                if candidate.is_file()
+            ),
+            None,
+        )
+        if ps is None:
+            return True
+        try:
+            completed = subprocess.run(
+                [str(ps), "-o", "stat=", "-p", str(pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=1,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        state = completed.stdout.strip().split(maxsplit=1)
+        if state:
+            return not state[0].upper().startswith("Z")
+
+        # The process may have been reaped between kill(pid, 0) and ps.  A
+        # second signal check distinguishes that race from an unusable ps.
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            return True
+        except OSError:
+            return False
         return True
 
     @staticmethod

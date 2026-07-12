@@ -1,12 +1,57 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from imcodex.ops import BridgeRestartExecutor
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process states only")
+def test_posix_process_status_treats_unreaped_child_as_stopped_without_reaping() -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while BridgeRestartExecutor._posix_process_is_running(process.pid):
+            if time.monotonic() >= deadline:
+                pytest.fail("child did not reach its exited, unreaped state")
+            time.sleep(0.01)
+
+        # WNOWAIT must leave the Popen owner able to perform the eventual
+        # reap; kill(pid, 0) still succeeds while that zombie is present.
+        os.kill(process.pid, 0)
+        assert process.returncode is None
+    finally:
+        process.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process states only")
+@pytest.mark.parametrize(("state", "expected"), [("Z+\n", False), ("Ss\n", True)])
+def test_posix_process_status_reads_non_child_zombie_state(
+    monkeypatch,
+    state: str,
+    expected: bool,
+) -> None:
+    def non_child(*_args):
+        raise ChildProcessError
+
+    monkeypatch.setattr("imcodex.ops.os.kill", lambda *_args: None)
+    monkeypatch.setattr("imcodex.ops.os.waitid", non_child)
+    monkeypatch.setattr(
+        "imcodex.ops.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout=state),
+    )
+
+    assert BridgeRestartExecutor._posix_process_is_running(12345) is expected
 
 
 def test_restart_executor_reads_launch_snapshot_and_restarts_bridge(
