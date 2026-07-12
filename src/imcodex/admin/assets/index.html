@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <meta name="referrer" content="no-referrer">
+    <title>Configuration · IMCodex</title>
+    <link rel="stylesheet" href="/admin/assets/admin.css">
+    <script src="/admin/assets/admin.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to configuration</a>
+
+    <div class="page-glow page-glow--one" aria-hidden="true"></div>
+    <div class="page-glow page-glow--two" aria-hidden="true"></div>
+
+    <header class="app-header">
+      <div class="app-header__inner">
+        <a class="brand" href="/admin" aria-label="IMCodex configuration home">
+          <span class="brand__mark" aria-hidden="true">IM</span>
+          <span class="brand__wordmark">IMCodex</span>
+        </a>
+
+        <div class="header-actions">
+          <span class="connection-state" id="connection-state" role="status" aria-live="polite">
+            <span class="connection-state__dot" aria-hidden="true"></span>
+            <span id="connection-state-label">Connecting</span>
+          </span>
+          <button class="button button--quiet button--compact" id="refresh-button" type="button">
+            Refresh
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-shell" id="main-content" tabindex="-1">
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Local configuration</p>
+          <h1 id="page-title">One place to tune your bridge.</h1>
+          <p class="hero__lede">
+            Codex keeps control of how it works. IMCodex keeps your channels connected.
+          </p>
+        </div>
+        <div class="local-note" aria-label="Security boundary">
+          <span class="local-note__icon" aria-hidden="true"></span>
+          <span>
+            <strong>Local only</strong>
+            <small>This console is available on this computer.</small>
+          </span>
+        </div>
+      </section>
+
+      <aside class="notice notice--restart" id="restart-banner" hidden>
+        <span class="notice__icon" aria-hidden="true">↻</span>
+        <div class="notice__content">
+          <strong>Restart IMCodex to apply bridge changes</strong>
+          <span>Your configuration is saved. Active messages continue with the current settings until restart.</span>
+        </div>
+        <button class="notice__dismiss" id="dismiss-restart" type="button" aria-label="Dismiss restart notice">×</button>
+      </aside>
+
+      <section class="error-panel" id="global-error" role="alert" hidden>
+        <div>
+          <strong id="global-error-title">Configuration is unavailable</strong>
+          <p id="global-error-message">IMCodex could not load this page.</p>
+        </div>
+        <button class="button button--secondary button--compact" id="retry-button" type="button">Try again</button>
+      </section>
+
+      <section class="settings-section settings-section--native" aria-labelledby="native-heading">
+        <div class="section-heading">
+          <div>
+            <div class="section-heading__title-row">
+              <span class="section-index" aria-hidden="true">01</span>
+              <h2 id="native-heading">Native Codex</h2>
+              <span class="authority-badge">Codex-owned</span>
+            </div>
+            <p>
+              Saved directly to Codex without restarting the bridge. New threads use the updated defaults;
+              existing and resumed threads retain their native thread settings.
+            </p>
+          </div>
+        </div>
+
+        <div class="warning-list" id="native-warnings" aria-live="polite"></div>
+
+        <div class="native-card">
+          <div class="settings-grid settings-grid--native" id="native-settings" aria-busy="true">
+            <div class="skeleton skeleton--field"></div>
+            <div class="skeleton skeleton--field"></div>
+            <div class="skeleton skeleton--field"></div>
+            <div class="skeleton skeleton--field"></div>
+            <div class="skeleton skeleton--field"></div>
+          </div>
+          <div class="card-footer" id="native-footer" hidden>
+            <p class="save-state" id="native-save-state" aria-live="polite">No native changes</p>
+            <button class="button button--primary" id="save-native-button" type="button" disabled>
+              Apply to Codex
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="bridge-heading">
+        <div class="section-heading">
+          <div>
+            <div class="section-heading__title-row">
+              <span class="section-index" aria-hidden="true">02</span>
+              <h2 id="bridge-heading">Bridge &amp; channels</h2>
+              <span class="authority-badge authority-badge--bridge">IMCodex-owned</span>
+            </div>
+            <p>Manage the local bridge, connection behavior, and the messaging channels you use.</p>
+          </div>
+          <span class="restart-pill">Restart after save</span>
+        </div>
+
+        <div class="bridge-sections" id="bridge-sections" aria-busy="true">
+          <article class="config-card skeleton-card" aria-hidden="true">
+            <div class="skeleton skeleton--title"></div>
+            <div class="skeleton skeleton--line"></div>
+            <div class="skeleton skeleton--field-wide"></div>
+            <div class="skeleton skeleton--field-wide"></div>
+          </article>
+          <article class="config-card skeleton-card" aria-hidden="true">
+            <div class="skeleton skeleton--title"></div>
+            <div class="skeleton skeleton--line"></div>
+            <div class="skeleton skeleton--field-wide"></div>
+            <div class="skeleton skeleton--field-wide"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <div class="save-dock" id="save-dock" hidden>
+      <div class="save-dock__inner">
+        <div>
+          <strong id="bridge-change-count">Unsaved bridge changes</strong>
+          <span>Saved bridge settings take effect after restart.</span>
+        </div>
+        <div class="save-dock__actions">
+          <button class="button button--quiet" id="discard-bridge-button" type="button">Discard</button>
+          <button class="button button--primary" id="save-bridge-button" type="button">Save changes</button>
+        </div>
+      </div>
+    </div>
+
+    <dialog class="conflict-dialog" id="conflict-dialog" aria-labelledby="conflict-title">
+      <div class="dialog-mark" aria-hidden="true">!</div>
+      <h2 id="conflict-title">Configuration changed elsewhere</h2>
+      <p>
+        Another process updated the configuration after this page loaded. Reload the latest values before saving again.
+      </p>
+      <div class="dialog-actions">
+        <button class="button button--quiet" id="conflict-cancel" type="button">Keep reviewing</button>
+        <button class="button button--primary" id="conflict-reload" type="button">Reload configuration</button>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+    <noscript>
+      <div class="noscript-message">JavaScript is required to manage IMCodex configuration.</div>
+    </noscript>
+  </body>
+</html>
