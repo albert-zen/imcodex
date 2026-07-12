@@ -9,6 +9,7 @@ def test_layer_packages_exist() -> None:
     assert (root / "bridge").is_dir()
     assert (root / "channels").is_dir()
     assert (root / "appserver").is_dir()
+    assert (root / "admin").is_dir()
 
 
 def test_layer_dependencies_only_flow_forward() -> None:
@@ -61,9 +62,17 @@ def _resolve_import_from(module_name: str, node: ast.ImportFrom) -> str | None:
 
 def _is_disallowed_dependency(module_name: str, imported: str) -> bool:
     if module_name.startswith("imcodex.appserver"):
-        return imported.startswith("imcodex.bridge") or imported.startswith("imcodex.channels")
+        return (
+            imported.startswith("imcodex.bridge")
+            or imported.startswith("imcodex.channels")
+            or imported.startswith("imcodex.admin")
+        )
     if module_name.startswith("imcodex.bridge"):
-        return imported.startswith("imcodex.channels")
+        return imported.startswith("imcodex.channels") or imported.startswith("imcodex.admin")
     if module_name.startswith("imcodex.channels"):
-        return imported.startswith("imcodex.bridge") or imported.startswith("imcodex.appserver")
+        return (
+            imported.startswith("imcodex.bridge")
+            or imported.startswith("imcodex.appserver")
+            or imported.startswith("imcodex.admin")
+        )
     return False

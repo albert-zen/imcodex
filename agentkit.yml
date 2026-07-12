@@ -97,8 +97,9 @@ components:
       - approval
 
   runtime:
-    description: Composition root, config, observability, debug harness, and operator-facing runtime commands.
+    description: Composition root, local administration, config, observability, debug harness, and operator-facing runtime commands.
     code:
+      - src/imcodex/admin/**
       - src/imcodex/application.py
       - src/imcodex/composition.py
       - src/imcodex/config.py
@@ -110,7 +111,15 @@ components:
       - src/imcodex/ops_cli.py
       - src/imcodex/runtime.py
       - scripts/**
+      - tests/test_admin_*.py
+      - tests/test_application.py
+      - tests/test_architecture.py
+      - tests/test_main.py
       - tests/test_observability.py
+      - tests/test_restart_executor.py
+      - tests/test_restart_preflight.py
+      - tests/test_runtime.py
+      - tests/test_startup_scripts.py
     docs:
       - docs/design.md
       - docs/workflow.md
@@ -169,6 +178,7 @@ layers:
       - state
   runtime:
     paths:
+      - src/imcodex/admin/**
       - src/imcodex/application.py
       - src/imcodex/composition.py
       - src/imcodex/debug_harness/**

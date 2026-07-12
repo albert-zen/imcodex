@@ -179,7 +179,7 @@ At connection initialization, if native Codex has no effective modern or legacy 
 - `default_permissions = ":danger-full-access"`
 - `approval_policy = "never"`
 
-That seed MUST use native config operations and reload the native user-config stack. It MUST use the native user-layer version for optimistic concurrency, preserve managed defaults and restrictions, and MUST NOT be repeated over an existing native permission choice. It MUST NOT be expressed as a thread start, resume, or turn override. Already-loaded threads may retain their native thread settings until they are cold-loaded again.
+That seed MUST use native config operations and reload the native user-config stack. It MUST use the native user-layer version for optimistic concurrency, preserve managed defaults and restrictions, and MUST NOT be repeated over an existing native permission choice. It MUST NOT be expressed as a thread start, resume, or turn override. Existing and resumed threads may retain their persisted native thread settings.
 
 The bridge MUST NOT maintain separate long-term per-conversation defaults for:
 
@@ -189,6 +189,80 @@ The bridge MUST NOT maintain separate long-term per-conversation defaults for:
 - personality
 
 If the product allows these settings to be changed from IM, the bridge is only a translation layer for native Codex operations.
+
+### Configuration Console Rules
+
+The graphical configuration console is a local presentation and composition
+surface. It MUST NOT become another authority for native Codex execution
+semantics.
+
+For native Codex settings, the console MUST:
+
+- read effective values and supported choices through the App Server boundary
+- project managed new-thread defaults and native feature requirements as effective, read-only state
+- write model, reasoning effort, personality, Fast mode, and permission changes
+  through native Codex configuration operations
+- derive Fast availability from the selected or default native model's advertised
+  service tiers, while preserving an off path for a currently configured Fast tier
+- treat `service_tier` as the native Fast-mode truth and leave the native
+  `features.fast_mode` capability gate unchanged
+- treat the successful native response as authoritative and refresh from
+  native state instead of retaining a bridge-owned shadow value
+- apply interdependent model, reasoning, personality, and service-tier changes as one validated
+  native config batch so the page cannot strand an incompatible partial transition
+- expose only an explicit allowlist of configuration fields; raw native config
+  layers MUST NOT be returned to the browser because unrelated native settings
+  may contain secrets
+
+For bridge and channel settings, the console MAY manage the project `.env`, but
+it MUST:
+
+- limit writes to an explicit bridge-owned schema
+- update the file atomically with optimistic revision checking, preserve
+  unmanaged entries and comments, and protect the file as sensitive on
+  platforms that expose suitable file permissions
+- serialize console writers across processes; unrelated external editors are
+  outside that advisory lock and MUST NOT be described as fully coordinated
+- report that a bridge restart is required; it MUST NOT claim that `.env`
+  changes have been hot-reloaded
+- treat values supplied by the process environment as higher-precedence,
+  read-only overrides, while launcher values proven to have been imported from
+  the managed `.env` remain editable there
+- never return stored secret values to the browser or diagnostics; secret
+  fields MUST use explicit preserve, replace, and clear operations
+
+The console MUST remain loopback-only even when other IMCodex HTTP routes bind
+to a non-loopback interface. Every console request MUST pass both a loopback
+network-peer check and a loopback `Host` check. Mutating requests MUST also
+present a server-issued CSRF token, and browser-originated mutations MUST be
+same-origin. The console MUST NOT be treated as a remotely exposable mobile or
+web administration protocol.
+
+## Bridge Restart Safety
+
+The built-in restart path MUST fail before stopping the current bridge unless
+all of the following are true:
+
+- the launch snapshot is environment-reconstructable rather than derived from
+  an untracked explicit `Settings` object
+- every externally owned bridge, native Codex, TLS, certificate, and proxy
+  environment input named by the snapshot is still present
+- reconstructed Settings, local channel prerequisites, the App Server target,
+  and the intended HTTP bind address pass a side-effect-free preflight
+- a newly selected HTTP port is bindable before the current listener is stopped
+- the bridge currently answering at the recorded endpoint reports the exact
+  PID and instance ID recorded in the launch snapshot
+
+Replacement health MUST be verified through a bridge-specific HTTP response
+that reports the replacement PID and a non-empty instance ID. A listening TCP
+port alone is not health evidence. Wildcard bind addresses MAY be probed through
+their corresponding loopback address.
+
+On native Windows, built-in restart MUST request shutdown through the running
+bridge and allow the normal ASGI lifespan cleanup to finish. It MUST NOT use a
+forceful process termination fallback. The control request MUST be loopback-only
+and bound to the current instance identity; when graceful control is
+unavailable, restart MUST fail closed.
 
 ## Approval Rules
 

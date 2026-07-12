@@ -98,6 +98,74 @@ by `start.sh`; native Windows checks only the `app-server` command used by its
 detached TCP launcher. The HTTP port check uses the configured
 `IMCODEX_HTTP_HOST` bind address rather than assuming loopback.
 
+### Configuration console
+
+Once IMCodex is running on the default port, open:
+
+```text
+http://127.0.0.1:8000/admin
+```
+
+If `IMCODEX_HTTP_PORT` is different, substitute that port. Keep the browser URL
+on `127.0.0.1` (or another loopback spelling); the administration route is not
+a remote control endpoint. Access is accepted only when both the network peer
+and the HTTP `Host` are loopback. This remains true when the main HTTP service
+binds `IMCODEX_HTTP_HOST=0.0.0.0`, so do not put `/admin` behind a remote reverse
+proxy. State-changing requests also require the console's server-issued CSRF
+token and an allowed same-origin request.
+
+The page contains two kinds of configuration with different owners:
+
+- Native Codex settings are loaded from Codex and written immediately through
+  the connected App Server. Codex remains authoritative for model, reasoning
+  effort, personality, Fast mode, and permission behavior; the console does
+  not keep a second copy of that state.
+- Bridge and channel settings are saved atomically to the repository `.env`.
+  The current process continues using its startup configuration, so restart
+  IMCodex after a successful save. Comments and settings outside the console's
+  managed schema are preserved.
+
+Shell, service-manager, or other process-environment values have higher
+precedence than `.env`. The console reports those overrides as read-only; change
+them at their source and restart instead of trying to shadow them in `.env`.
+Values that the platform launcher itself imported from this project's `.env`
+remain editable as `.env` values.
+
+The built-in `ops restart` path preserves genuine process-environment
+overrides but deliberately releases values that came from `.env` (or from
+defaults) before launching the replacement process. The replacement therefore
+re-reads the current `.env`, including a changed HTTP port, instead of replaying
+the stale resolved launch snapshot.
+
+Run `ops restart` from an environment that still contains every externally
+owned setting used to start the bridge. This includes `IMCODEX_*` settings and
+execution context used by native Codex or HTTPS, such as `PATH`, `HOME`,
+`CODEX_HOME`, `CODEX_*`, `OPENAI_*`, certificate variables, and proxy
+variables. The launch snapshot records only the names of those settings, never
+their values. If any are missing, or if the fully reconstructed Settings,
+channel prerequisites, local App Server executable, token file, HTTP bind
+address, or a newly selected HTTP port fail preflight validation, restart
+aborts before stopping the current process. Runtimes constructed by
+embedding `imcodex` with an explicit `Settings` object are marked
+restart-unsupported unless the caller passes `settings_source="environment"`
+to declare that the object came from `Settings.from_env()`.
+
+Immediately before stopping, restart checks `/healthz` against the PID and
+instance ID in the launch snapshot, so a stale snapshot cannot signal a reused
+PID. After launching the replacement, it probes the configured bridge bind host
+(mapping wildcard binds to the matching loopback address) at `/healthz` again.
+Success requires the IMCodex bridge identity and the replacement process PID;
+an unrelated listener on the same port is not accepted as a healthy restart.
+Preflight failures retain a bounded, non-secret diagnostic instead of only an
+exit code.
+
+Credentials are write-only in the console. The API and page never receive an
+existing secret value: leaving a secret untouched preserves it, entering a new
+value replaces it, and an explicit clear action removes it. The `.env` update
+serializes configuration-console writers and rejects stale revisions. Do not
+edit the file with an unrelated external tool while a console save is in
+progress, because ordinary editors do not participate in that lock.
+
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.
 
@@ -157,6 +225,14 @@ on port `8765`, exports the canonical websocket target, and then starts the
 bridge. Reuse is accepted only when the core manifest, PID, command, listener,
 and App Server `/readyz` probe match; an unrelated process occupying that port
 fails explicitly.
+Built-in bridge restart asks the running Windows process to shut down through a
+loopback-only, instance-bound control request. Uvicorn then runs the normal
+lifespan shutdown, flushing bridge state and closing channel/native resources;
+the restart path never falls back to force-terminating the process. Wildcard
+binds are reachable through loopback. If the bridge is bound only to a
+non-loopback interface or is hosted by a third-party ASGI runner without the
+built-in shutdown callback, restart fails closed and the operator must stop it
+through that service manager.
 The equivalent explicit workflow is:
 
 ```powershell

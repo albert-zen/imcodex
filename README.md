@@ -97,6 +97,32 @@ On Linux, run:
 ./scripts/start.sh
 ```
 
+### Configuration console
+
+After the bridge starts, open [http://127.0.0.1:8000/admin](http://127.0.0.1:8000/admin)
+to manage its supported settings. If `IMCODEX_HTTP_PORT` is changed, use that
+port while keeping the loopback host. The console is deliberately local-only:
+it requires both a loopback client and a loopback `Host` header, and mutations
+require a server-issued CSRF token. Binding the main HTTP service to
+`0.0.0.0` does not make `/admin` remotely accessible.
+
+The console preserves the native/bridge ownership boundary:
+
+- Native Codex settings such as model, reasoning effort, personality, Fast
+  mode, and permissions are read and written live through App Server. Codex
+  remains their source of truth, and these changes do not require a bridge
+  restart.
+- Bridge and channel settings are written safely to the project's `.env`.
+  They take effect after restarting IMCodex; the console does not pretend to
+  hot-reload them.
+- A value supplied by the process environment overrides `.env` and is shown as
+  read-only, so the console cannot create a misleading lower-precedence value.
+- Secret values are never returned to the browser. Existing secrets can only
+  be preserved, replaced, or explicitly cleared.
+
+See [Startup and shutdown](docs/startup.md#configuration-console) for the
+operator details and security boundary.
+
 ### Native App Server daemon
 
 On macOS and Linux, a recent standalone Codex CLI can own a long-lived local

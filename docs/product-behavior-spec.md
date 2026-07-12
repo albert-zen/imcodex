@@ -376,7 +376,8 @@ Behavior:
 - the model's `defaultReasoningEffort` is identified in the command output
 - if native model metadata is unavailable, the bridge may expose a compatibility list instead
 - a non-default effort is rejected when the selected native model does not advertise it
-- config changes reload the native user-config stack and apply to new or cold-loaded threads
+- config changes reload the native user-config stack and apply as defaults to new threads;
+  existing and resumed native threads retain their persisted thread settings
 - already-loaded threads retain their native thread settings; the command output must not claim an immediate live-thread change
 - the bridge does not maintain a second reasoning-effort truth
 
@@ -391,7 +392,8 @@ Behavior:
 Behavior:
 
 - new, attached, resumed, and rehydrated threads omit thread-level personality overrides; native Codex applies any explicit global configuration
-- personality changes reload native Codex config for new or cold-loaded threads
+- personality changes reload native Codex config as a default for new threads; resumed threads
+  retain their native thread setting
 - already-loaded threads retain their native thread settings; changing them immediately would require an experimental native thread-settings operation
 - the bridge does not force `friendly` or maintain a second personality truth
 
@@ -406,8 +408,18 @@ Behavior:
 Behavior:
 
 - Fast mode changes are written to native Codex config
-- enabling Fast mode writes `service_tier = "fast"` and `features.fast_mode = true`
-- disabling Fast mode writes `service_tier = "standard"` and `features.fast_mode = false`
+- enabling Fast mode writes the native Fast request tier, `service_tier = "priority"`
+- disabling Fast mode explicitly selects standard routing with `service_tier = "default"`
+- the bridge does not mutate `features.fast_mode`; that native feature gate controls whether
+  clients expose service-tier selection, not the user's selected tier
+- `priority` and the legacy config value `fast` are both displayed as Fast
+- the configuration console follows the selected model's native service-tier catalog; it does not
+  offer Fast for a model that does not advertise it, but still lets a user turn off a currently
+  configured Fast tier
+- when no explicit tier is configured, the selected model's native `defaultServiceTier` is effective;
+  an explicit non-default tier is effective only when that model advertises the tier ID
+- managed `configRequirements` defaults and feature requirements take priority and are not
+  shadowed by editable bridge state
 - the bridge does not maintain a second speed-mode truth
 
 ### `/permission`
@@ -433,8 +445,8 @@ Behavior:
 - an existing native, legacy, or managed permission choice is preserved and remains authoritative
 - managed defaults and requirements take precedence; if they disallow full access, startup preserves the managed behavior instead of bypassing it or failing the bridge
 - bootstrap writes use the native user-config layer version so a concurrent user or administrator update cannot be silently overwritten
-- permission config changes reload the native config stack for new or cold-loaded threads rather than adding thread-level permission overrides
-- already-loaded threads retain their native permission settings until they are cold-loaded again
+- permission config changes reload the native config stack as defaults for new threads rather than adding thread-level permission overrides
+- existing and resumed threads retain their native permission settings
 - the bridge does not maintain a second permission truth
 
 ### Approval Commands

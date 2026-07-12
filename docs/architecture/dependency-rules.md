@@ -60,10 +60,15 @@ Transport adapters and outbound sinks.
 
 ### Runtime
 
-Composition, startup, ops, and debug harness entry surfaces.
+Composition, startup, local administration, ops, and debug harness entry
+surfaces. `imcodex.admin` is a presentation/composition surface: it may project
+native settings through `appserver` and manage the explicit bridge-owned config
+schema, but it must not become a business layer or a second configuration
+authority.
 
 - may import all lower layers in order to wire them together
 - should not become a new business layer
+- lower layers must not import `imcodex.admin`
 
 ## Existing Test Enforcement
 

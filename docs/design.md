@@ -12,12 +12,17 @@ thread model inside the bridge.
 
 ## Core Product Shape
 
-The intended runtime has four practical surfaces:
+The intended runtime has five practical surfaces:
 
 - transport adapters under `imcodex.channels`
 - bridge logic under `imcodex.bridge`
 - native Codex protocol integration under `imcodex.appserver`
+- a loopback-only configuration presentation under `imcodex.admin`
 - a thin composition/runtime shell that wires them together
+
+`imcodex.admin` belongs to the runtime/composition side of the architecture. It
+projects native settings without owning them and manages only the explicit
+bridge/channel configuration schema; lower layers do not depend on it.
 
 The bridge should feel conversational in IM, but the native Codex core remains
 the authority for:
