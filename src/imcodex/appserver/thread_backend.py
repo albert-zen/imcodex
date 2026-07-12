@@ -274,10 +274,12 @@ class CodexThreadBackendMixin:
         self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
 
-    async def rehydrate_bound_threads(self) -> None:
+    async def rehydrate_bound_threads(self) -> dict[str, int]:
+        summary = {"total": 0, "succeeded": 0, "failed": 0, "unverified": 0}
         for binding in self.store.iter_bindings():
             if not binding.thread_id:
                 continue
+            summary["total"] += 1
             emit_event(
                 component="appserver.backend",
                 event="bridge.thread_rehydrate.started",
@@ -289,11 +291,17 @@ class CodexThreadBackendMixin:
                 },
             )
             try:
-                result = await self.client.resume_thread(
+                resume = getattr(
+                    self.client,
+                    "resume_thread_for_recovery",
+                    self.client.resume_thread,
+                )
+                result = await resume(
                     thread_id=binding.thread_id,
                     service_name=self.service_name,
                 )
             except AppServerError as exc:
+                summary["failed"] += 1
                 failed_thread_id = binding.thread_id
                 stale_thread = self._is_stale_thread_error(exc)
                 had_active_turn = self.store.get_active_turn(failed_thread_id) is not None
@@ -317,6 +325,7 @@ class CodexThreadBackendMixin:
                 continue
             payload = result.get("thread")
             if not isinstance(payload, dict):
+                summary["unverified"] += 1
                 had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
                 if had_active_turn:
                     self.store.clear_active_turn(binding.thread_id)
@@ -336,6 +345,7 @@ class CodexThreadBackendMixin:
             returned_thread_id = str(payload.get("id") or payload.get("threadId") or "")
             native_thread_status = self._native_status(payload.get("status"))
             if returned_thread_id != binding.thread_id or native_thread_status is None:
+                summary["unverified"] += 1
                 had_active_turn = self.store.get_active_turn(binding.thread_id) is not None
                 if had_active_turn:
                     self.store.clear_active_turn(binding.thread_id)
@@ -384,6 +394,8 @@ class CodexThreadBackendMixin:
                     "cwd": snapshot.cwd,
                 },
             )
+            summary["succeeded"] += 1
+        return summary
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = self._native_status(payload.get("status"))

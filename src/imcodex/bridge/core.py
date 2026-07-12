@@ -556,7 +556,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             except AppServerError:
                 continue
 
-    async def handle_connection_ready(self, connection_epoch: int) -> None:
+    async def handle_connection_ready(self, connection_epoch: int) -> dict | None:
         emit_event(
             component="bridge",
             event="bridge.connection.ready",
@@ -564,9 +564,14 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             data={"connection_epoch": connection_epoch},
         )
         if not self.backend.prefers_native_recovery():
-            return
+            return None
         async with self._rehydration_lock:
-            await self.backend.rehydrate_bound_threads()
+            summary = await self.backend.rehydrate_bound_threads()
+        degraded = summary.get("failed", 0) + summary.get("unverified", 0)
+        return {
+            "status": "degraded" if degraded else "connected",
+            "rehydration": summary,
+        }
 
     async def _emit(self, message: OutboundMessage | None) -> list[OutboundMessage]:
         if message is None:

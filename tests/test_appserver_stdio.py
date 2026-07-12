@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 
 import pytest
 import websockets
@@ -11,7 +12,6 @@ from imcodex.appserver import (
     AppServerClient,
     AppServerError,
     AppServerSupervisor,
-    CodexBackend,
     summarize_transport_message,
 )
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
@@ -25,7 +25,6 @@ from imcodex.appserver.supervisor import (
     derive_health_probe_urls,
     resolve_unix_socket_path,
 )
-from imcodex.store import ConversationStore
 
 
 class FakeStdout:
@@ -366,6 +365,137 @@ async def test_initialize_enables_experimental_api_only_when_configured() -> Non
 
 
 @pytest.mark.asyncio
+async def test_lightweight_recovery_resume_falls_back_for_older_app_servers(monkeypatch) -> None:
+    supervisor = AppServerSupervisor(app_server_url="stdio://")
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        experimental_api_enabled=True,
+    )
+    calls: list[tuple[str, dict]] = []
+
+    async def request(method: str, params: dict) -> dict:
+        calls.append((method, params))
+        if params.get("excludeTurns"):
+            raise AppServerError("invalid params: unknown field excludeTurns", code=-32602)
+        return {"thread": {"id": "thr_1", "status": "idle", "turns": []}}
+
+    monkeypatch.setattr(client, "_request", request)
+
+    result = await client.resume_thread_for_recovery(thread_id="thr_1")
+
+    assert result["thread"]["id"] == "thr_1"
+    assert calls == [
+        (
+            "thread/resume",
+            {
+                "threadId": "thr_1",
+                "excludeTurns": True,
+                "initialTurnsPage": {"limit": 4},
+            },
+        ),
+        ("thread/resume", {"threadId": "thr_1"}),
+    ]
+
+
+def test_resume_initial_turns_page_is_merged_in_chronological_order() -> None:
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(app_server_url="stdio://"),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    result = {
+        "thread": {"id": "thr_1", "status": "inProgress", "turns": []},
+        "initialTurnsPage": {
+            "data": [
+                {"id": "turn_new", "status": "inProgress"},
+                {"id": "turn_old", "status": "completed"},
+            ]
+        },
+    }
+
+    normalized = client._normalize_result("thread/resume", result)
+
+    assert [turn["id"] for turn in normalized["thread"]["turns"]] == [
+        "turn_old",
+        "turn_new",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ready_handler_can_report_degraded_native_rehydration(monkeypatch) -> None:
+    health_updates: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.mark_appserver_health",
+        lambda **payload: health_updates.append(payload),
+    )
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    client.add_connection_ready_handler(
+        lambda _epoch: {
+            "status": "degraded",
+            "rehydration": {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0},
+        }
+    )
+
+    await client.initialize()
+
+    assert health_updates[-1]["status"] == "degraded"
+    assert health_updates[-1]["rehydration"]["failed"] == 1
+    assert client.connection_facts()["status"] == "degraded"
+    assert client.connection_facts()["rehydration"]["failed"] == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_background_reconnect_preserves_degraded_rehydration_health(monkeypatch) -> None:
+    observed_health: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.mark_appserver_health",
+        lambda **payload: observed_health.append(payload),
+    )
+    first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
+    sockets = iter([first, second])
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="ws://127.0.0.1:9001",
+            websocket_factory=lambda _url: next(sockets),
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    def ready_health(epoch: int) -> dict | None:
+        if epoch != 2:
+            return None
+        return {
+            "status": "degraded",
+            "rehydration": {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0},
+        }
+
+    client.add_connection_ready_handler(ready_health)
+    await client.initialize()
+    listener_task = client._listener_task
+    assert listener_task is not None
+    first.messages.put_nowait(ConnectionError("socket closed"))
+
+    await asyncio.wait_for(listener_task, timeout=1)
+    reconnect_task = client._reconnect_task
+    if reconnect_task is not None:
+        await asyncio.wait_for(reconnect_task, timeout=1)
+
+    assert client.connection_facts()["status"] == "degraded"
+    assert observed_health[-1]["status"] == "degraded"
+    assert observed_health[-1]["rehydration"]["failed"] == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_client_reads_response_while_notification_handler_is_still_running() -> None:
     handler_started = asyncio.Event()
     release_handler = asyncio.Event()
@@ -403,6 +533,88 @@ async def test_client_reads_response_while_notification_handler_is_still_running
     assert result == {"threads": []}
     assert handler_started.is_set()
     release_handler.set()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_server_request_dispatch_is_not_blocked_by_slow_notifications() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    notification_started = asyncio.Event()
+    release_notification = asyncio.Event()
+    request_received = asyncio.Event()
+    captured_requests: list[dict] = []
+    supervisor = AppServerSupervisor(
+        app_server_url="stdio://",
+        spawn_process=lambda *_args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    async def slow_notification(_notification: dict) -> None:
+        notification_started.set()
+        await release_notification.wait()
+
+    def capture_request(request: dict) -> None:
+        captured_requests.append(request)
+        request_received.set()
+
+    client.add_notification_handler(slow_notification)
+    client.add_server_request_handler(capture_request)
+    await client.initialize()
+    process.stdout.lines.put_nowait(
+        b'{"method":"thread/status/changed","params":{"threadId":"thr_1"}}\n'
+    )
+    await asyncio.wait_for(notification_started.wait(), timeout=1)
+    process.stdout.lines.put_nowait(
+        b'{"id":91,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_1"}}\n'
+    )
+
+    await asyncio.wait_for(request_received.wait(), timeout=1)
+
+    assert captured_requests[0]["id"] == 91
+    release_notification.set()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_queue_overflow_resets_instead_of_growing_unbounded(monkeypatch) -> None:
+    observed_events: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.emit_event",
+        lambda **payload: observed_events.append(payload),
+    )
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    notification_started = asyncio.Event()
+    supervisor = AppServerSupervisor(
+        app_server_url="stdio://",
+        spawn_process=lambda *_args: process,
+    )
+    client = AppServerClient(
+        supervisor=supervisor,
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        notification_queue_size=1,
+    )
+
+    async def blocked_notification(_notification: dict) -> None:
+        notification_started.set()
+        await asyncio.Event().wait()
+
+    client.add_notification_handler(blocked_notification)
+    await client.initialize()
+    process.stdout.lines.put_nowait(b'{"method":"event/one","params":{}}\n')
+    await asyncio.wait_for(notification_started.wait(), timeout=1)
+    listener_task = client._listener_task
+    assert listener_task is not None
+    process.stdout.lines.put_nowait(b'{"method":"event/two","params":{}}\n')
+    process.stdout.lines.put_nowait(b'{"method":"event/three","params":{}}\n')
+
+    await asyncio.wait_for(listener_task, timeout=1)
+
+    assert client.connection_mode == "disconnected"
+    assert client._dispatch_queue is None
+    assert any(event.get("event") == "appserver.dispatch.overflow" for event in observed_events)
     await client.close()
 
 
@@ -1225,6 +1437,50 @@ async def test_default_unix_connector_performs_a_real_websocket_upgrade(tmp_path
         assert connection is not None
         assert supervisor.connection_mode == "external"
         await connection.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
+async def test_unix_connector_accepts_thread_resume_frames_larger_than_16_mib(tmp_path) -> None:
+    socket_path = Path("/tmp") / f"imcodex-large-{os.getpid()}-{tmp_path.name[-8:]}.sock"
+    large_preview = "x" * (17 * 1024 * 1024)
+
+    async def handler(websocket) -> None:
+        async for raw in websocket:
+            request = json.loads(raw)
+            method = request.get("method")
+            if method == "initialize":
+                await websocket.send(json.dumps({"id": request["id"], "result": {"ok": True}}))
+            elif method == "thread/resume":
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "id": request["id"],
+                            "result": {
+                                "thread": {
+                                    "id": "thr_large",
+                                    "status": "idle",
+                                    "preview": large_preview,
+                                    "turns": [],
+                                }
+                            },
+                        }
+                    )
+                )
+
+    async with websockets.unix_serve(handler, str(socket_path)):
+        client = AppServerClient(
+            supervisor=AppServerSupervisor(
+                app_server_url=f"unix://{socket_path.as_posix()}",
+            ),
+            client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+            request_timeout_s=3.0,
+        )
+
+        result = await client.resume_thread(thread_id="thr_large")
+
+        assert len(result["thread"]["preview"]) == len(large_preview)
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -2322,7 +2578,7 @@ async def test_dispatcher_that_initiates_reset_exits_with_its_connection_epoch()
     )
     client.add_server_request_handler(reset_from_dispatcher)
     await client.initialize()
-    old_dispatcher = client._dispatcher_task
+    old_dispatcher = client._server_request_dispatcher_task
     assert old_dispatcher is not None
 
     websocket.messages.put_nowait(
@@ -2338,7 +2594,7 @@ async def test_dispatcher_that_initiates_reset_exits_with_its_connection_epoch()
     await asyncio.wait_for(old_dispatcher, timeout=1)
 
     assert old_dispatcher.done()
-    assert client._dispatcher_task is None
+    assert client._server_request_dispatcher_task is None
     await client.close()
 
 
@@ -2379,7 +2635,7 @@ async def test_failed_server_reply_resets_and_reconnects_without_replaying_the_r
     )
     client.add_server_request_handler(reply_from_dispatcher)
     await client.initialize()
-    old_dispatcher = client._dispatcher_task
+    old_dispatcher = client._server_request_dispatcher_task
     assert old_dispatcher is not None
 
     first.messages.put_nowait(

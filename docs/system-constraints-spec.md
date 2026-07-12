@@ -290,9 +290,13 @@ The rewrite MUST assume that:
 The bridge and App Server adapter MUST therefore follow these rules:
 
 - the socket read path MUST be kept fast and MUST NOT block on slow downstream projection or logging work
+- JSON-RPC responses MUST stay on the socket read fast path, while native server requests such as approvals MUST use a bounded dispatch path isolated from ordinary notifications
+- dispatch queues MUST be bounded; overflow MUST reset and reconcile the connection explicitly instead of blocking the socket reader, dropping protocol messages silently, or growing memory without limit
 - protocol/event logging MUST NOT synchronously slow the transport read path under normal operation
 - high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
 - default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
+- the websocket client MUST accept legitimate full native thread responses; a bridge-owned frame limit MUST NOT create a permanent reconnect loop for a large `thread/resume` result
+- recovery MAY request a bounded recent-turn page only when the experimental native API is enabled, and MUST retry with the stable request shape when that capability is rejected
 - reconnect and rehydrate logic MUST reconcile native thread state before trusting any previously cached local `active_turn`
 - an established external App Server target MUST reconnect in the background after an unexpected disconnect; a new inbound IM message MUST NOT be the recovery trigger
 - an external connection failure MUST NOT silently spawn or select another App Server; `stdio://` is an explicit bridge-child compatibility target only
@@ -300,6 +304,7 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - connect and initialize work MUST be serialized so that each connection epoch has at most one handshake
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
+- health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
 

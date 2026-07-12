@@ -164,7 +164,11 @@ Server. Configure the target directly:
 - `stdio://`: explicit bridge-child compatibility target
 
 External targets preserve native App Server state across bridge restarts and
-use background reconnect. `stdio://` lives and dies with the bridge and never
+use background reconnect. A restored connection is reported as `degraded`
+when native thread rehydration cannot verify every binding. Native server
+requests such as approvals are isolated from ordinary notification work, and
+bounded dispatch overflow resets the connection so recovery can reconcile
+native state explicitly. `stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
 rejected because it silently changed which App Server owned a request. Native

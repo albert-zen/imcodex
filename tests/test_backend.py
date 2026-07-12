@@ -500,7 +500,7 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
     client = RehydrateClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    await backend.rehydrate_bound_threads()
+    summary = await backend.rehydrate_bound_threads()
 
     assert client.resume_calls == [
         {"thread_id": "thr_1", "service_name": "imcodex-test"},
@@ -508,6 +508,7 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
     ]
     assert store.get_thread_snapshot("thr_1").preview == "Recovered thread"
     assert store.get_thread_snapshot("thr_2").preview == "Recovered thread"
+    assert summary == {"total": 2, "succeeded": 2, "failed": 0, "unverified": 0}
 
 
 @pytest.mark.asyncio
@@ -518,9 +519,10 @@ async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_
     client = RehydrateClient(status="idle")
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    await backend.rehydrate_bound_threads()
+    summary = await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") is None
+    assert summary == {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0}
 
 
 @pytest.mark.asyncio
@@ -538,10 +540,11 @@ async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_bindi
         service_name="imcodex-test",
     )
 
-    await backend.rehydrate_bound_threads()
+    summary = await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") is None
     assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+    assert summary == {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0}
 
 
 @pytest.mark.asyncio
@@ -572,10 +575,18 @@ async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(thread
         service_name="imcodex-test",
     )
 
-    await backend.rehydrate_bound_threads()
+    summary = await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") is None
     assert store.get_binding("qq", "conv-1").thread_id == "thr_1"
+    if (
+        isinstance(thread_payload, dict)
+        and thread_payload.get("id") == "thr_1"
+        and thread_payload.get("status") is not None
+    ):
+        assert summary == {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0}
+    else:
+        assert summary == {"total": 1, "succeeded": 0, "failed": 0, "unverified": 1}
 
 
 @pytest.mark.asyncio

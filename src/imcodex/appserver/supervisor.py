@@ -27,9 +27,13 @@ ConnectWebSocket = Callable[..., Awaitable[Any] | Any]
 ConnectUnixWebSocket = Callable[..., Awaitable[Any] | Any]
 Sleep = Callable[[float], Awaitable[None] | None]
 STDIO_STREAM_LIMIT = 1024 * 1024
-WS_MAX_SIZE = 16 * 1024 * 1024
+# Native thread/resume may legitimately return the complete thread in one
+# WebSocket frame. A bridge-side cap can trap large threads in a reconnect loop
+# before the response can be normalized, so trust the explicitly configured
+# App Server endpoint and let JSON decoding provide the natural memory bound.
+WS_MAX_SIZE: int | None = None
 DEFAULT_HEALTH_PATHS = ("/readyz", "/healthz")
-DEFAULT_UNIX_WEBSOCKET_URI = "ws://localhost/rpc"
+DEFAULT_UNIX_WEBSOCKET_URI = "ws://localhost/"
 UNIX_ENDPOINT_PREFIX = "unix://"
 
 

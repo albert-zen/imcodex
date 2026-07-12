@@ -17,9 +17,11 @@ JsonDict = dict[str, Any]
 NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
 ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
-ConnectionReadyHandler = Callable[[int], Awaitable[None] | None]
+ConnectionReadyHandler = Callable[[int], Awaitable[JsonDict | None] | JsonDict | None]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
+DEFAULT_NOTIFICATION_QUEUE_SIZE = 1024
+DEFAULT_SERVER_REQUEST_QUEUE_SIZE = 64
 DEFAULT_OPT_OUT_NOTIFICATION_METHODS = (
     "account/rateLimits/updated",
     "command/exec/outputDelta",
@@ -143,6 +145,8 @@ class AppServerClient:
         request_timeout_s: float = 15.0,
         request_retry_policy: RetryBackoff | None = None,
         reconnect_retry_policy: RetryBackoff | None = None,
+        notification_queue_size: int = DEFAULT_NOTIFICATION_QUEUE_SIZE,
+        server_request_queue_size: int = DEFAULT_SERVER_REQUEST_QUEUE_SIZE,
         sleep: Callable[[float], Awaitable[None] | None] | None = None,
         random_float: Callable[[], float] | None = None,
     ) -> None:
@@ -152,12 +156,18 @@ class AppServerClient:
         self._request_timeout_s = request_timeout_s
         self._request_retry_policy = request_retry_policy or RetryBackoff()
         self._reconnect_retry_policy = reconnect_retry_policy or RetryBackoff()
+        if notification_queue_size < 1 or server_request_queue_size < 1:
+            raise ValueError("app-server dispatch queue sizes must be positive")
+        self._notification_queue_size = int(notification_queue_size)
+        self._server_request_queue_size = int(server_request_queue_size)
         self._sleep = sleep or asyncio.sleep
         self._random_float = random_float
         self._transport: AppServerTransport | None = None
         self._listener_task: asyncio.Task[None] | None = None
         self._dispatcher_task: asyncio.Task[None] | None = None
         self._dispatch_queue: asyncio.Queue[JsonDict] | None = None
+        self._server_request_dispatcher_task: asyncio.Task[None] | None = None
+        self._server_request_queue: asyncio.Queue[JsonDict] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._resetting = False
         self._reset_owner_task: asyncio.Task | None = None
@@ -171,6 +181,7 @@ class AppServerClient:
         self._initialize_owner_epoch: int | None = None
         self._initialize_owner_transport: AppServerTransport | None = None
         self._initialize_result: JsonDict | None = None
+        self._ready_health: JsonDict = {}
         self._has_been_ready = False
         self._next_request_id = 1
         self._pending_futures: dict[int, tuple[int, asyncio.Future[JsonDict]]] = {}
@@ -219,7 +230,7 @@ class AppServerClient:
         ready = transport_open and self.initialized
         reconnect_task = self._reconnect_task
         if ready:
-            status = "connected"
+            status = str(self._ready_health.get("status") or "connected")
         elif reconnect_task is not None and not reconnect_task.done():
             status = "reconnecting"
         elif transport_open:
@@ -227,7 +238,7 @@ class AppServerClient:
         else:
             status = "disconnected"
         target = self._supervisor.target
-        return {
+        facts: JsonDict = {
             "connected": transport_open,
             "ready": ready,
             "status": status,
@@ -238,6 +249,9 @@ class AppServerClient:
             "connection_epoch": self.connection_epoch,
             "reconnect_enabled": self._supervisor.supports_background_reconnect,
         }
+        if ready and isinstance(self._ready_health.get("rehydration"), dict):
+            facts["rehydration"] = dict(self._ready_health["rehydration"])
+        return facts
 
     def _mark_appserver_health(self, **changes: Any) -> None:
         payload = self.connection_facts()
@@ -296,12 +310,15 @@ class AppServerClient:
             self._initialize_owner_task = current_task
             self._initialize_owner_epoch = initialize_epoch
             self._initialize_owner_transport = initialize_transport
+            ready_health: JsonDict = {}
             try:
                 for handler in list(self._connection_ready_handlers):
                     self._require_initializing_connection(initialize_epoch, initialize_transport)
                     ready = handler(initialize_epoch)
                     if inspect.isawaitable(ready):
-                        await ready
+                        ready = await ready
+                    if isinstance(ready, dict):
+                        ready_health.update(ready)
                 self._require_initializing_connection(initialize_epoch, initialize_transport)
             except asyncio.CancelledError:
                 self.initialized = False
@@ -318,16 +335,21 @@ class AppServerClient:
                     self._initialize_owner_transport = None
             self.initialized = True
             self._has_been_ready = True
+            ready_status = str(ready_health.pop("status", "connected"))
+            self._ready_health = {"status": ready_status}
+            rehydration = ready_health.get("rehydration")
+            if isinstance(rehydration, dict):
+                self._ready_health["rehydration"] = dict(rehydration)
             self._mark_appserver_health(
                 connected=True,
                 mode=self.connection_mode,
-                status="connected",
                 retry_attempt=None,
                 retry_delay_s=None,
                 error_type=None,
                 health_ok=None,
                 health_status_code=None,
                 health_error_type=None,
+                **self._ready_health,
             )
             return result
 
@@ -343,6 +365,35 @@ class AppServerClient:
         payload = dict(params or {})
         payload.update(kwargs)
         return await self._request("thread/resume", self._normalize_thread_params(payload))
+
+    async def resume_thread_for_recovery(
+        self,
+        params: JsonDict | None = None,
+        **kwargs: Any,
+    ) -> JsonDict:
+        payload = dict(params or {})
+        payload.update(kwargs)
+        normalized = self._normalize_thread_params(payload)
+        if not self._experimental_api_enabled:
+            return await self._request("thread/resume", normalized)
+        lightweight = {
+            **normalized,
+            "excludeTurns": True,
+            "initialTurnsPage": {"limit": _MAX_RECENT_THREAD_TURNS},
+        }
+        try:
+            return await self._request("thread/resume", lightweight)
+        except AppServerError as exc:
+            if not self._is_unsupported_lightweight_resume(exc):
+                raise
+            emit_event(
+                component="appserver.client",
+                event="appserver.thread_resume.lightweight_unsupported",
+                level="WARNING",
+                message="App-server does not support lightweight thread resume; retrying compatibly",
+                data={"error_code": exc.code},
+            )
+            return await self._request("thread/resume", normalized)
 
     async def list_threads(self, params: JsonDict | None = None, **kwargs: Any) -> JsonDict:
         payload = dict(params or {})
@@ -653,14 +704,24 @@ class AppServerClient:
                 raise AppServerError("app-server client is closed")
         self.connection_epoch += 1
         epoch = self.connection_epoch
-        queue: asyncio.Queue[JsonDict] = asyncio.Queue()
+        queue: asyncio.Queue[JsonDict] = asyncio.Queue(maxsize=self._notification_queue_size)
+        server_request_queue: asyncio.Queue[JsonDict] = asyncio.Queue(
+            maxsize=self._server_request_queue_size
+        )
         self._transport = transport
         self._dispatch_queue = queue
+        self._server_request_queue = server_request_queue
         self._dispatcher_task = asyncio.create_task(self._dispatch_loop(queue, epoch))
-        self._listener_task = asyncio.create_task(self._receive_loop(transport, queue, epoch))
+        self._server_request_dispatcher_task = asyncio.create_task(
+            self._server_request_dispatch_loop(server_request_queue, epoch)
+        )
+        self._listener_task = asyncio.create_task(
+            self._receive_loop(transport, queue, server_request_queue, epoch)
+        )
         self._protocol_initialized = False
         self.initialized = False
         self._initialize_result = None
+        self._ready_health = {}
         self._mark_appserver_health(
             connected=True,
             mode=self.connection_mode,
@@ -831,6 +892,7 @@ class AppServerClient:
         self,
         transport: AppServerTransport,
         queue: asyncio.Queue[JsonDict],
+        server_request_queue: asyncio.Queue[JsonDict],
         epoch: int,
     ) -> None:
         error: Exception | None = None
@@ -841,7 +903,14 @@ class AppServerClient:
                 self._trace_protocol_message(stage="received", payload=message)
                 if self._dispatch_response(message, epoch):
                     continue
-                queue.put_nowait(message)
+                if self._is_server_request(message):
+                    self._enqueue_dispatch_message(
+                        server_request_queue,
+                        message,
+                        queue_kind="server_request",
+                    )
+                else:
+                    self._enqueue_dispatch_message(queue, message, queue_kind="notification")
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -870,17 +939,61 @@ class AppServerClient:
         ):
             message = await queue.get()
             try:
-                await self._dispatch(message, epoch)
-            except Exception as exc:
-                emit_event(
-                    component="appserver.client",
-                    event="appserver.dispatch.failed",
-                    level="ERROR",
-                    message=str(exc),
-                    data={"error_type": type(exc).__name__},
-                )
+                await self._dispatch_one(message, epoch, queue_kind="notification")
             finally:
                 queue.task_done()
+
+    async def _server_request_dispatch_loop(
+        self,
+        queue: asyncio.Queue[JsonDict],
+        epoch: int,
+    ) -> None:
+        current_task = asyncio.current_task()
+        while (
+            self._server_request_queue is queue
+            and self.connection_epoch == epoch
+            and self._server_request_dispatcher_task is current_task
+        ):
+            message = await queue.get()
+            try:
+                await self._dispatch_one(message, epoch, queue_kind="server_request")
+            finally:
+                queue.task_done()
+
+    async def _dispatch_one(self, message: JsonDict, epoch: int, *, queue_kind: str) -> None:
+        try:
+            await self._dispatch(message, epoch)
+        except Exception as exc:
+            emit_event(
+                component="appserver.client",
+                event="appserver.dispatch.failed",
+                level="ERROR",
+                message=str(exc),
+                data={"error_type": type(exc).__name__, "queue": queue_kind},
+            )
+
+    @staticmethod
+    def _is_server_request(message: JsonDict) -> bool:
+        return "id" in message and "method" in message
+
+    def _enqueue_dispatch_message(
+        self,
+        queue: asyncio.Queue[JsonDict],
+        message: JsonDict,
+        *,
+        queue_kind: str,
+    ) -> None:
+        try:
+            queue.put_nowait(message)
+        except asyncio.QueueFull as exc:
+            emit_event(
+                component="appserver.client",
+                event="appserver.dispatch.overflow",
+                level="ERROR",
+                message=f"App-server {queue_kind} dispatch queue overflowed",
+                data={"queue": queue_kind, "maxsize": queue.maxsize},
+            )
+            raise AppServerError(f"app-server {queue_kind} dispatch queue overflowed") from exc
 
     def _dispatch_response(self, message: JsonDict, epoch: int) -> bool:
         if "id" not in message or ("result" not in message and "error" not in message):
@@ -996,6 +1109,17 @@ class AppServerClient:
                 dispatcher_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await dispatcher_task
+        server_request_dispatcher_task = self._server_request_dispatcher_task
+        self._server_request_dispatcher_task = None
+        self._server_request_queue = None
+        if (
+            server_request_dispatcher_task is not None
+            and server_request_dispatcher_task is not initiating_task
+        ):
+            if not server_request_dispatcher_task.done():
+                server_request_dispatcher_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await server_request_dispatcher_task
         stderr_task = self._stderr_task
         self._stderr_task = None
         if stderr_task is not None and stderr_task is not initiating_task:
@@ -1012,6 +1136,7 @@ class AppServerClient:
         self._protocol_initialized = False
         self.initialized = False
         self._initialize_result = None
+        self._ready_health = {}
         self.connection_mode = "disconnected"
         await self._supervisor.stop()
         if notify_handlers and reset_epoch > 0:
@@ -1129,7 +1254,6 @@ class AppServerClient:
                 self._mark_appserver_health(
                     connected=True,
                     mode=self.connection_mode,
-                    status="connected",
                     retry_attempt=None,
                     retry_delay_s=None,
                     error_type=None,
@@ -1165,8 +1289,30 @@ class AppServerClient:
 
     def _normalize_result(self, method: str, result: JsonDict) -> JsonDict:
         if method in _TRIMMED_THREAD_METHODS:
+            self._merge_initial_turns_page(result)
             self._trim_thread_history(result)
         return result
+
+    @staticmethod
+    def _is_unsupported_lightweight_resume(exc: AppServerError) -> bool:
+        message = str(exc).lower()
+        return exc.code == -32602 or any(
+            marker in message
+            for marker in ("unknown field", "invalid params", "requires experimentalapi")
+        )
+
+    @staticmethod
+    def _merge_initial_turns_page(result: JsonDict) -> None:
+        thread = result.get("thread")
+        page = result.get("initialTurnsPage")
+        if not isinstance(thread, dict) or not isinstance(page, dict):
+            return
+        turns = page.get("data")
+        if not isinstance(turns, list):
+            return
+        # Native pages default to descending order; the canonical thread payload
+        # is chronological and existing reconciliation scans it from the end.
+        thread["turns"] = list(reversed(turns))
 
     async def _drain_process_stderr(self, process: Any) -> None:
         stderr = getattr(process, "stderr", None)

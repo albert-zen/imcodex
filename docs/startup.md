@@ -111,15 +111,26 @@ background loop, and `auto` is rejected. Shutdown cancels any pending retry.
 
 A transport connection is not considered fully restored on its own. Each new
 connection epoch reruns native `initialize`, permission defaults, and bound
-thread rehydration before health reports `appserver.status=connected`. During
-recovery, `health.json` reports `appserver.status=reconnecting` together with
-the current retry attempt and delay. The App Server health object also reports
-`ready`, `ownership`, `transport`, a credential-safe `endpoint`,
-`connection_epoch`, and whether background reconnect is enabled. The IM
-`/status` command presents the same connection facts and remains useful when a
-native thread read is temporarily unavailable. Recovery does not wait for
-another IM message. Reconnect delays must be positive, the maximum must be at
-least the initial delay, and jitter must be between `0` and `1`.
+thread rehydration before health reports `appserver.status=connected`. If one or
+more native bindings fail or cannot be verified, the connection remains usable
+but health reports `appserver.status=degraded` with `rehydration` totals instead
+of claiming complete recovery. During recovery, `health.json` reports
+`appserver.status=reconnecting` together with the current retry attempt and
+delay. The App Server health object also reports `ready`, `ownership`,
+`transport`, a credential-safe `endpoint`, `connection_epoch`, and whether
+background reconnect is enabled. The IM `/status` command presents the same
+connection facts and remains useful when a native thread read is temporarily
+unavailable. Recovery does not wait for another IM message. Reconnect delays
+must be positive, the maximum must be at least the initial delay, and jitter
+must be between `0` and `1`.
+
+JSON-RPC responses are handled on the socket read fast path. Native server
+requests such as approvals use a separate bounded dispatcher so a slow ordinary
+notification cannot starve them. If either dispatch queue fills, the bridge
+records `appserver.dispatch.overflow`, resets that connection epoch, and lets
+normal reconnect reconciliation recover from native state. WebSocket frame
+size is not capped by the bridge because native `thread/resume` may return a
+legitimate full thread in one response.
 
 ### Native Windows: independent TCP App Server + bridge
 
