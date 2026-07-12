@@ -27,6 +27,10 @@ the authority for:
 - approval and request identity
 - model / permission / reasoning semantics
 
+The built-in transport set currently includes QQ, Telegram, Feishu/Lark, and
+experimental Tencent iLink Weixin. These are peer adapters over the same
+bridge contract; no channel owns a separate Codex agent or thread runtime.
+
 ## Native-First Rule
 
 Native Codex source code and protocol behavior are the first source to inspect
@@ -51,9 +55,15 @@ as:
 - reply context needed by a transport adapter
 - IM-only visibility preferences
 - minimal request routing needed to complete native flows
+- platform transport cursors and reply tokens required to resume an IM
+  protocol, such as Telegram update offsets and Weixin context tokens
 
 If a change introduces a new local source of truth for something native Codex
 already owns, that is a design smell and should be challenged.
+
+Transport credentials and cursors are not native Codex state. A channel may
+persist them only when its platform protocol requires them, using private files
+that never enter launch snapshots or normal user-visible diagnostics.
 
 ## Runtime Mode Direction
 

@@ -36,6 +36,11 @@ It MUST:
 - normalize them into the bridge's inbound format
 - send bridge outbound messages to the platform
 - maintain platform-specific reply metadata when needed
+- keep stable sender identity separate from conversation identity
+- apply channel admission before an inbound message reaches bridge commands or
+  Codex execution
+- hand normalized input off promptly so network callbacks and socket readers
+  never wait for Codex turn work
 
 It MUST NOT:
 
@@ -114,9 +119,15 @@ Allowed examples:
 - temporary `/threads` browser state
 - IM reply metadata
 - visibility preferences
+- protocol-required channel transport state, such as a polling cursor, a
+  platform reply/context token, or a bot credential
 
 This state exists only to support IM interaction.
 It does not replace native Codex truth.
+
+Channel transport state MUST be bounded to the protocol need, written
+atomically when persisted, protected as sensitive when it contains credentials
+or reply tokens, and omitted from launch snapshots and normal diagnostics.
 
 ## Forbidden Bridge State
 
@@ -250,6 +261,11 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
 - default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
 - reconnect and rehydrate logic MUST reconcile native thread state before trusting any previously cached local `active_turn`
+
+Managed IM adapters MUST also reconnect without blocking the App Server socket
+reader. Their stop path MUST cancel long polls/background connections promptly,
+and one adapter's stop failure MUST NOT prevent the remaining adapters and
+native client from being closed.
 
 Candidate high-volume notification classes that SHOULD be reviewed for native opt-out in the default product profile include:
 

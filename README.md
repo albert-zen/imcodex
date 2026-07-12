@@ -7,7 +7,7 @@ IM to Codex `app-server` thin bridge.
 The codebase now follows a simple three-layer shape plus a thin wiring root:
 
 - `imcodex.channels`
-  Adapts concrete IM and transport surfaces such as QQ and the generic webhook API.
+  Adapts QQ, Telegram, Feishu/Lark, experimental Tencent iLink Weixin, and the authenticated generic webhook.
 - `imcodex.bridge`
   Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
 - `imcodex.appserver`
@@ -37,6 +37,7 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 ## Docs
 
 - [Startup and shutdown](docs/startup.md)
+- [Channel setup and security](docs/channels.md)
 - [Product behavior](docs/product-behavior-spec.md)
 - [System constraints](docs/system-constraints-spec.md)
 
@@ -115,26 +116,45 @@ bridge must stay clear about which mode it is using, and changes should not
 silently remove support for the other documented paths without an explicit
 follow-up decision.
 
-## QQ Bot
+## Channels
 
-Set these environment variables to enable the built-in QQ adapter:
+Built-in channel support now includes:
 
-- `IMCODEX_QQ_ENABLED=1`
-- `IMCODEX_QQ_APP_ID=<your AppID>`
-- `IMCODEX_QQ_CLIENT_SECRET=<your AppSecret>`
-- `IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com`
-- `IMCODEX_QQ_MARKDOWN_ENABLED=0` to force outbound QQ messages to plain text
+| Channel | Ingress | Scope | Status |
+| --- | --- | --- | --- |
+| QQ | Gateway websocket | Private and group `@bot` text | Stable |
+| Telegram | Bot API long polling | Private, group, and forum-topic text | Stable |
+| Feishu / Lark | Official Channel SDK websocket | Private, group, and topic text | Stable |
+| Weixin | Tencent iLink long polling | Direct text only | Experimental |
+| Generic webhook | HTTP | Trusted adapter injection | Loopback-only by default |
 
-The adapter currently supports:
+All remote IM adapters use stable platform user IDs for admission. An empty
+allowlist denies every inbound user; `*` is an explicit opt-out, not a default.
+Group adapters require an explicit mention by default.
 
-- `C2C_MESSAGE_CREATE` for private chat
-- `GROUP_AT_MESSAGE_CREATE` for group `@bot` chat
+Inspect and validate channel configuration without revealing credentials:
 
-QQ inbound messages are mapped to internal conversation ids like `c2c:<openid>` and `group:<group_openid>`, so Codex thread routing and async completion messages can flow back through the QQ API.
+```powershell
+python -m imcodex channels list
+python -m imcodex channels doctor
+```
+
+Feishu/Lark uses an optional official SDK:
+
+```powershell
+pip install -e ".[feishu]"
+```
+
+See [Channel setup and security](docs/channels.md) for platform creation,
+permissions, allowlist discovery, QR login, Windows notes, and troubleshooting.
 
 ## Inbound Webhook
 
 `POST /api/channels/webhook/inbound`
+
+The endpoint accepts unauthenticated requests only from loopback. To call it
+through a remote gateway, set `IMCODEX_INBOUND_WEBHOOK_TOKEN` and send
+`Authorization: Bearer <token>` over HTTPS.
 
 Example body:
 
@@ -153,7 +173,7 @@ Example body:
 1. Install Python 3.13+ and `codex`
 2. Copy `.env.example` to `.env`
 3. Fill in the required settings
-4. Run `pip install -e .`
+4. Run `pip install -e .` (or `pip install -e ".[feishu]"` for Feishu/Lark)
 5. Run `pwsh -File .\scripts\doctor.ps1`
 6. Start with `pwsh -File .\scripts\start.ps1`
 
@@ -186,10 +206,20 @@ Codex version requirement:
 - `IMCODEX_HTTP_HOST`: HTTP bind host, default `0.0.0.0`
 - `IMCODEX_HTTP_PORT`: HTTP bind port, default `8000`
 - `IMCODEX_OUTBOUND_URL`: optional outbound webhook target
+- `IMCODEX_INBOUND_WEBHOOK_TOKEN`: bearer token required for non-loopback inbound webhook callers; never written to launch snapshots
 - `IMCODEX_SERVICE_NAME`: client name sent to app-server, default `imcodex`
 - `IMCODEX_QQ_ENABLED`: enable QQ bot adapter, default `false`
 - `IMCODEX_QQ_APP_ID`: QQ bot AppID
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret
 - `IMCODEX_QQ_API_BASE`: QQ API base, default `https://api.sgroup.qq.com`
 - `IMCODEX_QQ_MARKDOWN_ENABLED`: send QQ outbound messages as Markdown rich text with plain-text fallback, default `true`
+- `IMCODEX_QQ_ALLOWED_USER_IDS`: comma-separated QQ sender openids; empty denies all
+- `IMCODEX_TELEGRAM_ENABLED`: enable Telegram Bot API long polling, default `false`
+- `IMCODEX_TELEGRAM_BOT_TOKEN_FILE`: preferred local file containing the Telegram bot token
+- `IMCODEX_TELEGRAM_ALLOWED_USER_IDS`: comma-separated numeric Telegram user IDs; empty denies all
+- `IMCODEX_FEISHU_ENABLED`: enable Feishu/Lark websocket ingress, default `false`
+- `IMCODEX_FEISHU_DOMAIN`: `feishu` or `lark`
+- `IMCODEX_FEISHU_ALLOWED_USER_IDS`: comma-separated sender open_ids; empty denies all
+- `IMCODEX_WEIXIN_ENABLED`: enable experimental Tencent iLink direct messaging, default `false`
+- `IMCODEX_WEIXIN_STATE_DIR`: private credential/cursor/context-token directory; defaults under `IMCODEX_DATA_DIR`
 - `IMCODEX_PYTHON`: Python executable used by helper scripts, default `python`

@@ -32,6 +32,28 @@ For behavior purposes, the user should be able to think in terms of:
 
 The bridge is responsible for making that feel continuous inside one IM conversation.
 
+## Channel Admission and Identity
+
+Every remote IM adapter must use the platform's stable sender identifier for
+admission. Display names are presentation only and must not authorize local
+Codex access.
+
+Product behavior:
+
+- an empty channel user allowlist denies every inbound user
+- `*` is an explicit operator choice to admit every stable sender ID
+- optional conversation allowlists can narrow an admitted user to selected
+  private chats, groups, or topics
+- group-capable adapters require an explicit bot mention by default
+- topic/thread identifiers are part of the IM conversation identity so two
+  platform topics do not silently share one native Codex thread
+- rejected messages never reach bridge commands or the Codex execution path
+
+The Weixin iLink adapter is an experimental direct-text transport. QR login
+sets the scanning user's stable iLink ID as the default owner. Enterprise
+WeCom and personal Weixin are different products and must not be represented as
+one ambiguous channel.
+
 ## Native Authority
 
 The product must use native Codex behavior as the source of truth for core agent operations.

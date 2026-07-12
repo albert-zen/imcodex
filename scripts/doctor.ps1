@@ -126,3 +126,16 @@ if ($qqEnabled) {
     Write-Check "QQ client secret" (-not [string]::IsNullOrWhiteSpace($qqSecret)) $qqSecretDetail
     Write-Check "QQ API base" $true $qqApiBase
 }
+
+Write-Host ""
+try {
+    & $python -m imcodex channels doctor
+    $channelsOk = $LASTEXITCODE -eq 0
+    Write-Check "Channel configuration" $channelsOk ($(if ($channelsOk) { "ready" } else { "see channel doctor output above" }))
+    if (-not $channelsOk) {
+        exit 1
+    }
+} catch {
+    Write-Check "Channel configuration" $false $_.Exception.Message
+    exit 1
+}
