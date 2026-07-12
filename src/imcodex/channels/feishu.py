@@ -50,7 +50,10 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         channel_factory: Callable[..., object] | None = None,
         sleep=asyncio.sleep,
     ) -> None:
-        super().__init__(middleware=middleware, access_policy=access_policy)
+        super().__init__(
+            middleware=middleware,
+            access_policy=access_policy or ChannelAccessPolicy(allowed_user_ids=frozenset()),
+        )
         self.enabled = enabled
         self.app_id = app_id.strip()
         self.app_secret = app_secret.strip()
@@ -101,6 +104,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         mark_channel_health("feishu", enabled=True, connected=False, status="connecting")
 
     async def stop(self) -> None:
+        errors: list[Exception] = []
         self._stop_event.set()
         if self._runner_task is not None:
             self._runner_task.cancel()
@@ -108,6 +112,8 @@ class FeishuChannelAdapter(BaseChannelAdapter):
                 await self._runner_task
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                errors.append(exc)
             self._runner_task = None
         for task in list(self._inbound_tasks):
             task.cancel()
@@ -115,6 +121,8 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             await asyncio.gather(*self._inbound_tasks, return_exceptions=True)
         self._inbound_tasks.clear()
         mark_channel_health("feishu", connected=False, status="stopped")
+        if errors:
+            raise ExceptionGroup("Feishu shutdown failed", errors)
 
     def parse_inbound_message(self, message: object) -> InboundMessage | None:
         if str(getattr(message, "raw_content_type", "")) != "text":

@@ -59,7 +59,10 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         http_client: httpx.AsyncClient | None = None,
         sleep=asyncio.sleep,
     ) -> None:
-        super().__init__(middleware=middleware, access_policy=access_policy)
+        super().__init__(
+            middleware=middleware,
+            access_policy=access_policy or ChannelAccessPolicy(allowed_user_ids=frozenset()),
+        )
         self.enabled = enabled
         self.bot_token = bot_token.strip()
         self.bot_token_file = bot_token_file
@@ -112,6 +115,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         mark_channel_health("telegram", enabled=True, connected=False, status="connecting")
 
     async def stop(self) -> None:
+        errors: list[Exception] = []
         self._stop_event.set()
         if self._runner_task is not None:
             self._runner_task.cancel()
@@ -119,10 +123,17 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 await self._runner_task
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:
+                errors.append(exc)
             self._runner_task = None
         if self._owns_http_client:
-            await self.http_client.aclose()
+            try:
+                await self.http_client.aclose()
+            except Exception as exc:
+                errors.append(exc)
         mark_channel_health("telegram", connected=False, status="stopped")
+        if errors:
+            raise ExceptionGroup("Telegram shutdown failed", errors)
 
     def parse_inbound_update(self, update: dict[str, Any]) -> tuple[InboundMessage, str] | None:
         message = update.get("message")

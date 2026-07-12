@@ -129,6 +129,23 @@ def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_
     assert config["startup_timeout_s"] == 12.5
 
 
+def test_settings_reads_weixin_channel_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_WEIXIN_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_WEIXIN_STATE_DIR", ".weixin-state")
+    monkeypatch.setenv("IMCODEX_WEIXIN_ALLOWED_USER_IDS", "owner@im.wechat")
+    monkeypatch.setenv("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", "25000")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    config = settings.channel_configs()["weixin"]
+    assert config["enabled"] is True
+    assert config["state_dir"] == Path(".weixin-state")
+    assert config["allowed_user_ids"] == "owner@im.wechat"
+    assert config["poll_timeout_ms"] == 25000
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")

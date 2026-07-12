@@ -96,6 +96,11 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_FEISHU_DOMAIN": settings.feishu_domain,
             "IMCODEX_FEISHU_REQUIRE_MENTION": "1" if settings.feishu_require_mention else "0",
             "IMCODEX_FEISHU_STARTUP_TIMEOUT": str(settings.feishu_startup_timeout_s),
+            "IMCODEX_WEIXIN_ENABLED": "1" if settings.weixin_enabled else "0",
+            "IMCODEX_WEIXIN_STATE_DIR": str(
+                settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"
+            ),
+            "IMCODEX_WEIXIN_POLL_TIMEOUT_MS": str(settings.weixin_poll_timeout_ms),
         },
     )
     return AppRuntime(

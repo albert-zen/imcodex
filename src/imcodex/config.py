@@ -85,6 +85,11 @@ class Settings:
     feishu_allowed_conversation_ids: str = ""
     feishu_require_mention: bool = True
     feishu_startup_timeout_s: float = 30.0
+    weixin_enabled: bool = False
+    weixin_state_dir: Path | None = None
+    weixin_allowed_user_ids: str = ""
+    weixin_allowed_conversation_ids: str = ""
+    weixin_poll_timeout_ms: int = 35_000
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -117,6 +122,13 @@ class Settings:
                 "allowed_conversation_ids": self.feishu_allowed_conversation_ids,
                 "require_mention": self.feishu_require_mention,
                 "startup_timeout_s": self.feishu_startup_timeout_s,
+            },
+            "weixin": {
+                "enabled": self.weixin_enabled,
+                "state_dir": self.weixin_state_dir or self.data_dir / "channels" / "weixin",
+                "allowed_user_ids": self.weixin_allowed_user_ids,
+                "allowed_conversation_ids": self.weixin_allowed_conversation_ids,
+                "poll_timeout_ms": self.weixin_poll_timeout_ms,
             },
         }
 
@@ -192,4 +204,15 @@ class Settings:
             feishu_startup_timeout_s=_env_float(
                 "IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv
             ),
+            weixin_enabled=_env_bool("IMCODEX_WEIXIN_ENABLED", False, dotenv),
+            weixin_state_dir=(
+                Path(path)
+                if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip())
+                else None
+            ),
+            weixin_allowed_user_ids=_env("IMCODEX_WEIXIN_ALLOWED_USER_IDS", "", dotenv),
+            weixin_allowed_conversation_ids=_env(
+                "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
+            weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
         )

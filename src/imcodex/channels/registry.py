@@ -4,6 +4,7 @@ from .base import BaseChannelAdapter
 from .feishu import FeishuChannelAdapter
 from .qq import QQChannelAdapter
 from .telegram import TelegramChannelAdapter
+from .weixin import WeixinChannelAdapter
 
 
 def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
@@ -11,6 +12,7 @@ def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
         "qq": QQChannelAdapter,
         "telegram": TelegramChannelAdapter,
         "feishu": FeishuChannelAdapter,
+        "weixin": WeixinChannelAdapter,
     }
 
 

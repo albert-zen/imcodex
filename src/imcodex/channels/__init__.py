@@ -8,6 +8,9 @@ from .qq import DEFAULT_API_BASE, SANDBOX_API_BASE, TOKEN_URL, QQChannelAdapter
 from .registry import build_enabled_channel_adapters, get_channel_adapter_registry
 from .text import split_text
 from .telegram import TelegramAPIError, TelegramChannelAdapter
+from .weixin import WeixinChannelAdapter
+from .weixin_ilink import DEFAULT_ILINK_BASE_URL, ILinkError, WeixinILinkTransport
+from .weixin_state import WeixinCredentials, WeixinStateStore, WeixinTransportState
 
 __all__ = [
     "BaseChannelAdapter",
@@ -25,6 +28,13 @@ __all__ = [
     "TelegramChannelAdapter",
     "UnifiedChannelMiddleware",
     "WebhookOutboundSink",
+    "DEFAULT_ILINK_BASE_URL",
+    "ILinkError",
+    "WeixinChannelAdapter",
+    "WeixinCredentials",
+    "WeixinILinkTransport",
+    "WeixinStateStore",
+    "WeixinTransportState",
     "build_enabled_channel_adapters",
     "create_app",
     "get_channel_adapter_registry",
