@@ -6,6 +6,7 @@ from .outbound import MultiplexOutboundSink, WebhookOutboundSink
 from .qq import DEFAULT_API_BASE, SANDBOX_API_BASE, TOKEN_URL, QQChannelAdapter
 from .registry import build_enabled_channel_adapters, get_channel_adapter_registry
 from .text import split_text
+from .telegram import TelegramAPIError, TelegramChannelAdapter
 
 __all__ = [
     "BaseChannelAdapter",
@@ -16,6 +17,8 @@ __all__ = [
     "QQChannelAdapter",
     "SANDBOX_API_BASE",
     "TOKEN_URL",
+    "TelegramAPIError",
+    "TelegramChannelAdapter",
     "UnifiedChannelMiddleware",
     "WebhookOutboundSink",
     "build_enabled_channel_adapters",

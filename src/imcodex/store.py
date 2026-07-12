@@ -276,6 +276,11 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
     def note_inbound_message(self, channel_id: str, conversation_id: str, message_id: str) -> None:
         binding = self.get_binding(channel_id, conversation_id)
         binding.reply_context["last_inbound_message_id"] = message_id
+        recent = binding.reply_context.get("recent_inbound_message_ids")
+        recent_ids = [str(item) for item in recent] if isinstance(recent, list) else []
+        recent_ids = [item for item in recent_ids if item != message_id]
+        recent_ids.append(message_id)
+        binding.reply_context["recent_inbound_message_ids"] = recent_ids[-32:]
         self._save()
 
     def should_drop_duplicate_inbound_message(
@@ -284,9 +289,17 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
         channel_id: str,
         conversation_id: str,
         user_id: str,
+        message_id: str | None = None,
         text_fingerprint: str,
     ) -> bool:
         key = (channel_id, conversation_id)
+        binding = self._bindings.get(key)
+        if message_id and binding is not None:
+            recent = binding.reply_context.get("recent_inbound_message_ids")
+            if isinstance(recent, list) and message_id in {str(item) for item in recent}:
+                return True
+            if binding.reply_context.get("last_inbound_message_id") == message_id:
+                return True
         now = self.clock()
         bucket = self._recent_inbound_fingerprints.setdefault(key, {})
         expired = [

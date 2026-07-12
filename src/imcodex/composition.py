@@ -87,6 +87,10 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_QQ_APP_ID": settings.qq_app_id,
             "IMCODEX_QQ_API_BASE": settings.qq_api_base,
             "IMCODEX_QQ_MARKDOWN_ENABLED": "1" if settings.qq_markdown_enabled else "0",
+            "IMCODEX_TELEGRAM_ENABLED": "1" if settings.telegram_enabled else "0",
+            "IMCODEX_TELEGRAM_API_BASE": settings.telegram_api_base,
+            "IMCODEX_TELEGRAM_REQUIRE_MENTION": "1" if settings.telegram_require_mention else "0",
+            "IMCODEX_TELEGRAM_POLL_TIMEOUT": str(settings.telegram_poll_timeout_s),
         },
     )
     return AppRuntime(

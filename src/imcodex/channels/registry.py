@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from .base import BaseChannelAdapter
 from .qq import QQChannelAdapter
+from .telegram import TelegramChannelAdapter
 
 
 def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
-    return {"qq": QQChannelAdapter}
+    return {
+        "qq": QQChannelAdapter,
+        "telegram": TelegramChannelAdapter,
+    }
 
 
 def build_enabled_channel_adapters(*, settings, middleware) -> list[object]:

@@ -88,6 +88,26 @@ def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
     assert config["allowed_conversation_ids"] == "c2c:owner"
 
 
+def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "telegram-token.txt")
+    monkeypatch.setenv("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "42")
+    monkeypatch.setenv("IMCODEX_TELEGRAM_REQUIRE_MENTION", "0")
+    monkeypatch.setenv("IMCODEX_TELEGRAM_POLL_TIMEOUT", "20")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    config = settings.channel_configs()["telegram"]
+    assert config["enabled"] is True
+    assert config["bot_token_file"] == Path("telegram-token.txt")
+    assert config["allowed_user_ids"] == "42"
+    assert config["require_mention"] is False
+    assert config["poll_timeout_s"] == 20
+    assert config["state_dir"] == Path(".imcodex/channels/telegram")
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")

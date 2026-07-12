@@ -134,6 +134,7 @@ class UnifiedChannelMiddleware:
                 channel_id=inbound.channel_id,
                 conversation_id=inbound.conversation_id,
                 user_id=inbound.user_id,
+                message_id=inbound.message_id,
                 text_fingerprint=text_fingerprint,
             )
         )

@@ -490,3 +490,33 @@ async def test_channel_middleware_drops_short_window_duplicate_inbound_messages(
         "message.inbound.received",
         "message.inbound.duplicate_dropped",
     ]
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_drops_persisted_duplicate_message_id(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    first_store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    first_service = CountingService(first_store)
+    first_middleware = UnifiedChannelMiddleware(service=first_service)
+
+    class FakeAdapter:
+        channel_id = "telegram"
+
+        async def send_message(self, _message: OutboundMessage) -> None:
+            return None
+
+    inbound = InboundMessage(
+        channel_id="telegram",
+        conversation_id="chat:42",
+        user_id="42",
+        message_id="42:7",
+        text="/status",
+    )
+    await first_middleware.handle_inbound(FakeAdapter(), inbound)
+
+    reloaded_store = ConversationStore(clock=lambda: 10.0, state_path=state_path)
+    reloaded_service = CountingService(reloaded_store)
+    reloaded_middleware = UnifiedChannelMiddleware(service=reloaded_service)
+    await reloaded_middleware.handle_inbound(FakeAdapter(), inbound)
+
+    assert reloaded_service.calls == []

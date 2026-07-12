@@ -69,6 +69,14 @@ class Settings:
     app_server_health_timeout_s: float = 1.0
     qq_allowed_user_ids: str = ""
     qq_allowed_conversation_ids: str = ""
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_bot_token_file: Path | None = None
+    telegram_api_base: str = "https://api.telegram.org"
+    telegram_allowed_user_ids: str = ""
+    telegram_allowed_conversation_ids: str = ""
+    telegram_require_mention: bool = True
+    telegram_poll_timeout_s: int = 30
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -80,7 +88,18 @@ class Settings:
                 "markdown_enabled": self.qq_markdown_enabled,
                 "allowed_user_ids": self.qq_allowed_user_ids,
                 "allowed_conversation_ids": self.qq_allowed_conversation_ids,
-            }
+            },
+            "telegram": {
+                "enabled": self.telegram_enabled,
+                "bot_token": self.telegram_bot_token,
+                "bot_token_file": self.telegram_bot_token_file,
+                "api_base": self.telegram_api_base,
+                "allowed_user_ids": self.telegram_allowed_user_ids,
+                "allowed_conversation_ids": self.telegram_allowed_conversation_ids,
+                "require_mention": self.telegram_require_mention,
+                "poll_timeout_s": self.telegram_poll_timeout_s,
+                "state_dir": self.data_dir / "channels" / "telegram",
+            },
         }
 
     @classmethod
@@ -121,4 +140,18 @@ class Settings:
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
             qq_allowed_user_ids=_env("IMCODEX_QQ_ALLOWED_USER_IDS", "", dotenv),
             qq_allowed_conversation_ids=_env("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            telegram_enabled=_env_bool("IMCODEX_TELEGRAM_ENABLED", False, dotenv),
+            telegram_bot_token=_env("IMCODEX_TELEGRAM_BOT_TOKEN", "", dotenv),
+            telegram_bot_token_file=(
+                Path(path)
+                if (path := _env("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "", dotenv).strip())
+                else None
+            ),
+            telegram_api_base=_env("IMCODEX_TELEGRAM_API_BASE", "https://api.telegram.org", dotenv),
+            telegram_allowed_user_ids=_env("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "", dotenv),
+            telegram_allowed_conversation_ids=_env(
+                "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
+            telegram_require_mention=_env_bool("IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv),
+            telegram_poll_timeout_s=_env_int("IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv),
         )
