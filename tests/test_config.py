@@ -75,6 +75,19 @@ def test_settings_reads_optional_qq_markdown_flag_from_env(monkeypatch, tmp_path
     assert settings.channel_configs()["qq"]["markdown_enabled"] is False
 
 
+def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner,backup")
+    monkeypatch.setenv("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "c2c:owner")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    config = settings.channel_configs()["qq"]
+    assert config["allowed_user_ids"] == "owner,backup"
+    assert config["allowed_conversation_ids"] == "c2c:owner"
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")

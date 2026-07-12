@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from .base import BaseChannelAdapter
 from .qq import QQChannelAdapter
 
 
-def get_channel_adapter_registry() -> dict[str, type[QQChannelAdapter]]:
+def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
     return {"qq": QQChannelAdapter}
 
 
@@ -15,6 +16,6 @@ def build_enabled_channel_adapters(*, settings, middleware) -> list[object]:
             continue
         adapter_cls = registry.get(channel_id)
         if adapter_cls is None:
-            continue
+            raise RuntimeError(f"Unsupported enabled channel: {channel_id}")
         adapters.append(adapter_cls.from_config(config=config, middleware=middleware))
     return adapters

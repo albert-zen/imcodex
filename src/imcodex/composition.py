@@ -85,7 +85,6 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
             "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",
             "IMCODEX_QQ_APP_ID": settings.qq_app_id,
-            "IMCODEX_QQ_CLIENT_SECRET": settings.qq_client_secret,
             "IMCODEX_QQ_API_BASE": settings.qq_api_base,
             "IMCODEX_QQ_MARKDOWN_ENABLED": "1" if settings.qq_markdown_enabled else "0",
         },

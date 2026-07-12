@@ -12,6 +12,7 @@ import httpx
 import websockets
 
 from .base import BaseChannelAdapter
+from .access import ChannelAccessPolicy
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 
@@ -67,8 +68,9 @@ class QQChannelAdapter(BaseChannelAdapter):
         clock=time.time,
         startup_timeout_s: float = 15.0,
         markdown_enabled: bool = True,
+        access_policy: ChannelAccessPolicy | None = None,
     ) -> None:
-        super().__init__(middleware=middleware)
+        super().__init__(middleware=middleware, access_policy=access_policy)
         self.enabled = enabled
         self.app_id = app_id
         self.client_secret = client_secret
@@ -99,6 +101,7 @@ class QQChannelAdapter(BaseChannelAdapter):
             middleware=middleware,
             api_base=str(config.get("api_base") or DEFAULT_API_BASE),
             markdown_enabled=_config_bool(config.get("markdown_enabled")),
+            access_policy=ChannelAccessPolicy.from_config(config),
         )
 
     async def start(self) -> None:

@@ -108,6 +108,24 @@ class _FailingClient(_FakeClient):
         raise RuntimeError("boom")
 
 
+class _NamedChannel:
+    def __init__(self, name: str, calls: list[str], *, fail_start: bool = False, fail_stop: bool = False) -> None:
+        self.name = name
+        self.calls = calls
+        self.fail_start = fail_start
+        self.fail_stop = fail_stop
+
+    async def start(self) -> None:
+        self.calls.append(f"{self.name}.start")
+        if self.fail_start:
+            raise RuntimeError(f"{self.name} start failed")
+
+    async def stop(self) -> None:
+        self.calls.append(f"{self.name}.stop")
+        if self.fail_stop:
+            raise RuntimeError(f"{self.name} stop failed")
+
+
 @pytest.mark.asyncio
 async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events() -> None:
     calls: list[str] = []
@@ -216,7 +234,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         service_name="imcodex",
         qq_enabled=False,
         qq_app_id="",
-        qq_client_secret="",
+        qq_client_secret="do-not-persist",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=True,
     )
@@ -235,6 +253,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
     assert launch["env"]["IMCODEX_CORE_URL"] == "ws://127.0.0.1:8765"
     assert launch["env"]["IMCODEX_APP_SERVER_AUTH_TOKEN_FILE"] == ""
     assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]
+    assert "IMCODEX_QQ_CLIENT_SECRET" not in launch["env"]
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 
@@ -307,3 +326,39 @@ async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup
         "obs.event:bridge:bridge.start_failed",
         "obs.stop",
     ]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_start_fails() -> None:
+    calls: list[str] = []
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[
+            _NamedChannel("first", calls),
+            _NamedChannel("second", calls, fail_start=True),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="second start failed"):
+        await runtime.start()
+
+    assert calls[-4:] == ["first.start", "second.start", "first.stop", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_stops_remaining_resources_after_channel_stop_failure() -> None:
+    calls: list[str] = []
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[
+            _NamedChannel("first", calls),
+            _NamedChannel("second", calls, fail_stop=True),
+        ],
+    )
+
+    with pytest.raises(ExceptionGroup, match="runtime shutdown failed"):
+        await runtime.stop()
+
+    assert calls == ["second.stop", "first.stop", "client.close"]

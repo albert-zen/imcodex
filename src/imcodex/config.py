@@ -67,6 +67,8 @@ class Settings:
     app_server_retry_jitter_fraction: float = 0.25
     app_server_connect_timeout_s: float = 3.0
     app_server_health_timeout_s: float = 1.0
+    qq_allowed_user_ids: str = ""
+    qq_allowed_conversation_ids: str = ""
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -76,6 +78,8 @@ class Settings:
                 "client_secret": self.qq_client_secret,
                 "api_base": self.qq_api_base,
                 "markdown_enabled": self.qq_markdown_enabled,
+                "allowed_user_ids": self.qq_allowed_user_ids,
+                "allowed_conversation_ids": self.qq_allowed_conversation_ids,
             }
         }
 
@@ -115,4 +119,6 @@ class Settings:
             app_server_retry_jitter_fraction=_env_float("IMCODEX_APP_SERVER_RETRY_JITTER", 0.25, dotenv),
             app_server_connect_timeout_s=_env_float("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv),
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
+            qq_allowed_user_ids=_env("IMCODEX_QQ_ALLOWED_USER_IDS", "", dotenv),
+            qq_allowed_conversation_ids=_env("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv),
         )
