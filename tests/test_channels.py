@@ -752,6 +752,50 @@ async def test_qq_inbound_worker_retries_before_advancing_resume_sequence() -> N
     await adapter.stop()
 
 
+def test_qq_startup_configuration_normalizes_credentials() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="  app-id  ",
+        client_secret="  client-secret  ",
+        middleware=object(),
+        api_base="  https://api.sgroup.qq.com/  ",
+        http_client=object(),
+    )
+
+    adapter.validate_startup_configuration()
+
+    assert adapter.app_id == "app-id"
+    assert adapter.client_secret == "client-secret"
+    assert adapter.api_base == "https://api.sgroup.qq.com"
+
+
+def test_qq_startup_configuration_rejects_blank_credentials() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="   ",
+        client_secret="secret",
+        middleware=object(),
+        http_client=object(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires app_id and client_secret"):
+        adapter.validate_startup_configuration()
+
+
+def test_qq_startup_configuration_rejects_invalid_api_base() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+        api_base="ftp://api.sgroup.qq.com",
+        http_client=object(),
+    )
+
+    with pytest.raises(ValueError, match=r"IMCODEX_QQ_API_BASE must be an HTTP\(S\) URL"):
+        adapter.validate_startup_configuration()
+
+
 @pytest.mark.asyncio
 async def test_qq_adapter_start_survives_initial_network_failure(monkeypatch) -> None:
     observed_health: list[tuple[str, dict]] = []

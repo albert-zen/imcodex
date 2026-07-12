@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import websockets
 
+from ..config import validate_http_endpoint
 from .base import BaseChannelAdapter
 from .access import ChannelAccessPolicy
 from ..models import InboundMessage, OutboundMessage
@@ -73,9 +74,9 @@ class QQChannelAdapter(BaseChannelAdapter):
     ) -> None:
         super().__init__(middleware=middleware, access_policy=access_policy)
         self.enabled = enabled
-        self.app_id = app_id
-        self.client_secret = client_secret
-        self.api_base = api_base.rstrip("/")
+        self.app_id = app_id.strip()
+        self.client_secret = client_secret.strip()
+        self.api_base = api_base.strip().rstrip("/")
         self.token_url = token_url
         self.http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
@@ -132,6 +133,7 @@ class QQChannelAdapter(BaseChannelAdapter):
             return
         if not self.app_id or not self.client_secret:
             raise RuntimeError("QQ adapter requires app_id and client_secret when enabled.")
+        validate_http_endpoint(self.api_base, key="IMCODEX_QQ_API_BASE")
 
     async def stop(self) -> None:
         self._stop_event.set()

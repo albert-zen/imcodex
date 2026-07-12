@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .app_server_target import AppServerTarget, resolve_app_server_target
 
@@ -111,6 +112,25 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
 
 def is_restart_context_env_key(key: str) -> bool:
     return key in RESTART_CONTEXT_ENV_KEYS or key.startswith(RESTART_CONTEXT_ENV_PREFIXES)
+
+
+def validate_http_endpoint(value: str, *, key: str) -> None:
+    """Validate a non-empty HTTP(S) base URL without embedded credentials."""
+
+    if any(character.isspace() for character in value):
+        raise ValueError(f"{key} must not contain whitespace")
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{key} must be a valid HTTP(S) URL") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not host:
+        raise ValueError(f"{key} must be an HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{key} must not contain userinfo credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{key} must not contain query or fragment credentials")
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:

@@ -10,6 +10,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from ..app_server_target import default_app_server_endpoint, parse_app_server_target
+from ..config import validate_http_endpoint
 
 
 FieldKind = Literal["string", "boolean", "integer", "number", "select", "secret"]
@@ -29,20 +30,10 @@ def _validate_text(value: str, *, key: str, max_length: int) -> None:
 def _validate_http_url(value: str, *, key: str) -> None:
     if not value:
         return
-    if any(character.isspace() for character in value):
-        raise FieldValueError(f"{key} must not contain whitespace")
     try:
-        parsed = urlsplit(value)
-        host = parsed.hostname
-        parsed.port
+        validate_http_endpoint(value, key=key)
     except ValueError as exc:
-        raise FieldValueError(f"{key} must be a valid HTTP(S) URL") from exc
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not host:
-        raise FieldValueError(f"{key} must be an HTTP(S) URL")
-    if parsed.username is not None or parsed.password is not None:
-        raise FieldValueError(f"{key} must not contain userinfo credentials")
-    if parsed.query or parsed.fragment:
-        raise FieldValueError(f"{key} must not contain query or fragment credentials")
+        raise FieldValueError(str(exc)) from exc
 
 
 def _validate_outbound_url(value: str, *, key: str) -> None:

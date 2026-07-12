@@ -217,6 +217,27 @@ async def test_telegram_start_requires_a_token() -> None:
         await adapter.start()
 
 
+def test_telegram_startup_configuration_normalizes_api_base() -> None:
+    adapter = _adapter(
+        api_base="  https://api.telegram.org/  ",
+        http_client=object(),
+    )
+
+    adapter.validate_startup_configuration()
+
+    assert adapter.api_base == "https://api.telegram.org"
+
+
+def test_telegram_startup_configuration_rejects_invalid_api_base() -> None:
+    adapter = _adapter(
+        api_base="https://user:password@api.telegram.org",
+        http_client=object(),
+    )
+
+    with pytest.raises(ValueError, match="IMCODEX_TELEGRAM_API_BASE must not contain userinfo"):
+        adapter.validate_startup_configuration()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
 def test_telegram_token_file_must_be_private(tmp_path: Path) -> None:
     token_file = tmp_path / "bot-token"

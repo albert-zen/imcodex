@@ -35,6 +35,7 @@ components:
     description: IM-facing transport adapters, webhook ingress, outbound sinks, and channel-safe message shaping.
     code:
       - src/imcodex/channels/**
+      - tests/test_channel_*.py
       - tests/test_channels.py
       - tests/test_service_e2e.py
     docs:
@@ -120,6 +121,7 @@ components:
       - tests/test_restart_preflight.py
       - tests/test_runtime.py
       - tests/test_startup_scripts.py
+      - tests/test_windows_scripts.py
     docs:
       - docs/design.md
       - docs/workflow.md

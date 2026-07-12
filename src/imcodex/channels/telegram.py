@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from ..config import validate_http_endpoint
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
@@ -93,7 +94,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         self.enabled = enabled
         self.bot_token = bot_token.strip()
         self.bot_token_file = bot_token_file
-        self.api_base = api_base.rstrip("/")
+        self.api_base = api_base.strip().rstrip("/")
         self.require_mention = require_mention
         self.poll_timeout_s = max(1, int(poll_timeout_s))
         self.state_dir = state_dir
@@ -145,6 +146,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             raise RuntimeError(
                 "Telegram adapter requires IMCODEX_TELEGRAM_BOT_TOKEN or IMCODEX_TELEGRAM_BOT_TOKEN_FILE when enabled."
             )
+        validate_http_endpoint(self.api_base, key="IMCODEX_TELEGRAM_API_BASE")
 
     async def stop(self) -> None:
         errors: list[Exception] = []
