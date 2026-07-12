@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "${script_dir}/.." && pwd)"
+
+if [[ -n "${AGENTKIT_PYTHON:-}" ]]; then
+    python="${AGENTKIT_PYTHON}"
+elif [[ -x "${repo_root}/.venv/bin/python" ]]; then
+    python="${repo_root}/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    python="python3"
+elif command -v python >/dev/null 2>&1; then
+    python="python"
+else
+    echo "AgentKit requires Python, but no interpreter was found." >&2
+    exit 127
+fi
+
+if ! "${python}" -P -c "import agentkit.__main__" >/dev/null 2>&1; then
+    echo "AgentKit is not installed for ${python}." >&2
+    printf 'From %q, prefer:\n  uv pip install --python %q -e %q\n' \
+        "${repo_root}" "${python}" ".[agentkit]" >&2
+    printf 'This works even when the selected virtual environment has no pip.\n' >&2
+    printf 'Without uv, bootstrap pip if available, then install:\n' >&2
+    printf '  %q -m ensurepip --upgrade\n  %q -m pip install -e %q\n' \
+        "${python}" "${python}" ".[agentkit]" >&2
+    exit 127
+fi
+
+exec "${python}" -P -m agentkit --repo "${repo_root}" "$@"

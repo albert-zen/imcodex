@@ -26,6 +26,36 @@ and TCP WebSocket as transports of the same external ownership model.
 
 ## Agent-Led Change Loop
 
+Run AgentKit through the repository launcher instead of relying on a global
+command or shell `PATH` configuration:
+
+```bash
+scripts/agentkit status
+```
+
+On native Windows, use `scripts\agentkit.cmd status`. The launcher prefers the
+repository virtual environment and invokes `python -P -m agentkit`. This keeps
+module dispatch consistent across macOS, Windows, and conda environments without
+requiring the `agentkit` console script on the shell `PATH`.
+Set `AGENTKIT_PYTHON` only when an explicit interpreter is required. If the
+selected interpreter does not contain AgentKit, install the optional dependency
+from the repository root. Prefer `uv pip`, which can install into a virtual
+environment that does not contain pip itself:
+
+```bash
+uv pip install --python .venv/bin/python -e ".[agentkit]"
+```
+
+On native Windows, use `.venv\Scripts\python.exe` as the `--python` value. If
+`AGENTKIT_PYTHON` selects a different interpreter, pass that path instead.
+Without uv, use the selected interpreter's existing pip. If pip is absent and
+`ensurepip` is available, bootstrap it with
+`<selected-python> -m ensurepip --upgrade`, then run
+`<selected-python> -m pip install -e ".[agentkit]"`.
+
+The launcher does not install dependencies or run `uv` automatically, so using
+it cannot create or update `uv.lock` as a side effect.
+
 For repository-changing work:
 
 1. clarify the task and the layer that should own the change
@@ -89,7 +119,9 @@ Pull requests and pushes to `main` should pass the GitHub Actions CI workflow.
 The baseline CI gate installs the package with development dependencies on
 Python 3.13 and runs the full `python -m pytest` regression suite.
 
-CI also runs an advisory AgentKit check. The advisory job installs the
-repository's `agentkit` optional dependency and runs `agentkit check`, but it is
-configured as non-blocking so AgentKit availability or maintainability warnings
-do not prevent merging a PR.
+CI also runs an advisory AgentKit check. Its isolated job installs the
+repository's `agentkit` optional dependency and invokes the resulting console
+script directly; the repository launcher remains the required entry point for
+local and agent-led work, where shell `PATH` cannot be assumed. The advisory
+job is non-blocking, so AgentKit availability or maintainability warnings do not
+prevent merging a PR.

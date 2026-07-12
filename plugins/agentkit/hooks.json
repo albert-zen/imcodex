@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "agentkit codex-stop-hook",
+            "command": "scripts/agentkit codex-stop-hook --log \".agentkit/codex-stop-hook.log\"",
+            "commandWindows": "scripts\\agentkit.cmd codex-stop-hook --log \".agentkit\\codex-stop-hook.log\"",
             "timeout": 30,
             "statusMessage": "Checking AgentKit task closeout"
           }
