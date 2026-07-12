@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import shutil
@@ -91,8 +92,18 @@ class ObservabilityRuntime:
             self.event_writer.close()
         if self.health_writer is not None:
             self.health_writer.update(status="stopped")
+            self.health_writer.close()
         reset_observability_logging()
         clear_active_runtime()
+
+    def flush(self) -> None:
+        if self.event_writer is not None:
+            self.event_writer.flush()
+        if self.health_writer is not None:
+            self.health_writer.flush()
+        for handler in logging.getLogger().handlers:
+            if getattr(handler, "_imcodex_managed", False):
+                handler.flush()
 
     def emit_event(
         self,
@@ -210,38 +221,53 @@ def emit_event(
 ) -> None:
     runtime = get_active_runtime()
     if runtime is not None:
-        runtime.emit_event(
-            component=component,
-            event=event,
-            level=level,
-            message=message,
-            data=data,
-            **fields,
-        )
+        try:
+            runtime.emit_event(
+                component=component,
+                event=event,
+                level=level,
+                message=message,
+                data=data,
+                **fields,
+            )
+        except Exception:
+            pass
 
 
 def update_health(**changes: Any) -> None:
     runtime = get_active_runtime()
     if runtime is not None:
-        runtime.update_health(**changes)
+        try:
+            runtime.update_health(**changes)
+        except Exception:
+            pass
 
 
 def mark_channel_health(channel_id: str, **changes: Any) -> None:
     runtime = get_active_runtime()
     if runtime is not None:
-        runtime.mark_channel_health(channel_id, **changes)
+        try:
+            runtime.mark_channel_health(channel_id, **changes)
+        except Exception:
+            pass
 
 
 def mark_http_health(**changes: Any) -> None:
     runtime = get_active_runtime()
     if runtime is not None:
-        runtime.mark_http_health(**changes)
+        try:
+            runtime.mark_http_health(**changes)
+        except Exception:
+            pass
 
 
 def mark_appserver_health(**changes: Any) -> None:
     runtime = get_active_runtime()
     if runtime is not None:
-        runtime.mark_appserver_health(**changes)
+        try:
+            runtime.mark_appserver_health(**changes)
+        except Exception:
+            pass
 
 
 def _read_git_metadata(cwd: Path) -> dict[str, str]:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from queue import Queue
+from queue import Empty, Full, Queue
 from threading import Lock
 from threading import Thread
+import time
 from typing import Any
 
 from .context import InstanceContext
@@ -11,14 +12,18 @@ from .paths import ObservabilityPaths
 
 
 class EventWriter:
+    QUEUE_LIMIT = 4096
+    CLOSE_TIMEOUT_S = 0.25
+
     def __init__(self, *, paths: ObservabilityPaths, context: InstanceContext, clock) -> None:
         self.paths = paths
         self.context = context
         self.clock = clock
         self._lock = Lock()
         self._state_lock = Lock()
-        self._queue: Queue[dict[str, Any] | None] = Queue()
+        self._queue: Queue[dict[str, Any] | None] = Queue(maxsize=self.QUEUE_LIMIT)
         self._closed = False
+        self._dropped = 0
         for path in (self.paths.events_path, self.paths.current_events_path):
             path.touch(exist_ok=True)
         self._thread = Thread(target=self._write_loop, name="imcodex-event-writer", daemon=True)
@@ -50,19 +55,34 @@ class EventWriter:
         with self._state_lock:
             if self._closed:
                 return
-            self._queue.put(record)
+            try:
+                self._queue.put_nowait(record)
+            except Full:
+                self._dropped += 1
 
-    def flush(self) -> None:
-        self._queue.join()
+    def flush(self, *, timeout_s: float = 1.0) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while self._queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self._queue.unfinished_tasks == 0
 
     def close(self) -> None:
         with self._state_lock:
             if self._closed:
                 return
             self._closed = True
-            self._queue.put(None)
-        self._queue.join()
-        self._thread.join(timeout=1)
+            try:
+                self._queue.put_nowait(None)
+            except Full:
+                try:
+                    self._queue.get_nowait()
+                except Empty:
+                    pass
+                else:
+                    self._queue.task_done()
+                    self._dropped += 1
+                self._queue.put_nowait(None)
+        self._thread.join(timeout=self.CLOSE_TIMEOUT_S)
 
     def _write_loop(self) -> None:
         while True:

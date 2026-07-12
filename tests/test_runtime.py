@@ -109,7 +109,14 @@ class _FailingClient(_FakeClient):
 
 
 class _NamedChannel:
-    def __init__(self, name: str, calls: list[str], *, fail_start: bool = False, fail_stop: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        calls: list[str],
+        *,
+        fail_start: bool = False,
+        fail_stop: bool = False,
+    ) -> None:
         self.name = name
         self.calls = calls
         self.fail_start = fail_start
@@ -216,7 +223,9 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_path: Path) -> None:
+async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
+    tmp_path: Path,
+) -> None:
     settings = Settings(
         data_dir=tmp_path / ".imcodex",
         run_dir=tmp_path / ".imcodex-run",
@@ -240,6 +249,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
         inbound_webhook_token="do-not-persist",
+        outbound_webhook_token="do-not-persist",
     )
     runtime = build_runtime(settings)
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
@@ -260,12 +270,15 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
     assert "IMCODEX_TELEGRAM_BOT_TOKEN" not in launch["env"]
     assert "IMCODEX_FEISHU_APP_SECRET" not in launch["env"]
     assert "IMCODEX_INBOUND_WEBHOOK_TOKEN" not in launch["env"]
+    assert "IMCODEX_OUTBOUND_WEBHOOK_TOKEN" not in launch["env"]
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_persists_lifecycle_events_and_health_snapshot(tmp_path: Path) -> None:
+async def test_app_runtime_persists_lifecycle_events_and_health_snapshot(
+    tmp_path: Path,
+) -> None:
     observability = ObservabilityRuntime(
         run_root=tmp_path,
         service_name="imcodex",
@@ -274,9 +287,14 @@ async def test_app_runtime_persists_lifecycle_events_and_health_snapshot(tmp_pat
         http_port=8000,
         app_server_url=None,
         cwd=Path(r"D:\desktop\imcodex"),
-        clock=lambda: __import__("datetime").datetime(2026, 4, 19, 10, 15, 30, tzinfo=__import__("datetime").timezone.utc),
+        clock=lambda: __import__("datetime").datetime(
+            2026, 4, 19, 10, 15, 30, tzinfo=__import__("datetime").timezone.utc
+        ),
         pid_provider=lambda: 48648,
-        git_metadata_provider=lambda cwd: {"git_branch": "main", "git_commit": "abc1234"},
+        git_metadata_provider=lambda cwd: {
+            "git_branch": "main",
+            "git_commit": "abc1234",
+        },
     )
     runtime = AppRuntime(
         client=_FakeClient([]),
@@ -328,6 +346,7 @@ async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup
         "client.add_server_request_handler",
         "client.add_connection_ready_handler",
         "client.initialize",
+        "client.close",
         "obs.health",
         "obs.event:bridge:bridge.start_failed",
         "obs.stop",
@@ -343,19 +362,45 @@ async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_s
         managed_channels=[
             _NamedChannel("first", calls),
             _NamedChannel("second", calls, fail_start=True),
+            _NamedChannel("third", calls),
         ],
     )
 
     with pytest.raises(RuntimeError, match="second start failed"):
         await runtime.start()
 
-    assert calls[-5:] == [
+    assert "third.start" not in calls
+    assert calls[-6:] == [
         "first.start",
         "second.start",
+        "third.stop",
         "second.stop",
         "first.stop",
         "client.close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_closes_unstarted_channels_when_client_initialize_fails() -> None:
+    calls: list[str] = []
+    duplicate = _NamedChannel("duplicate", calls)
+    runtime = AppRuntime(
+        client=_FailingClient(calls),
+        service=_FakeService(),
+        managed_channels=[
+            _NamedChannel("first", calls),
+            duplicate,
+            duplicate,
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await runtime.start()
+
+    assert "first.start" not in calls
+    assert "duplicate.start" not in calls
+    assert calls.count("duplicate.stop") == 1
+    assert calls[-3:] == ["duplicate.stop", "first.stop", "client.close"]
 
 
 @pytest.mark.asyncio
@@ -374,3 +419,187 @@ async def test_app_runtime_stops_remaining_resources_after_channel_stop_failure(
         await runtime.stop()
 
     assert calls == ["second.stop", "first.stop", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_closes_client_when_initialize_is_cancelled() -> None:
+    calls: list[str] = []
+    initialize_started = __import__("asyncio").Event()
+
+    class BlockingClient(_FakeClient):
+        async def initialize(self) -> None:
+            self.calls.append("client.initialize")
+            initialize_started.set()
+            await __import__("asyncio").Event().wait()
+
+    runtime = AppRuntime(client=BlockingClient(calls), service=_FakeService())
+    task = __import__("asyncio").create_task(runtime.start())
+    await initialize_started.wait()
+    task.cancel()
+
+    with pytest.raises(__import__("asyncio").CancelledError):
+        await task
+
+    assert calls[-2:] == ["client.initialize", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_stops_partially_started_channel_when_start_is_cancelled() -> None:
+    calls: list[str] = []
+    channel_started = __import__("asyncio").Event()
+
+    class BlockingChannel(_FakeChannel):
+        async def start(self) -> None:
+            self.calls.append("channel.start")
+            channel_started.set()
+            await __import__("asyncio").Event().wait()
+
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[BlockingChannel(calls)],
+    )
+    task = __import__("asyncio").create_task(runtime.start())
+    await channel_started.wait()
+    task.cancel()
+
+    with pytest.raises(__import__("asyncio").CancelledError):
+        await task
+
+    assert calls[-3:] == ["channel.start", "channel.stop", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_finishes_shutdown_before_propagating_cancellation() -> None:
+    calls: list[str] = []
+    stop_started = __import__("asyncio").Event()
+    release_stop = __import__("asyncio").Event()
+
+    class BlockingStopChannel(_FakeChannel):
+        async def stop(self) -> None:
+            self.calls.append("channel.stop")
+            stop_started.set()
+            await release_stop.wait()
+
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[BlockingStopChannel(calls)],
+    )
+    task = __import__("asyncio").create_task(runtime.stop())
+    await stop_started.wait()
+    task.cancel()
+    await __import__("asyncio").sleep(0)
+    assert not task.done()
+
+    release_stop.set()
+    with pytest.raises(__import__("asyncio").CancelledError):
+        await task
+
+    assert calls == ["channel.stop", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_ignores_repeated_cancellation_until_shutdown_finishes() -> None:
+    calls: list[str] = []
+    stop_started = __import__("asyncio").Event()
+    release_stop = __import__("asyncio").Event()
+
+    class BlockingStopChannel(_FakeChannel):
+        def __init__(self, calls: list[str]) -> None:
+            super().__init__(calls)
+            self.closed = False
+
+        async def stop(self) -> None:
+            self.calls.append("channel.stop.begin")
+            stop_started.set()
+            await release_stop.wait()
+            self.closed = True
+            self.calls.append("channel.stop.end")
+
+    channel = BlockingStopChannel(calls)
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[channel],
+    )
+    task = __import__("asyncio").create_task(runtime.stop())
+    await stop_started.wait()
+
+    task.cancel()
+    await __import__("asyncio").sleep(0)
+    task.cancel()
+    await __import__("asyncio").sleep(0)
+
+    assert not task.done()
+    assert channel.closed is False
+    release_stop.set()
+    with pytest.raises(__import__("asyncio").CancelledError):
+        await task
+
+    assert channel.closed is True
+    assert calls == ["channel.stop.begin", "channel.stop.end", "client.close"]
+
+
+@pytest.mark.asyncio
+async def test_observability_failures_never_skip_runtime_resource_cleanup() -> None:
+    calls: list[str] = []
+
+    class FailingObservability(_FakeObservability):
+        def emit_event(self, *, component: str, event: str, **_kwargs) -> None:
+            self.calls.append(f"obs.event:{component}:{event}")
+            if event == "bridge.stopping":
+                raise OSError("log disk full")
+
+        def update_health(self, **_kwargs) -> None:
+            self.calls.append("obs.health")
+            raise OSError("health disk full")
+
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[_FakeChannel(calls)],
+        observability=FailingObservability(calls),
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert "channel.stop" in calls
+    assert "client.close" in calls
+    assert calls[-1] == "obs.stop"
+
+
+@pytest.mark.asyncio
+async def test_observability_shutdown_never_blocks_event_loop() -> None:
+    calls: list[str] = []
+    stop_started = __import__("threading").Event()
+    release_stop = __import__("threading").Event()
+
+    class BlockingObservability(_FakeObservability):
+        def stop(self) -> None:
+            self.calls.append("obs.stop.begin")
+            stop_started.set()
+            release_stop.wait(timeout=1)
+            self.calls.append("obs.stop.end")
+
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        observability=BlockingObservability(calls),
+    )
+    shutdown = __import__("asyncio").create_task(runtime.stop())
+    assert await __import__("asyncio").to_thread(stop_started.wait, 1)
+    ticker_fired = __import__("asyncio").Event()
+
+    async def tick() -> None:
+        await __import__("asyncio").sleep(0.01)
+        ticker_fired.set()
+
+    ticker = __import__("asyncio").create_task(tick())
+    await __import__("asyncio").wait_for(ticker_fired.wait(), timeout=0.2)
+    release_stop.set()
+    await shutdown
+    await ticker
+
+    assert calls[-2:] == ["obs.stop.begin", "obs.stop.end"]
