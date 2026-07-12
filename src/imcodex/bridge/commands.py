@@ -354,12 +354,12 @@ class CommandRouter:
         if effort == "default":
             return CommandResponse(
                 action="settings.reasoning.write",
-                text="Native reasoning effort preference cleared. It applies to new or cold-loaded threads.",
+                text="Native reasoning effort preference cleared. It applies to new threads; resumed threads retain their native setting.",
                 payload={"effort": None},
             )
         return CommandResponse(
             action="settings.reasoning.write",
-            text=f"Native reasoning effort preference set to {effort}. It applies to new or cold-loaded threads.",
+            text=f"Native reasoning effort preference set to {effort}. It applies to new threads; resumed threads retain their native setting.",
             payload={"effort": effort},
         )
 
@@ -376,7 +376,7 @@ class CommandRouter:
         if personality == "default":
             return CommandResponse(
                 action="settings.personality.write",
-                text="Native personality preference reset to default. It applies to new or cold-loaded threads.",
+                text="Native personality preference reset to default. It applies to new threads; resumed threads retain their native setting.",
                 payload={"personality": None},
             )
         if personality not in _PERSONALITIES:
@@ -386,7 +386,7 @@ class CommandRouter:
             )
         return CommandResponse(
             action="settings.personality.write",
-            text=f"Native personality preference set to {personality}. It applies to new or cold-loaded threads.",
+            text=f"Native personality preference set to {personality}. It applies to new threads; resumed threads retain their native setting.",
             payload={"personality": personality},
         )
 
@@ -400,24 +400,16 @@ class CommandRouter:
             return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
         mode = command.args[0].lower()
         if mode == "on":
-            edits = [
-                {"key_path": "service_tier", "value": "fast", "merge_strategy": "replace"},
-                {"key_path": "features.fast_mode", "value": True, "merge_strategy": "replace"},
-            ]
             return CommandResponse(
                 action="settings.fast.write",
                 text="Fast mode enabled.",
-                payload={"mode": "on", "edits": edits},
+                payload={"enabled": True},
             )
         if mode == "off":
-            edits = [
-                {"key_path": "service_tier", "value": "standard", "merge_strategy": "replace"},
-                {"key_path": "features.fast_mode", "value": False, "merge_strategy": "replace"},
-            ]
             return CommandResponse(
                 action="settings.fast.write",
                 text="Fast mode disabled.",
-                payload={"mode": "off", "edits": edits},
+                payload={"enabled": False},
             )
         return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
 

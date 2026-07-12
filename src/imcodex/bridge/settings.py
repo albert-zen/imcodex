@@ -75,25 +75,36 @@ def render_reasoning_effort(payload: dict) -> str:
 def render_personality(payload: dict) -> str:
     config = effective_config(payload)
     current = current_personality_label(config)
-    return "\n".join(
-        [
-            "Personality",
-            "",
-            f"Current: {current}",
-            "",
-            "- /personality default",
-            "- /personality none",
-            "- /personality friendly",
-            "- /personality pragmatic",
-            "",
-            "This is the configured default; an already-loaded thread may retain its native settings.",
-        ]
-    )
+    lines = ["Personality", "", f"Current: {current}", ""]
+    if payload.get("personalityAvailable") is False:
+        lines.extend(
+            [
+                "Unavailable for the current native Codex feature/model configuration.",
+                "",
+                "- /personality default",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- /personality default",
+                "- /personality none",
+                "- /personality friendly",
+                "- /personality pragmatic",
+            ]
+        )
+    lines.extend(["", "This is the configured default; an already-loaded thread may retain its native settings."])
+    return "\n".join(lines)
 
 
 def render_fast_mode(payload: dict) -> str:
     config = effective_config(payload)
-    current = fast_mode_label(config)
+    current = fast_mode_label(
+        config,
+        default_service_tier=payload.get("selectedModelDefaultServiceTier"),
+        feature_available=payload.get("fastAvailable") is not False,
+        fast_supported=payload.get("fastSupported") if isinstance(payload.get("fastSupported"), bool) else None,
+    )
     return "\n".join(
         [
             "Fast Mode",
@@ -143,7 +154,10 @@ def render_credits(payload: dict) -> str:
 
 
 def render_permission_modes(payload: dict) -> str:
-    config = effective_config(payload)
+    config = dict(effective_config(payload))
+    managed_default = _requirements_default_permission(payload.get("requirements"))
+    if managed_default is not None:
+        config["default_permissions"] = managed_default
     current = permission_mode_label(config)
     lines = ["Permission Modes", "", f"Current: {current}", ""]
     profiles = _permission_profile_items(payload.get("profiles"))
@@ -199,7 +213,7 @@ def render_permission_set_result(payload: dict) -> str:
             "remains effective."
         )
     lines = [f"Native permission preference set to {label}."]
-    lines.append("It applies to new or cold-loaded threads; already-loaded threads keep their native settings.")
+    lines.append("It applies to new threads; existing and resumed threads retain their native thread settings.")
     if payload.get("fallback"):
         lines.append("Used compatibility config because native permission profiles are unavailable.")
     return "\n".join(lines)
@@ -254,32 +268,50 @@ def current_personality_label(config: dict) -> str:
     return labels.get(value.lower(), value)
 
 
-def fast_mode_label(config: dict) -> str:
-    tier = str(_first_config_value(config, "service_tier", "serviceTier") or "").strip().lower()
-    features = _first_config_value(config, "features")
-    features = features if isinstance(features, dict) else {}
-    fast_enabled = features.get("fast_mode") if isinstance(features, dict) else None
-    if fast_enabled is None and isinstance(features, dict):
-        fast_enabled = features.get("fastMode")
-    if tier == "fast" and fast_enabled is True:
-        return "Fast"
-    if tier in {"", "standard"} and fast_enabled in {None, False}:
+def fast_mode_label(
+    config: dict,
+    *,
+    default_service_tier: object = None,
+    feature_available: bool = True,
+    fast_supported: bool | None = None,
+) -> str:
+    if not feature_available:
         return "Standard"
-    details = []
-    if tier:
-        details.append(f"service_tier={tier}")
-    if fast_enabled is not None:
-        details.append(f"fast_mode={str(fast_enabled).lower()}")
-    return f"Custom ({', '.join(details)})" if details else "Standard"
+    configured = _first_config_value(config, "service_tier", "serviceTier")
+    tier = str(configured if configured is not None else default_service_tier or "").strip().lower()
+    if tier in {"priority", "fast"}:
+        return "Fast" if fast_supported is not False else "Standard"
+    if tier in {"", "default", "standard"}:
+        return "Standard"
+    return f"Custom (service_tier={tier})"
 
 
 def permission_mode_label(config: dict) -> str:
     profile = _first_config_value(config, "default_permissions", "permissionProfile")
     if profile:
-        return _permission_profile_label(str(profile))
+        expected_approval = {
+            ":workspace": "on-request",
+            ":read-only": "on-request",
+            ":danger-full-access": "never",
+        }.get(str(profile))
+        approval = str(_first_config_value(config, "approval_policy", "approvalPolicy") or "on-request")
+        if expected_approval is not None and approval == expected_approval:
+            return _permission_profile_label(str(profile))
+        details = ", ".join(part for part in (str(profile), approval) if part)
+        return f"Custom ({details})" if details else "Custom"
     active_profile = config.get("activePermissionProfile") or config.get("active_permission_profile")
     if isinstance(active_profile, dict) and active_profile.get("id"):
-        return _permission_profile_label(str(active_profile["id"]))
+        profile_id = str(active_profile["id"])
+        expected_approval = {
+            ":workspace": "on-request",
+            ":read-only": "on-request",
+            ":danger-full-access": "never",
+        }.get(profile_id)
+        approval = str(_first_config_value(config, "approval_policy", "approvalPolicy") or "on-request")
+        if expected_approval is not None and approval == expected_approval:
+            return _permission_profile_label(profile_id)
+        details = ", ".join(part for part in (profile_id, approval) if part)
+        return f"Custom ({details})" if details else "Custom"
     approval = str(_first_config_value(config, "approval_policy", "approvalPolicy") or "")
     sandbox_value = _first_config_value(config, "sandbox_mode", "sandboxMode", "sandbox")
     if isinstance(sandbox_value, dict):
@@ -297,6 +329,9 @@ def permission_mode_label(config: dict) -> str:
 
 
 def effective_config(payload: dict) -> dict:
+    managed = payload.get("effectiveConfig") if isinstance(payload.get("effectiveConfig"), dict) else None
+    if managed is not None:
+        return managed
     config = payload.get("config") if isinstance(payload.get("config"), dict) else None
     if config is not None:
         return config
@@ -385,6 +420,15 @@ def _blocked_permission_profile_ids(profiles: list[dict], requirements: object) 
 def _allowed_permission_profile_map(requirements: object) -> dict | None:
     if isinstance(requirements, dict) and isinstance(requirements.get("allowedPermissionProfiles"), dict):
         return requirements["allowedPermissionProfiles"]
+    return None
+
+
+def _requirements_default_permission(requirements: object) -> object | None:
+    if not isinstance(requirements, dict):
+        return None
+    for key in ("defaultPermissions", "defaultPermissionProfile", "default_permissions"):
+        if requirements.get(key) is not None:
+            return requirements[key]
     return None
 
 

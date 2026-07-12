@@ -10,6 +10,7 @@ from imcodex.bridge.settings import current_reasoning_label
 from imcodex.bridge.settings import fast_mode_label
 from imcodex.bridge.settings import permission_mode_label
 from imcodex.bridge.settings import render_credits
+from imcodex.bridge.settings import render_fast_mode
 from imcodex.bridge.settings import render_native_config_write_result
 from imcodex.bridge.settings import render_permission_modes
 from imcodex.bridge.settings import render_permission_set_result
@@ -137,7 +138,7 @@ def test_render_credits_shows_partial_warning() -> None:
 def test_render_permission_modes_uses_native_profiles_and_requirements() -> None:
     text = render_permission_modes(
         {
-            "config": {"default_permissions": ":danger-full-access"},
+            "config": {"default_permissions": ":danger-full-access", "approval_policy": "never"},
             "profiles": [
                 {"id": ":read-only", "description": "Only reads files"},
                 {"id": ":workspace"},
@@ -169,8 +170,8 @@ def test_settings_labels_accept_native_camel_case_effective_config() -> None:
     config = {
         "modelId": "gpt-5.4",
         "reasoningEffort": "high",
-        "serviceTier": "fast",
-        "features": {"fastMode": True},
+        "serviceTier": "priority",
+        "features": {"fastMode": False},
         "permissionProfile": ":read-only",
         "approvalPolicy": "on-request",
         "sandbox": {"mode": "read-only"},
@@ -180,6 +181,15 @@ def test_settings_labels_accept_native_camel_case_effective_config() -> None:
     assert current_reasoning_label(config) == "high"
     assert fast_mode_label(config) == "Fast"
     assert permission_mode_label(config) == "Read Only"
+
+
+def test_fast_mode_label_accepts_legacy_fast_without_feature_flag() -> None:
+    assert fast_mode_label({"service_tier": "fast"}) == "Fast"
+    assert fast_mode_label({"service_tier": "default", "features": {"fast_mode": True}}) == "Standard"
+    assert fast_mode_label({}, default_service_tier="priority") == "Fast"
+    assert fast_mode_label({"service_tier": "default"}, default_service_tier="priority") == "Standard"
+    assert fast_mode_label({"service_tier": "priority"}, feature_available=False) == "Standard"
+    assert fast_mode_label({"service_tier": "priority"}, fast_supported=False) == "Standard"
 
 
 def test_render_reasoning_effort_uses_native_model_catalog_options() -> None:
@@ -206,6 +216,37 @@ def test_render_reasoning_effort_uses_native_model_catalog_options() -> None:
     assert "/think minimal" not in text
 
 
+def test_command_status_renderers_prefer_managed_effective_config() -> None:
+    reasoning = render_reasoning_effort(
+        {
+            "config": {"model_reasoning_effort": "low"},
+            "effectiveConfig": {"model_reasoning_effort": "high"},
+            "reasoningEfforts": [{"reasoningEffort": "high"}],
+        }
+    )
+    fast = render_fast_mode(
+        {
+            "config": {"service_tier": "default"},
+            "effectiveConfig": {"service_tier": "priority"},
+        }
+    )
+    permission = render_permission_modes(
+        {
+            "config": {"default_permissions": ":workspace"},
+            "effectiveConfig": {
+                "default_permissions": ":read-only",
+                "approval_policy": "on-request",
+            },
+            "profiles": [{"id": ":workspace"}, {"id": ":read-only"}],
+            "requirements": {"defaultPermissions": ":read-only"},
+        }
+    )
+
+    assert "Current: high" in reasoning
+    assert "Current: Fast" in fast
+    assert "Current: Read Only" in permission
+
+
 def test_render_personality_defaults_to_native_default_and_lists_choices() -> None:
     text = render_personality({"config": {"personality": None}})
 
@@ -214,9 +255,26 @@ def test_render_personality_defaults_to_native_default_and_lists_choices() -> No
     assert "/personality none" in text
     assert current_personality_label({"personality": "pragmatic"}) == "Pragmatic"
 
+    unavailable = render_personality(
+        {"config": {"personality": "friendly"}, "personalityAvailable": False}
+    )
+    assert "Unavailable for the current native Codex feature/model configuration" in unavailable
+    assert "/personality default" in unavailable
+    assert "/personality friendly" not in unavailable
+
 
 def test_permission_mode_label_falls_back_to_legacy_config() -> None:
     assert permission_mode_label({"approval_policy": "on-request", "sandbox_mode": "workspace-write"}) == "Default"
+    assert (
+        permission_mode_label(
+            {"default_permissions": ":danger-full-access", "approval_policy": "on-request"}
+        )
+        == "Custom (:danger-full-access, on-request)"
+    )
+    assert permission_mode_label({"default_permissions": ":workspace"}) == "Default"
+    assert permission_mode_label({"default_permissions": ":danger-full-access"}) == (
+        "Custom (:danger-full-access, on-request)"
+    )
 
 
 def test_permission_profile_definitions_are_not_rendered_as_the_selected_profile() -> None:
@@ -227,7 +285,8 @@ def test_render_permission_set_result_marks_compatibility_fallback() -> None:
     text = render_permission_set_result({"mode": "read-only", "fallback": True})
 
     assert "Native permission preference set to Read Only." in text
-    assert "new or cold-loaded threads" in text
+    assert "new threads" in text
+    assert "resumed threads retain" in text
     assert "compatibility config" in text
 
 

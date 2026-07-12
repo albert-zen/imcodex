@@ -1671,7 +1671,10 @@ async def test_status_command_returns_status_message_when_backend_read_fails() -
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/read": [{"id": 2, "error": {"message": "server overloaded"}}],
+            "config/read": [{"id": 2, "result": {"config": {}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+            "model/list": [{"id": 4, "result": {"data": [], "nextCursor": None}}],
+            "thread/read": [{"id": 5, "error": {"message": "server overloaded"}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -1707,7 +1710,10 @@ async def test_status_command_hides_oversized_upstream_error_details() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/read": [{"id": 2, "error": {"message": "<html>" + ("x" * 500)}}],
+            "config/read": [{"id": 2, "result": {"config": {}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+            "model/list": [{"id": 4, "result": {"data": [], "nextCursor": None}}],
+            "thread/read": [{"id": 5, "error": {"message": "<html>" + ("x" * 500)}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -1764,6 +1770,47 @@ async def test_status_command_bounds_native_queries_and_still_reports_connection
     assert "State: Unavailable" in messages[0].text
     assert "App Server: Connected" in messages[0].text
     assert "Connection epoch: 1" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_status_keeps_effective_config_when_model_catalog_times_out(monkeypatch) -> None:
+    monkeypatch.setattr("imcodex.bridge.thread_views._STATUS_QUERY_TIMEOUT_S", 0.01)
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "config": {
+                            "model": "gpt-kept",
+                            "model_reasoning_effort": "high",
+                            "default_permissions": ":workspace",
+                        }
+                    },
+                }
+            ],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+
+    assert "Model: gpt-kept" in messages[0].text
+    assert "Reasoning: high" in messages[0].text
+    assert "Permissions: Default" in messages[0].text
     await client.close()
 
 
@@ -1931,9 +1978,11 @@ async def test_model_command_writes_native_default_model_config() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [{"id": 2, "result": {"config": {}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
             "config/value/write": [
                 {
-                    "id": 2,
+                    "id": 4,
                     "result": {
                         "status": "updated",
                         "version": "v1",
@@ -1961,6 +2010,42 @@ async def test_model_command_writes_native_default_model_config() -> None:
     assert messages[0].message_type == "status"
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/value/write"]
     assert payloads == [{"keyPath": "model", "value": "gpt-5.4", "mergeStrategy": "replace"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_model_command_reports_higher_priority_native_override() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [{"id": 2, "result": {"config": {}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+            "config/value/write": [
+                {
+                    "id": 4,
+                    "result": {
+                        "status": "okOverridden",
+                        "overriddenMetadata": {"source": "commandLine"},
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/model gpt-5.4",
+        )
+    )
+
+    assert "higher-priority native Codex configuration remains effective" in messages[0].text
     await client.close()
 
 
@@ -2021,9 +2106,11 @@ async def test_model_default_clears_native_default_model_config() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [{"id": 2, "result": {"config": {}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
             "config/value/write": [
                 {
-                    "id": 2,
+                    "id": 4,
                     "result": {
                         "status": "updated",
                         "version": "v2",
@@ -2060,9 +2147,10 @@ async def test_think_command_writes_native_reasoning_effort_config() -> None:
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
             "config/read": [{"id": 2, "result": {"config": {"model": "gpt-5.5"}}}],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
             "model/list": [
                 {
-                    "id": 3,
+                    "id": 4,
                     "result": {
                         "data": [
                             {
@@ -2081,7 +2169,7 @@ async def test_think_command_writes_native_reasoning_effort_config() -> None:
             ],
             "config/batchWrite": [
                 {
-                    "id": 4,
+                    "id": 5,
                     "result": {
                         "status": "updated",
                         "version": "v3",
@@ -2128,8 +2216,31 @@ async def test_personality_commands_read_and_reload_native_config_for_future_thr
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "config/read": [{"id": 2, "result": {"config": {"personality": None}}}],
-            "config/batchWrite": [{"id": 3, "result": {"status": "updated"}}],
+            "config/read": [
+                {"id": 2, "result": {"config": {"personality": None}}},
+                {"id": 5, "result": {"config": {"personality": None}}},
+            ],
+            "configRequirements/read": [
+                {"id": 3, "result": {"requirements": None}},
+                {"id": 6, "result": {"requirements": None}},
+            ],
+            "model/list": [
+                {
+                    "id": 4,
+                    "result": {
+                        "data": [{"id": "gpt-default", "isDefault": True, "supportsPersonality": True}],
+                        "nextCursor": None,
+                    },
+                },
+                {
+                    "id": 7,
+                    "result": {
+                        "data": [{"id": "gpt-default", "isDefault": True, "supportsPersonality": True}],
+                        "nextCursor": None,
+                    },
+                },
+            ],
+            "config/batchWrite": [{"id": 8, "result": {"status": "updated"}}],
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
@@ -2158,7 +2269,8 @@ async def test_personality_commands_read_and_reload_native_config_for_future_thr
     assert "Personality" in current[0].text
     assert "Current: Default" in current[0].text
     assert "Native personality preference set to pragmatic." in updated[0].text
-    assert "new or cold-loaded threads" in updated[0].text
+    assert "new threads" in updated[0].text
+    assert "resumed threads retain" in updated[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "config/batchWrite"]
     assert payloads == [
         {
@@ -2182,7 +2294,24 @@ async def test_personality_commands_read_and_reload_native_config_for_future_thr
         ),
         (
             "/personality pragmatic",
-            {"config/batchWrite": [{"id": 2, "error": {"code": -32000, "message": "config locked"}}]},
+            {
+                "config/read": [{"id": 2, "result": {"config": {}}}],
+                "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+                "model/list": [
+                    {
+                        "id": 4,
+                        "result": {
+                            "data": [
+                                {"id": "gpt-default", "isDefault": True, "supportsPersonality": True}
+                            ],
+                            "nextCursor": None,
+                        },
+                    }
+                ],
+                "config/batchWrite": [
+                    {"id": 5, "error": {"code": -32000, "message": "config locked"}}
+                ],
+            },
             "Personality could not be set in Codex",
         ),
     ],
@@ -2209,12 +2338,41 @@ async def test_personality_commands_render_native_config_errors(command: str, sc
 
 
 @pytest.mark.asyncio
-async def test_fast_command_writes_native_fast_mode_config() -> None:
+@pytest.mark.parametrize(
+    ("command", "service_tier"),
+    [("/fast on", "priority"), ("/fast off", "default")],
+)
+async def test_fast_command_writes_native_service_tier_only(
+    command: str,
+    service_tier: str,
+) -> None:
+    scripts = {
+        "initialize": [{"id": 1, "result": {"ok": True}}],
+        "config/read": [{"id": 2, "result": {"config": {}, "layers": []}}],
+        "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+        "config/batchWrite": [
+            {"id": 5 if command == "/fast on" else 4, "result": {"status": "updated"}}
+        ],
+    }
+    if command == "/fast on":
+        scripts["model/list"] = [
+            {
+                "id": 4,
+                "result": {
+                    "data": [
+                        {
+                            "id": "gpt-fast",
+                            "isDefault": True,
+                            "serviceTiers": [{"id": "priority", "name": "Fast"}],
+                            "additionalSpeedTiers": ["fast"],
+                        }
+                    ],
+                    "nextCursor": None,
+                },
+            }
+        ]
     process = ScriptedProcess(
-        {
-            "initialize": [{"id": 1, "result": {"ok": True}}],
-            "config/batchWrite": [{"id": 2, "result": {"status": "updated"}}],
-        }
+        scripts
     )
     store = ConversationStore(clock=lambda: 1.0)
     sink = CapturingSink()
@@ -2226,7 +2384,7 @@ async def test_fast_command_writes_native_fast_mode_config() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/fast on",
+            text=command,
         )
     )
 
@@ -2235,8 +2393,7 @@ async def test_fast_command_writes_native_fast_mode_config() -> None:
     assert payloads == [
         {
             "edits": [
-                {"keyPath": "service_tier", "value": "fast", "mergeStrategy": "replace"},
-                {"keyPath": "features.fast_mode", "value": True, "mergeStrategy": "replace"},
+                {"keyPath": "service_tier", "value": service_tier, "mergeStrategy": "replace"},
             ],
             "reloadUserConfig": False,
         }
@@ -2424,7 +2581,7 @@ async def test_think_and_fast_without_args_read_native_config() -> None:
                     },
                 },
                 {
-                    "id": 3,
+                    "id": 5,
                     "result": {
                         "config": {
                             "model_reasoning_effort": "high",
@@ -2433,6 +2590,10 @@ async def test_think_and_fast_without_args_read_native_config() -> None:
                         }
                     },
                 },
+            ],
+            "configRequirements/read": [
+                {"id": 3, "result": {"requirements": None}},
+                {"id": 6, "result": {"requirements": None}},
             ],
             "model/list": [
                 {
@@ -2448,11 +2609,27 @@ async def test_think_and_fast_without_args_read_native_config() -> None:
                                     {"reasoningEffort": "high", "description": "Deep"},
                                 ],
                                 "defaultReasoningEffort": "high",
+                                "serviceTiers": [{"id": "priority", "name": "Fast"}],
                             }
                         ],
                         "nextCursor": None,
                     },
-                }
+                },
+                {
+                    "id": 7,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.5",
+                                "displayName": "GPT-5.5",
+                                "isDefault": True,
+                                "defaultServiceTier": "default",
+                                "serviceTiers": [{"id": "priority", "name": "Fast"}],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                },
             ],
         }
     )
@@ -2669,9 +2846,25 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
                     },
                 }
             ],
+            "configRequirements/read": [{"id": 3, "result": {"requirements": None}}],
+            "model/list": [
+                {
+                    "id": 4,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-5.4",
+                                "isDefault": True,
+                                "serviceTiers": [{"id": "fast", "name": "Fast"}],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
             "thread/read": [
                 {
-                    "id": 3,
+                    "id": 5,
                     "result": {
                         "thread": {
                             "id": "thr_1",
@@ -2684,7 +2877,7 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
                     },
                 },
                 {
-                    "id": 4,
+                    "id": 6,
                     "result": {
                         "thread": {
                             "id": "thr_1",
@@ -2742,6 +2935,79 @@ async def test_status_and_thread_read_render_transport_mode_and_thread_source() 
 
 
 @pytest.mark.asyncio
+async def test_status_uses_same_managed_effective_native_settings_as_setting_commands() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "config/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "config": {
+                            "model": "gpt-user",
+                            "model_reasoning_effort": "low",
+                            "service_tier": "default",
+                            "default_permissions": ":workspace",
+                            "approval_policy": "on-request",
+                        }
+                    },
+                }
+            ],
+            "configRequirements/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "requirements": {
+                            "models": {
+                                "newThread": {
+                                    "model": "gpt-managed",
+                                    "modelReasoningEffort": "high",
+                                    "serviceTier": "priority",
+                                }
+                            },
+                            "defaultPermissions": ":read-only",
+                        }
+                    },
+                }
+            ],
+            "model/list": [
+                {
+                    "id": 4,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "gpt-managed",
+                                "serviceTiers": [{"id": "priority", "name": "Fast"}],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/status",
+        )
+    )
+
+    assert "Model: gpt-managed" in messages[0].text
+    assert "Reasoning: high" in messages[0].text
+    assert "Fast mode: Fast" in messages[0].text
+    assert "Permissions: Read Only" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_status_reports_an_independently_managed_unix_app_server() -> None:
     websocket = ScriptedWebSocket(
         {
@@ -2760,9 +3026,11 @@ async def test_status_reports_an_independently_managed_unix_app_server() -> None
                 }
             ],
             "config/read": [{"id": 3, "result": {}}],
+            "configRequirements/read": [{"id": 4, "result": {"requirements": None}}],
+            "model/list": [{"id": 5, "result": {"data": [], "nextCursor": None}}],
             "thread/read": [
                 {
-                    "id": 4,
+                    "id": 6,
                     "result": {
                         "thread": {
                             "id": "thr_1",
@@ -3328,7 +3596,8 @@ async def test_permission_command_selects_native_permission_profile() -> None:
 
     assert messages[0].message_type == "status"
     assert "Native permission preference set to Full Access." in messages[0].text
-    assert "new or cold-loaded threads" in messages[0].text
+    assert "new threads" in messages[0].text
+    assert "resumed threads retain" in messages[0].text
     profile_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "permissionProfile/list"]
     assert profile_payloads == [{"cwd": r"D:\work\alpha"}]
     requirement_payloads = [payload for payload in process.inputs if payload.get("method") == "configRequirements/read"]

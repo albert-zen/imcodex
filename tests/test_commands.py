@@ -336,13 +336,17 @@ def test_fast_on_builds_native_fast_mode_payload() -> None:
     response = router.handle("qq", "conv-1", "/fast on")
 
     assert response.action == "settings.fast.write"
-    assert response.payload == {
-        "mode": "on",
-        "edits": [
-            {"key_path": "service_tier", "value": "fast", "merge_strategy": "replace"},
-            {"key_path": "features.fast_mode", "value": True, "merge_strategy": "replace"},
-        ],
-    }
+    assert response.payload == {"enabled": True}
+
+
+def test_fast_off_builds_native_standard_tier_intent() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/fast off")
+
+    assert response.action == "settings.fast.write"
+    assert response.payload == {"enabled": False}
 
 
 def test_fast_status_reads_native_config() -> None:

@@ -213,13 +213,16 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             return [self._message(message, "command_result", render_reasoning_effort(result))]
         if response.action == "settings.personality.read":
             try:
-                result = await self.backend.read_config(message.channel_id, message.conversation_id)
+                result = await self.backend.read_personality_options(
+                    message.channel_id,
+                    message.conversation_id,
+                )
             except AppServerError as exc:
                 text = f"Personality could not be queried from Codex: {self._safe_appserver_error(exc)}."
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_personality(result))]
         if response.action == "settings.fast.read":
-            result = await self.backend.read_config(message.channel_id, message.conversation_id)
+            result = await self.backend.read_fast_options(message.channel_id, message.conversation_id)
             return [self._message(message, "command_result", render_fast_mode(result))]
         if response.action == "credits.read":
             try:
@@ -306,8 +309,17 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             )
             return [self._message(message, "status", response.text)]
         if response.action == "settings.model":
-            await self.backend.set_default_model(None if response.payload is None else response.payload.get("model"))
-            return [self._message(message, "status", response.text)]
+            try:
+                result = await self.backend.set_model(
+                    message.channel_id,
+                    message.conversation_id,
+                    None if response.payload is None else response.payload.get("model"),
+                )
+            except AppServerError as exc:
+                text = f"Model could not be set in Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            text = render_native_config_write_result(result, response.text, setting_label="Model")
+            return [self._message(message, "status", text)]
         if response.action == "settings.reasoning.write":
             payload = response.payload or {}
             try:
@@ -324,7 +336,11 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if response.action == "settings.personality.write":
             payload = response.payload or {}
             try:
-                result = await self.backend.set_default_personality(payload.get("personality"))
+                result = await self.backend.set_personality(
+                    message.channel_id,
+                    message.conversation_id,
+                    payload.get("personality"),
+                )
             except AppServerError as exc:
                 text = f"Personality could not be set in Codex: {self._safe_appserver_error(exc)}."
                 return [self._message(message, "status", text)]
@@ -332,16 +348,17 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             return [self._message(message, "status", text)]
         if response.action == "settings.fast.write":
             payload = response.payload or {}
-            edits = [
-                {
-                    "keyPath": edit["key_path"],
-                    "value": edit["value"],
-                    "mergeStrategy": edit["merge_strategy"],
-                }
-                for edit in list(payload.get("edits") or [])
-            ]
-            await self.backend.batch_write_config(edits=edits, reload_user_config=False)
-            return [self._message(message, "status", response.text)]
+            try:
+                result = await self.backend.set_fast_mode(
+                    message.channel_id,
+                    message.conversation_id,
+                    payload.get("enabled") is True,
+                )
+            except AppServerError as exc:
+                text = f"Fast mode could not be set in Codex: {self._safe_appserver_error(exc)}."
+                return [self._message(message, "status", text)]
+            text = render_native_config_write_result(result, response.text, setting_label="Fast mode")
+            return [self._message(message, "status", text)]
         if response.action == "settings.permission.write":
             payload = response.payload or {}
             try:

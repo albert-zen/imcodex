@@ -164,6 +164,14 @@ class ThreadViewMixin:
                 active = self.store.get_active_turn(binding.thread_id)
                 state = "Working" if active and active[1] == "inProgress" else self._human_state(snapshot.status)
         app_server = self.backend.app_server_connection_facts()
+        fast_label = fast_mode_label(
+            current_config,
+            default_service_tier=config.get("selectedModelDefaultServiceTier"),
+            feature_available=config.get("fastAvailable") is not False,
+            fast_supported=(
+                config.get("fastSupported") if isinstance(config.get("fastSupported"), bool) else None
+            ),
+        )
         return "\n".join(
             [
                 "Status",
@@ -178,7 +186,7 @@ class ThreadViewMixin:
                 f"Connection epoch: {int(app_server.get('connection_epoch') or 0)}",
                 f"Model: {current_model_label(current_config)}",
                 f"Reasoning: {current_reasoning_label(current_config)}",
-                f"Fast mode: {fast_mode_label(current_config)}",
+                f"Fast mode: {fast_label}",
                 f"Permissions: {permission_mode_label(current_config)}",
                 f"Bridge visibility: {self._bridge_visibility_label(binding)}",
                 f"Pending approvals: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id, kind='approval'))}",
@@ -270,9 +278,20 @@ class ThreadViewMixin:
 
     async def _read_status_config(self, channel_id: str, conversation_id: str) -> dict:
         try:
-            return await asyncio.wait_for(
-                self.backend.read_config(channel_id, conversation_id),
+            base = await asyncio.wait_for(
+                self.backend.read_effective_settings(
+                    channel_id,
+                    conversation_id,
+                    include_model_metadata=False,
+                ),
                 timeout=_STATUS_QUERY_TIMEOUT_S,
             )
         except (asyncio.TimeoutError, AppServerError):
             return {"config": {}}
+        try:
+            return await asyncio.wait_for(
+                self.backend.enrich_effective_settings(base),
+                timeout=_STATUS_QUERY_TIMEOUT_S,
+            )
+        except (asyncio.TimeoutError, AppServerError):
+            return base

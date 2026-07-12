@@ -18,11 +18,17 @@ def test_backend_module_keeps_split_compatibility_exports() -> None:
 
 
 @pytest.mark.parametrize("connection_mode", [None, ""])
-def test_connection_facts_fallback_treats_empty_modes_as_disconnected(connection_mode) -> None:
+def test_connection_facts_fallback_treats_empty_modes_as_disconnected(
+    connection_mode,
+) -> None:
     client = type(
         "ConnectionModeOnlyClient",
         (),
-        {"connection_mode": connection_mode, "initialized": True, "connection_epoch": 0},
+        {
+            "connection_mode": connection_mode,
+            "initialized": True,
+            "connection_epoch": 0,
+        },
     )()
     backend = CodexBackend(
         client=client,
@@ -218,14 +224,26 @@ class ThreadOpsClient:
 )
 def test_prefers_native_recovery_for_websocket_modes(mode: str, expected: bool) -> None:
     client = type("Client", (), {"connection_mode": mode, "last_connection_mode": "disconnected"})()
-    backend = CodexBackend(client=client, store=ConversationStore(clock=lambda: 1.0), service_name="imcodex")
+    backend = CodexBackend(
+        client=client,
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex",
+    )
 
     assert backend.prefers_native_recovery() is expected
 
 
 def test_prefers_native_recovery_falls_back_to_last_connection_mode() -> None:
-    client = type("Client", (), {"connection_mode": "disconnected", "last_connection_mode": "dedicated-ws"})()
-    backend = CodexBackend(client=client, store=ConversationStore(clock=lambda: 1.0), service_name="imcodex")
+    client = type(
+        "Client",
+        (),
+        {"connection_mode": "disconnected", "last_connection_mode": "dedicated-ws"},
+    )()
+    backend = CodexBackend(
+        client=client,
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex",
+    )
 
     assert backend.prefers_native_recovery() is True
 
@@ -308,7 +326,12 @@ async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_p
     store.bind_thread("qq", "conv-1", "thr_bound")
     client = CursoredClient(
         [
-            {"id": f"thr_{index}", "cwd": rf"D:\work\{index}", "preview": f"Thread {index}", "status": "idle"}
+            {
+                "id": f"thr_{index}",
+                "cwd": rf"D:\work\{index}",
+                "preview": f"Thread {index}",
+                "status": "idle",
+            }
             for index in range(1, 6)
         ]
     )
@@ -316,7 +339,13 @@ async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_p
 
     result = await backend.query_threads("qq", "conv-1", limit=5)
 
-    assert [thread.thread_id for thread in result.threads] == ["thr_1", "thr_2", "thr_3", "thr_4", "thr_5"]
+    assert [thread.thread_id for thread in result.threads] == [
+        "thr_1",
+        "thr_2",
+        "thr_3",
+        "thr_4",
+        "thr_5",
+    ]
     assert result.next_cursor == "cursor-2"
     assert client.list_calls == [{"sortKey": "updated_at", "limit": 5}]
 
@@ -327,7 +356,12 @@ async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_nat
     store.bind_thread("qq", "conv-1", "thr_bound")
     client = NamedClient(
         [
-            {"id": f"thr_{index}", "cwd": rf"D:\work\{index}", "preview": f"Thread {index}", "status": "idle"}
+            {
+                "id": f"thr_{index}",
+                "cwd": rf"D:\work\{index}",
+                "preview": f"Thread {index}",
+                "status": "idle",
+            }
             for index in range(1, 6)
         ]
     )
@@ -335,7 +369,13 @@ async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_nat
 
     result = await backend.query_threads("qq", "conv-1", limit=5)
 
-    assert [thread.thread_id for thread in result.threads] == ["thr_1", "thr_2", "thr_3", "thr_4", "thr_5"]
+    assert [thread.thread_id for thread in result.threads] == [
+        "thr_1",
+        "thr_2",
+        "thr_3",
+        "thr_4",
+        "thr_5",
+    ]
     assert result.next_cursor is None
     assert client.list_calls == [{"sortKey": "updated_at", "limit": 5}]
 
@@ -478,7 +518,9 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("message", ["unknown thread", "no rollout found for thread id thr_old"])
-async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(message: str) -> None:
+async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(
+    message: str,
+) -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_old")
     store.note_active_turn("thr_old", "turn_1", "inProgress")
@@ -597,7 +639,9 @@ async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_bindi
         {"id": "thr_1", "status": {"type": "active"}, "turns": []},
     ],
 )
-async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(thread_payload) -> None:
+async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(
+    thread_payload,
+) -> None:
     class UnverifiableClient:
         async def resume_thread(self, **_params):
             return {"thread": thread_payload}
@@ -642,9 +686,17 @@ async def test_rehydrate_replaces_cached_turn_with_verified_native_active_turn()
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
-    ["inProgress", "in_progress", "running", "working", {"type": "active", "activeFlags": []}],
+    [
+        "inProgress",
+        "in_progress",
+        "running",
+        "working",
+        {"type": "active", "activeFlags": []},
+    ],
 )
-async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_active(status: object) -> None:
+async def test_rehydrate_bound_threads_keeps_active_turn_when_native_thread_is_active(
+    status: object,
+) -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
     store.note_active_turn("thr_1", "turn_1", "inProgress")
@@ -682,9 +734,11 @@ class SettingsClient:
         self.requirements = requirements
         self.layers = list(layers or [])
         self.read_calls: list[dict] = []
+        self.write_calls: list[dict] = []
         self.batch_calls: list[dict] = []
         self.profile_calls: list[dict] = []
         self.model_calls: list[dict] = []
+        self.requirements_calls = 0
 
     async def read_config(self, *, include_layers: bool = False, cwd: str | None = None):
         self.read_calls.append({"include_layers": include_layers, "cwd": cwd})
@@ -703,7 +757,19 @@ class SettingsClient:
         return {"data": list(self.profiles), "nextCursor": None}
 
     async def read_config_requirements(self):
+        self.requirements_calls += 1
         return {"requirements": self.requirements}
+
+    async def write_config_value(
+        self,
+        *,
+        key_path: str,
+        value: object,
+        merge_strategy: str = "replace",
+    ):
+        call = {"key_path": key_path, "value": value, "merge_strategy": merge_strategy}
+        self.write_calls.append(call)
+        return {"status": "ok"}
 
     async def batch_write_config(
         self,
@@ -765,6 +831,524 @@ async def test_reasoning_options_follow_selected_native_model_and_reload_config_
 
 
 @pytest.mark.asyncio
+async def test_reasoning_command_uses_managed_model_and_rejects_managed_effort_write() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-user", "model_reasoning_effort": "low"},
+        models=[
+            {
+                "id": "gpt-managed",
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+            }
+        ],
+        requirements={
+            "models": {
+                "newThread": {
+                    "model": "gpt-managed",
+                    "modelReasoningEffort": "high",
+                }
+            }
+        },
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert options["selectedModel"] == "gpt-managed"
+    assert options["effectiveConfig"]["model_reasoning_effort"] == "high"
+    with pytest.raises(AppServerError, match="managed by Codex requirements"):
+        await backend.set_reasoning_effort("qq", "conv-1", "high")
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_global_settings_reads_native_options_without_creating_a_binding() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    layers = [
+        {
+            "name": {"type": "user", "file": "/tmp/codex/config.toml"},
+            "version": "user-v7",
+            "config": {"model": "gpt-admin"},
+        }
+    ]
+    client = SettingsClient(
+        config={"model": "gpt-admin", "model_reasoning_effort": "high"},
+        layers=layers,
+        models=[
+            {
+                "id": "gpt-admin",
+                "displayName": "GPT Admin",
+                "defaultReasoningEffort": "medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "medium", "description": "Balanced"},
+                    {"reasoningEffort": "high", "description": "Deep"},
+                ],
+            }
+        ],
+        profiles=[{"id": ":workspace", "allowed": True}],
+        requirements={"allowedPermissionProfiles": {":workspace": True}},
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.read_global_settings()
+
+    assert result["config"] == {"model": "gpt-admin", "model_reasoning_effort": "high"}
+    assert result["layers"] == layers
+    assert result["models"] == client.models
+    assert result["selectedModel"] == "gpt-admin"
+    assert result["reasoningEfforts"] == [
+        {"reasoningEffort": "medium", "description": "Balanced"},
+        {"reasoningEffort": "high", "description": "Deep"},
+    ]
+    assert result["profiles"] == [{"id": ":workspace", "allowed": True}]
+    assert result["requirements"] == {"allowedPermissionProfiles": {":workspace": True}}
+    assert result["nativeProfilesSupported"] is True
+    assert client.read_calls == [{"include_layers": True, "cwd": None}]
+    assert client.model_calls == [{"includeHidden": True}]
+    assert client.profile_calls == [{}]
+    assert client.requirements_calls == 1
+    assert store.iter_bindings() == []
+
+
+@pytest.mark.asyncio
+async def test_global_settings_projects_managed_new_thread_defaults_from_codex() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={
+            "model": "gpt-user",
+            "model_reasoning_effort": "low",
+            "service_tier": "default",
+            "default_permissions": ":workspace",
+            "approval_policy": "never",
+        },
+        models=[
+            {
+                "id": "gpt-managed",
+                "hidden": True,
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+                "serviceTiers": [{"id": "priority", "name": "Fast"}],
+            }
+        ],
+        requirements={
+            "models": {
+                "newThread": {
+                    "model": "gpt-managed",
+                    "modelReasoningEffort": "high",
+                    "serviceTier": "priority",
+                }
+            },
+            "defaultPermissions": ":read-only",
+        },
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.read_global_settings()
+
+    assert result["config"]["model"] == "gpt-user"
+    assert result["effectiveGlobalConfig"] == {
+        **result["config"],
+        "model": "gpt-managed",
+        "model_reasoning_effort": "high",
+        "service_tier": "priority",
+        "default_permissions": ":read-only",
+    }
+    assert result["managedSettings"] == ["model", "reasoningEffort", "fast", "permissionMode"]
+    assert result["selectedModel"] == "gpt-managed"
+    assert client.model_calls == [{"includeHidden": True}]
+
+
+@pytest.mark.asyncio
+async def test_global_managed_model_default_cannot_be_overridden() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(requirements={"models": {"newThread": {"model": "gpt-managed"}}})
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="model is managed"):
+        await backend.set_global_model("gpt-user")
+
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_global_personality_rejects_model_without_native_capability() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-mini"},
+        models=[{"id": "gpt-mini", "displayName": "GPT Mini", "supportsPersonality": False}],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="not supported by GPT Mini"):
+        await backend.set_global_personality("friendly")
+
+    await backend.set_global_personality(None)
+    assert len(client.batch_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_personality_feature_requirement_blocks_selection_but_allows_reset() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-capable", "personality": "friendly"},
+        models=[
+            {"id": "gpt-capable", "supportsPersonality": True},
+            {"id": "gpt-no-personality", "supportsPersonality": False},
+        ],
+        requirements={"features": {"personality": False}},
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_personality_options("qq", "conv-1")
+    assert options["personalityAvailable"] is False
+
+    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+        await backend.set_personality("qq", "conv-1", "friendly")
+    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+        await backend.set_global_preferences({"personality": "friendly"})
+
+    await backend.set_global_preferences({"model": "gpt-no-personality"})
+    assert client.batch_calls[-1]["edits"] == [
+        {"keyPath": "model", "value": "gpt-no-personality", "mergeStrategy": "replace"}
+    ]
+
+    await backend.set_personality("qq", "conv-1", None)
+    assert client.batch_calls[-1]["edits"] == [
+        {"keyPath": "personality", "value": None, "mergeStrategy": "replace"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fast_options_use_native_model_default_and_feature_gate() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-fast"},
+        models=[{"id": "gpt-fast", "defaultServiceTier": "priority"}],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.read_fast_options("qq", "conv-1")
+
+    assert result["selectedModelDefaultServiceTier"] == "priority"
+    assert result["fastAvailable"] is True
+    assert client.model_calls == [{"includeHidden": True}]
+
+
+@pytest.mark.asyncio
+async def test_fast_enable_rejects_native_feature_requirement_but_off_remains_available() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-fast"},
+        models=[{"id": "gpt-fast", "serviceTiers": [{"id": "priority"}]}],
+        requirements={"featureRequirements": {"fast_mode": False}},
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+        await backend.set_global_fast_mode(True)
+    await backend.set_global_fast_mode(False)
+
+    assert len(client.batch_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_global_settings_writes_use_optimistic_user_layer_without_binding() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-admin"},
+        layers=[
+            {
+                "name": {"type": "user", "file": "/tmp/codex/config.toml"},
+                "version": "user-v9",
+                "config": {},
+            }
+        ],
+        models=[
+            {
+                "id": "gpt-admin",
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+                "serviceTiers": [{"id": "priority", "name": "Fast"}],
+                "additionalSpeedTiers": ["fast"],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.set_global_model("gpt-admin")
+    await backend.set_global_reasoning_effort("HIGH")
+    await backend.set_global_personality("Friendly")
+    await backend.set_global_fast_mode(True)
+    permission = await backend.set_global_permission_mode("default")
+
+    assert client.read_calls == [{"include_layers": True, "cwd": None}] * 5
+    assert client.requirements_calls == 5
+    assert client.batch_calls == [
+        {
+            "edits": [{"keyPath": "model", "value": "gpt-admin", "mergeStrategy": "replace"}],
+            "reload_user_config": False,
+            "expected_version": "user-v9",
+            "file_path": "/tmp/codex/config.toml",
+        },
+        {
+            "edits": [
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": "high",
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reload_user_config": True,
+            "expected_version": "user-v9",
+            "file_path": "/tmp/codex/config.toml",
+        },
+        {
+            "edits": [
+                {
+                    "keyPath": "personality",
+                    "value": "friendly",
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reload_user_config": True,
+            "expected_version": "user-v9",
+            "file_path": "/tmp/codex/config.toml",
+        },
+        {
+            "edits": [
+                {
+                    "keyPath": "service_tier",
+                    "value": "priority",
+                    "mergeStrategy": "replace",
+                },
+            ],
+            "reload_user_config": False,
+            "expected_version": "user-v9",
+            "file_path": "/tmp/codex/config.toml",
+        },
+        {
+            "edits": [
+                {
+                    "keyPath": "default_permissions",
+                    "value": ":workspace",
+                    "mergeStrategy": "replace",
+                },
+                {
+                    "keyPath": "approval_policy",
+                    "value": "on-request",
+                    "mergeStrategy": "replace",
+                },
+                {"keyPath": "sandbox_mode", "value": None, "mergeStrategy": "replace"},
+            ],
+            "reload_user_config": True,
+            "expected_version": "user-v9",
+            "file_path": "/tmp/codex/config.toml",
+        },
+    ]
+    assert permission == {
+        "status": "ok",
+        "mode": "default",
+        "profile": ":workspace",
+        "fallback": False,
+    }
+    assert store.iter_bindings() == []
+
+
+@pytest.mark.asyncio
+async def test_global_preferences_apply_model_transition_atomically_against_candidate_state() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={
+            "model": "gpt-old",
+            "model_reasoning_effort": "high",
+            "personality": "friendly",
+            "service_tier": "priority",
+        },
+        layers=[
+            {
+                "name": {"type": "user", "file": "/tmp/codex/config.toml"},
+                "version": "user-v11",
+                "config": {},
+            }
+        ],
+        models=[
+            {
+                "id": "gpt-old",
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+                "supportsPersonality": True,
+                "serviceTiers": [{"id": "priority"}],
+            },
+            {
+                "id": "gpt-new",
+                "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
+                "supportsPersonality": False,
+                "serviceTiers": [],
+            },
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.set_global_preferences(
+        {
+            "model": "gpt-new",
+            "reasoningEffort": "low",
+            "personality": None,
+            "fast": False,
+        }
+    )
+
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {"keyPath": "model", "value": "gpt-new", "mergeStrategy": "replace"},
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": "low",
+                    "mergeStrategy": "replace",
+                },
+                {"keyPath": "personality", "value": None, "mergeStrategy": "replace"},
+                {"keyPath": "service_tier", "value": "default", "mergeStrategy": "replace"},
+            ],
+            "reload_user_config": True,
+            "expected_version": "user-v11",
+            "file_path": "/tmp/codex/config.toml",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_global_preferences_reject_model_incompatible_with_managed_effort() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        models=[
+            {
+                "id": "gpt-low",
+                "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
+            }
+        ],
+        requirements={"models": {"newThread": {"modelReasoningEffort": "high"}}},
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="reasoning effort high is not supported"):
+        await backend.set_global_preferences({"model": "gpt-low"})
+
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_global_fast_mode_disables_with_native_default_tier_only() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        layers=[
+            {
+                "name": {"type": "user", "file": "/tmp/codex/config.toml"},
+                "version": "user-v10",
+                "config": {"service_tier": "priority"},
+            }
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.set_global_fast_mode(False)
+
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {
+                    "keyPath": "service_tier",
+                    "value": "default",
+                    "mergeStrategy": "replace",
+                },
+            ],
+            "reload_user_config": False,
+            "expected_version": "user-v10",
+            "file_path": "/tmp/codex/config.toml",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_atomic_preferences_keep_fast_off_available_without_model_catalog() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(config={"service_tier": "priority"}, models=[])
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.set_global_preferences({"fast": False})
+
+    assert client.model_calls == []
+    assert client.batch_calls[0]["edits"] == [
+        {"keyPath": "service_tier", "value": "default", "mergeStrategy": "replace"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_global_fast_mode_enable_rejects_unsupported_native_model() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-mini"},
+        models=[
+            {
+                "id": "gpt-mini",
+                "serviceTiers": [],
+                "additionalSpeedTiers": [],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="not available for gpt-mini"):
+        await backend.set_global_fast_mode(True)
+
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_conversation_fast_write_validates_the_project_effective_model() -> None:
+    class ProjectSettingsClient(SettingsClient):
+        async def read_config(self, *, include_layers: bool = False, cwd: str | None = None):
+            self.read_calls.append({"include_layers": include_layers, "cwd": cwd})
+            model = "gpt-project" if cwd == "/tmp/project" else "gpt-global"
+            return {"config": {"model": model}, "origins": {}, "layers": None}
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", "/tmp/project")
+    client = ProjectSettingsClient(
+        models=[
+            {"id": "gpt-global", "serviceTiers": [{"id": "priority"}]},
+            {"id": "gpt-project", "serviceTiers": []},
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="not available for gpt-project"):
+        await backend.set_fast_mode("qq", "conv-1", True)
+
+    assert client.read_calls == [{"include_layers": False, "cwd": "/tmp/project"}]
+    assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_global_reasoning_rejects_effort_not_advertised_by_native_model() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-admin"},
+        models=[
+            {
+                "id": "gpt-admin",
+                "displayName": "GPT Admin",
+                "supportedReasoningEfforts": [{"reasoningEffort": "medium"}],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="available efforts: medium"):
+        await backend.set_global_reasoning_effort("high")
+
+    assert client.batch_calls == []
+    assert store.iter_bindings() == []
+
+
+@pytest.mark.asyncio
 async def test_reasoning_write_rejects_effort_not_advertised_by_selected_model() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
@@ -794,7 +1378,13 @@ async def test_personality_write_reloads_native_config_stack() -> None:
 
     assert client.batch_calls == [
         {
-            "edits": [{"keyPath": "personality", "value": "pragmatic", "mergeStrategy": "replace"}],
+            "edits": [
+                {
+                    "keyPath": "personality",
+                    "value": "pragmatic",
+                    "mergeStrategy": "replace",
+                }
+            ],
             "reload_user_config": True,
         }
     ]
@@ -826,7 +1416,11 @@ async def test_permission_bootstrap_seeds_documented_full_access_only_when_unset
                     "value": ":danger-full-access",
                     "mergeStrategy": "replace",
                 },
-                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+                {
+                    "keyPath": "approval_policy",
+                    "value": "never",
+                    "mergeStrategy": "replace",
+                },
                 {"keyPath": "sandbox_mode", "value": None, "mergeStrategy": "replace"},
             ],
             "reload_user_config": True,
@@ -845,7 +1439,9 @@ async def test_permission_bootstrap_seeds_documented_full_access_only_when_unset
         {"sandbox_mode": "read-only"},
     ],
 )
-async def test_permission_bootstrap_preserves_any_existing_native_permission_choice(config: dict) -> None:
+async def test_permission_bootstrap_preserves_any_existing_native_permission_choice(
+    config: dict,
+) -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(config=config)
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -863,7 +1459,10 @@ async def test_permission_bootstrap_preserves_managed_default_and_restrictions()
     client = SettingsClient(
         requirements={
             "defaultPermissions": ":read-only",
-            "allowedPermissionProfiles": {":read-only": True, ":danger-full-access": False},
+            "allowedPermissionProfiles": {
+                ":read-only": True,
+                ":danger-full-access": False,
+            },
         },
         profiles=[
             {"id": ":read-only", "allowed": True},
