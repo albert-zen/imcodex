@@ -90,6 +90,7 @@ class Settings:
     weixin_allowed_user_ids: str = ""
     weixin_allowed_conversation_ids: str = ""
     weixin_poll_timeout_ms: int = 35_000
+    inbound_webhook_token: str = ""
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -215,4 +216,5 @@ class Settings:
                 "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv
             ),
             weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
+            inbound_webhook_token=_env("IMCODEX_INBOUND_WEBHOOK_TOKEN", "", dotenv),
         )

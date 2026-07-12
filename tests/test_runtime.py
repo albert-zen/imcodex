@@ -239,6 +239,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
         qq_markdown_enabled=True,
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
+        inbound_webhook_token="do-not-persist",
     )
     runtime = build_runtime(settings)
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
@@ -258,6 +259,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(tmp_pat
     assert "IMCODEX_QQ_CLIENT_SECRET" not in launch["env"]
     assert "IMCODEX_TELEGRAM_BOT_TOKEN" not in launch["env"]
     assert "IMCODEX_FEISHU_APP_SECRET" not in launch["env"]
+    assert "IMCODEX_INBOUND_WEBHOOK_TOKEN" not in launch["env"]
     assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
     assert launch["port"] == 8000
 

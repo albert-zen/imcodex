@@ -44,10 +44,11 @@ class CountingService:
 
 
 def test_webhook_inbound_returns_messages() -> None:
-    client = TestClient(create_app(StubService()))
+    client = TestClient(create_app(StubService(), inbound_token="webhook-secret"))
 
     response = client.post(
         "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
         json={
             "channel_id": "demo",
             "conversation_id": "conv-1",
@@ -59,6 +60,40 @@ def test_webhook_inbound_returns_messages() -> None:
 
     assert response.status_code == 200
     assert response.json()["messages"][0]["message_type"] == "accepted"
+
+
+def test_webhook_inbound_rejects_invalid_bearer_token() -> None:
+    client = TestClient(create_app(StubService(), inbound_token="webhook-secret"))
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer wrong"},
+        json={
+            "channel_id": "demo",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "m1",
+            "text": "hello",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_webhook_inbound_without_token_is_loopback_only() -> None:
+    app = create_app(StubService())
+    remote_client = TestClient(app, client=("198.51.100.10", 50000))
+    loopback_client = TestClient(app, client=("127.0.0.1", 50000))
+    body = {
+        "channel_id": "demo",
+        "conversation_id": "conv-1",
+        "user_id": "u1",
+        "message_id": "m1",
+        "text": "hello",
+    }
+
+    assert remote_client.post("/api/channels/webhook/inbound", json=body).status_code == 403
+    assert loopback_client.post("/api/channels/webhook/inbound", json=body).status_code == 200
 
 
 def test_qq_adapter_normalizes_group_mention_message() -> None:

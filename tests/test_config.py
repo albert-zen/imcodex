@@ -146,6 +146,16 @@ def test_settings_reads_weixin_channel_config(monkeypatch, tmp_path) -> None:
     assert config["poll_timeout_ms"] == 25000
 
 
+def test_settings_reads_inbound_webhook_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_INBOUND_WEBHOOK_TOKEN", "webhook-secret")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.inbound_webhook_token == "webhook-secret"
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")

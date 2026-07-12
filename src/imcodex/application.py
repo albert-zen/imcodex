@@ -23,7 +23,10 @@ def create_application(
         finally:
             await runtime.stop()
 
-    app = create_app(runtime.service)
+    app = create_app(
+        runtime.service,
+        inbound_token=str(getattr(settings, "inbound_webhook_token", "") or ""),
+    )
     if bool(getattr(settings, "debug_api_enabled", False)):
         install_debug_routes(app, runtime)
     app.router.lifespan_context = lifespan
