@@ -19,7 +19,7 @@ function Write-Check([string]$Label, [bool]$Ok, [string]$Detail) {
 $dotenvPath = Join-Path $repoRoot ".env"
 $dotenv = @{}
 if (Test-Path $dotenvPath) {
-    Get-Content $dotenvPath | ForEach-Object {
+    Get-Content -LiteralPath $dotenvPath -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) {
             return

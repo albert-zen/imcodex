@@ -16,6 +16,13 @@ _TARGET_ENV_NAMES = (
     "IMCODEX_CORE_PORT",
 )
 _POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+_START_PS1 = Path(__file__).resolve().parents[1] / "scripts" / "start.ps1"
+
+
+def test_start_ps1_reads_dotenv_as_utf8_for_windows_powershell() -> None:
+    script = _START_PS1.read_text(encoding="utf-8")
+
+    assert "Get-Content -LiteralPath $dotenvPath -Encoding UTF8" in script
 
 
 def _run_start_sh(
@@ -140,6 +147,7 @@ def _run_start_ps1(
     provenance_capture_path = tmp_path / "powershell-dotenv-provenance.txt"
     launcher_provenance_capture_path = tmp_path / "powershell-launcher-provenance.txt"
     http_port_capture_path = tmp_path / "powershell-http-port.txt"
+    data_dir_capture_path = tmp_path / "powershell-data-dir.txt"
     if os.name == "nt":
         fake_python = tmp_path / "fake-python.cmd"
         fake_python.write_text(
@@ -154,6 +162,11 @@ def _run_start_ps1(
             '  >"%IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE%" echo('
             "%IMCODEX_LAUNCHER_RELOADABLE_KEYS%\n"
             '  >"%IMCODEX_TEST_HTTP_PORT_CAPTURE%" echo %IMCODEX_HTTP_PORT%\n'
+            '  "%IMCODEX_TEST_POWERSHELL%" -NoLogo -NoProfile -Command '
+            '"[IO.File]::WriteAllText($env:IMCODEX_TEST_DATA_DIR_CAPTURE, '
+            '$env:IMCODEX_DATA_DIR, (New-Object -TypeName System.Text.UTF8Encoding '
+            '-ArgumentList $false))"\n'
+            "  if errorlevel 1 exit /b %errorlevel%\n"
             ")\n"
             "exit /b 0\n",
             encoding="utf-8",
@@ -172,6 +185,7 @@ def _run_start_ps1(
             '  printf "%s\\n" "${IMCODEX_LAUNCHER_RELOADABLE_KEYS:-}" > '
             '"$IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE"\n'
             '  printf "%s\\n" "${IMCODEX_HTTP_PORT:-}" > "$IMCODEX_TEST_HTTP_PORT_CAPTURE"\n'
+            '  printf "%s" "${IMCODEX_DATA_DIR:-}" > "$IMCODEX_TEST_DATA_DIR_CAPTURE"\n'
             "fi\n"
             "exit 0\n",
             encoding="utf-8",
@@ -189,8 +203,11 @@ def _run_start_ps1(
         "IMCODEX_TEST_PROVENANCE_CAPTURE",
         "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE",
         "IMCODEX_TEST_HTTP_PORT_CAPTURE",
+        "IMCODEX_TEST_DATA_DIR_CAPTURE",
+        "IMCODEX_TEST_POWERSHELL",
         "IMCODEX_DOTENV_IMPORTED_KEYS",
         "IMCODEX_LAUNCHER_RELOADABLE_KEYS",
+        "IMCODEX_DATA_DIR",
         "CONDA_EXE",
     ):
         environment.pop(name, None)
@@ -202,6 +219,8 @@ def _run_start_ps1(
             "IMCODEX_TEST_PROVENANCE_CAPTURE": str(provenance_capture_path),
             "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE": str(launcher_provenance_capture_path),
             "IMCODEX_TEST_HTTP_PORT_CAPTURE": str(http_port_capture_path),
+            "IMCODEX_TEST_DATA_DIR_CAPTURE": str(data_dir_capture_path),
+            "IMCODEX_TEST_POWERSHELL": str(_POWERSHELL),
         }
     )
     environment.update(environment_overrides or {})
@@ -239,6 +258,20 @@ def _run_start_ps1(
     invocations = capture_path.read_text(encoding="utf-8").splitlines() if capture_path.exists() else []
     target_environment = target_capture_path.read_text(encoding="utf-8").strip() if target_capture_path.exists() else ""
     return completed, invocations, target_environment
+
+
+@pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
+def test_start_ps1_preserves_non_ascii_utf8_dotenv_values(tmp_path: Path) -> None:
+    expected = "数据/缓存"
+
+    completed, _invocations, _target_environment = _run_start_ps1(
+        tmp_path,
+        dotenv=f"IMCODEX_DATA_DIR={expected}\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    captured = (tmp_path / "powershell-data-dir.txt").read_text(encoding="utf-8")
+    assert captured == expected
 
 
 def _fake_powershell_conda_executable(tmp_path: Path) -> Path:

@@ -25,6 +25,7 @@ def test_windows_doctor_matches_launcher_interpreter_and_target_model() -> None:
     assert "app-server daemon --help" in script
     assert 'Get-Setting "IMCODEX_HTTP_HOST" "0.0.0.0"' in script
     assert "Test-PortAvailable -HostName $httpHost -Port $httpPort" in script
+    assert "Get-Content -LiteralPath $dotenvPath -Encoding UTF8" in script
     assert "??" not in script
     assert "shared-ws probe + stdio fallback" not in script
 

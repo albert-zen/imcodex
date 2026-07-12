@@ -660,39 +660,43 @@ def test_successful_write_restricts_dotenv_permissions(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows DACLs only")
 def test_successful_write_restricts_existing_windows_dacl(tmp_path: Path) -> None:
-    parent = tmp_path / "permissive"
-    parent.mkdir()
+    path = tmp_path / ".env"
+    path.write_text("IMCODEX_HTTP_PORT=8000\n", encoding="utf-8")
     subprocess.run(
         [
             "icacls",
-            str(parent),
+            str(path),
             "/grant",
-            "*S-1-1-0:(OI)(CI)(R)",
+            "*S-1-1-0:(R)",
         ],
         capture_output=True,
         text=True,
         check=True,
     )
-    path = parent / ".env"
-    path.write_text("IMCODEX_HTTP_PORT=8000\n", encoding="utf-8")
 
-    def acl() -> str:
+    def access_sids() -> set[str]:
+        powershell = "powershell.exe"
+        script = (
+            "$acl = Get-Acl -LiteralPath $args[0]; "
+            "$acl.Access | ForEach-Object { "
+            "$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
+            "}"
+        )
         result = subprocess.run(
-            ["icacls", str(path)],
+            [powershell, "-NoLogo", "-NoProfile", "-Command", script, str(path)],
             capture_output=True,
             text=True,
             check=True,
         )
-        return result.stdout
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
-    before = acl()
-    assert "(I)" in before
+    assert "S-1-1-0" in access_sids()
     store = ConfigStore(path, environ={})
     store.update(
         expected_revision=store.read().revision,
         values={"IMCODEX_HTTP_PORT": 8123},
     )
 
-    after = acl()
-    assert after != before
-    assert "(I)" not in after
+    after = access_sids()
+    assert "S-1-1-0" not in after
+    assert len(after) == 1

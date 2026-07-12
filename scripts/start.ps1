@@ -29,7 +29,7 @@ function Import-DotEnv {
         return
     }
 
-    foreach ($rawLine in Get-Content $dotenvPath) {
+    foreach ($rawLine in Get-Content -LiteralPath $dotenvPath -Encoding UTF8) {
         $line = $rawLine.Trim()
         if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) {
             continue
