@@ -1186,6 +1186,35 @@ async def test_server_request_without_outbound_sink_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_terminal_notification_without_outbound_sink_is_not_marked_delivered() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client, service = _build_service(store, process, None)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="No outbound IM sink"):
+        await service.handle_notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thr_1",
+                    "turnId": "turn_1",
+                    "item": {
+                        "id": "item_1",
+                        "type": "agentMessage",
+                        "phase": "final_answer",
+                        "text": "Must remain recoverable.",
+                    },
+                },
+            }
+        )
+
+    assert ("thr_1", "turn_1") not in service._recent_terminal_deliveries
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_current_time_server_request_is_resolved_internally_without_help_surface() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1_788_888_888.9)

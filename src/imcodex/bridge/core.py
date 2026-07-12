@@ -519,7 +519,10 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                     namespace="projection",
                     terminal_key=terminal_key,
                 )
-                outbound = await self._emit(message)
+                if terminal_key is not None and message is not None:
+                    outbound = await self._emit_required(message)
+                else:
+                    outbound = await self._emit(message)
                 if terminal_key is not None and message is not None:
                     self._remember_terminal_delivery(terminal_key)
         else:
