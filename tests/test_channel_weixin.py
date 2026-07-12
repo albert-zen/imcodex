@@ -7,7 +7,11 @@ import pytest
 
 from imcodex.channels import ChannelAccessPolicy, WeixinChannelAdapter
 from imcodex.channels.weixin_ilink import ILinkError
-from imcodex.channels.weixin_state import WeixinCredentials, WeixinStateStore, WeixinTransportState
+from imcodex.channels.weixin_state import (
+    WeixinCredentials,
+    WeixinStateStore,
+    WeixinTransportState,
+)
 from imcodex.models import InboundMessage, OutboundMessage
 
 
@@ -114,7 +118,9 @@ def test_weixin_normalizes_text_only_direct_messages(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_weixin_does_not_persist_context_for_unauthorized_sender(tmp_path: Path) -> None:
+async def test_weixin_does_not_persist_context_for_unauthorized_sender(
+    tmp_path: Path,
+) -> None:
     adapter = _adapter(tmp_path)
 
     await adapter.handle_raw_message(
@@ -128,7 +134,9 @@ async def test_weixin_does_not_persist_context_for_unauthorized_sender(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_weixin_poll_persists_context_before_dispatch_and_then_cursor(tmp_path: Path) -> None:
+async def test_weixin_poll_persists_context_before_dispatch_and_then_cursor(
+    tmp_path: Path,
+) -> None:
     class Middleware:
         def __init__(self) -> None:
             self.messages: list[InboundMessage] = []
@@ -168,7 +176,10 @@ async def test_weixin_start_defaults_access_to_qr_login_owner_and_stops_cleanly(
     adapter = _adapter(
         tmp_path,
         transport=transport,
-        access_policy=ChannelAccessPolicy(allowed_user_ids=frozenset()),
+        access_policy=ChannelAccessPolicy(
+            allowed_user_ids=frozenset(),
+            allowed_conversation_ids=frozenset({"user:owner@im.wechat"}),
+        ),
     )
 
     await adapter.start()
@@ -183,13 +194,16 @@ async def test_weixin_start_defaults_access_to_qr_login_owner_and_stops_cleanly(
         user_id="intruder@im.wechat",
         conversation_id="user:intruder@im.wechat",
     )
+    assert adapter.access_policy.allowed_conversation_ids == frozenset({"user:owner@im.wechat"})
     assert transport.notify_start_calls == 1
     assert transport.notify_stop_calls == 1
     assert transport.close_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_weixin_discards_transport_state_from_a_different_account(tmp_path: Path) -> None:
+async def test_weixin_discards_transport_state_from_a_different_account(
+    tmp_path: Path,
+) -> None:
     store = WeixinStateStore(tmp_path)
     store.save_credentials(_credentials())
     store.save_transport_state(
@@ -213,6 +227,31 @@ async def test_weixin_discards_transport_state_from_a_different_account(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_weixin_prunes_context_tokens_revoked_by_current_allowlist(
+    tmp_path: Path,
+) -> None:
+    store = WeixinStateStore(tmp_path)
+    store.save_credentials(_credentials())
+    store.save_transport_state(
+        WeixinTransportState(
+            account_id="bot@im.bot",
+            context_tokens={
+                "owner@im.wechat": "owner-context",
+                "intruder@im.wechat": "intruder-context",
+            },
+        )
+    )
+    transport = FakeTransport()
+    adapter = _adapter(tmp_path, state_store=store, transport=transport)
+
+    await adapter.start()
+    await asyncio.wait_for(transport.poll_started.wait(), timeout=1)
+    await adapter.stop()
+
+    assert store.load_transport_state().context_tokens == {"owner@im.wechat": "owner-context"}
+
+
+@pytest.mark.asyncio
 async def test_weixin_sends_chunked_text_with_persisted_context(tmp_path: Path) -> None:
     transport = FakeTransport()
     adapter = _adapter(tmp_path, transport=transport)
@@ -231,6 +270,30 @@ async def test_weixin_sends_chunked_text_with_persisted_context(tmp_path: Path) 
     assert [len(item["text"]) for item in transport.sent] == [4000, 1]
     assert {item["context_token"] for item in transport.sent} == {"context-secret"}
     assert {item["to_user_id"] for item in transport.sent} == {"owner@im.wechat"}
+    assert [item["client_id"] for item in transport.sent] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_weixin_uses_stable_delivery_id_for_chunk_retries(tmp_path: Path) -> None:
+    transport = FakeTransport()
+    adapter = _adapter(tmp_path, transport=transport)
+    adapter._transport = transport
+    adapter._state.set_context_token("owner@im.wechat", "context-secret")
+
+    await adapter.send_message(
+        OutboundMessage(
+            channel_id="weixin",
+            conversation_id="user:owner@im.wechat",
+            message_type="turn_result",
+            text="a" * 4001,
+            metadata={"delivery_id": "imcodex:stable"},
+        )
+    )
+
+    assert [item["client_id"] for item in transport.sent] == [
+        "imcodex:stable:0",
+        "imcodex:stable:1",
+    ]
 
 
 @pytest.mark.asyncio

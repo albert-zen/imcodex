@@ -6,6 +6,8 @@ from .qq import QQChannelAdapter
 from .telegram import TelegramChannelAdapter
 from .weixin import WeixinChannelAdapter
 
+BUILTIN_CHANNEL_IDS = frozenset({"qq", "telegram", "feishu", "weixin"})
+
 
 def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
     return {

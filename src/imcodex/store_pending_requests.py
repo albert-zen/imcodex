@@ -33,7 +33,6 @@ class PendingRequestStoreMixin:
             payload=dict(payload or {}),
         )
         self._pending_requests[request_id] = route
-        self._save()
         return route
 
     def list_pending_requests(
@@ -110,8 +109,6 @@ class PendingRequestStoreMixin:
 
     def remove_pending_request(self, request_id: str) -> PendingNativeRequestRoute | None:
         route = self._pending_requests.pop(request_id, None)
-        if route is not None:
-            self._save()
         return route
 
     def remove_pending_requests_for_turn(self, thread_id: str, turn_id: str) -> None:
@@ -124,17 +121,11 @@ class PendingRequestStoreMixin:
             return
         for request_id in removed:
             self._pending_requests.pop(request_id, None)
-        self._save()
 
     def invalidate_pending_requests_for_connection(self, connection_epoch: int) -> list[PendingNativeRequestRoute]:
-        removed = [
-            route
-            for route in self._pending_requests.values()
-            if route.connection_epoch == connection_epoch
-        ]
+        removed = [route for route in self._pending_requests.values() if route.connection_epoch == connection_epoch]
         if not removed:
             return []
         for route in removed:
             self._pending_requests.pop(route.request_id, None)
-        self._save()
         return removed

@@ -169,6 +169,7 @@ async def test_text_turn_flows_from_cwd_to_final_result() -> None:
 
     assert messages == []
     assert sink.messages[-1].text == "Hello from Codex"
+    assert sink.messages[-1].metadata["delivery_id"].startswith("imcodex:native:")
     await client.close()
 
 

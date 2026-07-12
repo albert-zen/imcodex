@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -39,30 +40,190 @@ def test_weixin_state_store_round_trips_sensitive_state_with_private_permissions
         saved_at=store.load_credentials().saved_at,
     )
     assert store.load_transport_state() == state
-    assert store.root.stat().st_mode & 0o777 == 0o700
-    assert store.credentials_path.stat().st_mode & 0o777 == 0o600
-    assert store.transport_state_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert store.root.stat().st_mode & 0o777 == 0o700
+        assert store.credentials_path.stat().st_mode & 0o777 == 0o600
+        assert store.transport_state_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_weixin_transport_state_bounds_context_tokens() -> None:
     state = WeixinTransportState()
 
     for index in range(4):
-        state.set_context_token(f"u{index}", f"token{index}", limit=3)
+        state.set_context_token(f"u{index}@im.wechat", f"token{index}", limit=3)
 
-    assert state.context_tokens == {"u1": "token1", "u2": "token2", "u3": "token3"}
+    assert state.context_tokens == {
+        "u1@im.wechat": "token1",
+        "u2@im.wechat": "token2",
+        "u3@im.wechat": "token3",
+    }
 
 
-def test_weixin_state_store_recovers_from_corrupt_transport_but_not_credentials(
+def test_weixin_state_store_fails_closed_on_corrupt_state(
     tmp_path: Path,
 ) -> None:
     store = WeixinStateStore(tmp_path)
     store.transport_state_path.write_text("not-json", encoding="utf-8")
     store.credentials_path.write_text("not-json", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(store.root, 0o700)
+        os.chmod(store.transport_state_path, 0o600)
+        os.chmod(store.credentials_path, 0o600)
 
-    assert store.load_transport_state() == WeixinTransportState()
+    with pytest.raises(RuntimeError, match="Could not read Weixin transport state"):
+        store.load_transport_state()
     with pytest.raises(RuntimeError, match="Could not read Weixin state file"):
         store.load_credentials()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "version": 2,
+            "account_id": "bot@im.bot",
+            "get_updates_buf": "cursor",
+            "context_tokens": {},
+        },
+        {
+            "version": 1,
+            "account_id": ["bot@im.bot"],
+            "get_updates_buf": {},
+            "context_tokens": [],
+        },
+        {
+            "version": 1,
+            "account_id": "bot@im.bot",
+            "get_updates_buf": "cursor",
+            "context_tokens": {"*@im.wechat": "secret"},
+        },
+    ],
+)
+def test_weixin_state_store_fails_closed_on_wrong_transport_shape(
+    tmp_path: Path,
+    payload: dict,
+) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+    store.root.mkdir(parents=True)
+    store.transport_state_path.write_text(json.dumps(payload), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(store.root, 0o700)
+        os.chmod(store.transport_state_path, 0o600)
+
+    with pytest.raises(RuntimeError, match="Invalid Weixin transport state"):
+        store.load_transport_state()
+
+
+@pytest.mark.parametrize(
+    "field_name,invalid_value",
+    [
+        ("version", 2),
+        ("account_id", ["bot@im.bot"]),
+        ("base_url", "https://attacker.example"),
+        ("owner_user_id", "*@im.wechat"),
+    ],
+)
+def test_weixin_state_store_fails_closed_on_invalid_credentials(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+    store.save_credentials(
+        WeixinCredentials(
+            account_id="bot@im.bot",
+            bot_token="bot-secret",
+            base_url="https://ilinkai.weixin.qq.com",
+            owner_user_id="owner@im.wechat",
+        )
+    )
+    payload = json.loads(store.credentials_path.read_text(encoding="utf-8"))
+    payload[field_name] = invalid_value
+    store.credentials_path.write_text(json.dumps(payload), encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(store.credentials_path, 0o600)
+
+    with pytest.raises(RuntimeError, match="Invalid Weixin credential file"):
+        store.load_credentials()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
+def test_weixin_state_store_fails_closed_when_chmod_fails(tmp_path: Path, monkeypatch) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+    credentials = WeixinCredentials(
+        account_id="bot@im.bot",
+        bot_token="bot-secret",
+        base_url="https://ilinkai.weixin.qq.com",
+    )
+
+    def fail_chmod(_path, _mode) -> None:
+        raise OSError("chmod unavailable")
+
+    monkeypatch.setattr("imcodex.channels.weixin_state.os.chmod", fail_chmod)
+
+    with pytest.raises(RuntimeError, match="Could not secure Weixin state path"):
+        store.save_credentials(credentials)
+
+    assert not store.credentials_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
+def test_weixin_state_store_rejects_existing_world_readable_secret(
+    tmp_path: Path,
+) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+    store.save_credentials(
+        WeixinCredentials(
+            account_id="bot@im.bot",
+            bot_token="bot-secret",
+            base_url="https://ilinkai.weixin.qq.com",
+        )
+    )
+    os.chmod(store.credentials_path, 0o644)
+
+    with pytest.raises(RuntimeError, match="Insecure Weixin state permissions"):
+        store.load_credentials()
+
+
+def test_weixin_state_store_refuses_wildcard_owner_identity(tmp_path: Path) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+
+    with pytest.raises(RuntimeError, match="invalid Weixin credentials"):
+        store.save_credentials(
+            WeixinCredentials(
+                account_id="bot@im.bot",
+                bot_token="bot-secret",
+                base_url="https://ilinkai.weixin.qq.com",
+                owner_user_id="*@im.wechat",
+            )
+        )
+
+
+def test_weixin_state_store_refuses_nonofficial_base_url(tmp_path: Path) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+
+    with pytest.raises(RuntimeError, match="invalid Weixin credentials"):
+        store.save_credentials(
+            WeixinCredentials(
+                account_id="bot@im.bot",
+                bot_token="bot-secret",
+                base_url="https://attacker.example",
+            )
+        )
+
+
+def test_weixin_logout_clear_removes_temporary_secret_files(tmp_path: Path) -> None:
+    store = WeixinStateStore(tmp_path / "weixin")
+    store.root.mkdir(parents=True)
+    credentials_tmp = store.credentials_path.with_suffix(".json.tmp")
+    transport_tmp = store.transport_state_path.with_suffix(".json.tmp")
+    credentials_tmp.write_text("secret", encoding="utf-8")
+    transport_tmp.write_text("context", encoding="utf-8")
+
+    store.clear()
+
+    assert not credentials_tmp.exists()
+    assert not transport_tmp.exists()
 
 
 @pytest.mark.asyncio

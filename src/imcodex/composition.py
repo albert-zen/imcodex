@@ -6,7 +6,11 @@ from pathlib import Path
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .appserver.retry import RetryBackoff
 from .bridge import BridgeService, CommandRouter, MessageProjector
-from .channels import MultiplexOutboundSink, UnifiedChannelMiddleware, WebhookOutboundSink
+from .channels import (
+    MultiplexOutboundSink,
+    UnifiedChannelMiddleware,
+    WebhookOutboundSink,
+)
 from .channels.registry import build_enabled_channel_adapters
 from .config import Settings
 from .observability.runtime import ObservabilityRuntime
@@ -35,7 +39,11 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
     )
     client = AppServerClient(
         supervisor=supervisor,
-        client_info={"name": settings.service_name, "title": "IM Codex Bridge", "version": "0.1.0"},
+        client_info={
+            "name": settings.service_name,
+            "title": "IM Codex Bridge",
+            "version": "0.1.0",
+        },
         experimental_api_enabled=settings.app_server_experimental_api_enabled,
         request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
     )
@@ -47,7 +55,14 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
         outbound_sink=None,
     )
     channel_middleware = UnifiedChannelMiddleware(service=service)
-    default_outbound_sink = WebhookOutboundSink(settings.outbound_url) if settings.outbound_url else None
+    default_outbound_sink = (
+        WebhookOutboundSink(
+            settings.outbound_url,
+            bearer_token=settings.outbound_webhook_token,
+        )
+        if settings.outbound_url
+        else None
+    )
     managed_channels = build_enabled_channel_adapters(settings=settings, middleware=channel_middleware)
     channel_sinks = {channel.channel_id: channel for channel in managed_channels}
     if channel_sinks or default_outbound_sink is not None:
@@ -97,9 +112,7 @@ def build_runtime(settings: Settings | None = None) -> AppRuntime:
             "IMCODEX_FEISHU_REQUIRE_MENTION": "1" if settings.feishu_require_mention else "0",
             "IMCODEX_FEISHU_STARTUP_TIMEOUT": str(settings.feishu_startup_timeout_s),
             "IMCODEX_WEIXIN_ENABLED": "1" if settings.weixin_enabled else "0",
-            "IMCODEX_WEIXIN_STATE_DIR": str(
-                settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"
-            ),
+            "IMCODEX_WEIXIN_STATE_DIR": str(settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"),
             "IMCODEX_WEIXIN_POLL_TIMEOUT_MS": str(settings.weixin_poll_timeout_ms),
         },
     )

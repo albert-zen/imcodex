@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 
 from ..appserver import AppServerError, StaleThreadBindingError, ThreadSelectionError
 from ..models import InboundMessage, OutboundMessage
@@ -350,22 +352,32 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             try:
                 snapshot = await self.backend.fork_thread(message.channel_id, message.conversation_id)
             except AppServerError as exc:
-                return [self._message(message, "status", f"Thread could not be forked: {self._safe_appserver_error(exc)}.")]
+                return [
+                    self._message(message, "status", f"Thread could not be forked: {self._safe_appserver_error(exc)}.")
+                ]
             if snapshot.cwd:
-                return [self._message(message, "status", f"Forked to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}")]
+                return [
+                    self._message(message, "status", f"Forked to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}")
+                ]
             return [self._message(message, "status", f"Forked to {self._thread_label(snapshot)}.")]
         if response.action == "thread.rename":
             name = str((response.payload or {}).get("name") or "").strip()
             try:
                 await self.backend.rename_thread(message.channel_id, message.conversation_id, name)
             except AppServerError as exc:
-                return [self._message(message, "status", f"Thread could not be renamed: {self._safe_appserver_error(exc)}.")]
+                return [
+                    self._message(message, "status", f"Thread could not be renamed: {self._safe_appserver_error(exc)}.")
+                ]
             return [self._message(message, "status", f"Renamed thread to {name}.")]
         if response.action == "thread.compact":
             try:
                 await self.backend.compact_thread(message.channel_id, message.conversation_id)
             except AppServerError as exc:
-                return [self._message(message, "status", f"Compaction could not be started: {self._safe_appserver_error(exc)}.")]
+                return [
+                    self._message(
+                        message, "status", f"Compaction could not be started: {self._safe_appserver_error(exc)}."
+                    )
+                ]
             return [self._message(message, "status", "Compaction started.")]
         if response.action == "thread.pick":
             context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
@@ -380,7 +392,11 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             except ThreadSelectionError as exc:
                 return [self._message(message, "error", str(exc))]
             except AppServerError as exc:
-                return [self._message(message, "status", f"Thread could not be attached: {self._safe_appserver_error(exc)}.")]
+                return [
+                    self._message(
+                        message, "status", f"Thread could not be attached: {self._safe_appserver_error(exc)}."
+                    )
+                ]
             snapshot = self.store.get_thread_snapshot(attached_id)
             label = self._thread_label(snapshot) if snapshot is not None else attached_id
             if snapshot is not None and snapshot.cwd:
@@ -401,9 +417,15 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             except ThreadSelectionError as exc:
                 return [self._message(message, "error", str(exc))]
             except Exception as exc:
-                return [self._message(message, "status", f"Thread could not be attached: {self._safe_exception_text(exc)}.")]
+                return [
+                    self._message(message, "status", f"Thread could not be attached: {self._safe_exception_text(exc)}.")
+                ]
             if snapshot.cwd:
-                return [self._message(message, "status", f"Attached to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}")]
+                return [
+                    self._message(
+                        message, "status", f"Attached to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}"
+                    )
+                ]
             return [self._message(message, "status", f"Attached to {self._thread_label(snapshot)}.")]
         if response.action == "turn.stop":
             interrupted = await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
@@ -459,6 +481,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
     async def handle_notification(self, notification: dict) -> list[OutboundMessage]:
         journal_entry = record_native_appserver_journal(self.store, notification)
         message = self.projector.project_notification(notification, self.store)
+        self._attach_native_delivery_id(message, notification, namespace="projection")
         self.store.update_native_appserver_event(
             journal_entry.sequence,
             outcome="projected" if message is not None else "ingested",
@@ -483,9 +506,11 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 )
             return []
         message = self.projector.project_notification(request, self.store)
+        self._attach_native_delivery_id(message, request, namespace="request")
         outbound = await self._emit(message)
         rejection = await self.native_requests.reject_unrouted(request)
         if rejection is not None:
+            self._attach_native_delivery_id(rejection, request, namespace="rejection")
             self.store.update_native_appserver_event(
                 journal_entry.sequence,
                 outcome="rejected",
@@ -538,6 +563,29 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if self.outbound_sink is not None:
             await self.outbound_sink.send_message(message)
         return [message]
+
+    @staticmethod
+    def _attach_native_delivery_id(
+        message: OutboundMessage | None,
+        native_message: dict,
+        *,
+        namespace: str,
+    ) -> None:
+        if message is None or message.metadata.get("delivery_id"):
+            return
+        canonical = json.dumps(native_message, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256()
+        for value in (
+            namespace,
+            message.channel_id,
+            message.conversation_id,
+            message.message_type,
+            canonical,
+        ):
+            encoded = value.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        message.metadata["delivery_id"] = f"imcodex:native:{digest.hexdigest()}"
 
     def _message(
         self,

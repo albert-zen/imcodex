@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from imcodex.channels import ChannelAccessPolicy, parse_id_set, split_text
-from imcodex.channels.base import BaseChannelAdapter
+from imcodex.channels.base import BaseChannelAdapter, ChannelRouteContext
 from imcodex.models import InboundMessage, OutboundMessage
 
 
@@ -35,7 +37,9 @@ def test_split_text_prefers_soft_boundaries_and_hard_splits_long_tokens() -> Non
 
 
 @pytest.mark.asyncio
-async def test_base_adapter_drops_unauthorized_inbound_before_middleware(monkeypatch) -> None:
+async def test_base_adapter_drops_unauthorized_inbound_before_middleware(
+    monkeypatch,
+) -> None:
     events: list[dict] = []
     monkeypatch.setattr("imcodex.channels.base.emit_event", lambda **payload: events.append(payload))
 
@@ -80,3 +84,85 @@ async def test_base_adapter_drops_unauthorized_inbound_before_middleware(monkeyp
 
     assert middleware.calls == 0
     assert events[0]["event"] == "message.inbound.access_denied"
+
+
+@pytest.mark.asyncio
+async def test_access_denial_diagnostics_are_rate_limited(monkeypatch) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr("imcodex.channels.base.emit_event", lambda **payload: events.append(payload))
+
+    class Adapter(BaseChannelAdapter):
+        channel_id = "test"
+
+        @classmethod
+        def from_config(cls, *, config, middleware):
+            raise NotImplementedError
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            return None
+
+    adapter = Adapter(middleware=object())
+    for index in range(25):
+        await adapter.dispatch_inbound(
+            InboundMessage(
+                channel_id="test",
+                conversation_id="chat:1",
+                user_id=f"intruder-{index}",
+                message_id=f"m{index}",
+                text="hello",
+            )
+        )
+
+    assert len(events) == 10
+
+
+def test_outbound_gate_rechecks_persisted_sender_against_current_policy() -> None:
+    middleware = SimpleNamespace(
+        get_route_context=lambda _channel_id, _conversation_id: ChannelRouteContext(
+            admitted_user_id="owner",
+            last_inbound_message_id="m1",
+        )
+    )
+
+    class Adapter(BaseChannelAdapter):
+        channel_id = "test"
+
+        @classmethod
+        def from_config(cls, *, config, middleware):
+            raise NotImplementedError
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            return None
+
+    adapter = Adapter(
+        middleware=middleware,
+        access_policy=ChannelAccessPolicy(allowed_user_ids=frozenset({"owner"})),
+    )
+    message = OutboundMessage(
+        channel_id="test",
+        conversation_id="chat:1",
+        message_type="turn_result",
+        text="done",
+    )
+
+    adapter.ensure_outbound_allowed(message)
+    adapter.access_policy = ChannelAccessPolicy(allowed_user_ids=frozenset({"someone-else"}))
+
+    with pytest.raises(PermissionError, match="current access policy"):
+        adapter.ensure_outbound_allowed(message)
+
+    message.metadata["user_id"] = "someone-else"
+    with pytest.raises(PermissionError, match="current access policy"):
+        adapter.ensure_outbound_allowed(message)

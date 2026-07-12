@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from imcodex.store import ConversationStore
 
 
@@ -30,14 +32,37 @@ def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert payload["pending_requests"] == []
 
 
-def test_store_ignores_legacy_state_file_shape(tmp_path) -> None:
+def test_store_fails_explicitly_on_legacy_or_corrupt_state(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text('{"bindings":[{"channel_id":"qq"}]}', encoding="utf-8")
 
-    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    with pytest.raises(RuntimeError, match="Unsupported or invalid bridge state"):
+        ConversationStore(clock=lambda: 1.0, state_path=state_path)
 
-    binding = store.get_binding("qq", "conv-1")
-    assert binding.thread_id is None
+    state_path.write_text("{truncated", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Could not load bridge state"):
+        ConversationStore(clock=lambda: 1.0, state_path=state_path)
+
+
+def test_store_atomic_save_preserves_previous_state_on_replace_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    store.set_bootstrap_cwd("qq", "conv-1", "/first")
+    previous = state_path.read_text(encoding="utf-8")
+
+    def fail_replace(_source, _target) -> None:
+        raise OSError("disk failure")
+
+    monkeypatch.setattr("imcodex.store.os.replace", fail_replace)
+
+    with pytest.raises(OSError, match="disk failure"):
+        store.set_bootstrap_cwd("qq", "conv-1", "/second")
+
+    assert state_path.read_text(encoding="utf-8") == previous
+    assert not state_path.with_suffix(".json.tmp").exists()
 
 
 def test_store_matches_unique_request_prefix() -> None:
@@ -57,6 +82,24 @@ def test_store_matches_unique_request_prefix() -> None:
 
     assert matched is not None
     assert matched.request_id == "native-request-abcdef"
+
+
+def test_store_bounds_persisted_inbound_dedupe_horizon() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    for index in range(1100):
+        store.mark_inbound_message_processed(
+            channel_id="gateway",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id=f"m{index}",
+            text_fingerprint="fingerprint",
+        )
+
+    recent = store.get_binding("gateway", "conv-1").reply_context["recent_inbound_message_ids"]
+    assert len(recent) == store.RECENT_INBOUND_MESSAGE_ID_LIMIT
+    assert recent[0] == "m76"
+    assert recent[-1] == "m1099"
 
 
 def test_binding_a_thread_moves_ownership_to_latest_conversation() -> None:

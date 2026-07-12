@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from imcodex.channels import (
     LARK_DOMAIN,
     FeishuChannelAdapter,
 )
+from imcodex.channels.base import ChannelRouteContext
 from imcodex.models import InboundMessage, OutboundMessage
 
 
@@ -178,6 +180,50 @@ async def test_feishu_sends_chunked_thread_replies() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feishu_async_topic_output_uses_persisted_message_id_not_thread_id() -> None:
+    sdk = FakeFeishuSdk()
+    middleware = SimpleNamespace(
+        get_route_context=lambda _channel_id, _conversation_id: ChannelRouteContext(
+            admitted_user_id="ou_owner",
+            last_inbound_message_id="om_last",
+        )
+    )
+    adapter = _adapter(middleware=middleware, channel_factory=lambda **_config: sdk)
+    adapter._sdk = sdk
+
+    await adapter.send_message(
+        OutboundMessage(
+            channel_id="feishu",
+            conversation_id="chat:oc_1:thread:omt_root",
+            message_type="turn_result",
+            text="done",
+        )
+    )
+
+    assert sdk.sent[0][2]["reply_to"] == "om_last"
+    assert sdk.sent[0][2]["reply_to"] != "omt_root"
+
+
+@pytest.mark.asyncio
+async def test_feishu_topic_output_fails_without_persisted_reply_message() -> None:
+    sdk = FakeFeishuSdk()
+    adapter = _adapter(channel_factory=lambda **_config: sdk)
+    adapter._sdk = sdk
+
+    with pytest.raises(RuntimeError, match="persisted inbound message ID"):
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="feishu",
+                conversation_id="chat:oc_1:thread:omt_root",
+                message_type="turn_result",
+                text="done",
+            )
+        )
+
+    assert sdk.sent == []
+
+
+@pytest.mark.asyncio
 async def test_feishu_surfaces_outbound_rejection() -> None:
     sdk = FakeFeishuSdk(send_success=False)
     adapter = _adapter(channel_factory=lambda **_config: sdk)
@@ -232,3 +278,198 @@ async def test_feishu_start_requires_credentials() -> None:
 
     with pytest.raises(RuntimeError, match="requires IMCODEX_FEISHU_APP_ID"):
         await adapter.start()
+
+
+@pytest.mark.asyncio
+async def test_feishu_immediate_stop_always_disconnects_sdk() -> None:
+    sdk = FakeFeishuSdk()
+    adapter = _adapter(channel_factory=lambda **_config: sdk)
+
+    await adapter.start()
+    await adapter.stop()
+
+    assert sdk.disconnect_calls == 1
+    assert adapter._sdk is None
+
+
+@pytest.mark.asyncio
+async def test_feishu_subscription_failure_disconnects_partial_sdk() -> None:
+    class FailingSubscribeSdk(FakeFeishuSdk):
+        def on(self, name: str, handler):
+            if name == "reconnecting":
+                raise RuntimeError("subscribe failed")
+            return super().on(name, handler)
+
+    sdk = FailingSubscribeSdk()
+    adapter = _adapter(channel_factory=lambda **_config: sdk)
+
+    with pytest.raises(RuntimeError, match="subscribe failed"):
+        await adapter.start()
+
+    assert sdk.disconnect_calls == 1
+    assert adapter._sdk is None
+    assert sdk.handlers["message"] == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_serializes_inbound_messages_in_callback_order() -> None:
+    class Middleware:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def handle_inbound(self, _adapter, inbound, *, reply_to_message_id=None) -> None:
+            self.started.append(inbound.message_id)
+            if inbound.message_id == "om_1":
+                self.first_started.set()
+                await self.release_first.wait()
+
+    sdk = FakeFeishuSdk()
+    middleware = Middleware()
+    adapter = _adapter(middleware=middleware, channel_factory=lambda **_config: sdk)
+    await adapter.start()
+    await asyncio.sleep(0)
+
+    sdk.handlers["message"][0](_message())
+    second = _message(text="second")
+    second.id = "om_2"
+    second.message_id = "om_2"
+    sdk.handlers["message"][0](second)
+
+    await asyncio.wait_for(middleware.first_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert middleware.started == ["om_1"]
+
+    middleware.release_first.set()
+    for _ in range(20):
+        if middleware.started == ["om_1", "om_2"]:
+            break
+        await asyncio.sleep(0)
+    await adapter.stop()
+
+    assert middleware.started == ["om_1", "om_2"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_stop_drops_queued_inbound_before_sdk_disconnect() -> None:
+    class BlockingDisconnectSdk(FakeFeishuSdk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.disconnect_started = asyncio.Event()
+            self.release_disconnect = asyncio.Event()
+
+        async def disconnect(self) -> None:
+            self.disconnect_calls += 1
+            self.disconnect_started.set()
+            await self.release_disconnect.wait()
+
+    class Middleware:
+        def __init__(self) -> None:
+            self.started: list[str] = []
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def handle_inbound(self, _adapter, inbound, *, reply_to_message_id=None) -> None:
+            self.started.append(inbound.message_id)
+            if inbound.message_id == "om_1":
+                self.first_started.set()
+                await self.release_first.wait()
+
+    sdk = BlockingDisconnectSdk()
+    middleware = Middleware()
+    adapter = _adapter(middleware=middleware, channel_factory=lambda **_config: sdk)
+    await adapter.start()
+    await asyncio.sleep(0)
+    sdk.handlers["message"][0](_message())
+    second = _message(text="second")
+    second.id = "om_2"
+    second.message_id = "om_2"
+    sdk.handlers["message"][0](second)
+    await asyncio.wait_for(middleware.first_started.wait(), timeout=1)
+
+    stop_task = asyncio.create_task(adapter.stop())
+    await asyncio.wait_for(sdk.disconnect_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert middleware.started == ["om_1"]
+    sdk.release_disconnect.set()
+    await stop_task
+    assert middleware.started == ["om_1"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_rejects_unauthorized_messages_before_queueing() -> None:
+    sdk = FakeFeishuSdk()
+    adapter = _adapter(
+        channel_factory=lambda **_config: sdk,
+        access_policy=ChannelAccessPolicy(allowed_user_ids=frozenset({"ou_owner"})),
+    )
+    await adapter.start()
+    await asyncio.sleep(0)
+    intruder = _message()
+    intruder.sender.open_id = "ou_intruder"
+
+    for _ in range(100):
+        sdk.handlers["message"][0](intruder)
+    await asyncio.sleep(0)
+
+    assert adapter._inbound_queue is not None
+    assert adapter._inbound_queue.qsize() == 0
+    await adapter.stop()
+
+
+def test_feishu_sdk_is_created_with_strict_bounded_security(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Config:
+        def __init__(self, **kwargs) -> None:
+            self.__dict__.update(kwargs)
+
+    class Channel:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    fake_module = SimpleNamespace(
+        ChatQueueConfig=Config,
+        FeishuChannel=Channel,
+        InboundConfig=Config,
+        MediaCapabilities=Config,
+        PolicyConfig=Config,
+        SafetyConfig=Config,
+        SecurityConfig=Config,
+        TransportConfig=Config,
+    )
+    monkeypatch.setitem(sys.modules, "lark_channel", fake_module)
+    adapter = _adapter(channel_factory=None)
+
+    adapter._create_sdk()
+
+    security = captured["security"]
+    assert security.mode == "strict"
+    assert security.allow_insecure_ws is False
+    assert security.allow_local_insecure_ws is False
+    assert security.max_ws_fragment_parts == 64
+    assert security.max_ws_fragment_bytes == 2 * 1024 * 1024
+    assert security.max_concurrent_ws_handlers == 16
+    assert security.resource_overflow_policy == "drop"
+
+
+def test_feishu_real_optional_sdk_construction_smoke() -> None:
+    pytest.importorskip("lark_channel")
+    adapter = FeishuChannelAdapter(
+        enabled=True,
+        app_id="cli_test",
+        app_secret="secret",
+        middleware=object(),
+        access_policy=ChannelAccessPolicy.allow_all(),
+    )
+
+    sdk = adapter._create_sdk()
+    try:
+        security = sdk.config.security
+        assert security.mode == "strict"
+        assert security.allow_insecure_ws is False
+        assert security.allow_local_insecure_ws is False
+    finally:
+        sdk.stop(join_timeout=0.1)

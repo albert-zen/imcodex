@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
+import logging
+import os
 from collections import deque
 from pathlib import Path
+from threading import Lock, RLock
+import tempfile
 from typing import Callable
 
 from .models import (
@@ -20,10 +26,13 @@ from .store_pending_requests import PendingRequestStoreMixin
 
 
 Clock = Callable[[], float]
+logger = logging.getLogger(__name__)
 
 
 class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
     INBOUND_DEDUP_WINDOW_S = 2.0
+    RECENT_INBOUND_MESSAGE_ID_LIMIT = 1024
+    RECENT_INBOUND_RESPONSE_LIMIT = 32
     DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT = _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT
 
     def __init__(
@@ -44,6 +53,15 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
         self._native_appserver_journal: deque[NativeAppServerJournalEntry] = deque(maxlen=journal_limit)
         self._native_appserver_journal_sequence = 0
         self._recent_inbound_fingerprints: dict[tuple[str, str], dict[str, float]] = {}
+        self._save_lock = RLock()
+        self._revision_lock = Lock()
+        self._next_state_revision = 0
+        self._persisted_state_revision = 0
+        self._async_persistence_lock = asyncio.Lock()
+        self._dirty_inbound_commits: set[tuple[str, str, str]] = set()
+        self._queued_state_write: tuple[int, str] | None = None
+        self._background_writer_task: asyncio.Task[None] | None = None
+        self._background_write_failures: dict[int, BaseException] = {}
         if self.state_path and self.state_path.exists():
             self._load()
 
@@ -104,9 +122,7 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
         binding = self.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
             self._active_turns.pop(binding.thread_id, None)
-            self._suppressed_turns = {
-                key for key in self._suppressed_turns if key[0] != binding.thread_id
-            }
+            self._suppressed_turns = {key for key in self._suppressed_turns if key[0] != binding.thread_id}
         binding.thread_id = None
         self._save()
         return binding
@@ -273,15 +289,164 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
         self._save()
         return binding
 
-    def note_inbound_message(self, channel_id: str, conversation_id: str, message_id: str) -> None:
+    def note_inbound_message(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        message_id: str,
+        *,
+        user_id: str | None = None,
+    ) -> None:
+        """Update in-memory reply/routing context before handling."""
+
         binding = self.get_binding(channel_id, conversation_id)
         binding.reply_context["last_inbound_message_id"] = message_id
+        if user_id:
+            binding.reply_context["last_inbound_user_id"] = user_id
+
+    def mark_inbound_message_processed(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        user_id: str,
+        message_id: str,
+        text_fingerprint: str,
+        response_payload: list[dict] | None = None,
+    ) -> None:
+        self._record_inbound_message_processed(
+            channel_id=channel_id,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            message_id=message_id,
+            text_fingerprint=text_fingerprint,
+            response_payload=response_payload,
+        )
+        self._save()
+
+    async def commit_inbound_message_processed(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        user_id: str,
+        message_id: str,
+        text_fingerprint: str,
+        response_payload: list[dict] | None = None,
+    ) -> None:
+        async with self._async_persistence_lock:
+            self._record_inbound_message_processed(
+                channel_id=channel_id,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                message_id=message_id,
+                text_fingerprint=text_fingerprint,
+                response_payload=response_payload,
+            )
+            if self.state_path is None or not message_id:
+                return
+            commit_key = (channel_id, conversation_id, message_id)
+            self._dirty_inbound_commits.add(commit_key)
+            try:
+                revision, serialized = self._snapshot_state()
+                await self._write_state_async(serialized, revision)
+            except asyncio.CancelledError:
+                # _write_state_async only re-raises cancellation after the
+                # shielded write has completed successfully.
+                self._dirty_inbound_commits.discard(commit_key)
+                raise
+            except BaseException:
+                # Keep the processed marker and cached response in memory.
+                # A platform retry can persist and replay them without
+                # executing the native command a second time.
+                raise
+            else:
+                self._dirty_inbound_commits.discard(commit_key)
+
+    async def ensure_inbound_message_durable(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> None:
+        commit_key = (channel_id, conversation_id, message_id)
+        if commit_key not in self._dirty_inbound_commits:
+            return
+        async with self._async_persistence_lock:
+            if commit_key not in self._dirty_inbound_commits:
+                return
+            try:
+                revision, serialized = self._snapshot_state()
+                await self._write_state_async(serialized, revision)
+            except asyncio.CancelledError:
+                self._dirty_inbound_commits.discard(commit_key)
+                raise
+            except BaseException:
+                raise
+            else:
+                self._dirty_inbound_commits.discard(commit_key)
+
+    async def _write_state_async(self, serialized: str, revision: int) -> None:
+        write_task = asyncio.create_task(
+            asyncio.to_thread(
+                self._write_serialized_state,
+                serialized,
+                revision,
+            )
+        )
+        try:
+            await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            # Resolve the write before propagating cancellation so callers
+            # never have to guess whether the marker reached disk.
+            await write_task
+            raise
+
+    def _record_inbound_message_processed(
+        self,
+        *,
+        channel_id: str,
+        conversation_id: str,
+        user_id: str,
+        message_id: str,
+        text_fingerprint: str,
+        response_payload: list[dict] | None = None,
+    ) -> None:
+        binding = self.get_binding(channel_id, conversation_id)
+        if not message_id:
+            key = (channel_id, conversation_id)
+            bucket = self._recent_inbound_fingerprints.setdefault(key, {})
+            bucket[f"{user_id}:{text_fingerprint}"] = self.clock()
+            return
         recent = binding.reply_context.get("recent_inbound_message_ids")
         recent_ids = [str(item) for item in recent] if isinstance(recent, list) else []
         recent_ids = [item for item in recent_ids if item != message_id]
         recent_ids.append(message_id)
-        binding.reply_context["recent_inbound_message_ids"] = recent_ids[-32:]
-        self._save()
+        binding.reply_context["recent_inbound_message_ids"] = recent_ids[-self.RECENT_INBOUND_MESSAGE_ID_LIMIT :]
+        if response_payload is not None:
+            responses = binding.reply_context.get("recent_inbound_responses")
+            response_map = dict(responses) if isinstance(responses, dict) else {}
+            response_map.pop(message_id, None)
+            response_map[message_id] = copy.deepcopy(response_payload)
+            overflow = len(response_map) - self.RECENT_INBOUND_RESPONSE_LIMIT
+            for old_message_id in list(response_map)[: max(0, overflow)]:
+                response_map.pop(old_message_id, None)
+            binding.reply_context["recent_inbound_responses"] = response_map
+
+    def get_processed_inbound_response(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        message_id: str,
+    ) -> list[dict] | None:
+        binding = self._bindings.get((channel_id, conversation_id))
+        if binding is None:
+            return None
+        responses = binding.reply_context.get("recent_inbound_responses")
+        if not isinstance(responses, dict):
+            return None
+        payload = responses.get(message_id)
+        return copy.deepcopy(payload) if isinstance(payload, list) else None
 
     def should_drop_duplicate_inbound_message(
         self,
@@ -298,28 +463,83 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
             recent = binding.reply_context.get("recent_inbound_message_ids")
             if isinstance(recent, list) and message_id in {str(item) for item in recent}:
                 return True
-            if binding.reply_context.get("last_inbound_message_id") == message_id:
-                return True
         now = self.clock()
         bucket = self._recent_inbound_fingerprints.setdefault(key, {})
         expired = [
-            fingerprint
-            for fingerprint, seen_at in bucket.items()
-            if now - seen_at > self.INBOUND_DEDUP_WINDOW_S
+            fingerprint for fingerprint, seen_at in bucket.items() if now - seen_at > self.INBOUND_DEDUP_WINDOW_S
         ]
         for fingerprint in expired:
             bucket.pop(fingerprint, None)
+        if message_id:
+            return False
         fingerprint = f"{user_id}:{text_fingerprint}"
         seen_at = bucket.get(fingerprint)
-        if seen_at is not None and now - seen_at <= self.INBOUND_DEDUP_WINDOW_S:
-            return True
-        bucket[fingerprint] = now
-        return False
+        return seen_at is not None and now - seen_at <= self.INBOUND_DEDUP_WINDOW_S
 
     def _save(self) -> None:
         if not self.state_path:
             return
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        revision, serialized = self._snapshot_state()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_serialized_state(serialized, revision)
+            return
+        self._queued_state_write = (revision, serialized)
+        if self._background_writer_task is None or self._background_writer_task.done():
+            self._background_writer_task = loop.create_task(self._run_background_writer())
+
+    async def _run_background_writer(self) -> None:
+        try:
+            while self._queued_state_write is not None:
+                revision, serialized = self._queued_state_write
+                self._queued_state_write = None
+                if revision <= self._current_persisted_revision():
+                    continue
+                try:
+                    await self._write_state_async(serialized, revision)
+                except asyncio.CancelledError:
+                    if revision > self._current_persisted_revision():
+                        self._background_write_failures[revision] = asyncio.CancelledError()
+                    raise
+                except BaseException as exc:
+                    self._background_write_failures[revision] = exc
+                    logger.error(
+                        "Bridge state background persistence failed: %s",
+                        type(exc).__name__,
+                    )
+                self._discard_superseded_write_failures()
+        finally:
+            self._background_writer_task = None
+
+    async def flush_pending_writes(self) -> None:
+        while self._background_writer_task is not None:
+            task = self._background_writer_task
+            await asyncio.shield(task)
+        self._discard_superseded_write_failures()
+        persisted_revision = self._current_persisted_revision()
+        outstanding = [
+            (revision, error)
+            for revision, error in self._background_write_failures.items()
+            if revision > persisted_revision
+        ]
+        if outstanding:
+            revision, error = max(outstanding, key=lambda item: item[0])
+            raise RuntimeError(f"Could not persist bridge state revision {revision}") from error
+
+    def _discard_superseded_write_failures(self) -> None:
+        persisted_revision = self._current_persisted_revision()
+        self._background_write_failures = {
+            revision: error
+            for revision, error in self._background_write_failures.items()
+            if revision > persisted_revision
+        }
+
+    def _current_persisted_revision(self) -> int:
+        with self._save_lock:
+            return self._persisted_state_revision
+
+    def _snapshot_state(self) -> tuple[int, str]:
         payload = {
             "version": 2,
             "bindings": [
@@ -343,22 +563,69 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
                 or binding.show_system is not False
                 or binding.reply_context
             ],
-            "pending_requests": [
-                
-            ],
+            "pending_requests": [],
         }
-        self.state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        with self._revision_lock:
+            self._next_state_revision += 1
+            revision = self._next_state_revision
+        return revision, json.dumps(payload, ensure_ascii=True, indent=2) + "\n"
+
+    def _write_serialized_state(self, serialized: str, revision: int) -> None:
+        if self.state_path is None:
+            return
+        temporary: Path | None = None
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f"{self.state_path.name}.tmp.",
+                dir=self.state_path.parent,
+            )
+            temporary = Path(temporary_name)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(serialized)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
+            # Slow file I/O happens before taking the shared lock. A normal
+            # event-loop mutation therefore never waits behind a worker that
+            # is blocked in fsync.
+            with self._save_lock:
+                if revision <= self._persisted_state_revision:
+                    temporary.unlink()
+                    return
+                os.replace(temporary, self.state_path)
+                self._persisted_state_revision = revision
+        except BaseException:
+            if revision <= self._persisted_state_revision:
+                # A newer revision may have won while this writer was doing
+                # I/O. Its state is authoritative.
+                try:
+                    if temporary is not None:
+                        temporary.unlink()
+                except FileNotFoundError:
+                    pass
+                return
+            try:
+                if temporary is not None:
+                    temporary.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
     def _load(self) -> None:
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return
-        if payload.get("version") != 2:
-            return
-        for item in payload.get("bindings", []):
-            if "channel_id" not in item or "conversation_id" not in item:
-                continue
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Could not load bridge state: {self.state_path}") from exc
+        if not isinstance(payload, dict) or payload.get("version") != 2:
+            raise RuntimeError(f"Unsupported or invalid bridge state: {self.state_path}")
+        bindings = payload.get("bindings")
+        if not isinstance(bindings, list):
+            raise RuntimeError(f"Invalid bridge bindings state: {self.state_path}")
+        for item in bindings:
+            if not isinstance(item, dict) or "channel_id" not in item or "conversation_id" not in item:
+                raise RuntimeError(f"Invalid bridge binding entry: {self.state_path}")
             binding = ConversationBinding(
                 channel_id=str(item["channel_id"]),
                 conversation_id=str(item["conversation_id"]),

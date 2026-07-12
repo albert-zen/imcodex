@@ -12,7 +12,12 @@ from .access import ChannelAccessPolicy
 from .base import BaseChannelAdapter
 from .text import split_text
 from .weixin_ilink import ILinkError, WeixinILinkTransport
-from .weixin_state import WeixinCredentials, WeixinStateStore, WeixinTransportState
+from .weixin_state import (
+    WeixinCredentials,
+    WeixinStateStore,
+    WeixinTransportState,
+    is_weixin_user_id,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +27,7 @@ STALE_TOKEN_CODE = -14
 STALE_TOKEN_PAUSE_S = 60 * 60
 RECONNECT_INITIAL_DELAY_S = 2.0
 RECONNECT_MAX_DELAY_S = 30.0
-CONVERSATION_PATTERN = re.compile(r"^user:(.+@im\.wechat)$")
+CONVERSATION_PATTERN = re.compile(r"^user:([^@\s*]+@im\.wechat)$")
 
 
 class WeixinChannelAdapter(BaseChannelAdapter):
@@ -77,13 +82,12 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             return
         credentials = self.state_store.load_credentials()
         if credentials is None:
-            raise RuntimeError(
-                "Weixin is not logged in. Run: python -m imcodex channels login weixin"
-            )
+            raise RuntimeError("Weixin is not logged in. Run: python -m imcodex channels login weixin")
         self._credentials = credentials
         if not self.access_policy.has_allowed_users and credentials.owner_user_id:
             self.access_policy = ChannelAccessPolicy(
-                allowed_user_ids=frozenset({credentials.owner_user_id})
+                allowed_user_ids=frozenset({credentials.owner_user_id}),
+                allowed_conversation_ids=self.access_policy.allowed_conversation_ids,
             )
         if not self.access_policy.has_allowed_users:
             logger.warning(
@@ -94,6 +98,18 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         if self._state.account_id != credentials.account_id:
             self._state = WeixinTransportState(account_id=credentials.account_id)
             await self._persist_state()
+        else:
+            admitted_tokens = {
+                user_id: token
+                for user_id, token in self._state.context_tokens.items()
+                if self.access_policy.allows(
+                    user_id=user_id,
+                    conversation_id=f"user:{user_id}",
+                )
+            }
+            if admitted_tokens != self._state.context_tokens:
+                self._state.context_tokens = admitted_tokens
+                await self._persist_state()
         self._transport = self._create_transport(credentials)
         self._stop_event.clear()
         self._auth_stale = False
@@ -140,7 +156,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         if str(payload.get("group_id") or "").strip():
             return None
         user_id = str(payload.get("from_user_id") or "").strip()
-        if not user_id:
+        if not is_weixin_user_id(user_id):
             return None
         message_id = self._stable_message_id(payload)
         text = self._text_from_items(payload.get("item_list"))
@@ -163,7 +179,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         context_token = str(payload.get("context_token") or "").strip()
         conversation_id = f"user:{user_id}"
         if (
-            user_id
+            is_weixin_user_id(user_id)
             and context_token
             and self.access_policy.allows(user_id=user_id, conversation_id=conversation_id)
         ):
@@ -177,25 +193,24 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
             return
+        self.ensure_outbound_allowed(message)
         if self._auth_stale:
-            raise RuntimeError(
-                "Weixin credentials are stale. Run: python -m imcodex channels login weixin"
-            )
+            raise RuntimeError("Weixin credentials are stale. Run: python -m imcodex channels login weixin")
         transport = self._transport
         if transport is None:
             raise RuntimeError("Weixin channel is not connected.")
         user_id = self._parse_conversation_id(message.conversation_id)
         context_token = self._state.context_tokens.get(user_id)
         if not context_token:
-            raise RuntimeError(
-                "Weixin cannot send before this user has supplied an active context token."
-            )
-        for chunk in split_text(message.text, limit=WEIXIN_TEXT_LIMIT):
+            raise RuntimeError("Weixin cannot send before this user has supplied an active context token.")
+        delivery_id = str(message.metadata.get("delivery_id") or "").strip()
+        for index, chunk in enumerate(split_text(message.text, limit=WEIXIN_TEXT_LIMIT)):
             try:
                 await transport.send_text(
                     to_user_id=user_id,
                     text=chunk,
                     context_token=context_token,
+                    client_id=f"{delivery_id}:{index}" if delivery_id else None,
                 )
             except ILinkError as exc:
                 if exc.code == STALE_TOKEN_CODE:
@@ -210,7 +225,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             try:
                 await transport.notify_start()
             except Exception as exc:
-                logger.warning("Weixin notifyStart failed; polling will continue: %s", type(exc).__name__)
+                logger.warning(
+                    "Weixin notifyStart failed; polling will continue: %s",
+                    type(exc).__name__,
+                )
             failures = 0
             while not self._stop_event.is_set():
                 try:
@@ -359,6 +377,13 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             raise ValueError(f"Unsupported Weixin conversation id: {conversation_id}")
         return match.group(1)
 
+    def _conversation_user_id(self, conversation_id: str) -> str | None:
+        match = CONVERSATION_PATTERN.fullmatch(conversation_id)
+        return match.group(1) if match is not None else None
+
     @staticmethod
     def _reconnect_delay(failures: int) -> float:
-        return min(RECONNECT_INITIAL_DELAY_S * (2 ** max(0, failures - 1)), RECONNECT_MAX_DELAY_S)
+        return min(
+            RECONNECT_INITIAL_DELAY_S * (2 ** max(0, failures - 1)),
+            RECONNECT_MAX_DELAY_S,
+        )

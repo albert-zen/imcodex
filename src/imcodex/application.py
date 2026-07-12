@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from .channels import create_app
 from .composition import build_runtime
+from .config import Settings
 from .debug_harness.api import install_debug_routes
 from .runtime import AppRuntime
 
@@ -12,6 +13,7 @@ def create_application(
     settings=None,
     runtime: AppRuntime | None = None,
 ):
+    settings = settings or Settings.from_env()
     runtime = runtime or build_runtime(settings)
 
     @asynccontextmanager

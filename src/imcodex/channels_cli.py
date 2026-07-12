@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable
 
 from .channels import parse_id_set
+from .channels.feishu import FeishuChannelAdapter
+from .channels.telegram import read_telegram_bot_token_file
 from .channels.weixin_ilink import ILinkError, WeixinILinkTransport
 from .channels.weixin_login import WeixinLoginError, WeixinLoginFlow
 from .channels.weixin_state import WeixinStateStore
@@ -18,7 +20,10 @@ def build_channels_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m imcodex channels")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("list", help="List built-in channel adapters and enabled state.")
-    subparsers.add_parser("doctor", help="Validate enabled channel configuration without revealing secrets.")
+    subparsers.add_parser(
+        "doctor",
+        help="Validate enabled channel configuration without revealing secrets.",
+    )
 
     login = subparsers.add_parser("login", help="Run an interactive channel login.")
     login.add_argument("channel", choices=["weixin"])
@@ -61,6 +66,7 @@ def run_channels_cli(
                 output(f"Account: {credentials.account_id}")
                 output(f"Owner: {credentials.owner_user_id or '(configure allowlist)'}")
                 output(f"State: {state_store.root}")
+                output("Restart the bridge to load the new Weixin credentials.")
             finally:
                 with contextlib.suppress(Exception):
                     await transport.close()
@@ -78,7 +84,10 @@ def run_channels_cli(
                 output("Cancelled.")
                 return 1
         WeixinStateStore(_weixin_state_dir(settings)).clear()
-        output("Local Weixin credentials and transport state removed.")
+        output(
+            "Local Weixin credentials and transport state removed. "
+            "Restart any running bridge to discard in-memory credentials."
+        )
         return 0
     return 2
 
@@ -87,10 +96,7 @@ def _list_channels(settings: Settings, *, output: Callable[[str], object]) -> in
     output("Built-in channels:")
     output(f"  qq        {'enabled' if settings.qq_enabled else 'disabled'}")
     output(f"  telegram  {'enabled' if settings.telegram_enabled else 'disabled'}")
-    output(
-        f"  feishu    {'enabled' if settings.feishu_enabled else 'disabled'} "
-        f"({settings.feishu_domain})"
-    )
+    output(f"  feishu    {'enabled' if settings.feishu_enabled else 'disabled'} ({settings.feishu_domain})")
     output(f"  weixin    {'enabled' if settings.weixin_enabled else 'disabled'} (experimental)")
     return 0
 
@@ -103,28 +109,34 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
         if not parse_id_set(settings.qq_allowed_user_ids):
             failures.append("qq: no allowed user IDs (all inbound messages will be denied)")
     if settings.telegram_enabled:
-        try:
-            token_file_ok = bool(
-                settings.telegram_bot_token_file
-                and settings.telegram_bot_token_file.is_file()
-                and settings.telegram_bot_token_file.stat().st_size > 0
-            )
-        except OSError:
-            token_file_ok = False
-        if not settings.telegram_bot_token.strip() and not token_file_ok:
+        token_file_ok = False
+        token_file_invalid = False
+        if not settings.telegram_bot_token.strip() and settings.telegram_bot_token_file:
+            try:
+                token_file_ok = bool(read_telegram_bot_token_file(settings.telegram_bot_token_file))
+            except RuntimeError as exc:
+                token_file_invalid = True
+                failures.append(f"telegram: {exc}")
+        if not settings.telegram_bot_token.strip() and not token_file_ok and not token_file_invalid:
             failures.append("telegram: missing bot token or readable token file")
         if not parse_id_set(settings.telegram_allowed_user_ids):
             failures.append("telegram: no allowed user IDs (all inbound messages will be denied)")
     if settings.feishu_enabled:
         if not settings.feishu_app_id or not settings.feishu_app_secret:
             failures.append("feishu: missing App ID or App Secret")
+        try:
+            FeishuChannelAdapter._normalize_domain(settings.feishu_domain)
+        except ValueError as exc:
+            failures.append(f"feishu: invalid domain ({exc})")
         if importlib.util.find_spec("lark_channel") is None:
             failures.append("feishu: optional dependency missing; install .[feishu]")
         if not parse_id_set(settings.feishu_allowed_user_ids):
             failures.append("feishu: no allowed user IDs (all inbound messages will be denied)")
     if settings.weixin_enabled:
+        state_store = WeixinStateStore(_weixin_state_dir(settings))
         try:
-            credentials = WeixinStateStore(_weixin_state_dir(settings)).load_credentials()
+            credentials = state_store.load_credentials()
+            state_store.load_transport_state()
         except RuntimeError as exc:
             failures.append(f"weixin: {exc}")
         else:

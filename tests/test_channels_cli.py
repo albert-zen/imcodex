@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -64,11 +65,16 @@ async def test_weixin_login_flow_persists_confirmed_credentials_without_printing
 
 
 @pytest.mark.asyncio
-async def test_weixin_login_handles_pair_code_and_official_idc_redirect(tmp_path: Path) -> None:
+async def test_weixin_login_handles_pair_code_and_official_idc_redirect(
+    tmp_path: Path,
+) -> None:
     transport = FakeLoginTransport(
         [
             {"status": "need_verifycode"},
-            {"status": "scaned_but_redirect", "redirect_host": "sh.ilinkai.weixin.qq.com"},
+            {
+                "status": "scaned_but_redirect",
+                "redirect_host": "sh.ilinkai.weixin.qq.com",
+            },
             {
                 "status": "confirmed",
                 "bot_token": "bot-secret",
@@ -94,9 +100,7 @@ async def test_weixin_login_handles_pair_code_and_official_idc_redirect(tmp_path
 
 @pytest.mark.asyncio
 async def test_weixin_login_rejects_non_weixin_redirect(tmp_path: Path) -> None:
-    transport = FakeLoginTransport(
-        [{"status": "scaned_but_redirect", "redirect_host": "attacker.example"}]
-    )
+    transport = FakeLoginTransport([{"status": "scaned_but_redirect", "redirect_host": "attacker.example"}])
     flow = WeixinLoginFlow(
         state_store=WeixinStateStore(tmp_path),
         transport=transport,
@@ -105,6 +109,29 @@ async def test_weixin_login_rejects_non_weixin_redirect(tmp_path: Path) -> None:
 
     with pytest.raises(WeixinLoginError, match="非微信域名"):
         await flow.login(timeout_s=30)
+
+
+@pytest.mark.parametrize(
+    ("account_id", "owner_user_id", "error"),
+    [
+        ("*", "owner@im.wechat", "bot 凭据"),
+        ("bot@im.bot", "*@im.wechat", "扫码用户 ID"),
+    ],
+)
+def test_weixin_login_rejects_wildcard_platform_identities(
+    account_id: str,
+    owner_user_id: str,
+    error: str,
+) -> None:
+    with pytest.raises(WeixinLoginError, match=error):
+        WeixinLoginFlow._credentials_from_confirmation(
+            {
+                "ilink_bot_id": account_id,
+                "bot_token": "bot-secret",
+                "baseurl": "https://ilinkai.weixin.qq.com",
+                "ilink_user_id": owner_user_id,
+            }
+        )
 
 
 def test_channels_cli_lists_builtin_channels(monkeypatch, tmp_path: Path) -> None:
@@ -134,6 +161,50 @@ def test_channels_cli_doctor_reports_enabled_channel_without_secrets(
     assert result == 1
     assert "missing bot token" in rendered
     assert "Bearer" not in rendered
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
+def test_channels_cli_doctor_rejects_insecure_telegram_token_file(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    token_file = tmp_path / "telegram-token"
+    token_file.write_text("secret", encoding="utf-8")
+    os.chmod(token_file, 0o644)
+    monkeypatch.setenv("IMCODEX_TELEGRAM_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "42")
+    outputs: list[str] = []
+
+    result = run_channels_cli(["doctor"], output=outputs.append)
+
+    assert result == 1
+    assert "private file (0600)" in "\n".join(outputs)
+
+
+def test_channels_cli_doctor_rejects_invalid_feishu_domain(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_FEISHU_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_FEISHU_APP_ID", "cli_app")
+    monkeypatch.setenv("IMCODEX_FEISHU_APP_SECRET", "secret")
+    monkeypatch.setenv("IMCODEX_FEISHU_DOMAIN", "example.com")
+    monkeypatch.setenv("IMCODEX_FEISHU_ALLOWED_USER_IDS", "ou_owner")
+    monkeypatch.setattr(
+        "imcodex.channels_cli.importlib.util.find_spec",
+        lambda _name: object(),
+    )
+    outputs: list[str] = []
+
+    result = run_channels_cli(["doctor"], output=outputs.append)
+
+    rendered = "\n".join(outputs)
+    assert result == 1
+    assert "feishu: invalid domain" in rendered
+    assert "must be 'feishu' or 'lark'" in rendered
 
 
 def test_channels_cli_runs_weixin_login_and_closes_transport(

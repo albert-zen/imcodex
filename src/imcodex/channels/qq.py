@@ -40,6 +40,7 @@ SUPPORTED_EVENTS = {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}
 MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
 RECONNECT_INITIAL_DELAY_S = 1.0
 RECONNECT_MAX_DELAY_S = 60.0
+INBOUND_QUEUE_LIMIT = 64
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -91,6 +92,12 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._access_token_expires_at = 0.0
         self._session_id: str | None = None
         self._last_seq: int | None = None
+        self._session_epoch = 0
+        self._inbound_queue: asyncio.Queue[tuple[InboundMessage, int | None, int]] = asyncio.Queue(
+            maxsize=INBOUND_QUEUE_LIMIT
+        )
+        self._queued_message_ids: set[tuple[str, str]] = set()
+        self._inbound_worker_task: asyncio.Task[None] | None = None
 
     @classmethod
     def from_config(cls, *, config: dict[str, object], middleware):
@@ -109,8 +116,14 @@ class QQChannelAdapter(BaseChannelAdapter):
             return
         if not self.app_id or not self.client_secret:
             raise RuntimeError("QQ adapter requires app_id and client_secret when enabled.")
+        if not self.access_policy.has_allowed_users:
+            logger.warning(
+                "QQ has no allowed user IDs; inbound messages will be denied. "
+                "Set IMCODEX_QQ_ALLOWED_USER_IDS after discovering the owner's stable openid."
+            )
         self._stop_event.clear()
         self._ready_event.clear()
+        self._ensure_inbound_worker()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
         mark_channel_health("qq", enabled=True, connected=False, status="connecting")
@@ -125,6 +138,14 @@ class QQChannelAdapter(BaseChannelAdapter):
             except asyncio.CancelledError:
                 pass
             self._runner_task = None
+        if self._inbound_worker_task is not None:
+            self._inbound_worker_task.cancel()
+            try:
+                await self._inbound_worker_task
+            except asyncio.CancelledError:
+                pass
+            self._inbound_worker_task = None
+        self._drain_inbound_queue()
         if self._owns_http_client:
             await self.http_client.aclose()
 
@@ -164,6 +185,7 @@ class QQChannelAdapter(BaseChannelAdapter):
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != "qq" or not message.text.strip():
             return
+        self.ensure_outbound_allowed(message)
         token = await self._get_access_token()
         path = self._conversation_path(message.conversation_id)
         reply_to = (
@@ -250,23 +272,24 @@ class QQChannelAdapter(BaseChannelAdapter):
                 async for raw in websocket:
                     payload = json.loads(raw)
                     seq = payload.get("s")
-                    if isinstance(seq, int):
-                        self._last_seq = seq
+                    sequence = seq if isinstance(seq, int) else None
                     op = payload.get("op")
                     if op == OP_HELLO:
                         interval_ms = (payload.get("d") or {}).get("heartbeat_interval", 45000)
                         if heartbeat_task is not None:
                             heartbeat_task.cancel()
-                        heartbeat_task = asyncio.create_task(
-                            self._heartbeat_loop(websocket, interval_ms / 1000.0)
-                        )
+                        heartbeat_task = asyncio.create_task(self._heartbeat_loop(websocket, interval_ms / 1000.0))
                         await websocket.send(json.dumps(self._resume_or_identify_payload(token)))
                         continue
                     if op == OP_DISPATCH:
                         event_type = payload.get("t")
                         data = payload.get("d") or {}
                         if event_type == "READY":
-                            self._session_id = data.get("session_id")
+                            session_id = str(data.get("session_id") or "") or None
+                            if self._session_id is not None and self._session_id != session_id:
+                                self._session_epoch += 1
+                            self._session_id = session_id
+                            self._advance_sequence_if_idle(sequence)
                             logger.info("QQ gateway ready session_id=%s", self._session_id)
                             emit_event(
                                 component="channels.qq",
@@ -283,6 +306,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                             self._ready_event.set()
                             continue
                         if event_type == "RESUMED":
+                            self._advance_sequence_if_idle(sequence)
                             logger.info("QQ gateway resumed")
                             emit_event(
                                 component="channels.qq",
@@ -298,13 +322,15 @@ class QQChannelAdapter(BaseChannelAdapter):
                             self._ready_event.set()
                             continue
                         if event_type in SUPPORTED_EVENTS:
-                            await self.handle_dispatch_event(event_type, data)
+                            self._queue_dispatch_event(event_type, data, sequence)
                             continue
+                        self._advance_sequence_if_idle(sequence)
                     if op == OP_HEARTBEAT_ACK:
                         continue
                     if op == OP_INVALID_SESSION:
                         self._session_id = None
                         self._last_seq = None
+                        self._session_epoch += 1
                         break
                     if op == OP_RECONNECT:
                         break
@@ -315,6 +341,106 @@ class QQChannelAdapter(BaseChannelAdapter):
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    def _queue_dispatch_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        sequence: int | None,
+    ) -> None:
+        inbound = self.parse_inbound_event(event_type, payload)
+        if inbound is None:
+            self._advance_sequence_if_idle(sequence)
+            return
+        if not self.inbound_allowed(inbound):
+            suppressed = self.prepare_access_denial_report()
+            if suppressed is not None:
+                self.emit_access_denial(inbound, suppressed)
+            self._advance_sequence_if_idle(sequence)
+            return
+        message_key = (inbound.conversation_id, inbound.message_id)
+        if message_key in self._queued_message_ids:
+            return
+        self._ensure_inbound_worker()
+        try:
+            self._inbound_queue.put_nowait((inbound, sequence, self._session_epoch))
+        except asyncio.QueueFull:
+            emit_event(
+                component="channels.qq",
+                event="message.inbound.queue_overflow",
+                level="ERROR",
+                message="QQ inbound queue is full; reconnecting for replay",
+                data={"queue_limit": INBOUND_QUEUE_LIMIT},
+            )
+            raise RuntimeError("QQ inbound queue is full; reconnecting before acknowledging messages") from None
+        self._queued_message_ids.add(message_key)
+
+    def _ensure_inbound_worker(self) -> None:
+        if self._inbound_worker_task is None or self._inbound_worker_task.done():
+            self._inbound_worker_task = asyncio.create_task(self._run_inbound_worker())
+
+    async def _run_inbound_worker(self) -> None:
+        while True:
+            inbound, sequence, epoch = await self._inbound_queue.get()
+            message_key = (inbound.conversation_id, inbound.message_id)
+            failures = 0
+            try:
+                while not self._stop_event.is_set():
+                    try:
+                        await self.dispatch_inbound(
+                            inbound,
+                            reply_to_message_id=inbound.message_id,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        failures += 1
+                        delay = self._reconnect_delay(failures)
+                        logger.warning(
+                            "QQ inbound delivery failed; retrying in %.1fs: %s",
+                            delay,
+                            type(exc).__name__,
+                        )
+                        emit_event(
+                            component="channels.qq",
+                            event="message.inbound.delivery_failed",
+                            level="ERROR",
+                            message="QQ inbound delivery failed; retrying",
+                            channel_id=self.channel_id,
+                            conversation_id=inbound.conversation_id,
+                            user_id=inbound.user_id,
+                            message_id=inbound.message_id,
+                            data={
+                                "error_type": type(exc).__name__,
+                                "retry_attempt": failures,
+                                "retry_delay_s": delay,
+                            },
+                        )
+                        await self.sleep(delay)
+                        continue
+                    self._advance_sequence(sequence, epoch=epoch)
+                    break
+            finally:
+                self._queued_message_ids.discard(message_key)
+                self._inbound_queue.task_done()
+
+    def _advance_sequence_if_idle(self, sequence: int | None) -> None:
+        if self._inbound_queue.empty() and not self._queued_message_ids:
+            self._advance_sequence(sequence, epoch=self._session_epoch)
+
+    def _advance_sequence(self, sequence: int | None, *, epoch: int) -> None:
+        if sequence is None or epoch != self._session_epoch:
+            return
+        self._last_seq = max(self._last_seq or sequence, sequence)
+
+    def _drain_inbound_queue(self) -> None:
+        while True:
+            try:
+                inbound, _sequence, _epoch = self._inbound_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._queued_message_ids.discard((inbound.conversation_id, inbound.message_id))
+            self._inbound_queue.task_done()
 
     def _reconnect_delay(self, failures: int) -> float:
         if failures <= 0:
@@ -350,10 +476,7 @@ class QQChannelAdapter(BaseChannelAdapter):
             "d": {
                 "token": f"QQBot {token}",
                 "intents": (
-                    INTENT_PUBLIC_GUILD_MESSAGES
-                    | INTENT_GUILD_MEMBERS
-                    | INTENT_DIRECT_MESSAGE
-                    | INTENT_GROUP_AND_C2C
+                    INTENT_PUBLIC_GUILD_MESSAGES | INTENT_GUILD_MEMBERS | INTENT_DIRECT_MESSAGE | INTENT_GROUP_AND_C2C
                 ),
                 "shard": [0, 1],
             },
@@ -369,9 +492,11 @@ class QQChannelAdapter(BaseChannelAdapter):
         )
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("QQ token response was not an object.")
         token = payload.get("access_token")
         if not token:
-            raise RuntimeError(f"QQ token response missing access_token: {payload}")
+            raise RuntimeError("QQ token response missing required access_token field.")
         expires_in = int(payload.get("expires_in", 7200))
         self._access_token = token
         self._access_token_expires_at = self.clock() + expires_in
@@ -390,9 +515,11 @@ class QQChannelAdapter(BaseChannelAdapter):
             )
             if response.is_success:
                 payload = response.json()
+                if not isinstance(payload, dict):
+                    raise RuntimeError("QQ gateway response was not an object.")
                 url = payload.get("url")
                 if not url:
-                    raise RuntimeError(f"QQ gateway response missing url: {payload}")
+                    raise RuntimeError("QQ gateway response missing required url field.")
                 self.api_base = api_base
                 return str(url)
             last_error = httpx.HTTPStatusError(
@@ -428,6 +555,11 @@ class QQChannelAdapter(BaseChannelAdapter):
         if conversation_id.startswith("group:"):
             return f"/v2/groups/{conversation_id[6:]}/messages"
         raise ValueError(f"Unsupported QQ conversation id: {conversation_id}")
+
+    def _conversation_user_id(self, conversation_id: str) -> str | None:
+        if conversation_id.startswith("c2c:"):
+            return conversation_id[4:] or None
+        return None
 
     def _next_msg_seq(self, conversation_id: str) -> int:
         self._msg_seq[conversation_id] += 1

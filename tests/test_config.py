@@ -129,6 +129,43 @@ def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_
     assert config["startup_timeout_s"] == 12.5
 
 
+def test_settings_uses_lark_aliases_when_feishu_environment_values_are_blank(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_FEISHU_APP_ID", "")
+    monkeypatch.setenv("IMCODEX_FEISHU_APP_SECRET", "  ")
+    monkeypatch.setenv("IMCODEX_LARK_APP_ID", "cli_lark")
+    monkeypatch.setenv("IMCODEX_LARK_APP_SECRET", "secret")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.feishu_app_id == "cli_lark"
+    assert settings.feishu_app_secret == "secret"
+
+
+def test_settings_uses_lark_aliases_with_blank_feishu_dotenv_template_values(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "IMCODEX_FEISHU_APP_ID=\n"
+        "IMCODEX_FEISHU_APP_SECRET=\n"
+        "IMCODEX_LARK_APP_ID=cli_lark\n"
+        "IMCODEX_LARK_APP_SECRET=secret\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.feishu_app_id == "cli_lark"
+    assert settings.feishu_app_secret == "secret"
+
+
 def test_settings_reads_weixin_channel_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_WEIXIN_ENABLED", "1")
@@ -154,6 +191,16 @@ def test_settings_reads_inbound_webhook_token(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
 
     assert settings.inbound_webhook_token == "webhook-secret"
+
+
+def test_settings_reads_outbound_webhook_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_OUTBOUND_WEBHOOK_TOKEN", "outbound-secret")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.outbound_webhook_token == "outbound-secret"
 
 
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:

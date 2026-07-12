@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 import re
+import stat
+import time
 from typing import Any
 
 import httpx
@@ -23,14 +25,22 @@ DEFAULT_API_BASE = "https://api.telegram.org"
 TELEGRAM_TEXT_LIMIT = 4000
 RECONNECT_INITIAL_DELAY_S = 1.0
 RECONNECT_MAX_DELAY_S = 60.0
+OFFSET_MAX_AGE_S = 6 * 24 * 60 * 60
 CONVERSATION_PATTERN = re.compile(r"^chat:(-?\d+)(?::topic:(\d+))?$")
 
 
 class TelegramAPIError(RuntimeError):
-    def __init__(self, *, error_code: int, description: str) -> None:
+    def __init__(
+        self,
+        *,
+        error_code: int,
+        description: str,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(f"Telegram API error {error_code}: {description}")
         self.error_code = error_code
         self.description = description
+        self.retry_after = retry_after
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -39,6 +49,22 @@ def _config_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def read_telegram_bot_token_file(path: Path) -> str:
+    try:
+        if os.name != "nt":
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                raise RuntimeError(f"Telegram bot token file must be a non-symlink private file (0600): {path}")
+        token = path.read_text(encoding="utf-8").strip()
+    except RuntimeError:
+        raise
+    except OSError as exc:
+        raise RuntimeError(f"Could not read Telegram bot token file: {path}") from exc
+    if not token:
+        raise RuntimeError(f"Telegram bot token file is empty: {path}")
+    return token
 
 
 class TelegramChannelAdapter(BaseChannelAdapter):
@@ -58,6 +84,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         state_dir: Path | None = None,
         http_client: httpx.AsyncClient | None = None,
         sleep=asyncio.sleep,
+        clock=time.time,
     ) -> None:
         super().__init__(
             middleware=middleware,
@@ -73,9 +100,10 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         self.http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
         self.sleep = sleep
+        self.clock = clock
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
-        self._offset = self._load_offset()
+        self._offset, self._offset_bot_id, self._offset_updated_at = self._load_offset()
         self._bot_id: str | None = None
         self._bot_username: str | None = None
 
@@ -101,8 +129,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         self.bot_token = self._resolve_bot_token()
         if not self.bot_token:
             raise RuntimeError(
-                "Telegram adapter requires IMCODEX_TELEGRAM_BOT_TOKEN or "
-                "IMCODEX_TELEGRAM_BOT_TOKEN_FILE when enabled."
+                "Telegram adapter requires IMCODEX_TELEGRAM_BOT_TOKEN or IMCODEX_TELEGRAM_BOT_TOKEN_FILE when enabled."
             )
         if not self.access_policy.has_allowed_users:
             logger.warning(
@@ -183,6 +210,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
             return
+        self.ensure_outbound_allowed(message)
         chat_id, thread_id = self._parse_conversation_id(message.conversation_id)
         reply_to = self._parse_reply_message_id(
             message.metadata.get("reply_to_message_id") or message.metadata.get("message_id")
@@ -197,7 +225,12 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 body["message_thread_id"] = thread_id
             if index == 0 and reply_to is not None:
                 body["reply_parameters"] = {"message_id": reply_to}
-            await self._api_call("sendMessage", body, max_attempts=3)
+            await self._api_call(
+                "sendMessage",
+                body,
+                max_attempts=3,
+                retry_ambiguous=False,
+            )
 
     async def _run_forever(self) -> None:
         failures = 0
@@ -216,14 +249,16 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                     message="Telegram long polling is ready",
                     data={"bot_username": self._bot_username},
                 )
-                failures = 0
                 while not self._stop_event.is_set():
                     await self._poll_once()
+                    failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 failures += 1
                 delay = self._reconnect_delay(failures)
+                if isinstance(exc, TelegramAPIError) and exc.retry_after is not None:
+                    delay = max(delay, exc.retry_after)
                 logger.warning("Telegram polling failed; retrying in %.1fs: %s", delay, exc)
                 logger.debug("Telegram polling failure details", exc_info=True)
                 mark_channel_health(
@@ -251,10 +286,20 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         result = await self._api_call("getMe", {}, max_attempts=1)
         if not isinstance(result, dict) or not result.get("id"):
             raise RuntimeError("Telegram getMe response did not include a bot id.")
-        self._bot_id = str(result["id"])
+        bot_id = str(result["id"])
+        if self._offset_bot_id != bot_id or self._offset_is_stale():
+            self._offset = None
+            self._offset_bot_id = bot_id
+            self._offset_updated_at = self.clock()
+            await self._persist_offset()
+        self._bot_id = bot_id
         self._bot_username = str(result.get("username") or "").strip() or None
 
     async def _poll_once(self) -> None:
+        if self._offset is not None and self._offset_is_stale():
+            self._offset = None
+            self._offset_updated_at = self.clock()
+            await self._persist_offset()
         body: dict[str, object] = {
             "timeout": self.poll_timeout_s,
             "allowed_updates": ["message"],
@@ -277,6 +322,8 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 continue
             await self.handle_update(update)
             self._offset = max(self._offset or 0, update_id + 1)
+            self._offset_bot_id = self._bot_id or self._offset_bot_id
+            self._offset_updated_at = self.clock()
             await self._persist_offset()
 
     async def _api_call(
@@ -286,6 +333,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         *,
         timeout_s: float = 20.0,
         max_attempts: int,
+        retry_ambiguous: bool = True,
     ) -> object:
         url = f"{self.api_base}/bot{self.bot_token}/{method}"
         attempts = max(1, max_attempts)
@@ -293,7 +341,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             try:
                 response = await self.http_client.post(url, json=body, timeout=timeout_s)
             except httpx.HTTPError as exc:
-                if attempt >= attempts:
+                if not retry_ambiguous or attempt >= attempts:
                     raise TelegramAPIError(
                         error_code=0,
                         description=f"network request failed ({type(exc).__name__})",
@@ -304,10 +352,17 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             payload = self._response_payload(response)
             error_code = int(payload.get("error_code") or response.status_code or 0)
             retry_after = self._retry_after(payload, response)
-            if error_code == 429 and attempt < attempts:
-                await self.sleep(retry_after)
-                continue
-            if response.status_code >= 500 and attempt < attempts:
+            if error_code == 429:
+                if attempt < attempts:
+                    await self.sleep(retry_after)
+                    continue
+                description = str(payload.get("description") or "rate limited")
+                raise TelegramAPIError(
+                    error_code=error_code,
+                    description=description,
+                    retry_after=retry_after,
+                )
+            if response.status_code >= 500 and retry_ambiguous and attempt < attempts:
                 await self.sleep(min(2 ** (attempt - 1), 4))
                 continue
             if not response.is_success or payload.get("ok") is not True:
@@ -373,6 +428,13 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         thread_id = int(match.group(2)) if match.group(2) is not None else None
         return chat_id, thread_id
 
+    def _conversation_user_id(self, conversation_id: str) -> str | None:
+        match = CONVERSATION_PATTERN.fullmatch(conversation_id)
+        if match is None:
+            return None
+        chat_id = int(match.group(1))
+        return str(chat_id) if chat_id > 0 and match.group(2) is None else None
+
     def _parse_reply_message_id(self, value: object) -> int | None:
         if value is None:
             return None
@@ -387,36 +449,74 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             return self.bot_token
         if self.bot_token_file is None:
             return ""
-        try:
-            return self.bot_token_file.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise RuntimeError(f"Could not read Telegram bot token file: {self.bot_token_file}") from exc
+        return read_telegram_bot_token_file(self.bot_token_file)
 
-    def _load_offset(self) -> int | None:
+    def _load_offset(self) -> tuple[int | None, str, float]:
         path = self._offset_path
         if path is None or not path.exists():
-            return None
+            return None, "", 0.0
+        if path.is_symlink():
+            raise RuntimeError(f"Telegram polling offset must not be a symlink: {path}")
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("offset state must be an object")
             offset = payload.get("offset")
-            return int(offset) if offset is not None else None
+            bot_id = str(payload.get("bot_id") or "")
+            updated_at = float(payload.get("updated_at") or 0.0)
+            resolved_offset = int(offset) if offset is not None else None
+            if resolved_offset is not None and (resolved_offset < 0 or not bot_id):
+                raise ValueError("offset state lacks a valid bot identity")
+            if updated_at < 0:
+                raise ValueError("offset timestamp must be non-negative")
+            return resolved_offset, bot_id, updated_at
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            logger.warning("Ignoring invalid Telegram polling offset file: %s", path)
-            return None
+            raise RuntimeError(
+                f"Invalid Telegram polling offset state: {path}. "
+                "Inspect it before removing the file to reset polling explicitly."
+            ) from None
 
     async def _persist_offset(self) -> None:
         path = self._offset_path
-        if path is None or self._offset is None:
+        if path is None:
             return
-        await asyncio.to_thread(self._write_offset, path, self._offset)
+        await asyncio.to_thread(
+            self._write_offset,
+            path,
+            self._offset,
+            self._offset_bot_id,
+            self._offset_updated_at,
+        )
 
     @staticmethod
-    def _write_offset(path: Path, offset: int) -> None:
+    def _write_offset(
+        path: Path,
+        offset: int | None,
+        bot_id: str,
+        updated_at: float,
+    ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            os.chmod(path.parent, 0o700)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"offset": offset}) + "\n", encoding="utf-8")
-        os.chmod(temporary, 0o600)
+        temporary.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "bot_id": bot_id,
+                    "offset": offset,
+                    "updated_at": updated_at,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
         os.replace(temporary, path)
+
+    def _offset_is_stale(self) -> bool:
+        return self._offset_updated_at <= 0 or self.clock() - self._offset_updated_at > OFFSET_MAX_AGE_S
 
     @property
     def _offset_path(self) -> Path | None:
@@ -426,4 +526,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
 
     @staticmethod
     def _reconnect_delay(failures: int) -> float:
-        return min(RECONNECT_INITIAL_DELAY_S * (2 ** max(0, failures - 1)), RECONNECT_MAX_DELAY_S)
+        return min(
+            RECONNECT_INITIAL_DELAY_S * (2 ** max(0, failures - 1)),
+            RECONNECT_MAX_DELAY_S,
+        )

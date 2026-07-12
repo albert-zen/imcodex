@@ -22,6 +22,17 @@ def _env(name: str, default: str, dotenv: dict[str, str]) -> str:
     return os.getenv(name, dotenv.get(name, default))
 
 
+def _env_with_fallback(
+    name: str,
+    fallback_name: str,
+    dotenv: dict[str, str],
+) -> str:
+    value = _env(name, "", dotenv)
+    if value.strip():
+        return value
+    return _env(fallback_name, "", dotenv)
+
+
 def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
     raw = os.getenv(name, dotenv.get(name))
     if raw is None:
@@ -90,6 +101,7 @@ class Settings:
     weixin_allowed_user_ids: str = ""
     weixin_allowed_conversation_ids: str = ""
     weixin_poll_timeout_ms: int = 35_000
+    outbound_webhook_token: str = ""
     inbound_webhook_token: str = ""
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
@@ -158,9 +170,7 @@ class Settings:
             qq_markdown_enabled=_env_bool("IMCODEX_QQ_MARKDOWN_ENABLED", True, dotenv),
             app_server_auth_token=_env("IMCODEX_APP_SERVER_AUTH_TOKEN", "", dotenv).strip() or None,
             app_server_auth_token_file=(
-                Path(path)
-                if (path := _env("IMCODEX_APP_SERVER_AUTH_TOKEN_FILE", "", dotenv).strip())
-                else None
+                Path(path) if (path := _env("IMCODEX_APP_SERVER_AUTH_TOKEN_FILE", "", dotenv).strip()) else None
             ),
             app_server_connect_max_attempts=_env_int("IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS", 3, dotenv),
             app_server_request_max_attempts=_env_int("IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS", 3, dotenv),
@@ -174,47 +184,34 @@ class Settings:
             telegram_enabled=_env_bool("IMCODEX_TELEGRAM_ENABLED", False, dotenv),
             telegram_bot_token=_env("IMCODEX_TELEGRAM_BOT_TOKEN", "", dotenv),
             telegram_bot_token_file=(
-                Path(path)
-                if (path := _env("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "", dotenv).strip())
-                else None
+                Path(path) if (path := _env("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "", dotenv).strip()) else None
             ),
             telegram_api_base=_env("IMCODEX_TELEGRAM_API_BASE", "https://api.telegram.org", dotenv),
             telegram_allowed_user_ids=_env("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "", dotenv),
-            telegram_allowed_conversation_ids=_env(
-                "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv
-            ),
+            telegram_allowed_conversation_ids=_env("IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv),
             telegram_require_mention=_env_bool("IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv),
             telegram_poll_timeout_s=_env_int("IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv),
             feishu_enabled=_env_bool("IMCODEX_FEISHU_ENABLED", False, dotenv),
-            feishu_app_id=_env(
+            feishu_app_id=_env_with_fallback(
                 "IMCODEX_FEISHU_APP_ID",
-                _env("IMCODEX_LARK_APP_ID", "", dotenv),
+                "IMCODEX_LARK_APP_ID",
                 dotenv,
             ),
-            feishu_app_secret=_env(
+            feishu_app_secret=_env_with_fallback(
                 "IMCODEX_FEISHU_APP_SECRET",
-                _env("IMCODEX_LARK_APP_SECRET", "", dotenv),
+                "IMCODEX_LARK_APP_SECRET",
                 dotenv,
             ),
             feishu_domain=_env("IMCODEX_FEISHU_DOMAIN", "feishu", dotenv),
             feishu_allowed_user_ids=_env("IMCODEX_FEISHU_ALLOWED_USER_IDS", "", dotenv),
-            feishu_allowed_conversation_ids=_env(
-                "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv
-            ),
+            feishu_allowed_conversation_ids=_env("IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv),
             feishu_require_mention=_env_bool("IMCODEX_FEISHU_REQUIRE_MENTION", True, dotenv),
-            feishu_startup_timeout_s=_env_float(
-                "IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv
-            ),
+            feishu_startup_timeout_s=_env_float("IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv),
             weixin_enabled=_env_bool("IMCODEX_WEIXIN_ENABLED", False, dotenv),
-            weixin_state_dir=(
-                Path(path)
-                if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip())
-                else None
-            ),
+            weixin_state_dir=(Path(path) if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip()) else None),
             weixin_allowed_user_ids=_env("IMCODEX_WEIXIN_ALLOWED_USER_IDS", "", dotenv),
-            weixin_allowed_conversation_ids=_env(
-                "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv
-            ),
+            weixin_allowed_conversation_ids=_env("IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv),
             weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
+            outbound_webhook_token=_env("IMCODEX_OUTBOUND_WEBHOOK_TOKEN", "", dotenv),
             inbound_webhook_token=_env("IMCODEX_INBOUND_WEBHOOK_TOKEN", "", dotenv),
         )

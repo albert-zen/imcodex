@@ -7,7 +7,12 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from .weixin_ilink import DEFAULT_ILINK_BASE_URL, ILinkError
-from .weixin_state import WeixinCredentials, WeixinStateStore
+from .weixin_state import (
+    WeixinCredentials,
+    WeixinStateStore,
+    is_weixin_account_id,
+    is_weixin_user_id,
+)
 
 
 class WeixinLoginError(RuntimeError):
@@ -84,9 +89,7 @@ class WeixinLoginFlow:
                 self.state_store.save_credentials(credentials)
                 self.output("微信 iLink 登录成功。")
                 if not credentials.owner_user_id:
-                    self.output(
-                        "警告：平台未返回扫码用户 ID；请配置 IMCODEX_WEIXIN_ALLOWED_USER_IDS。"
-                    )
+                    self.output("警告：平台未返回扫码用户 ID；请配置 IMCODEX_WEIXIN_ALLOWED_USER_IDS。")
                 return self.state_store.load_credentials() or credentials
             elif status == "expired":
                 refresh_count += 1
@@ -128,8 +131,10 @@ class WeixinLoginFlow:
         bot_token = str(response.get("bot_token") or "").strip()
         base_url = str(response.get("baseurl") or DEFAULT_ILINK_BASE_URL).strip()
         owner_user_id = str(response.get("ilink_user_id") or "").strip()
-        if not account_id or not bot_token:
+        if not is_weixin_account_id(account_id) or not bot_token:
             raise WeixinLoginError("微信已确认扫码，但没有返回完整的 bot 凭据。")
+        if owner_user_id and not is_weixin_user_id(owner_user_id):
+            raise WeixinLoginError("平台返回了无效的扫码用户 ID。")
         parsed = urlparse(base_url)
         if (
             parsed.scheme != "https"
