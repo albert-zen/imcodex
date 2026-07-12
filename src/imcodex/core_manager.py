@@ -103,32 +103,45 @@ class DedicatedCoreManager:
 
     def stop(self) -> DedicatedCoreManifest:
         manifest = self.status()
+        if manifest.status != "running":
+            return manifest
+        self._validate_manifest(manifest, port=manifest.port)
         process = self._process
         if process is not None:
+            poll = getattr(process, "poll", None)
+            if callable(poll) and poll() is not None:
+                return self._mark_stopped(manifest)
             self._terminate_running_process(process, manifest.pid)
             wait = getattr(process, "wait", None)
             if callable(wait):
                 wait(timeout=10)
         else:
+            if not self._process_exists(manifest.pid):
+                return self._mark_stopped(manifest)
+            self._verify_listener_identity(manifest)
             self._terminate_pid(manifest.pid)
-        manifest.status = "stopped"
-        self.manifest_path.write_text(
-            json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
-        )
-        self._process = None
-        return manifest
+        return self._mark_stopped(manifest)
 
     def status(self) -> DedicatedCoreManifest:
         return DedicatedCoreManifest.from_dict(json.loads(self.manifest_path.read_text(encoding="utf-8")))
 
     def verify(self, *, port: int) -> DedicatedCoreManifest:
-        expected_url = f"ws://127.0.0.1:{port}"
         try:
             manifest = self.status()
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError(
                 f"Port {port} is occupied, but no valid IMCodex core manifest owns it"
             ) from exc
+        self._validate_manifest(manifest, port=port)
+        self._verify_listener_identity(manifest)
+        if not self._health_is_ready(port):
+            raise RuntimeError(
+                f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
+            )
+        return manifest
+
+    def _validate_manifest(self, manifest: DedicatedCoreManifest, *, port: int) -> None:
+        expected_url = f"ws://127.0.0.1:{port}"
         command_matches = bool(
             manifest.command
             and len(manifest.command) >= 4
@@ -143,6 +156,9 @@ class DedicatedCoreManager:
             raise RuntimeError(
                 f"Port {port} is occupied, but the IMCodex core manifest does not match it"
             )
+
+    def _verify_listener_identity(self, manifest: DedicatedCoreManifest) -> None:
+        port = manifest.port
         if not self._process_exists(manifest.pid):
             raise RuntimeError(
                 f"Port {port} is occupied, but the recorded IMCodex core PID {manifest.pid} is not running"
@@ -159,10 +175,14 @@ class DedicatedCoreManager:
             raise RuntimeError(
                 f"Recorded IMCodex core PID {manifest.pid} does not own the listener on port {port}"
             )
-        if not self._health_is_ready(port):
-            raise RuntimeError(
-                f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
-            )
+
+    def _mark_stopped(self, manifest: DedicatedCoreManifest) -> DedicatedCoreManifest:
+        manifest.status = "stopped"
+        self.manifest_path.write_text(
+            json.dumps(manifest.to_dict(), ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._process = None
         return manifest
 
     def wait_until_ready(self, *, port: int, timeout_s: float = 30.0) -> None:

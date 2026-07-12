@@ -95,7 +95,8 @@ precedence is the entry shell, then values injected by conda activation, then
 environment when conda environment variables define the App Server target. On
 macOS/Linux it also verifies the native `app-server daemon` capability required
 by `start.sh`; native Windows checks only the `app-server` command used by its
-detached TCP launcher.
+detached TCP launcher. The HTTP port check uses the configured
+`IMCODEX_HTTP_HOST` bind address rather than assuming loopback.
 
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.

@@ -57,8 +57,27 @@ function Test-PortListening([string]$HostName, [int]$Port) {
     }
 }
 
-function Test-PortAvailable([int]$Port) {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+function Resolve-BindAddress([string]$HostName) {
+    if ($HostName -eq "0.0.0.0") {
+        return [System.Net.IPAddress]::Any
+    }
+    if ($HostName -eq "::" -or $HostName -eq "[::]") {
+        return [System.Net.IPAddress]::IPv6Any
+    }
+    $parsed = $null
+    if ([System.Net.IPAddress]::TryParse($HostName, [ref]$parsed)) {
+        return $parsed
+    }
+    $addresses = [System.Net.Dns]::GetHostAddresses($HostName)
+    if ($addresses.Count -eq 0) {
+        throw "Could not resolve HTTP bind host '$HostName'"
+    }
+    return $addresses[0]
+}
+
+function Test-PortAvailable([string]$HostName, [int]$Port) {
+    $bindAddress = Resolve-BindAddress -HostName $HostName
+    $listener = [System.Net.Sockets.TcpListener]::new($bindAddress, $Port)
     try {
         $listener.Start()
         return $true
@@ -176,6 +195,7 @@ if ($null -ne $codexCommand) {
 $envFileOk = Test-Path $dotenvPath
 Write-Check ".env" $envFileOk ($dotenvPath)
 
+$httpHost = Get-Setting "IMCODEX_HTTP_HOST" "0.0.0.0"
 $httpPort = [int](Get-Setting "IMCODEX_HTTP_PORT" "8000")
 $dataDir = Get-Setting "IMCODEX_DATA_DIR" ".imcodex"
 $targetConfigured = $false
@@ -191,7 +211,7 @@ foreach ($targetName in @(
     }
 }
 
-Write-Check "HTTP port" $true $httpPort
+Write-Check "HTTP bind" $true ("{0}:{1}" -f $httpHost, $httpPort)
 Write-Check "Data dir" $true $dataDir
 $condaEnvName = Get-Setting "IMCODEX_CONDA_ENV"
 if (-not [string]::IsNullOrWhiteSpace($condaEnvName)) {
@@ -213,9 +233,9 @@ else {
     }
 }
 
-$httpPortAvailable = Test-PortAvailable -Port $httpPort
+$httpPortAvailable = Test-PortAvailable -HostName $httpHost -Port $httpPort
 $httpPortDetail = if ($httpPortAvailable) { "free" } else { "occupied" }
-Write-Check "HTTP port free" $httpPortAvailable $httpPortDetail
+Write-Check "HTTP port free" $httpPortAvailable ("{0}:{1} {2}" -f $httpHost, $httpPort, $httpPortDetail)
 
 if ($null -ne $target) {
     if ($target.transport -eq "tcp-websocket") {

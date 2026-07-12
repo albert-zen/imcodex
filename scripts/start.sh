@@ -242,6 +242,7 @@ if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core
         echo "Starting dedicated Codex core on ${IMCODEX_CORE_URL}"
         "${python}" -m imcodex core start --port "${core_port}"
         wait_for_core "${core_port}"
+        "${python}" -m imcodex core verify --port "${core_port}"
     fi
 fi
 

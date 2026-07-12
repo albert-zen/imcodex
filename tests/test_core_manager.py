@@ -185,6 +185,51 @@ def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:
     assert process.waited is True
 
 
+def test_core_manager_detached_stop_refuses_reused_pid_without_listener_ownership(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    manager.start(port=8765)
+    manager._process = None
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: False)
+    terminated: list[int] = []
+    monkeypatch.setattr(manager, "_terminate_pid", terminated.append)
+
+    with pytest.raises(RuntimeError, match="does not own the listener"):
+        manager.stop()
+
+    assert terminated == []
+    assert manager.status().status == "running"
+
+
+def test_core_manager_detached_stop_marks_missing_process_stopped_without_signalling(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    manager.start(port=8765)
+    manager._process = None
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: False)
+    terminated: list[int] = []
+    monkeypatch.setattr(manager, "_terminate_pid", terminated.append)
+
+    stopped = manager.stop()
+
+    assert stopped.status == "stopped"
+    assert terminated == []
+
+
 def test_core_manager_resolves_windows_codex_cmd(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("imcodex.core_manager.os.name", "nt")
     monkeypatch.setattr(

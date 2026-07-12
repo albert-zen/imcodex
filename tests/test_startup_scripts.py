@@ -310,7 +310,11 @@ def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(tmp_pat
 
     assert completed.returncode == 0, completed.stderr
     assert "Legacy core mode: dedicated-ws" in completed.stdout
-    assert invocations == ["-m imcodex core start --port 9123", "-m imcodex"]
+    assert invocations == [
+        "-m imcodex core start --port 9123",
+        "-m imcodex core verify --port 9123",
+        "-m imcodex",
+    ]
     assert target_environment == "|ws://127.0.0.1:9123|dedicated-ws|9123"
 
 
@@ -392,6 +396,7 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
     assert "Import-DotEnv\nEnable-CondaEnv\nResolve-TargetEnvironment" in script
     assert '$ensureDedicatedCore -or (-not $appServerUrl' in script
     assert "core verify --port $corePort" in script
+    assert script.count("core verify --port $corePort") == 2
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
@@ -478,3 +483,5 @@ def test_doctor_uses_the_canonical_target_resolver_without_claiming_fallback() -
     assert "if (-not $isNativeWindows)" in script
     assert "app-server daemon --help" in script
     assert 'Write-Check "Codex daemon lifecycle"' in script
+    assert 'Get-Setting "IMCODEX_HTTP_HOST" "0.0.0.0"' in script
+    assert "Test-PortAvailable -HostName $httpHost -Port $httpPort" in script

@@ -244,6 +244,10 @@ if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and
             exit $LASTEXITCODE
         }
         Wait-DedicatedCore -Port ([int] $corePort)
+        & $python -m imcodex core verify --port $corePort
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
     }
 }
 
