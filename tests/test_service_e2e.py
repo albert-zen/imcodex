@@ -853,6 +853,26 @@ async def test_connection_ready_delivers_terminal_result_completed_during_discon
             "initialize": [{"id": 1, "result": {"ok": True}}],
             "thread/resume": [
                 {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_1",
+                        "turnId": "turn_1",
+                        "item": {
+                            "id": "item_1",
+                            "type": "agentMessage",
+                            "phase": "final_answer",
+                            "text": "Finished while the bridge was offline.",
+                        },
+                    },
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "thr_1",
+                        "turn": {"id": "turn_1", "status": "completed"},
+                    },
+                },
+                {
                     "id": 2,
                     "result": {
                         "thread": {
@@ -898,6 +918,72 @@ async def test_connection_ready_delivers_terminal_result_completed_during_discon
     assert [message.text for message in recovered] == ["Finished while the bridge was offline."]
     assert recovered[0].metadata["delivery_id"].startswith("imcodex:native:")
     assert ("thr_1", "turn_1") not in service.projector.message_pump._turns
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_terminal_result_remains_retryable_until_delivery_succeeds() -> None:
+    class FailingOnceSink:
+        def __init__(self) -> None:
+            self.attempted_delivery_ids: list[str] = []
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.attempted_delivery_ids.append(str(message.metadata.get("delivery_id") or ""))
+            if len(self.attempted_delivery_ids) == 1:
+                raise RuntimeError("channel temporarily unavailable")
+            self.messages.append(message)
+
+    terminal_turn = {
+        "id": "turn_1",
+        "status": "completed",
+        "items": [
+            {
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "Recovered after retry.",
+            }
+        ],
+    }
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Recovered thread",
+                            "status": "idle",
+                            "turns": [terminal_turn],
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = FailingOnceSink()
+    client, service = _build_service(store, process, sink)  # type: ignore[arg-type]
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    await client.initialize()
+    assert sink.messages == []
+    assert ("thr_1", "turn_1") in service._pending_recovered_turns
+
+    health = await service.handle_connection_ready(connection_epoch=2)
+
+    assert health == {
+        "status": "connected",
+        "rehydration": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+    }
+    assert [message.text for message in sink.messages] == ["Recovered after retry."]
+    assert sink.attempted_delivery_ids[0] == sink.attempted_delivery_ids[1]
+    assert ("thr_1", "turn_1") not in service._pending_recovered_turns
     await client.close()
 
 
@@ -1071,6 +1157,31 @@ async def test_server_request_delivery_failure_is_bounded_and_rejected(delivery_
             },
         }
     ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_server_request_without_outbound_sink_is_rejected() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    client, service = _build_service(store, process, None)  # type: ignore[arg-type]
+
+    projected = await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "command": "Get-Date",
+            },
+        }
+    )
+
+    assert projected == []
+    assert store.list_pending_requests("qq", "conv-1") == []
+    assert any(payload.get("id") == 91 and "error" in payload for payload in process.inputs)
     await client.close()
 
 

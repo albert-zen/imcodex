@@ -164,6 +164,20 @@ async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> 
     assert fallback.messages == []
 
 
+@pytest.mark.asyncio
+async def test_multiplex_rejects_delivery_without_any_matching_sink() -> None:
+    sink = MultiplexOutboundSink()
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="turn_result",
+        text="must not disappear",
+    )
+
+    with pytest.raises(RuntimeError, match="No outbound sink"):
+        await sink.send_message(message)
+
+
 def test_remote_outbound_webhook_requires_https_and_bearer_token() -> None:
     with pytest.raises(ValueError, match="requires HTTPS"):
         WebhookOutboundSink(

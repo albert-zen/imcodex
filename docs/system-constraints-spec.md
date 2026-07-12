@@ -308,7 +308,8 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
 - cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
-- when a cached active turn completed during a disconnect, recovery SHOULD project its terminal native result and MUST discard any orphaned message-pump buffer
+- when a cached active turn completed during a disconnect, recovery SHOULD project its terminal native result, MUST use a stable thread/turn delivery identity to deduplicate queued native notifications, and MUST discard any orphaned message-pump buffer
+- a recovered terminal result MUST remain retryable until its IM sink confirms delivery; a transient sink failure MUST NOT consume the only recovery marker
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
 

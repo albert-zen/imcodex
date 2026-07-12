@@ -126,8 +126,6 @@ class MessagePump:
         items: list[dict],
     ) -> OutboundMessage | None:
         buffer = self._turns.pop((thread_id, turn_id), None)
-        if buffer is not None and buffer.final_visible:
-            return None
         final_text = ""
         changed_files: list[str] = []
         for item in items:

@@ -117,5 +117,5 @@ class MultiplexOutboundSink:
             raise RuntimeError(f"Built-in channel {message.channel_id!r} is not enabled; refusing fallback delivery.")
         sink = sink or self.default_sink
         if sink is None:
-            return
+            raise RuntimeError(f"No outbound sink is configured for channel {message.channel_id!r}.")
         await sink.send_message(message)

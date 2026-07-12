@@ -40,6 +40,8 @@ _SYSTEM_PREFIX = "[System] "
 _SERVER_REQUEST_DELIVERY_TIMEOUT_S = 10.0
 _RECOVERY_DELIVERY_TIMEOUT_S = 10.0
 _DELIVERY_FAILED_REQUEST_CODE = -32603
+_RECENT_TERMINAL_DELIVERY_LIMIT = 512
+_TERMINAL_PROJECTION_EVENT_KINDS = frozenset({"item_completed", "turn_completed"})
 
 
 class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
@@ -63,6 +65,13 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             float(server_request_delivery_timeout_s),
         )
         self._rehydration_lock = asyncio.Lock()
+        self._terminal_projection_lock = asyncio.Lock()
+        # These are short-lived presentation facts, not native turn state. The
+        # pending map keeps a recovered result retryable until an IM sink
+        # confirms delivery; the bounded delivered map closes the race between
+        # queued terminal notifications and a concurrent resume response.
+        self._pending_recovered_turns: dict[tuple[str, str], dict] = {}
+        self._recent_terminal_deliveries: dict[tuple[str, str], None] = {}
         self.native_requests = NativeRequestPolicy(store=store, backend=backend)
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
@@ -493,13 +502,35 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
 
     async def handle_notification(self, notification: dict) -> list[OutboundMessage]:
         journal_entry = record_native_appserver_journal(self.store, notification)
-        message = self.projector.project_notification(notification, self.store)
-        self._attach_native_delivery_id(message, notification, namespace="projection")
+        event = normalize_appserver_message(notification)
+        if event.kind in _TERMINAL_PROJECTION_EVENT_KINDS:
+            async with self._terminal_projection_lock:
+                message = self.projector.project_notification(notification, self.store)
+                terminal_key = self._terminal_delivery_key(event, message)
+                if terminal_key is not None and terminal_key in self._recent_terminal_deliveries:
+                    self.projector.discard_recovered_turn(
+                        thread_id=terminal_key[0],
+                        turn_id=terminal_key[1],
+                    )
+                    message = None
+                self._attach_delivery_id(
+                    message,
+                    notification,
+                    namespace="projection",
+                    terminal_key=terminal_key,
+                )
+                outbound = await self._emit(message)
+                if terminal_key is not None and message is not None:
+                    self._remember_terminal_delivery(terminal_key)
+        else:
+            message = self.projector.project_notification(notification, self.store)
+            self._attach_native_delivery_id(message, notification, namespace="projection")
+            outbound = await self._emit(message)
         self.store.update_native_appserver_event(
             journal_entry.sequence,
             outcome="projected" if message is not None else "ingested",
         )
-        return await self._emit(message)
+        return outbound
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
         journal_entry = record_native_appserver_journal(self.store, request)
@@ -530,7 +561,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if routed:
             try:
                 outbound = await asyncio.wait_for(
-                    self._emit(message),
+                    self._emit_required(message),
                     timeout=self.server_request_delivery_timeout_s,
                 )
             except Exception as exc:
@@ -642,36 +673,55 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 thread_id=str(discarded.get("threadId") or ""),
                 turn_id=str(discarded.get("turnId") or ""),
             )
-        delivery_failed = 0
         for recovered in result.get("recoveredTurns") or []:
             if not isinstance(recovered, dict) or not isinstance(recovered.get("turn"), dict):
                 continue
             thread_id = str(recovered.get("threadId") or "")
             turn = recovered["turn"]
-            message = self.projector.project_recovered_turn(
-                thread_id=thread_id,
-                turn=turn,
-                store=self.store,
-            )
-            if message is None:
+            turn_id = str(turn.get("id") or turn.get("turnId") or "")
+            if not thread_id or not turn_id:
                 continue
-            self._attach_native_delivery_id(
-                message,
-                {
-                    "method": "bridge/recoveredTurn",
-                    "params": {
-                        "threadId": thread_id,
-                        "turnId": turn.get("id") or turn.get("turnId"),
-                        "status": turn.get("status"),
-                    },
-                },
-                namespace="recovery",
-            )
+            self._pending_recovered_turns[(thread_id, turn_id)] = turn
+        delivery_failed = 0
+        for terminal_key, turn in list(self._pending_recovered_turns.items()):
+            thread_id, turn_id = terminal_key
+            if self.store.find_binding_by_thread_id(thread_id) is None:
+                self.projector.discard_recovered_turn(thread_id=thread_id, turn_id=turn_id)
+                self._pending_recovered_turns.pop(terminal_key, None)
+                continue
             try:
-                await asyncio.wait_for(
-                    self._emit(message),
-                    timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
-                )
+                async with self._terminal_projection_lock:
+                    if terminal_key in self._recent_terminal_deliveries:
+                        self.projector.discard_recovered_turn(
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                        )
+                        self._pending_recovered_turns.pop(terminal_key, None)
+                        continue
+                    message = self.projector.project_recovered_turn(
+                        thread_id=thread_id,
+                        turn=turn,
+                        store=self.store,
+                    )
+                    if message is None:
+                        self._pending_recovered_turns.pop(terminal_key, None)
+                        self._remember_terminal_delivery(terminal_key)
+                        continue
+                    self._attach_delivery_id(
+                        message,
+                        {
+                            "method": "bridge/terminalTurn",
+                            "params": {"threadId": thread_id, "turnId": turn_id},
+                        },
+                        namespace="terminal",
+                        terminal_key=terminal_key,
+                    )
+                    await asyncio.wait_for(
+                        self._emit_required(message),
+                        timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
+                    )
+                    self._pending_recovered_turns.pop(terminal_key, None)
+                    self._remember_terminal_delivery(terminal_key)
             except Exception as exc:
                 delivery_failed += 1
                 emit_event(
@@ -703,6 +753,49 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if self.outbound_sink is not None:
             await self.outbound_sink.send_message(message)
         return [message]
+
+    async def _emit_required(self, message: OutboundMessage) -> list[OutboundMessage]:
+        if self.outbound_sink is None:
+            raise RuntimeError("No outbound IM sink is available")
+        await self.outbound_sink.send_message(message)
+        return [message]
+
+    def _terminal_delivery_key(self, event, message: OutboundMessage | None) -> tuple[str, str] | None:
+        if message is None or message.message_type != "turn_result":
+            return None
+        turn_id = event.turn_id
+        if not turn_id and isinstance(event.payload.get("turn"), dict):
+            turn_id = str(event.payload["turn"].get("id") or event.payload["turn"].get("turnId") or "")
+        if not event.thread_id or not turn_id:
+            return None
+        return event.thread_id, turn_id
+
+    def _attach_delivery_id(
+        self,
+        message: OutboundMessage | None,
+        native_message: dict,
+        *,
+        namespace: str,
+        terminal_key: tuple[str, str] | None,
+    ) -> None:
+        if terminal_key is None:
+            self._attach_native_delivery_id(message, native_message, namespace=namespace)
+            return
+        self._attach_native_delivery_id(
+            message,
+            {
+                "method": "bridge/terminalTurn",
+                "params": {"threadId": terminal_key[0], "turnId": terminal_key[1]},
+            },
+            namespace="terminal",
+        )
+
+    def _remember_terminal_delivery(self, terminal_key: tuple[str, str]) -> None:
+        self._recent_terminal_deliveries.pop(terminal_key, None)
+        self._recent_terminal_deliveries[terminal_key] = None
+        while len(self._recent_terminal_deliveries) > _RECENT_TERMINAL_DELIVERY_LIMIT:
+            oldest = next(iter(self._recent_terminal_deliveries))
+            self._recent_terminal_deliveries.pop(oldest, None)
 
     @staticmethod
     def _attach_native_delivery_id(
