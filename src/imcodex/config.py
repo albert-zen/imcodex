@@ -77,6 +77,14 @@ class Settings:
     telegram_allowed_conversation_ids: str = ""
     telegram_require_mention: bool = True
     telegram_poll_timeout_s: int = 30
+    feishu_enabled: bool = False
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_domain: str = "feishu"
+    feishu_allowed_user_ids: str = ""
+    feishu_allowed_conversation_ids: str = ""
+    feishu_require_mention: bool = True
+    feishu_startup_timeout_s: float = 30.0
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         return {
@@ -99,6 +107,16 @@ class Settings:
                 "require_mention": self.telegram_require_mention,
                 "poll_timeout_s": self.telegram_poll_timeout_s,
                 "state_dir": self.data_dir / "channels" / "telegram",
+            },
+            "feishu": {
+                "enabled": self.feishu_enabled,
+                "app_id": self.feishu_app_id,
+                "app_secret": self.feishu_app_secret,
+                "domain": self.feishu_domain,
+                "allowed_user_ids": self.feishu_allowed_user_ids,
+                "allowed_conversation_ids": self.feishu_allowed_conversation_ids,
+                "require_mention": self.feishu_require_mention,
+                "startup_timeout_s": self.feishu_startup_timeout_s,
             },
         }
 
@@ -154,4 +172,24 @@ class Settings:
             ),
             telegram_require_mention=_env_bool("IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv),
             telegram_poll_timeout_s=_env_int("IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv),
+            feishu_enabled=_env_bool("IMCODEX_FEISHU_ENABLED", False, dotenv),
+            feishu_app_id=_env(
+                "IMCODEX_FEISHU_APP_ID",
+                _env("IMCODEX_LARK_APP_ID", "", dotenv),
+                dotenv,
+            ),
+            feishu_app_secret=_env(
+                "IMCODEX_FEISHU_APP_SECRET",
+                _env("IMCODEX_LARK_APP_SECRET", "", dotenv),
+                dotenv,
+            ),
+            feishu_domain=_env("IMCODEX_FEISHU_DOMAIN", "feishu", dotenv),
+            feishu_allowed_user_ids=_env("IMCODEX_FEISHU_ALLOWED_USER_IDS", "", dotenv),
+            feishu_allowed_conversation_ids=_env(
+                "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
+            feishu_require_mention=_env_bool("IMCODEX_FEISHU_REQUIRE_MENTION", True, dotenv),
+            feishu_startup_timeout_s=_env_float(
+                "IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv
+            ),
         )

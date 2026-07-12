@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from imcodex.channels import QQChannelAdapter, TelegramChannelAdapter
+from imcodex.channels import FeishuChannelAdapter, QQChannelAdapter, TelegramChannelAdapter
 from imcodex.channels.registry import build_enabled_channel_adapters, get_channel_adapter_registry
 
 
@@ -13,6 +13,7 @@ def test_channel_registry_contains_qq_adapter() -> None:
 
     assert registry["qq"] is QQChannelAdapter
     assert registry["telegram"] is TelegramChannelAdapter
+    assert registry["feishu"] is FeishuChannelAdapter
 
 
 def test_build_enabled_channel_adapters_uses_settings_channel_configs() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import BaseChannelAdapter
+from .feishu import FeishuChannelAdapter
 from .qq import QQChannelAdapter
 from .telegram import TelegramChannelAdapter
 
@@ -9,6 +10,7 @@ def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
     return {
         "qq": QQChannelAdapter,
         "telegram": TelegramChannelAdapter,
+        "feishu": FeishuChannelAdapter,
     }
 
 

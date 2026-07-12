@@ -108,6 +108,27 @@ def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
     assert config["state_dir"] == Path(".imcodex/channels/telegram")
 
 
+def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_FEISHU_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_LARK_APP_ID", "cli_lark")
+    monkeypatch.setenv("IMCODEX_LARK_APP_SECRET", "secret")
+    monkeypatch.setenv("IMCODEX_FEISHU_DOMAIN", "lark")
+    monkeypatch.setenv("IMCODEX_FEISHU_ALLOWED_USER_IDS", "ou_owner")
+    monkeypatch.setenv("IMCODEX_FEISHU_STARTUP_TIMEOUT", "12.5")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    config = settings.channel_configs()["feishu"]
+    assert config["enabled"] is True
+    assert config["app_id"] == "cli_lark"
+    assert config["app_secret"] == "secret"
+    assert config["domain"] == "lark"
+    assert config["allowed_user_ids"] == "ou_owner"
+    assert config["startup_timeout_s"] == 12.5
+
+
 def test_settings_reads_core_mode_and_restart_executor(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_CORE_MODE", "dedicated-ws")
