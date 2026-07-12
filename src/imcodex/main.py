@@ -26,11 +26,16 @@ def run(argv: list[str] | None = None) -> int | None:
     if argv and argv[0] == "channels":
         return run_channels_cli(argv[1:])
     settings = Settings.from_env()
-    uvicorn.run(
-        create_application(settings=settings),
-        host=settings.http_host,
-        port=settings.http_port,
+    app = create_application(settings=settings, settings_source="environment")
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=settings.http_host,
+            port=settings.http_port,
+        )
     )
+    app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
+    server.run()
     return 0
 
 

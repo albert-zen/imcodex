@@ -33,6 +33,9 @@ def _run_start_sh(
 
     capture_path = tmp_path / "python-invocations.txt"
     target_capture_path = tmp_path / "target-environment.txt"
+    provenance_capture_path = tmp_path / "dotenv-provenance.txt"
+    launcher_provenance_capture_path = tmp_path / "launcher-provenance.txt"
+    http_port_capture_path = tmp_path / "http-port.txt"
     core_started_path = tmp_path / "legacy-core-started"
     fake_python = tmp_path / "fake-python"
     fake_python.write_text(
@@ -49,6 +52,10 @@ def _run_start_sh(
         '  printf "%s|%s|%s|%s\\n" "${IMCODEX_APP_SERVER_URL:-}" '
         '"${IMCODEX_CORE_URL:-}" "${IMCODEX_CORE_MODE:-}" '
         '"${IMCODEX_CORE_PORT:-}" > "$IMCODEX_TEST_TARGET_CAPTURE"\n'
+        '  printf "%s\\n" "${IMCODEX_DOTENV_IMPORTED_KEYS:-}" > "$IMCODEX_TEST_PROVENANCE_CAPTURE"\n'
+        '  printf "%s\\n" "${IMCODEX_LAUNCHER_RELOADABLE_KEYS:-}" > '
+        '"$IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE"\n'
+        '  printf "%s\\n" "${IMCODEX_HTTP_PORT:-}" > "$IMCODEX_TEST_HTTP_PORT_CAPTURE"\n'
         "fi\n"
         "exit 0\n",
         encoding="utf-8",
@@ -65,6 +72,11 @@ def _run_start_sh(
         "IMCODEX_TEST_CORE_STARTED",
         "IMCODEX_TEST_DAEMON_EXIT",
         "IMCODEX_TEST_TARGET_CAPTURE",
+        "IMCODEX_TEST_PROVENANCE_CAPTURE",
+        "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE",
+        "IMCODEX_TEST_HTTP_PORT_CAPTURE",
+        "IMCODEX_DOTENV_IMPORTED_KEYS",
+        "IMCODEX_LAUNCHER_RELOADABLE_KEYS",
         "CONDA_EXE",
     ):
         environment.pop(name, None)
@@ -74,6 +86,9 @@ def _run_start_sh(
             "IMCODEX_TEST_CAPTURE": str(capture_path),
             "IMCODEX_TEST_CORE_STARTED": str(core_started_path),
             "IMCODEX_TEST_TARGET_CAPTURE": str(target_capture_path),
+            "IMCODEX_TEST_PROVENANCE_CAPTURE": str(provenance_capture_path),
+            "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE": str(launcher_provenance_capture_path),
+            "IMCODEX_TEST_HTTP_PORT_CAPTURE": str(http_port_capture_path),
         }
     )
     environment.update(environment_overrides or {})
@@ -86,16 +101,8 @@ def _run_start_sh(
         text=True,
         check=False,
     )
-    invocations = (
-        capture_path.read_text(encoding="utf-8").splitlines()
-        if capture_path.exists()
-        else []
-    )
-    target_environment = (
-        target_capture_path.read_text(encoding="utf-8").strip()
-        if target_capture_path.exists()
-        else ""
-    )
+    invocations = capture_path.read_text(encoding="utf-8").splitlines() if capture_path.exists() else []
+    target_environment = target_capture_path.read_text(encoding="utf-8").strip() if target_capture_path.exists() else ""
     return completed, invocations, target_environment
 
 
@@ -108,11 +115,7 @@ def _fake_conda_executable(tmp_path: Path) -> Path:
     conda_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     conda_executable.chmod(0o755)
     conda_hook.write_text(
-        "conda() {\n"
-        '  if [ "$1" = "activate" ]; then\n'
-        "    export IMCODEX_CORE_MODE=spawned-stdio\n"
-        "  fi\n"
-        "}\n",
+        'conda() {\n  if [ "$1" = "activate" ]; then\n    export IMCODEX_CORE_MODE=spawned-stdio\n  fi\n}\n',
         encoding="utf-8",
     )
     return conda_executable
@@ -134,15 +137,23 @@ def _run_start_ps1(
 
     capture_path = tmp_path / "powershell-python-invocations.txt"
     target_capture_path = tmp_path / "powershell-target-environment.txt"
+    provenance_capture_path = tmp_path / "powershell-dotenv-provenance.txt"
+    launcher_provenance_capture_path = tmp_path / "powershell-launcher-provenance.txt"
+    http_port_capture_path = tmp_path / "powershell-http-port.txt"
     if os.name == "nt":
         fake_python = tmp_path / "fake-python.cmd"
         fake_python.write_text(
             "@echo off\n"
-            "echo %*>>\"%IMCODEX_TEST_CAPTURE%\"\n"
-            "if \"%*\"==\"-m imcodex\" (\n"
-            "  >\"%IMCODEX_TEST_TARGET_CAPTURE%\" echo "
+            'echo %*>>"%IMCODEX_TEST_CAPTURE%"\n'
+            'if "%*"=="-m imcodex" (\n'
+            '  >"%IMCODEX_TEST_TARGET_CAPTURE%" echo '
             "%IMCODEX_APP_SERVER_URL%^|%IMCODEX_CORE_URL%^|"
             "%IMCODEX_CORE_MODE%^|%IMCODEX_CORE_PORT%\n"
+            '  >"%IMCODEX_TEST_PROVENANCE_CAPTURE%" echo('
+            "%IMCODEX_DOTENV_IMPORTED_KEYS%\n"
+            '  >"%IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE%" echo('
+            "%IMCODEX_LAUNCHER_RELOADABLE_KEYS%\n"
+            '  >"%IMCODEX_TEST_HTTP_PORT_CAPTURE%" echo %IMCODEX_HTTP_PORT%\n'
             ")\n"
             "exit /b 0\n",
             encoding="utf-8",
@@ -156,6 +167,11 @@ def _run_start_ps1(
             '  printf "%s|%s|%s|%s\\n" "${IMCODEX_APP_SERVER_URL:-}" '
             '"${IMCODEX_CORE_URL:-}" "${IMCODEX_CORE_MODE:-}" '
             '"${IMCODEX_CORE_PORT:-}" > "$IMCODEX_TEST_TARGET_CAPTURE"\n'
+            '  printf "%s\\n" "${IMCODEX_DOTENV_IMPORTED_KEYS:-}" > '
+            '"$IMCODEX_TEST_PROVENANCE_CAPTURE"\n'
+            '  printf "%s\\n" "${IMCODEX_LAUNCHER_RELOADABLE_KEYS:-}" > '
+            '"$IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE"\n'
+            '  printf "%s\\n" "${IMCODEX_HTTP_PORT:-}" > "$IMCODEX_TEST_HTTP_PORT_CAPTURE"\n'
             "fi\n"
             "exit 0\n",
             encoding="utf-8",
@@ -170,6 +186,11 @@ def _run_start_ps1(
         "IMCODEX_PYTHON",
         "IMCODEX_TEST_CAPTURE",
         "IMCODEX_TEST_TARGET_CAPTURE",
+        "IMCODEX_TEST_PROVENANCE_CAPTURE",
+        "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE",
+        "IMCODEX_TEST_HTTP_PORT_CAPTURE",
+        "IMCODEX_DOTENV_IMPORTED_KEYS",
+        "IMCODEX_LAUNCHER_RELOADABLE_KEYS",
         "CONDA_EXE",
     ):
         environment.pop(name, None)
@@ -178,6 +199,9 @@ def _run_start_ps1(
             "IMCODEX_PYTHON": str(fake_python),
             "IMCODEX_TEST_CAPTURE": str(capture_path),
             "IMCODEX_TEST_TARGET_CAPTURE": str(target_capture_path),
+            "IMCODEX_TEST_PROVENANCE_CAPTURE": str(provenance_capture_path),
+            "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE": str(launcher_provenance_capture_path),
+            "IMCODEX_TEST_HTTP_PORT_CAPTURE": str(http_port_capture_path),
         }
     )
     environment.update(environment_overrides or {})
@@ -212,16 +236,8 @@ def _run_start_ps1(
     finally:
         if listener is not None:
             listener.close()
-    invocations = (
-        capture_path.read_text(encoding="utf-8").splitlines()
-        if capture_path.exists()
-        else []
-    )
-    target_environment = (
-        target_capture_path.read_text(encoding="utf-8").strip()
-        if target_capture_path.exists()
-        else ""
-    )
+    invocations = capture_path.read_text(encoding="utf-8").splitlines() if capture_path.exists() else []
+    target_environment = target_capture_path.read_text(encoding="utf-8").strip() if target_capture_path.exists() else ""
     return completed, invocations, target_environment
 
 
@@ -264,7 +280,9 @@ def test_start_sh_does_not_start_legacy_core_for_a_canonical_target(
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_defaults_to_ensuring_the_native_daemon_then_starts_the_bridge(tmp_path) -> None:
+def test_start_sh_defaults_to_ensuring_the_native_daemon_then_starts_the_bridge(
+    tmp_path,
+) -> None:
     completed, invocations, target_environment = _run_start_sh(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
@@ -272,6 +290,8 @@ def test_start_sh_defaults_to_ensuring_the_native_daemon_then_starts_the_bridge(
     assert "Ensuring native Codex App Server daemon is running" in completed.stdout
     assert invocations == ["-m imcodex app-server start", "-m imcodex"]
     assert target_environment == "unix://|||"
+    assert (tmp_path / "dotenv-provenance.txt").read_text(encoding="utf-8").strip() == ""
+    assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_APP_SERVER_URL"
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
@@ -284,10 +304,62 @@ def test_start_sh_treats_a_dotenv_canonical_target_as_connect_only(tmp_path) -> 
     assert completed.returncode == 0, completed.stderr
     assert invocations == ["-m imcodex"]
     assert target_environment == "unix:///tmp/codex-control.sock|||"
+    assert (tmp_path / "dotenv-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_APP_SERVER_URL"
+    assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == ""
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_propagates_native_daemon_failure_without_starting_the_bridge(tmp_path) -> None:
+def test_start_sh_marks_only_values_imported_from_dotenv_as_editable_provenance(
+    tmp_path: Path,
+) -> None:
+    completed, _invocations, _target_environment = _run_start_sh(
+        tmp_path,
+        dotenv=(
+            "IMCODEX_APP_SERVER_URL=unix:///tmp/codex-control.sock\nIMCODEX_QQ_ENABLED=1\nIMCODEX_LOG_LEVEL=INFO\n"
+        ),
+        environment_overrides={"IMCODEX_LOG_LEVEL": "DEBUG"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    imported = (tmp_path / "dotenv-provenance.txt").read_text(encoding="utf-8").strip().split(",")
+    assert set(imported) == {"IMCODEX_APP_SERVER_URL", "IMCODEX_QQ_ENABLED"}
+    assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == ""
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_start_sh_ignores_spoofed_provenance_and_keeps_first_external_key(
+    tmp_path: Path,
+) -> None:
+    completed, _invocations, _target_environment = _run_start_sh(
+        tmp_path,
+        dotenv=(
+            "IMCODEX_DOTENV_IMPORTED_KEYS=IMCODEX_LOG_LEVEL\n"
+            "IMCODEX_LAUNCHER_RELOADABLE_KEYS=IMCODEX_LOG_LEVEL\n"
+            "IMCODEX_LOG_LEVEL=INFO\n"
+        ),
+        environment_overrides={"IMCODEX_LOG_LEVEL": "DEBUG"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (tmp_path / "dotenv-provenance.txt").read_text(encoding="utf-8").strip() == ""
+    assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_APP_SERVER_URL"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_start_sh_uses_last_duplicate_dotenv_value(tmp_path: Path) -> None:
+    completed, _invocations, _target_environment = _run_start_sh(
+        tmp_path,
+        dotenv="IMCODEX_HTTP_PORT=8000\nIMCODEX_HTTP_PORT=8123\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (tmp_path / "http-port.txt").read_text(encoding="utf-8").strip() == "8123"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_start_sh_propagates_native_daemon_failure_without_starting_the_bridge(
+    tmp_path,
+) -> None:
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
         environment_overrides={"IMCODEX_TEST_DAEMON_EXIT": "17"},
@@ -299,7 +371,9 @@ def test_start_sh_propagates_native_daemon_failure_without_starting_the_bridge(t
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(tmp_path) -> None:
+def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(
+    tmp_path,
+) -> None:
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
         environment_overrides={
@@ -316,10 +390,36 @@ def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(tmp_pat
         "-m imcodex",
     ]
     assert target_environment == "|ws://127.0.0.1:9123|dedicated-ws|9123"
+    assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_CORE_URL"
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_never_starts_legacy_core_when_canonical_and_legacy_values_conflict(tmp_path) -> None:
+def test_start_sh_distinguishes_dotenv_legacy_target_from_synthesized_values(
+    tmp_path: Path,
+) -> None:
+    completed, invocations, target_environment = _run_start_sh(
+        tmp_path,
+        dotenv="IMCODEX_CORE_PORT=9123\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert invocations == [
+        "-m imcodex core start --port 9123",
+        "-m imcodex core verify --port 9123",
+        "-m imcodex",
+    ]
+    assert target_environment == "|ws://127.0.0.1:9123|dedicated-ws|9123"
+    assert (tmp_path / "dotenv-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_CORE_PORT"
+    assert set((tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip().split(",")) == {
+        "IMCODEX_CORE_MODE",
+        "IMCODEX_CORE_URL",
+    }
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+def test_start_sh_never_starts_legacy_core_when_canonical_and_legacy_values_conflict(
+    tmp_path,
+) -> None:
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
         environment_overrides={
@@ -334,7 +434,9 @@ def test_start_sh_never_starts_legacy_core_when_canonical_and_legacy_values_conf
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_keeps_process_target_group_separate_from_dotenv_target_group(tmp_path) -> None:
+def test_start_sh_keeps_process_target_group_separate_from_dotenv_target_group(
+    tmp_path,
+) -> None:
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
         dotenv="IMCODEX_APP_SERVER_URL=unix://\nIMCODEX_CORE_PORT=8765\n",
@@ -348,14 +450,13 @@ def test_start_sh_keeps_process_target_group_separate_from_dotenv_target_group(t
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_prefers_conda_injected_target_group_over_dotenv_target_group(tmp_path) -> None:
+def test_start_sh_prefers_conda_injected_target_group_over_dotenv_target_group(
+    tmp_path,
+) -> None:
     conda_executable = _fake_conda_executable(tmp_path)
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
-        dotenv=(
-            "IMCODEX_CONDA_ENV=imcodex-test\n"
-            "IMCODEX_APP_SERVER_URL=unix://\n"
-        ),
+        dotenv=("IMCODEX_CONDA_ENV=imcodex-test\nIMCODEX_APP_SERVER_URL=unix://\n"),
         environment_overrides={"CONDA_EXE": str(conda_executable)},
     )
 
@@ -366,7 +467,9 @@ def test_start_sh_prefers_conda_injected_target_group_over_dotenv_target_group(t
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
-def test_start_sh_restores_entry_process_target_group_after_conda_activation(tmp_path) -> None:
+def test_start_sh_restores_entry_process_target_group_after_conda_activation(
+    tmp_path,
+) -> None:
     conda_executable = _fake_conda_executable(tmp_path)
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
@@ -388,15 +491,19 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
     script = (repo_root / "scripts" / "start.ps1").read_text(encoding="utf-8")
 
     assert "Get-SafeTargetLabel $appServerUrl" in script
-    assert '$appServerUrl = $coreUrl' in script
-    assert '$env:IMCODEX_APP_SERVER_URL = $appServerUrl' in script
-    assert '$ensureDedicatedCore = $true' in script
-    assert '$script:PreActivationTargetConfigured' in script
+    assert "$appServerUrl = $coreUrl" in script
+    assert "$env:IMCODEX_APP_SERVER_URL = $appServerUrl" in script
+    assert "$ensureDedicatedCore = $true" in script
+    assert "$script:PreActivationTargetConfigured" in script
     assert "Resolve-TargetEnvironment" in script
     assert "Import-DotEnv\nEnable-CondaEnv\nResolve-TargetEnvironment" in script
-    assert '$ensureDedicatedCore -or (-not $appServerUrl' in script
+    assert "$ensureDedicatedCore -or (-not $appServerUrl" in script
     assert "core verify --port $corePort" in script
     assert script.count("core verify --port $corePort") == 2
+    assert "IMCODEX_DOTENV_IMPORTED_KEYS" in script
+    assert "IMCODEX_LAUNCHER_RELOADABLE_KEYS" in script
+    assert 'Add-LauncherReloadableKey "IMCODEX_APP_SERVER_URL"' in script
+    assert "Publish-DotEnvProvenance" in script
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
@@ -433,6 +540,23 @@ def test_start_ps1_executes_target_precedence_matrix(
     )
     assert invocations == expected_invocations
     assert target_environment == expected_target
+    launcher_keys = (tmp_path / "powershell-launcher-provenance.txt").read_text(encoding="utf-8").strip()
+    assert launcher_keys == ("IMCODEX_APP_SERVER_URL" if not dotenv and not environment_overrides else "")
+
+
+@pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
+def test_start_ps1_uses_last_duplicate_dotenv_value(tmp_path: Path) -> None:
+    completed, _invocations, _target_environment = _run_start_ps1(
+        tmp_path,
+        dotenv="IMCODEX_HTTP_PORT=8000\nIMCODEX_HTTP_PORT=8123\n",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (tmp_path / "powershell-http-port.txt").read_text(encoding="utf-8").strip() == "8123"
+    assert (tmp_path / "powershell-dotenv-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_HTTP_PORT"
+    assert (tmp_path / "powershell-launcher-provenance.txt").read_text(
+        encoding="utf-8"
+    ).strip() == "IMCODEX_APP_SERVER_URL"
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
@@ -451,10 +575,7 @@ def test_start_ps1_keeps_conda_target_group_separate(
     conda_executable = _fake_powershell_conda_executable(tmp_path)
     completed, invocations, target_environment = _run_start_ps1(
         tmp_path,
-        dotenv=(
-            "IMCODEX_CONDA_ENV=imcodex-test\n"
-            "IMCODEX_APP_SERVER_URL=unix://\n"
-        ),
+        dotenv=("IMCODEX_CONDA_ENV=imcodex-test\nIMCODEX_APP_SERVER_URL=unix://\n"),
         environment_overrides={
             "CONDA_EXE": str(conda_executable),
             **entry_process_target,

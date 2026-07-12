@@ -126,11 +126,8 @@ class TelegramChannelAdapter(BaseChannelAdapter):
     async def start(self) -> None:
         if not self.enabled:
             return
+        self.validate_startup_configuration()
         self.bot_token = self._resolve_bot_token()
-        if not self.bot_token:
-            raise RuntimeError(
-                "Telegram adapter requires IMCODEX_TELEGRAM_BOT_TOKEN or IMCODEX_TELEGRAM_BOT_TOKEN_FILE when enabled."
-            )
         if not self.access_policy.has_allowed_users:
             logger.warning(
                 "Telegram has no allowed user IDs; inbound messages will be denied. "
@@ -140,6 +137,14 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
         mark_channel_health("telegram", enabled=True, connected=False, status="connecting")
+
+    def validate_startup_configuration(self) -> None:
+        if not self.enabled:
+            return
+        if not self._resolve_bot_token():
+            raise RuntimeError(
+                "Telegram adapter requires IMCODEX_TELEGRAM_BOT_TOKEN or IMCODEX_TELEGRAM_BOT_TOKEN_FILE when enabled."
+            )
 
     async def stop(self) -> None:
         errors: list[Exception] = []

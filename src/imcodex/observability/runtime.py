@@ -163,11 +163,30 @@ class ObservabilityRuntime:
         self.paths.instance_metadata_path.write_text(payload + "\n", encoding="utf-8")
         self.paths.current_metadata_path.write_text(payload + "\n", encoding="utf-8")
 
-    def write_launch_snapshot(self, *, command: list[str], cwd: Path, env: dict[str, str]) -> None:
+    def write_launch_snapshot(
+        self,
+        *,
+        command: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        settings_source: str = "explicit",
+        restart_supported: bool = False,
+        reload_env_keys: list[str] | None = None,
+        dotenv_imported_keys: list[str] | None = None,
+        launcher_reloadable_keys: list[str] | None = None,
+        required_external_env_keys: list[str] | None = None,
+    ) -> None:
         payload = {
             "command": command,
             "cwd": str(cwd),
             "env": env,
+            "host": self.http_host,
+            "settingsSource": settings_source,
+            "restartSupported": restart_supported,
+            "reloadEnvKeys": sorted(set(reload_env_keys or [])),
+            "dotenvImportedKeys": sorted(set(dotenv_imported_keys or [])),
+            "launcherReloadableKeys": sorted(set(launcher_reloadable_keys or [])),
+            "requiredExternalEnvKeys": sorted(set(required_external_env_keys or [])),
             "pid": self.pid_provider(),
             "port": self.http_port,
         }
@@ -178,10 +197,13 @@ class ObservabilityRuntime:
 
     def _persist_launch_snapshot(self, payload: dict[str, Any]) -> None:
         assert self.paths is not None
-        serialized = json.dumps(payload, ensure_ascii=True, indent=2)
+        persisted = dict(payload)
+        if self.context is not None:
+            persisted["instanceId"] = self.context.instance_id
+        serialized = json.dumps(persisted, ensure_ascii=True, indent=2)
         self.paths.launch_path.write_text(serialized + "\n", encoding="utf-8")
         self.paths.current_launch_path.write_text(serialized + "\n", encoding="utf-8")
-        self._pending_launch_snapshot = payload
+        self._pending_launch_snapshot = persisted
 
     def _prune_archived_runs(self) -> None:
         assert self.paths is not None

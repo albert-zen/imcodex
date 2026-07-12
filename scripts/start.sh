@@ -38,6 +38,64 @@ dotenv_app_server_url=""
 dotenv_core_url=""
 dotenv_core_mode=""
 dotenv_core_port=""
+dotenv_imported_keys=()
+dotenv_imported_values=()
+launcher_reloadable_keys=""
+
+record_dotenv_import() {
+    local key="$1"
+    local value="$2"
+    local index
+    for ((index = 0; index < ${#dotenv_imported_keys[@]}; index++)); do
+        if [[ "${dotenv_imported_keys[index]}" == "${key}" ]]; then
+            dotenv_imported_values[index]="${value}"
+            return
+        fi
+    done
+    dotenv_imported_keys+=("${key}")
+    dotenv_imported_values+=("${value}")
+}
+
+dotenv_key_was_imported() {
+    local candidate="$1"
+    local index
+    for ((index = 0; index < ${#dotenv_imported_keys[@]}; index++)); do
+        if [[ "${dotenv_imported_keys[index]}" == "${candidate}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+record_launcher_reloadable() {
+    local candidate="$1"
+    if [[ ",${launcher_reloadable_keys}," == *",${candidate},"* ]]; then
+        return
+    fi
+    if [[ -n "${launcher_reloadable_keys}" ]]; then
+        launcher_reloadable_keys+=","
+    fi
+    launcher_reloadable_keys+="${candidate}"
+}
+
+publish_dotenv_provenance() {
+    local imported=()
+    local index key expected
+    for ((index = 0; index < ${#dotenv_imported_keys[@]}; index++)); do
+        key="${dotenv_imported_keys[index]}"
+        expected="${dotenv_imported_values[index]}"
+        if [[ "${!key-}" == "${expected}" ]]; then
+            imported+=("${key}")
+        fi
+    done
+    local joined=""
+    if (( ${#imported[@]} )); then
+        joined="$(IFS=,; printf '%s' "${imported[*]}")"
+    fi
+    export IMCODEX_DOTENV_IMPORTED_KEYS="${joined}"
+
+    export IMCODEX_LAUNCHER_RELOADABLE_KEYS="${launcher_reloadable_keys}"
+}
 
 load_dotenv() {
     local dotenv_path="${repo_root}/.env"
@@ -61,6 +119,9 @@ load_dotenv() {
 
         [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         case "${key}" in
+            IMCODEX_DOTENV_IMPORTED_KEYS|IMCODEX_LAUNCHER_RELOADABLE_KEYS)
+                continue
+                ;;
             IMCODEX_APP_SERVER_URL)
                 dotenv_app_server_url="${value}"
                 ;;
@@ -74,8 +135,9 @@ load_dotenv() {
                 dotenv_core_port="${value}"
                 ;;
             *)
-                if [[ -z "${!key+x}" ]]; then
+                if [[ -z "${!key+x}" ]] || dotenv_key_was_imported "${key}"; then
                     export "${key}=${value}"
+                    record_dotenv_import "${key}" "${value}"
                 fi
                 ;;
         esac
@@ -112,6 +174,18 @@ resolve_target_environment() {
     apply_target_value IMCODEX_CORE_URL "${dotenv_core_url}"
     apply_target_value IMCODEX_CORE_MODE "${dotenv_core_mode}"
     apply_target_value IMCODEX_CORE_PORT "${dotenv_core_port}"
+    if is_nonblank "${dotenv_app_server_url}"; then
+        record_dotenv_import IMCODEX_APP_SERVER_URL "${dotenv_app_server_url}"
+    fi
+    if is_nonblank "${dotenv_core_url}"; then
+        record_dotenv_import IMCODEX_CORE_URL "${dotenv_core_url}"
+    fi
+    if is_nonblank "${dotenv_core_mode}"; then
+        record_dotenv_import IMCODEX_CORE_MODE "${dotenv_core_mode}"
+    fi
+    if is_nonblank "${dotenv_core_port}"; then
+        record_dotenv_import IMCODEX_CORE_PORT "${dotenv_core_port}"
+    fi
 }
 
 activate_conda_env() {
@@ -208,6 +282,7 @@ ensure_native_daemon=false
 if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "false" ]]; then
     app_server_url="unix://"
     export IMCODEX_APP_SERVER_URL="${app_server_url}"
+    record_launcher_reloadable IMCODEX_APP_SERVER_URL
     ensure_native_daemon=true
 fi
 
@@ -232,6 +307,12 @@ if [[ "${ensure_native_daemon}" == "true" ]]; then
 fi
 
 if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core_mode}" == "dedicated-ws" ]]; then
+    if ! is_nonblank "${IMCODEX_CORE_MODE-}"; then
+        record_launcher_reloadable IMCODEX_CORE_MODE
+    fi
+    if ! is_nonblank "${IMCODEX_CORE_URL-}"; then
+        record_launcher_reloadable IMCODEX_CORE_URL
+    fi
     export IMCODEX_CORE_MODE="${core_mode}"
     export IMCODEX_CORE_URL="${core_url}"
 
@@ -246,4 +327,5 @@ if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core
     fi
 fi
 
+publish_dotenv_provenance
 exec "${python}" -m imcodex

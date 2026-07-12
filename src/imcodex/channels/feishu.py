@@ -94,10 +94,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
     async def start(self) -> None:
         if not self.enabled:
             return
-        if not self.app_id or not self.app_secret:
-            raise RuntimeError(
-                "Feishu adapter requires IMCODEX_FEISHU_APP_ID and IMCODEX_FEISHU_APP_SECRET when enabled."
-            )
+        self.validate_startup_configuration()
         if not self.access_policy.has_allowed_users:
             logger.warning(
                 "Feishu has no allowed user IDs; inbound messages will be denied. Set IMCODEX_FEISHU_ALLOWED_USER_IDS."
@@ -116,6 +113,21 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             await self._detach_sdk()
             raise
         mark_channel_health("feishu", enabled=True, connected=False, status="connecting")
+
+    def validate_startup_configuration(self) -> None:
+        if not self.enabled:
+            return
+        if not self.app_id or not self.app_secret:
+            raise RuntimeError(
+                "Feishu adapter requires IMCODEX_FEISHU_APP_ID and IMCODEX_FEISHU_APP_SECRET when enabled."
+            )
+        if self.channel_factory is None:
+            try:
+                import lark_channel  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Feishu support requires the optional dependency. Install imcodex with: pip install -e '.[feishu]'"
+                ) from exc
 
     async def stop(self) -> None:
         errors: list[Exception] = []

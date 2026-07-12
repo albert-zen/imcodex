@@ -80,9 +80,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     async def start(self) -> None:
         if not self.enabled:
             return
-        credentials = self.state_store.load_credentials()
-        if credentials is None:
-            raise RuntimeError("Weixin is not logged in. Run: python -m imcodex channels login weixin")
+        credentials = self._validated_credentials()
         self._credentials = credentials
         if not self.access_policy.has_allowed_users and credentials.owner_user_id:
             self.access_policy = ChannelAccessPolicy(
@@ -122,6 +120,18 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             status="connecting",
             experimental=True,
         )
+
+    def validate_startup_configuration(self) -> None:
+        if not self.enabled:
+            return
+        self._validated_credentials()
+        self.state_store.load_transport_state()
+
+    def _validated_credentials(self) -> WeixinCredentials:
+        credentials = self.state_store.load_credentials()
+        if credentials is None:
+            raise RuntimeError("Weixin is not logged in. Run: python -m imcodex channels login weixin")
+        return credentials
 
     async def stop(self) -> None:
         errors: list[Exception] = []

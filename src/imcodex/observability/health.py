@@ -12,6 +12,11 @@ from .context import InstanceContext
 from .paths import ObservabilityPaths
 
 
+BRIDGE_HEALTH_KIND = "imcodex.bridge"
+BRIDGE_INSTANCE_HEADER = "x-imcodex-instance"
+BRIDGE_SHUTDOWN_PATH = "/_imcodex/ops/shutdown"
+
+
 class HealthWriter:
     CLOSE_TIMEOUT_S = 0.25
 

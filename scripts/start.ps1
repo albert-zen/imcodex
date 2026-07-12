@@ -20,6 +20,8 @@ foreach ($targetKey in $script:TargetEnvironmentKeys) {
     }
 }
 $script:DotEnvTargetValues = @{}
+$script:DotEnvImportedValues = @{}
+$script:LauncherReloadableKeys = @{}
 
 function Import-DotEnv {
     $dotenvPath = Join-Path $repoRoot ".env"
@@ -40,12 +42,22 @@ function Import-DotEnv {
         if ($key -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") {
             continue
         }
+        if ($key -in @(
+            "IMCODEX_DOTENV_IMPORTED_KEYS",
+            "IMCODEX_LAUNCHER_RELOADABLE_KEYS"
+        )) {
+            continue
+        }
         if ($script:TargetEnvironmentKeys -contains $key) {
             $script:DotEnvTargetValues[$key] = $value
             continue
         }
-        if ($null -eq [Environment]::GetEnvironmentVariable($key, "Process")) {
+        if (
+            $null -eq [Environment]::GetEnvironmentVariable($key, "Process") -or
+            $script:DotEnvImportedValues.ContainsKey($key)
+        ) {
             [Environment]::SetEnvironmentVariable($key, $value, "Process")
+            $script:DotEnvImportedValues[$key] = $value
         }
     }
 }
@@ -87,7 +99,37 @@ function Resolve-TargetEnvironment {
             $null
         }
         Set-TargetEnvironmentValue $targetKey $targetValue
+        if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+            $script:DotEnvImportedValues[$targetKey] = $targetValue
+        }
     }
+}
+
+function Add-LauncherReloadableKey([string] $Name) {
+    $script:LauncherReloadableKeys[$Name] = $true
+}
+
+function Publish-DotEnvProvenance {
+    $importedKeys = @()
+    foreach ($entry in $script:DotEnvImportedValues.GetEnumerator()) {
+        $currentValue = [Environment]::GetEnvironmentVariable($entry.Key, "Process")
+        if ($currentValue -ceq [string]$entry.Value) {
+            $importedKeys += [string]$entry.Key
+        }
+    }
+    [Array]::Sort($importedKeys)
+    [Environment]::SetEnvironmentVariable(
+        "IMCODEX_DOTENV_IMPORTED_KEYS",
+        ($importedKeys -join ","),
+        "Process"
+    )
+    $launcherKeys = @($script:LauncherReloadableKeys.Keys)
+    [Array]::Sort($launcherKeys)
+    [Environment]::SetEnvironmentVariable(
+        "IMCODEX_LAUNCHER_RELOADABLE_KEYS",
+        ($launcherKeys -join ","),
+        "Process"
+    )
 }
 
 function Enable-CondaEnv {
@@ -212,6 +254,7 @@ if (-not $coreUrl) {
 if (-not $appServerUrl -and -not $legacyCoreConfigured) {
     $appServerUrl = $coreUrl
     $env:IMCODEX_APP_SERVER_URL = $appServerUrl
+    Add-LauncherReloadableKey "IMCODEX_APP_SERVER_URL"
     $ensureDedicatedCore = $true
 }
 
@@ -226,6 +269,12 @@ else {
 
 if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws")) {
     if (-not $ensureDedicatedCore) {
+        if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_MODE)) {
+            Add-LauncherReloadableKey "IMCODEX_CORE_MODE"
+        }
+        if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_URL)) {
+            Add-LauncherReloadableKey "IMCODEX_CORE_URL"
+        }
         $env:IMCODEX_CORE_MODE = $coreMode
         $env:IMCODEX_CORE_URL = $coreUrl
     }
@@ -251,5 +300,6 @@ if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and
     }
 }
 
+Publish-DotEnvProvenance
 & $python -m imcodex
 exit $LASTEXITCODE

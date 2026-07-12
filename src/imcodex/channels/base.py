@@ -152,6 +152,9 @@ class BaseChannelAdapter(ABC):
     def from_config(cls, *, config: dict[str, object], middleware):
         raise NotImplementedError
 
+    def validate_startup_configuration(self) -> None:
+        """Validate local prerequisites without opening a transport."""
+
     @abstractmethod
     async def start(self) -> None:
         raise NotImplementedError

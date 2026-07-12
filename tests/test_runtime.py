@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -226,12 +227,21 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
     assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
+    assert runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
+    assert runtime.observability._pending_launch_snapshot["restartSupported"] is False
 
 
 @pytest.mark.asyncio
 async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setenv("IMCODEX_QQ_ENABLED", "0")
+    monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "do-not-persist")
+    monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner-42")
+    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "ws://127.0.0.1:8765")
+    monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_QQ_ENABLED")
+    monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "IMCODEX_APP_SERVER_URL")
     settings = Settings(
         data_dir=tmp_path / ".imcodex",
         run_dir=tmp_path / ".imcodex-run",
@@ -260,7 +270,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         app_server_reconnect_max_delay_s=45.0,
         app_server_reconnect_jitter_fraction=0.15,
     )
-    runtime = build_runtime(settings)
+    runtime = build_runtime(settings, settings_source="environment")
     runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
     runtime.client.close = lambda: __import__("asyncio").sleep(0)
 
@@ -268,23 +278,23 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     launch = json.loads(runtime.observability.paths.current_launch_path.read_text(encoding="utf-8"))
     await runtime.stop()
 
-    assert launch["command"] == ["python", "-m", "imcodex"]
-    assert launch["env"]["IMCODEX_DEBUG_API_ENABLED"] == "0"
-    assert launch["env"]["IMCODEX_APP_SERVER_EXPERIMENTAL_API"] == "0"
-    assert launch["env"]["IMCODEX_APP_SERVER_URL"] == "ws://127.0.0.1:8765"
-    assert launch["env"]["IMCODEX_CORE_MODE"] == ""
-    assert launch["env"]["IMCODEX_CORE_URL"] == ""
-    assert launch["env"]["IMCODEX_APP_SERVER_AUTH_TOKEN_FILE"] == ""
-    assert "IMCODEX_APP_SERVER_AUTH_TOKEN" not in launch["env"]
-    assert "IMCODEX_QQ_CLIENT_SECRET" not in launch["env"]
-    assert "IMCODEX_TELEGRAM_BOT_TOKEN" not in launch["env"]
-    assert "IMCODEX_FEISHU_APP_SECRET" not in launch["env"]
-    assert "IMCODEX_INBOUND_WEBHOOK_TOKEN" not in launch["env"]
-    assert "IMCODEX_OUTBOUND_WEBHOOK_TOKEN" not in launch["env"]
-    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY"] == "0.6"
-    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY"] == "45.0"
-    assert launch["env"]["IMCODEX_APP_SERVER_RECONNECT_JITTER"] == "0.15"
-    assert launch["env"]["IMCODEX_QQ_MARKDOWN_ENABLED"] == "1"
+    assert launch["command"] == [sys.executable, "-m", "imcodex"]
+    assert launch["env"] == {}
+    assert launch["settingsSource"] == "environment"
+    assert launch["restartSupported"] is True
+    assert launch["host"] == "127.0.0.1"
+    assert launch["instanceId"] == runtime.observability.context.instance_id
+    assert "IMCODEX_HTTP_PORT" in launch["reloadEnvKeys"]
+    assert "IMCODEX_QQ_ENABLED" in launch["reloadEnvKeys"]
+    assert launch["dotenvImportedKeys"] == ["IMCODEX_QQ_ENABLED"]
+    assert launch["launcherReloadableKeys"] == ["IMCODEX_APP_SERVER_URL"]
+    required_external = set(launch["requiredExternalEnvKeys"])
+    assert {
+        "IMCODEX_QQ_ALLOWED_USER_IDS",
+        "IMCODEX_QQ_CLIENT_SECRET",
+        "PATH",
+    } <= required_external
+    assert "do-not-persist" not in json.dumps(launch)
     assert launch["port"] == 8000
 
 

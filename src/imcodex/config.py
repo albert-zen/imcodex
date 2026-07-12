@@ -7,6 +7,112 @@ from pathlib import Path
 from .app_server_target import AppServerTarget, resolve_app_server_target
 
 
+DOTENV_IMPORTED_KEYS_ENV = "IMCODEX_DOTENV_IMPORTED_KEYS"
+LAUNCHER_RELOADABLE_KEYS_ENV = "IMCODEX_LAUNCHER_RELOADABLE_KEYS"
+PREFLIGHT_CURRENT_HTTP_HOST_ENV = "IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_HOST"
+PREFLIGHT_CURRENT_HTTP_PORT_ENV = "IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_PORT"
+RESTART_CONTEXT_ENV_KEYS = frozenset(
+    {
+        "ALL_PROXY",
+        "APPDATA",
+        "COMSPEC",
+        "CURL_CA_BUNDLE",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LOCALAPPDATA",
+        "NO_PROXY",
+        "PATH",
+        "PATHEXT",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SYSTEMROOT",
+        "USERPROFILE",
+        "all_proxy",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+    }
+)
+RESTART_CONTEXT_ENV_PREFIXES = ("CODEX_", "OPENAI_")
+TARGET_ENVIRONMENT_KEYS = frozenset(
+    {
+        "IMCODEX_APP_SERVER_URL",
+        "IMCODEX_CORE_URL",
+        "IMCODEX_CORE_MODE",
+        "IMCODEX_CORE_PORT",
+    }
+)
+KNOWN_SETTING_ENV_KEYS = frozenset(
+    {
+        "IMCODEX_APP_SERVER_AUTH_TOKEN",
+        "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE",
+        "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS",
+        "IMCODEX_APP_SERVER_CONNECT_TIMEOUT",
+        "IMCODEX_APP_SERVER_EXPERIMENTAL_API",
+        "IMCODEX_APP_SERVER_HEALTH_TIMEOUT",
+        "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
+        "IMCODEX_APP_SERVER_RECONNECT_JITTER",
+        "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY",
+        "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS",
+        "IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY",
+        "IMCODEX_APP_SERVER_RETRY_JITTER",
+        "IMCODEX_APP_SERVER_RETRY_MAX_DELAY",
+        "IMCODEX_APP_SERVER_URL",
+        "IMCODEX_CODEX_BIN",
+        "IMCODEX_CORE_MODE",
+        "IMCODEX_CORE_PORT",
+        "IMCODEX_CORE_URL",
+        "IMCODEX_DATA_DIR",
+        "IMCODEX_DEBUG_API_ENABLED",
+        "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS",
+        "IMCODEX_FEISHU_ALLOWED_USER_IDS",
+        "IMCODEX_FEISHU_APP_ID",
+        "IMCODEX_FEISHU_APP_SECRET",
+        "IMCODEX_FEISHU_DOMAIN",
+        "IMCODEX_FEISHU_ENABLED",
+        "IMCODEX_FEISHU_REQUIRE_MENTION",
+        "IMCODEX_FEISHU_STARTUP_TIMEOUT",
+        "IMCODEX_HTTP_HOST",
+        "IMCODEX_HTTP_PORT",
+        "IMCODEX_INBOUND_WEBHOOK_TOKEN",
+        "IMCODEX_LARK_APP_ID",
+        "IMCODEX_LARK_APP_SECRET",
+        "IMCODEX_LOG_LEVEL",
+        "IMCODEX_OUTBOUND_URL",
+        "IMCODEX_OUTBOUND_WEBHOOK_TOKEN",
+        "IMCODEX_QQ_ALLOWED_CONVERSATION_IDS",
+        "IMCODEX_QQ_ALLOWED_USER_IDS",
+        "IMCODEX_QQ_API_BASE",
+        "IMCODEX_QQ_APP_ID",
+        "IMCODEX_QQ_CLIENT_SECRET",
+        "IMCODEX_QQ_ENABLED",
+        "IMCODEX_QQ_MARKDOWN_ENABLED",
+        "IMCODEX_RESTART_EXECUTOR",
+        "IMCODEX_RUN_DIR",
+        "IMCODEX_SERVICE_NAME",
+        "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS",
+        "IMCODEX_TELEGRAM_ALLOWED_USER_IDS",
+        "IMCODEX_TELEGRAM_API_BASE",
+        "IMCODEX_TELEGRAM_BOT_TOKEN",
+        "IMCODEX_TELEGRAM_BOT_TOKEN_FILE",
+        "IMCODEX_TELEGRAM_ENABLED",
+        "IMCODEX_TELEGRAM_POLL_TIMEOUT",
+        "IMCODEX_TELEGRAM_REQUIRE_MENTION",
+        "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS",
+        "IMCODEX_WEIXIN_ALLOWED_USER_IDS",
+        "IMCODEX_WEIXIN_ENABLED",
+        "IMCODEX_WEIXIN_POLL_TIMEOUT_MS",
+        "IMCODEX_WEIXIN_STATE_DIR",
+    }
+)
+
+
+def is_restart_context_env_key(key: str) -> bool:
+    return key in RESTART_CONTEXT_ENV_KEYS or key.startswith(RESTART_CONTEXT_ENV_PREFIXES)
+
+
 def _read_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -73,8 +179,10 @@ def _app_server_config_from_env(
         "IMCODEX_CORE_PORT",
     )
     process_values = tuple(_optional_setting(os.getenv(name)) for name in names)
-    values = process_values if any(value is not None for value in process_values) else tuple(
-        _optional_setting(dotenv.get(name)) for name in names
+    values = (
+        process_values
+        if any(value is not None for value in process_values)
+        else tuple(_optional_setting(dotenv.get(name)) for name in names)
     )
     app_server_url, core_url, core_mode, core_port = values
     if core_port is not None and app_server_url is None and core_url is None:

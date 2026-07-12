@@ -114,8 +114,7 @@ class QQChannelAdapter(BaseChannelAdapter):
     async def start(self) -> None:
         if not self.enabled:
             return
-        if not self.app_id or not self.client_secret:
-            raise RuntimeError("QQ adapter requires app_id and client_secret when enabled.")
+        self.validate_startup_configuration()
         if not self.access_policy.has_allowed_users:
             logger.warning(
                 "QQ has no allowed user IDs; inbound messages will be denied. "
@@ -127,6 +126,12 @@ class QQChannelAdapter(BaseChannelAdapter):
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
         mark_channel_health("qq", enabled=True, connected=False, status="connecting")
+
+    def validate_startup_configuration(self) -> None:
+        if not self.enabled:
+            return
+        if not self.app_id or not self.client_secret:
+            raise RuntimeError("QQ adapter requires app_id and client_secret when enabled.")
 
     async def stop(self) -> None:
         self._stop_event.set()
