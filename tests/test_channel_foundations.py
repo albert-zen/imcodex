@@ -41,7 +41,12 @@ async def test_base_adapter_drops_unauthorized_inbound_before_middleware(
     monkeypatch,
 ) -> None:
     events: list[dict] = []
+    health: list[tuple[str, dict]] = []
     monkeypatch.setattr("imcodex.channels.base.emit_event", lambda **payload: events.append(payload))
+    monkeypatch.setattr(
+        "imcodex.channels.base.mark_channel_health",
+        lambda channel_id, **payload: health.append((channel_id, payload)),
+    )
 
     class Middleware:
         def __init__(self) -> None:
@@ -84,6 +89,67 @@ async def test_base_adapter_drops_unauthorized_inbound_before_middleware(
 
     assert middleware.calls == 0
     assert events[0]["event"] == "message.inbound.access_denied"
+    assert health[0][0] == "test"
+    assert health[0][1]["inbound_access_ready"] is True
+    assert health[0][1]["access_policy_mode"] == "restricted"
+    assert health[0][1]["last_inbound_access_denial_reason"] == "user_or_conversation_not_allowed"
+    assert health[0][1]["last_inbound_access_denied_at"].endswith("+00:00")
+
+
+def test_access_policy_health_exposes_deny_all_without_identifiers() -> None:
+    class Adapter(BaseChannelAdapter):
+        channel_id = "test"
+
+        @classmethod
+        def from_config(cls, *, config, middleware):
+            raise NotImplementedError
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            return None
+
+    adapter = Adapter(middleware=object())
+
+    assert adapter.inbound_access_ready is False
+    assert adapter.access_policy_health() == {
+        "inbound_access_ready": False,
+        "access_policy_mode": "deny_all",
+        "allowed_user_count": 0,
+        "allowed_conversation_count": 0,
+    }
+
+
+def test_access_policy_health_stays_restricted_when_only_users_are_wildcarded() -> None:
+    class Adapter(BaseChannelAdapter):
+        channel_id = "test"
+
+        @classmethod
+        def from_config(cls, *, config, middleware):
+            raise NotImplementedError
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            return None
+
+    adapter = Adapter(
+        middleware=object(),
+        access_policy=ChannelAccessPolicy(
+            allowed_user_ids=frozenset({"*"}),
+            allowed_conversation_ids=frozenset({"conversation-1"}),
+        ),
+    )
+
+    assert adapter.access_policy_health()["access_policy_mode"] == "restricted"
 
 
 @pytest.mark.asyncio

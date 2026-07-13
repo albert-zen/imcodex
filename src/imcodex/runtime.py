@@ -49,7 +49,10 @@ class AppRuntime:
             await self.client.initialize()
             if self.observability is not None:
                 self._observe(mark_http_health, listening=True)
-                self._observe(self.observability.update_health, status="healthy")
+                self._observe(
+                    self.observability.update_health,
+                    status="healthy" if self._channel_access_ready() else "degraded",
+                )
                 self._observe(
                     self.observability.emit_event,
                     component="bridge",
@@ -154,6 +157,12 @@ class AppRuntime:
             seen.add(identity)
             channels.append(channel)
         return channels
+
+    def _channel_access_ready(self) -> bool:
+        return all(
+            bool(getattr(channel, "inbound_access_ready", True))
+            for channel in self._managed_channels_in_order()
+        )
 
     def _managed_channels_in_order(self) -> list[object]:
         channels: list[object] = []

@@ -119,6 +119,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             connected=False,
             status="connecting",
             experimental=True,
+            **self.access_policy_health(),
         )
 
     def validate_startup_configuration(self) -> None:

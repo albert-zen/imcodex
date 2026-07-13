@@ -76,6 +76,22 @@ grow logs without bound. A safe discovery loop is:
 3. Read the denied event locally.
 4. Copy that stable ID into `.env` and restart the bridge.
 
+Channel health distinguishes transport connectivity from admission readiness.
+Under `.imcodex-run/current/health.json`, each enabled adapter reports
+`inbound_access_ready`, `access_policy_mode`, and non-secret allowlist counts.
+An empty user allowlist reports `access_policy_mode: "deny_all"`; the bridge's
+top-level health becomes `degraded` even if the platform websocket remains
+connected. A sampled denial also records `last_inbound_access_denied_at` and a
+non-secret reason. Deployments should run `channels doctor` and require both a
+connected transport and `inbound_access_ready: true` before declaring an IM
+channel usable.
+
+Upgrades from versions before stable-ID admission may have working thread
+bindings but no persisted owner allowlist. Bindings are routing history, not
+authorization, so IMCodex does not promote them automatically. Complete the
+discovery loop once and persist the owner ID before expecting the upgraded
+channel to resume normal traffic.
+
 Do not use display names as identities. Names can change and may not be unique.
 Every admitted identity is an operator, not a low-privilege chat user: it can
 use commands such as `/cwd`, `/config`, and `/native` and can reach the native

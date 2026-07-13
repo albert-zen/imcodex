@@ -836,7 +836,15 @@ async def test_qq_adapter_start_survives_initial_network_failure(monkeypatch) ->
     assert delays == [1.0]
     assert observed_health[0] == (
         "qq",
-        {"enabled": True, "connected": False, "status": "connecting"},
+        {
+            "enabled": True,
+            "connected": False,
+            "status": "connecting",
+            "inbound_access_ready": False,
+            "access_policy_mode": "deny_all",
+            "allowed_user_count": 0,
+            "allowed_conversation_count": 0,
+        },
     )
     assert observed_health[-1] == (
         "qq",

@@ -175,6 +175,32 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
 
 
 @pytest.mark.asyncio
+async def test_app_runtime_health_is_degraded_when_channel_access_denies_everyone() -> None:
+    calls: list[str] = []
+    health_updates: list[dict] = []
+
+    class DenyAllChannel(_FakeChannel):
+        inbound_access_ready = False
+
+    class CapturingObservability(_FakeObservability):
+        def update_health(self, **changes) -> None:
+            health_updates.append(changes)
+
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_FakeService(),
+        managed_channels=[DenyAllChannel(calls)],
+        observability=CapturingObservability(calls),
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    assert health_updates[0] == {"status": "degraded"}
+    assert health_updates[-1] == {"status": "stopped"}
+
+
+@pytest.mark.asyncio
 async def test_app_runtime_closes_service_before_app_server_client() -> None:
     calls: list[str] = []
     runtime = AppRuntime(

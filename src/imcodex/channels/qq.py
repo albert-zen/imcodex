@@ -126,7 +126,13 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._ensure_inbound_worker()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
-        mark_channel_health("qq", enabled=True, connected=False, status="connecting")
+        mark_channel_health(
+            "qq",
+            enabled=True,
+            connected=False,
+            status="connecting",
+            **self.access_policy_health(),
+        )
 
     def validate_startup_configuration(self) -> None:
         if not self.enabled:

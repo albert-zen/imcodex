@@ -112,7 +112,13 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         except BaseException:
             await self._detach_sdk()
             raise
-        mark_channel_health("feishu", enabled=True, connected=False, status="connecting")
+        mark_channel_health(
+            "feishu",
+            enabled=True,
+            connected=False,
+            status="connecting",
+            **self.access_policy_health(),
+        )
 
     def validate_startup_configuration(self) -> None:
         if not self.enabled:

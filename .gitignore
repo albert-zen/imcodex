@@ -2,6 +2,7 @@ __pycache__/
 .pytest_cache/
 .agentkit/
 .env
+.env.bak.*
 .imcodex-appserver-token
 .telegram-bot-token
 .imcodex/

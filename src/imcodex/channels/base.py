@@ -3,12 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from threading import Lock
 import time
 
 from ..models import InboundMessage, OutboundMessage
-from ..observability.runtime import emit_event
+from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 
 
@@ -65,10 +66,36 @@ class BaseChannelAdapter(ABC):
             conversation_id=inbound.conversation_id,
         )
 
+    @property
+    def inbound_access_ready(self) -> bool:
+        return self.access_policy.has_allowed_users
+
+    def access_policy_health(self) -> dict[str, object]:
+        if not self.access_policy.has_allowed_users:
+            mode = "deny_all"
+        elif "*" in self.access_policy.allowed_user_ids and (
+            not self.access_policy.allowed_conversation_ids
+            or "*" in self.access_policy.allowed_conversation_ids
+        ):
+            mode = "open"
+        else:
+            mode = "restricted"
+        return {
+            "inbound_access_ready": self.inbound_access_ready,
+            "access_policy_mode": mode,
+            "allowed_user_count": len(self.access_policy.allowed_user_ids),
+            "allowed_conversation_count": len(self.access_policy.allowed_conversation_ids),
+        }
+
     def prepare_access_denial_report(self) -> int | None:
         return self._access_denial_limiter.note()
 
     def emit_access_denial(self, inbound: InboundMessage, suppressed: int) -> None:
+        denial_reason = (
+            "no_allowed_users"
+            if not self.access_policy.has_allowed_users
+            else "user_or_conversation_not_allowed"
+        )
         logger.warning(
             "%s inbound message blocked by access policy user_id=%s conversation_id=%s suppressed_since_last=%d",
             self.channel_id,
@@ -86,6 +113,12 @@ class BaseChannelAdapter(ABC):
             user_id=inbound.user_id,
             message_id=inbound.message_id,
             data={"suppressed_since_last": suppressed},
+        )
+        mark_channel_health(
+            self.channel_id,
+            **self.access_policy_health(),
+            last_inbound_access_denied_at=datetime.now(timezone.utc).isoformat(),
+            last_inbound_access_denial_reason=denial_reason,
         )
 
     def ensure_outbound_allowed(self, message: OutboundMessage) -> None:
