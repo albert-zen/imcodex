@@ -10,6 +10,7 @@ from typing import Any
 
 from .protocol_map import (
     EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS,
+    HOST_DELEGATED_SERVER_REQUEST_METHODS,
     REJECTED_SERVER_REQUEST_METHODS,
     SUPPORTED_SERVER_REQUEST_METHODS,
 )
@@ -23,6 +24,7 @@ SchemaCommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 class ServerRequestSchemaDriftReport:
     schema_methods: frozenset[str]
     supported_methods: frozenset[str]
+    delegated_methods: frozenset[str]
     rejected_methods: frozenset[str]
     missing_methods: frozenset[str]
     extra_bridge_methods: frozenset[str]
@@ -31,7 +33,7 @@ class ServerRequestSchemaDriftReport:
 
     @property
     def covered_methods(self) -> frozenset[str]:
-        return self.supported_methods | self.rejected_methods
+        return self.supported_methods | self.delegated_methods | self.rejected_methods
 
     @property
     def ok(self) -> bool:
@@ -42,17 +44,20 @@ def compare_server_request_methods(
     schema_methods: Iterable[str],
     *,
     supported_methods: Iterable[str] = SUPPORTED_SERVER_REQUEST_METHODS,
+    delegated_methods: Iterable[str] = HOST_DELEGATED_SERVER_REQUEST_METHODS,
     rejected_methods: Iterable[str] = REJECTED_SERVER_REQUEST_METHODS,
     command: Iterable[str] = (),
     unavailable_reason: str | None = None,
 ) -> ServerRequestSchemaDriftReport:
     schema_method_set = frozenset(schema_methods)
     supported_method_set = frozenset(supported_methods)
+    delegated_method_set = frozenset(delegated_methods)
     rejected_method_set = frozenset(rejected_methods)
-    covered_methods = supported_method_set | rejected_method_set
+    covered_methods = supported_method_set | delegated_method_set | rejected_method_set
     return ServerRequestSchemaDriftReport(
         schema_methods=schema_method_set,
         supported_methods=supported_method_set,
+        delegated_methods=delegated_method_set,
         rejected_methods=rejected_method_set,
         missing_methods=frozenset(schema_method_set - covered_methods),
         extra_bridge_methods=frozenset(covered_methods - schema_method_set),

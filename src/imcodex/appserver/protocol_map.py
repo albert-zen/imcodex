@@ -62,10 +62,19 @@ EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS = frozenset(
     }
 )
 
+HOST_DELEGATED_SERVER_REQUEST_METHODS = frozenset(
+    {
+        # Dynamic tools are registered and implemented by the client that
+        # created the native thread. A shared external App Server broadcasts
+        # the request to every thread subscriber, so passive bridge clients
+        # must not race the owning host with an unsupported-method response.
+        "item/tool/call",
+    }
+)
+
 REJECTED_SERVER_REQUEST_METHODS = frozenset(
     {
         "mcpServer/elicitation/request",
-        "item/tool/call",
         "account/chatgptAuthTokens/refresh",
         "attestation/generate",
         "applyPatchApproval",
@@ -76,6 +85,7 @@ REJECTED_SERVER_REQUEST_METHODS = frozenset(
 SERVER_REQUEST_METHODS = (
     SUPPORTED_SERVER_REQUEST_METHODS
     | EXPERIMENTAL_SUPPORTED_SERVER_REQUEST_METHODS
+    | HOST_DELEGATED_SERVER_REQUEST_METHODS
     | REJECTED_SERVER_REQUEST_METHODS
 )
 
@@ -112,6 +122,7 @@ def normalize_appserver_message(message: dict[str, Any]) -> AppServerEvent:
     if not isinstance(payload, dict):
         payload = {}
     item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+    turn = payload.get("turn") if isinstance(payload.get("turn"), dict) else {}
     direction = "server_request" if method and "id" in message else "notification"
     request_id = payload.get("requestId") or payload.get("_request_id")
     if request_id is None and direction == "server_request":
@@ -124,7 +135,7 @@ def normalize_appserver_message(message: dict[str, Any]) -> AppServerEvent:
         kind=_EVENT_KINDS.get(method, "unknown"),
         payload=payload,
         thread_id=str(payload.get("threadId", "") or ""),
-        turn_id=str(payload.get("turnId", "") or ""),
+        turn_id=str(payload.get("turnId") or turn.get("id") or ""),
         item_id=str(item_id or ""),
         request_id=str(request_id) if request_id is not None else None,
         process_id=_string_or_none(payload.get("processId")),

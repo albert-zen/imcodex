@@ -43,6 +43,14 @@ class _FakeService:
         return None
 
 
+class _ClosableService(_FakeService):
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def close(self) -> None:
+        self.calls.append("service.close")
+
+
 class _ReadyBackend:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
@@ -164,6 +172,19 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
         "obs.event:bridge:bridge.stopped",
         "obs.stop",
     ]
+
+
+@pytest.mark.asyncio
+async def test_app_runtime_closes_service_before_app_server_client() -> None:
+    calls: list[str] = []
+    runtime = AppRuntime(
+        client=_FakeClient(calls),
+        service=_ClosableService(calls),
+    )
+
+    await runtime.stop()
+
+    assert calls == ["service.close", "client.close"]
 
 
 @pytest.mark.asyncio

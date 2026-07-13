@@ -9,6 +9,7 @@ from imcodex.appserver import (
     compare_server_request_methods,
     extract_server_request_methods,
 )
+from imcodex.appserver.protocol_map import HOST_DELEGATED_SERVER_REQUEST_METHODS
 from imcodex.appserver.protocol_map import REJECTED_SERVER_REQUEST_METHODS
 
 
@@ -76,6 +77,8 @@ def test_current_stable_server_request_schema_methods_are_explicitly_covered() -
 
     assert report.ok is True
     assert report.missing_methods == frozenset()
+    assert "item/tool/call" in HOST_DELEGATED_SERVER_REQUEST_METHODS
+    assert "item/tool/call" not in REJECTED_SERVER_REQUEST_METHODS
     assert "attestation/generate" in REJECTED_SERVER_REQUEST_METHODS
 
 

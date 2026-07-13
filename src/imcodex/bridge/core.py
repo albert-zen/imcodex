@@ -74,6 +74,9 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         self._recent_terminal_deliveries: dict[tuple[str, str], None] = {}
         self.native_requests = NativeRequestPolicy(store=store, backend=backend)
 
+    async def close(self) -> None:
+        await self.native_requests.close()
+
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         trace_id = ensure_trace_id(message)
         message_kind = "command" if message.text.startswith("/") else "text"
@@ -518,6 +521,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         return [self._message(message, message_type, response.text, request_id=response.request_id)]
 
     async def handle_notification(self, notification: dict) -> list[OutboundMessage]:
+        self.native_requests.observe_notification(notification)
         journal_entry = record_native_appserver_journal(self.store, notification)
         event = normalize_appserver_message(notification)
         if event.kind in _TERMINAL_PROJECTION_EVENT_KINDS:
@@ -573,6 +577,16 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         message = self.projector.project_notification(request, self.store)
         self._attach_native_delivery_id(message, request, namespace="request")
         event = normalize_appserver_message(request)
+        if self.native_requests.delegate_to_peer_host(
+            request,
+            journal_sequence=journal_entry.sequence,
+        ):
+            self.store.update_native_appserver_event(
+                journal_entry.sequence,
+                outcome="delegated",
+                note="host-owned request left for another external App Server subscriber",
+            )
+            return []
         routed = bool(
             event.request_id
             and self.store.get_pending_request(event.request_id) is not None
@@ -658,6 +672,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         return epoch or None
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
+        self.native_requests.cancel_connection_epoch(connection_epoch)
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
         if self.backend.prefers_native_recovery():
             return

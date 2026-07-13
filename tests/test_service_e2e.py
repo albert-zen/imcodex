@@ -1114,6 +1114,249 @@ async def test_unhandled_server_request_is_rejected_instead_of_silently_stalling
 
 
 @pytest.mark.asyncio
+async def test_external_shared_app_server_dynamic_tool_is_left_for_owning_host() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+
+    projected = await service.handle_server_request(
+        {
+            "id": 78,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "78",
+                "_transport_request_id": 78,
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+
+    assert projected == []
+    assert not any(payload.get("id") == 78 for payload in process.inputs)
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "item": {
+                    "id": "call_threads",
+                    "type": "dynamicToolCall",
+                    "status": "completed",
+                    "tool": "list_threads",
+                },
+            },
+        }
+    )
+    await asyncio.sleep(0)
+    journal = store.list_native_appserver_events()
+    delegated = next(entry for entry in journal if entry.method == "item/tool/call")
+    assert delegated.outcome == "delegated"
+
+
+@pytest.mark.asyncio
+async def test_external_dynamic_tool_fails_when_no_peer_host_claims_it() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+    service.native_requests.peer_host_request_timeout_s = 0.01
+
+    projected = await service.handle_server_request(
+        {
+            "id": 80,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "80",
+                "_transport_request_id": 80,
+                "threadId": "thr_1",
+                "turnId": "turn_orphaned",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+
+    assert projected == []
+    await asyncio.sleep(0.02)
+    errors = [payload for payload in process.inputs if payload.get("id") == 80]
+    assert errors[0]["error"]["code"] == -32601
+    assert errors[0]["error"]["data"]["reason"] == "dynamicToolHostUnavailable"
+    journal = store.list_native_appserver_events()
+    assert journal[-1].outcome == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_external_dynamic_tool_completion_tombstone_prevents_late_rejection() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+    service.native_requests.peer_host_request_timeout_s = 0.01
+
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "item": {
+                    "id": "call_threads",
+                    "type": "dynamicToolCall",
+                    "status": "completed",
+                    "tool": "list_threads",
+                },
+            },
+        }
+    )
+    projected = await service.handle_server_request(
+        {
+            "id": 81,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "81",
+                "_transport_request_id": 81,
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+
+    assert projected == []
+    await asyncio.sleep(0.02)
+    assert not any(payload.get("id") == 81 for payload in process.inputs)
+
+
+@pytest.mark.asyncio
+async def test_external_turn_completion_tombstone_uses_nested_native_turn_id() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+    service.native_requests.peer_host_request_timeout_s = 0.01
+
+    await service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {
+                    "id": "turn_desktop",
+                    "status": "completed",
+                    "items": [],
+                },
+            },
+        }
+    )
+    projected = await service.handle_server_request(
+        {
+            "id": 83,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "83",
+                "_transport_request_id": 83,
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+
+    assert projected == []
+    await asyncio.sleep(0.02)
+    assert not any(payload.get("id") == 83 for payload in process.inputs)
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_cancels_delegated_dynamic_tool_fallback() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+    service.native_requests.peer_host_request_timeout_s = 0.01
+
+    await service.handle_server_request(
+        {
+            "id": 82,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "82",
+                "_transport_request_id": 82,
+                "threadId": "thr_1",
+                "turnId": "turn_desktop",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+    await service.close()
+    await asyncio.sleep(0.02)
+
+    assert not any(payload.get("id") == 82 for payload in process.inputs)
+
+
+@pytest.mark.asyncio
+async def test_private_bridge_child_rejects_unhandled_dynamic_tool() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    _client, service = _build_service(store, process, sink)
+
+    projected = await service.handle_server_request(
+        {
+            "id": 79,
+            "method": "item/tool/call",
+            "params": {
+                "_request_id": "79",
+                "_transport_request_id": 79,
+                "threadId": "thr_1",
+                "turnId": "turn_im",
+                "callId": "call_threads",
+                "tool": "list_threads",
+                "arguments": {},
+            },
+        }
+    )
+
+    assert projected[0].message_type == "status"
+    errors = [payload for payload in process.inputs if payload.get("id") == 79]
+    assert errors[0]["error"]["code"] == -32601
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("delivery_failure", ["raise", "hang"])
 async def test_server_request_delivery_failure_is_bounded_and_rejected(delivery_failure: str) -> None:
     class FailingSink:

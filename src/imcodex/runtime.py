@@ -89,6 +89,8 @@ class AppRuntime:
                 with contextlib.suppress(BaseException):
                     await channel.stop()
             with contextlib.suppress(BaseException):
+                await self._close_service()
+            with contextlib.suppress(BaseException):
                 await self.client.close()
             with contextlib.suppress(BaseException):
                 await self._flush_store_writes()
@@ -111,6 +113,12 @@ class AppRuntime:
                 errors.append(RuntimeError("channel shutdown was cancelled"))
             except Exception as exc:
                 errors.append(exc)
+        try:
+            await self._close_service()
+        except asyncio.CancelledError:
+            errors.append(RuntimeError("bridge service shutdown was cancelled"))
+        except Exception as exc:
+            errors.append(exc)
         try:
             await self.client.close()
         except asyncio.CancelledError:
@@ -163,6 +171,11 @@ class AppRuntime:
         flush = getattr(store, "flush_pending_writes", None)
         if callable(flush):
             await flush()
+
+    async def _close_service(self) -> None:
+        close = getattr(self.service, "close", None)
+        if callable(close):
+            await close()
 
     async def _stop_observability(self) -> None:
         stop = getattr(self.observability, "stop", None)
