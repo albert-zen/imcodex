@@ -66,8 +66,9 @@ HOST_DELEGATED_SERVER_REQUEST_METHODS = frozenset(
     {
         # Dynamic tools are registered and implemented by the client that
         # created the native thread. A shared external App Server broadcasts
-        # the request to every thread subscriber, so passive bridge clients
-        # must not race the owning host with an unsupported-method response.
+        # the request to every thread subscriber. IMCodex may translate the
+        # native-mappable Desktop thread tools only when its configured
+        # topology declares it to be their host; it never owns thread state.
         "item/tool/call",
     }
 )

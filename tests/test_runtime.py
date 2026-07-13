@@ -231,6 +231,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_client_secret="",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=False,
+        native_thread_tool_host=True,
         app_server_reconnect_initial_delay_s=0.6,
         app_server_reconnect_max_delay_s=45.0,
         app_server_reconnect_jitter_fraction=0.15,
@@ -244,7 +245,8 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client._supervisor.target.connection_mode == "external"
     assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
     assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
-    assert runtime.client._experimental_api_enabled is False
+    assert runtime.client._experimental_api_enabled is True
+    assert runtime.service.native_requests.native_thread_tool_host is True
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
     assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
@@ -261,6 +263,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "do-not-persist")
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner-42")
     monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "ws://127.0.0.1:8765")
+    monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "1")
     monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_QQ_ENABLED")
     monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "IMCODEX_APP_SERVER_URL")
     settings = Settings(
@@ -283,6 +286,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         qq_client_secret="do-not-persist",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=True,
+        native_thread_tool_host=True,
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
         inbound_webhook_token="do-not-persist",
@@ -313,6 +317,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert {
         "IMCODEX_QQ_ALLOWED_USER_IDS",
         "IMCODEX_QQ_CLIENT_SECRET",
+        "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "PATH",
     } <= required_external
     assert "do-not-persist" not in json.dumps(launch)

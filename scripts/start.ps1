@@ -268,6 +268,7 @@ else {
 }
 
 if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and $coreMode -eq "dedicated-ws")) {
+    $env:IMCODEX_NATIVE_THREAD_TOOL_HOST = "1"
     if (-not $ensureDedicatedCore) {
         if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_MODE)) {
             Add-LauncherReloadableKey "IMCODEX_CORE_MODE"

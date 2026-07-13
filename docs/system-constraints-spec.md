@@ -417,13 +417,17 @@ Internal failure handling MUST follow these rules:
 - no native request may be left silently pending because the bridge forgot to answer it
 - unsupported native request shapes must fail explicitly
 - on a shared external App Server, host-registered dynamic tool requests are
-  owned by the client that supplied their implementation; IMCodex MUST leave
-  `item/tool/call` unanswered so it cannot race that host with a false
-  unsupported-method response. Delegation MUST be bounded and canceled when
-  native completion arrives; if no peer host resolves the call before that
-  bound, IMCodex MUST fail it explicitly rather than leave the turn pending.
-  A private bridge-child connection, where no peer host can answer, MUST still
-  reject the unsupported request immediately
+  owned by the client that supplied their implementation; IMCodex MUST NOT
+  execute a fallback with side effects unless its configured topology declares
+  IMCodex to be the thread-tool host. That declaration is enabled by the
+  project launchers for the independent App Server they manage, but remains
+  disabled for explicit connect-only endpoints. Delegation MUST be bounded and
+  canceled when native completion arrives. As the declared host, IMCodex MAY
+  translate only operations that map directly to native thread/turn APIs; it
+  MUST NOT recreate Desktop-owned project, pin, handoff, or remote-host state.
+  Other unresolved dynamic tools MUST fail explicitly rather than leave the
+  turn pending. A private bridge-child connection MAY use the same native
+  translations, but MUST reject unsupported requests immediately
 - protocol details should stay inside the App Server boundary
 - the bridge may log diagnostic detail, but must not expose raw protocol noise to end users
 

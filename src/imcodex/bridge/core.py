@@ -54,6 +54,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         projector,
         outbound_sink=None,
         server_request_delivery_timeout_s: float = _SERVER_REQUEST_DELIVERY_TIMEOUT_S,
+        native_thread_tool_host: bool = False,
     ) -> None:
         self.store = store
         self.backend = backend
@@ -72,7 +73,11 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         # queued terminal notifications and a concurrent resume response.
         self._pending_recovered_turns: dict[tuple[str, str], dict] = {}
         self._recent_terminal_deliveries: dict[tuple[str, str], None] = {}
-        self.native_requests = NativeRequestPolicy(store=store, backend=backend)
+        self.native_requests = NativeRequestPolicy(
+            store=store,
+            backend=backend,
+            native_thread_tool_host=native_thread_tool_host,
+        )
 
     async def close(self) -> None:
         await self.native_requests.close()
@@ -584,7 +589,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             self.store.update_native_appserver_event(
                 journal_entry.sequence,
                 outcome="delegated",
-                note="host-owned request left for another external App Server subscriber",
+                note="host-owned request deferred for a peer or native fallback",
             )
             return []
         routed = bool(

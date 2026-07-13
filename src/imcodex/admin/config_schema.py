@@ -242,6 +242,17 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         False,
     ),
     _field(
+        "IMCODEX_NATIVE_THREAD_TOOL_HOST",
+        "app_server",
+        "Native thread tool host",
+        "boolean",
+        False,
+        description=(
+            "Enable only when IMCodex is the sole host for Desktop thread-management tools on this App Server. "
+            "The project launchers enable it for the independent server they manage."
+        ),
+    ),
+    _field(
         "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE",
         "app_server",
         "Authorization token file",

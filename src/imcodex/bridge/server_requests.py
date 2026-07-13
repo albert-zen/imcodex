@@ -8,6 +8,7 @@ from ..appserver import normalize_appserver_message
 from ..appserver.protocol_map import HOST_DELEGATED_SERVER_REQUEST_METHODS
 from ..models import OutboundMessage
 from ..observability.runtime import emit_event
+from .native_thread_tools import KNOWN_THREAD_DYNAMIC_TOOLS, NativeThreadToolAdapter
 
 
 _SYSTEM_PREFIX = "[System] "
@@ -27,10 +28,19 @@ class _DelegatedHostRequest:
 
 
 class NativeRequestPolicy:
-    def __init__(self, *, store, backend, peer_host_request_timeout_s: float = _PEER_HOST_REQUEST_TIMEOUT_S) -> None:
+    def __init__(
+        self,
+        *,
+        store,
+        backend,
+        peer_host_request_timeout_s: float = _PEER_HOST_REQUEST_TIMEOUT_S,
+        native_thread_tool_host: bool = False,
+    ) -> None:
         self.store = store
         self.backend = backend
         self.peer_host_request_timeout_s = max(0.01, float(peer_host_request_timeout_s))
+        self.native_thread_tool_host = bool(native_thread_tool_host)
+        self.native_thread_tools = NativeThreadToolAdapter(backend=backend)
         self._delegated_host_requests: dict[tuple[int | None, str], _DelegatedHostRequest] = {}
         self._recent_dynamic_tool_completions: dict[tuple[str, str, str], None] = {}
         self._recent_turn_completions: dict[tuple[str, str], None] = {}
@@ -49,8 +59,13 @@ class NativeRequestPolicy:
         event = normalize_appserver_message(request)
         if event.method not in HOST_DELEGATED_SERVER_REQUEST_METHODS:
             return False
+        tool = str(event.payload.get("tool") or "")
         facts = self.backend.app_server_connection_facts()
-        if facts.get("ownership") != "external":
+        external = facts.get("ownership") == "external"
+        native_fallback = tool in KNOWN_THREAD_DYNAMIC_TOOLS and (
+            not external or self.native_thread_tool_host
+        )
+        if not external and not native_fallback:
             return False
         transport_request_id = self._transport_request_id(request)
         if transport_request_id is None:
@@ -66,11 +81,12 @@ class NativeRequestPolicy:
             task = asyncio.create_task(asyncio.sleep(0))
         else:
             task = asyncio.create_task(
-                self._reject_unclaimed_host_request(
+                self._resolve_unclaimed_host_request(
                     request,
                     transport_request_id=transport_request_id,
                     connection_epoch=connection_epoch,
                     journal_sequence=journal_sequence,
+                    native_fallback=native_fallback,
                 )
             )
         delegated = _DelegatedHostRequest(
@@ -89,7 +105,7 @@ class NativeRequestPolicy:
         emit_event(
             component="bridge",
             event="bridge.server_request.delegated",
-            message="Left host-owned native request for another App Server subscriber",
+            message="Deferred host-owned request for a peer or native fallback",
             data={
                 "method": event.method,
                 "request_id": event.request_id,
@@ -141,16 +157,92 @@ class NativeRequestPolicy:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _reject_unclaimed_host_request(
+    async def _resolve_unclaimed_host_request(
         self,
         request: dict,
         *,
         transport_request_id: str | int,
         connection_epoch: int | None,
         journal_sequence: int | None,
+        native_fallback: bool,
     ) -> None:
-        await asyncio.sleep(self.peer_host_request_timeout_s)
         event = normalize_appserver_message(request)
+        delay = 0.0 if native_fallback else self.peer_host_request_timeout_s
+        await asyncio.sleep(delay)
+        if native_fallback:
+            tool = str(event.payload.get("tool") or "")
+            try:
+                result = await self.native_thread_tools.call(
+                    tool,
+                    event.payload.get("arguments"),
+                    source_thread_id=event.thread_id,
+                )
+            except Exception as exc:
+                result = self.native_thread_tools.failure(
+                    f"{tool or 'thread tool'} could not be completed through the native App Server."
+                )
+                emit_event(
+                    component="bridge",
+                    event="bridge.server_request.native_thread_tool_failed",
+                    level="ERROR",
+                    message=str(exc) or "Native thread tool fallback failed",
+                    data={
+                        "method": event.method,
+                        "request_id": event.request_id,
+                        "thread_id": event.thread_id,
+                        "turn_id": event.turn_id,
+                        "tool": tool,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            try:
+                await self.backend.reply_to_transport_request(
+                    transport_request_id,
+                    result,
+                    connection_epoch=connection_epoch,
+                )
+            except Exception as exc:
+                if journal_sequence is not None:
+                    self.store.update_native_appserver_event(
+                        journal_sequence,
+                        outcome="rejected",
+                        note="native thread-management fallback reply failed",
+                    )
+                emit_event(
+                    component="bridge",
+                    event="bridge.server_request.native_thread_tool_reply_failed",
+                    level="ERROR",
+                    message=str(exc) or "Native thread tool fallback reply failed",
+                    data={
+                        "method": event.method,
+                        "request_id": event.request_id,
+                        "thread_id": event.thread_id,
+                        "turn_id": event.turn_id,
+                        "tool": tool,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+            if journal_sequence is not None:
+                self.store.update_native_appserver_event(
+                    journal_sequence,
+                    outcome="resolved",
+                    note="resolved through native thread-management fallback",
+                )
+            emit_event(
+                component="bridge",
+                event="bridge.server_request.native_thread_tool_resolved",
+                message="Resolved Desktop thread tool through native App Server APIs",
+                data={
+                    "method": event.method,
+                    "request_id": event.request_id,
+                    "thread_id": event.thread_id,
+                    "turn_id": event.turn_id,
+                    "tool": tool,
+                    "success": bool(result.get("success")),
+                },
+            )
+            return
         await self.backend.reply_error_to_transport_request(
             transport_request_id,
             code=_UNSUPPORTED_REQUEST_CODE,

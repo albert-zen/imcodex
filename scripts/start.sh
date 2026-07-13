@@ -302,11 +302,13 @@ else
 fi
 
 if [[ "${ensure_native_daemon}" == "true" ]]; then
+    export IMCODEX_NATIVE_THREAD_TOOL_HOST=1
     echo "Ensuring native Codex App Server daemon is running"
     "${python}" -m imcodex app-server start
 fi
 
 if [[ -z "${app_server_url}" && "${legacy_core_configured}" == "true" && "${core_mode}" == "dedicated-ws" ]]; then
+    export IMCODEX_NATIVE_THREAD_TOOL_HOST=1
     if ! is_nonblank "${IMCODEX_CORE_MODE-}"; then
         record_launcher_reloadable IMCODEX_CORE_MODE
     fi

@@ -53,6 +53,7 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_APP_SERVER_CONNECT_TIMEOUT",
         "IMCODEX_APP_SERVER_EXPERIMENTAL_API",
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT",
+        "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
         "IMCODEX_APP_SERVER_RECONNECT_JITTER",
         "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY",
@@ -256,6 +257,7 @@ class Settings:
     app_server_retry_jitter_fraction: float = 0.25
     app_server_connect_timeout_s: float = 3.0
     app_server_health_timeout_s: float = 1.0
+    native_thread_tool_host: bool = False
     app_server_reconnect_initial_delay_s: float = 0.5
     app_server_reconnect_max_delay_s: float = 30.0
     app_server_reconnect_jitter_fraction: float = 0.25
@@ -382,6 +384,7 @@ class Settings:
             app_server_retry_jitter_fraction=_env_float("IMCODEX_APP_SERVER_RETRY_JITTER", 0.25, dotenv),
             app_server_connect_timeout_s=_env_float("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv),
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
+            native_thread_tool_host=_env_bool("IMCODEX_NATIVE_THREAD_TOOL_HOST", False, dotenv),
             app_server_reconnect_initial_delay_s=_env_float(
                 "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
                 0.5,

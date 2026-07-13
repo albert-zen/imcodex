@@ -49,6 +49,16 @@ def test_settings_reads_app_server_experimental_api_flag_from_env(monkeypatch, t
     assert settings.app_server_experimental_api_enabled is True
 
 
+def test_settings_reads_native_thread_tool_host_flag_from_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "1")
+
+    settings = Settings.from_env()
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+
+    assert settings.native_thread_tool_host is True
+
+
 def test_settings_reads_optional_run_dir_from_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_RUN_DIR", ".custom-run")

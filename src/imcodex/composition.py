@@ -74,7 +74,14 @@ def build_runtime(
             "title": "IM Codex Bridge",
             "version": "0.1.0",
         },
-        experimental_api_enabled=settings.app_server_experimental_api_enabled,
+        # Native thread-tool hosting relies on the experimental dynamic-tool
+        # and paged thread-history protocol surfaces. This capability opt-in
+        # does not enable bridge product features such as MCP or review.
+        experimental_api_enabled=(
+            settings.app_server_experimental_api_enabled
+            or settings.native_thread_tool_host
+            or not app_server_target.is_external
+        ),
         request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
         reconnect_retry_policy=RetryBackoff(
             initial_delay_s=settings.app_server_reconnect_initial_delay_s,
@@ -88,6 +95,7 @@ def build_runtime(
         command_router=CommandRouter(store),
         projector=MessageProjector(),
         outbound_sink=None,
+        native_thread_tool_host=settings.native_thread_tool_host,
     )
     channel_middleware = UnifiedChannelMiddleware(service=service)
     default_outbound_sink = (
@@ -132,6 +140,7 @@ def build_runtime(
         "IMCODEX_APP_SERVER_RETRY_JITTER": str(settings.app_server_retry_jitter_fraction),
         "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(settings.app_server_connect_timeout_s),
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
+        "IMCODEX_NATIVE_THREAD_TOOL_HOST": "1" if settings.native_thread_tool_host else "0",
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(settings.app_server_reconnect_initial_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(settings.app_server_reconnect_max_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(settings.app_server_reconnect_jitter_fraction),
