@@ -112,6 +112,8 @@ def test_admin_page_is_loopback_only_and_sends_strict_browser_headers(
     logo = local.get("/admin/assets/logo.svg")
     assert logo.status_code == 200
     assert logo.headers["content-type"].startswith("image/svg+xml")
+    assert local.get("/admin/assets/logo-lockup.svg").status_code == 200
+    assert local.get("/admin/assets/logo-primary.svg").status_code == 200
     assert local.get("/admin/assets/not-present.js").status_code == 404
 
     remote = _client_with_address(app, "203.0.113.20")

@@ -22,6 +22,8 @@ _ASSETS = {
     "admin.css": "text/css",
     "admin.js": "text/javascript",
     "logo.svg": "image/svg+xml",
+    "logo-lockup.svg": "image/svg+xml",
+    "logo-primary.svg": "image/svg+xml",
 }
 _SECTION_METADATA = {
     "runtime": (

@@ -198,25 +198,45 @@ select:disabled {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 8px 18px;
+  gap: 12px;
+  padding: 8px 8px 22px;
   color: inherit;
   text-decoration: none;
 }
 
 .brand__mark {
   display: block;
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   flex: 0 0 auto;
-  border-radius: 9px;
-  box-shadow: 0 1px 2px rgba(16, 30, 33, 0.14);
+  fill: currentColor;
+}
+
+.brand__mark-accent {
+  fill: var(--accent);
+}
+
+.brand__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
 }
 
 .brand__wordmark {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 18px;
+  font-weight: 680;
+  letter-spacing: -0.045em;
+  line-height: 1;
+}
+
+.brand__descriptor {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 650;
+  letter-spacing: 0.075em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .nav-label {
@@ -1475,6 +1495,19 @@ select:disabled {
   .brand {
     min-height: 44px;
     padding: 0;
+  }
+
+  .brand__mark {
+    width: 32px;
+    height: 32px;
+  }
+
+  .brand__wordmark {
+    font-size: 16px;
+  }
+
+  .brand__descriptor {
+    display: none;
   }
 
   .nav-label {

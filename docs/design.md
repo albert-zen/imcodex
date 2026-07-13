@@ -36,6 +36,18 @@ The built-in transport set currently includes QQ, Telegram, Feishu/Lark, and
 experimental Tencent iLink Weixin. These are peer adapters over the same
 bridge contract; no channel owns a separate Codex agent or thread runtime.
 
+## Visual Identity
+
+The product mark is a geometric `IM` monogram: a teal `I`, an ink-coloured
+folded `M`, and a teal lower-left cutout. It represents the IM side joining a
+native Codex path without turning the bridge into a separate agent product.
+
+Use the mark as a responsive identity system: the vertical primary logo for
+large brand surfaces, the horizontal lockup for product chrome, and the mark
+alone for favicons or compact controls. Keep it flat, vector, and
+monochrome-compatible. Do not replace it with generic chat bubbles, bot faces,
+rounded app-icon containers, network-node clip art, gradients, or shadows.
+
 ## Native-First Rule
 
 Native Codex source code and protocol behavior are the first source to inspect

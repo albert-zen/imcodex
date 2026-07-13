@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 292 72" role="img" aria-labelledby="title">
+  <title id="title">IMCodex</title>
+  <style>
+    .accent { fill: #0b6b62; }
+    .ink { fill: #101619; }
+    .wordmark {
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 36px;
+      font-weight: 680;
+      letter-spacing: -1.7px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .accent { fill: #3ec9b8; }
+      .ink { fill: #e6edee; }
+    }
+  </style>
+  <g transform="translate(4 4) scale(2)">
+    <rect class="accent" x="2.5" y="3" width="4.5" height="26" rx="0.3"/>
+    <path class="accent" d="M10 18.5 20.5 29H10z"/>
+    <path class="ink" d="M10 7l7.5 7.5L29 3v26h-4.75V14.5l-6.75 6.75-7.5-7.5z"/>
+  </g>
+  <text class="ink wordmark" x="80" y="48">IMCodex</text>
+</svg>

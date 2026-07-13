@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 280" role="img" aria-labelledby="title description">
+  <title id="title">IMCodex</title>
+  <desc id="description">Native IM bridge for Codex</desc>
+  <style>
+    .accent { fill: #0b6b62; }
+    .ink { fill: #101619; }
+    .muted { fill: #526267; }
+    .wordmark {
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 54px;
+      font-weight: 650;
+      letter-spacing: -2.7px;
+    }
+    .descriptor {
+      font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: 2.2px;
+    }
+    @media (prefers-color-scheme: dark) {
+      .accent { fill: #3ec9b8; }
+      .ink { fill: #e6edee; }
+      .muted { fill: #93a2a4; }
+    }
+  </style>
+  <g transform="translate(108 18) scale(4.5)">
+    <rect class="accent" x="2.5" y="3" width="4.5" height="26" rx="0.3"/>
+    <path class="accent" d="M10 18.5 20.5 29H10z"/>
+    <path class="ink" d="M10 7l7.5 7.5L29 3v26h-4.75V14.5l-6.75 6.75-7.5-7.5z"/>
+  </g>
+  <text class="ink wordmark" x="180" y="220" text-anchor="middle">IMCodex</text>
+  <text class="muted descriptor" x="180" y="252" text-anchor="middle">NATIVE IM BRIDGE FOR CODEX</text>
+</svg>
