@@ -56,6 +56,7 @@
     bridgeFields: new Map(),
     bridgeBaseline: new Map(),
     bridgeDraft: new Map(),
+    fieldSection: new Map(),
     secretActions: new Map(),
     nativeBaseline: new Map(),
     nativeDraft: new Map(),
@@ -69,6 +70,7 @@
     nativeSaving: false,
     refreshing: false,
     restartPending: false,
+    activePanel: "native",
   };
 
   const elements = {
@@ -95,6 +97,14 @@
     conflictCancel: document.querySelector("#conflict-cancel"),
     conflictReload: document.querySelector("#conflict-reload"),
     toastRegion: document.querySelector("#toast-region"),
+    sectionNav: document.querySelector("#section-nav"),
+    breadcrumbCurrent: document.querySelector("#breadcrumb-current"),
+    breadcrumbGroup: document.querySelector("#breadcrumb-group"),
+    breadcrumbGroupSep: document.querySelector("#breadcrumb-group-sep"),
+    themeToggle: document.querySelector("#theme-toggle"),
+    themeToggleLabel: document.querySelector("#theme-toggle-label"),
+    mainContent: document.querySelector("#main-content"),
+    nativePanel: document.querySelector('[data-panel="native"]'),
   };
 
   function createElement(tagName, className, text) {
@@ -114,6 +124,189 @@
   function hasOwn(object, key) {
     return object !== null && typeof object === "object" && Object.prototype.hasOwnProperty.call(object, key);
   }
+
+  /* ------------------------------------------------------------------ theme */
+  const THEME_KEY = "imcodex-admin-theme";
+  const THEME_ORDER = ["auto", "light", "dark"];
+  const THEME_LABEL = { auto: "Auto theme", light: "Light theme", dark: "Dark theme" };
+
+  function applyTheme(pref) {
+    const root = document.documentElement;
+    if (pref === "light" || pref === "dark") {
+      root.dataset.theme = pref;
+    } else {
+      delete root.dataset.theme;
+      pref = "auto";
+    }
+    root.dataset.themePref = pref;
+    if (elements.themeToggleLabel) elements.themeToggleLabel.textContent = THEME_LABEL[pref];
+    if (elements.themeToggle) {
+      elements.themeToggle.setAttribute("aria-label", `Color theme: ${THEME_LABEL[pref]}. Click to change.`);
+    }
+  }
+
+  function initTheme() {
+    let stored = "auto";
+    try {
+      stored = window.localStorage.getItem(THEME_KEY) || "auto";
+    } catch (_error) {
+      stored = "auto";
+    }
+    applyTheme(THEME_ORDER.includes(stored) ? stored : "auto");
+  }
+
+  function cycleTheme() {
+    const current = document.documentElement.dataset.themePref || "auto";
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(current) + 1) % THEME_ORDER.length];
+    applyTheme(next);
+    try {
+      window.localStorage.setItem(THEME_KEY, next);
+    } catch (_error) {
+      /* storage unavailable — theme still applies for this session */
+    }
+  }
+
+  /* --------------------------------------------------------- panels & nav */
+  const NATIVE_PANEL = Object.freeze({ id: "native", label: "Native Codex" });
+  const EMPTY_BRIDGE_PANEL = Object.freeze({
+    id: "__bridge_empty__",
+    label: "Bridge & channels",
+  });
+
+  // Which top-level group a bridge section belongs to. Sections not listed
+  // fall back to the "Bridge" group so new backend sections still appear.
+  const GROUP_FOR_SECTION = Object.freeze({
+    runtime: "bridge",
+    app_server: "bridge",
+    webhooks: "bridge",
+    qq: "channels",
+    telegram: "channels",
+    feishu: "channels",
+    weixin: "channels",
+  });
+  const GROUP_LABEL = Object.freeze({ bridge: "Bridge", channels: "Channels" });
+  const GROUP_ORDER = Object.freeze(["bridge", "channels"]);
+
+  function groupForSection(id) {
+    return GROUP_FOR_SECTION[id] || "bridge";
+  }
+
+  function panelEntries() {
+    const entries = [{ ...NATIVE_PANEL, group: null }];
+    const sections = state.bridgeResponse && Array.isArray(state.bridgeResponse.sections)
+      ? state.bridgeResponse.sections
+      : [];
+    if (state.bridgeLoaded && sections.length === 0) {
+      entries.push({ ...EMPTY_BRIDGE_PANEL, group: "bridge" });
+    }
+    for (const section of sections) {
+      const id = String(section.id || "");
+      if (!id) continue;
+      entries.push({
+        id,
+        label: String(section.label || section.id || "Settings"),
+        group: groupForSection(id),
+      });
+    }
+    return entries;
+  }
+
+  function sectionDirtyCounts() {
+    const counts = new Map();
+    counts.set("native", nativeDirtyKeys().length);
+    for (const key of bridgeDirtyKeys()) {
+      const sectionId = state.fieldSection.get(key);
+      if (!sectionId) continue;
+      counts.set(sectionId, (counts.get(sectionId) || 0) + 1);
+    }
+    return counts;
+  }
+
+  function showPanel(id) {
+    const entries = panelEntries();
+    const target = entries.some((entry) => entry.id === id) ? id : NATIVE_PANEL.id;
+    state.activePanel = target;
+
+    for (const panel of document.querySelectorAll("[data-panel]")) {
+      panel.classList.toggle("is-active", panel.dataset.panel === target);
+    }
+    for (const navItem of elements.sectionNav.querySelectorAll(".nav-item")) {
+      const on = navItem.dataset.target === target;
+      navItem.classList.toggle("is-active", on);
+      if (on) navItem.setAttribute("aria-current", "true");
+      else navItem.removeAttribute("aria-current");
+    }
+    const entry = entries.find((item) => item.id === target);
+    if (entry) updateBreadcrumb(entry);
+    if (elements.mainContent) elements.mainContent.scrollTop = 0;
+    window.scrollTo({ top: 0 });
+  }
+
+  function updateBreadcrumb(entry) {
+    if (!elements.breadcrumbCurrent) return;
+    const groupLabel = entry.group ? GROUP_LABEL[entry.group] : "";
+    if (elements.breadcrumbGroup) {
+      elements.breadcrumbGroup.textContent = groupLabel;
+      elements.breadcrumbGroup.hidden = !groupLabel;
+    }
+    if (elements.breadcrumbGroupSep) elements.breadcrumbGroupSep.hidden = !groupLabel;
+    elements.breadcrumbCurrent.textContent = entry.label;
+  }
+
+  function updateNavDirty() {
+    if (!elements.sectionNav) return;
+    const counts = sectionDirtyCounts();
+    for (const navItem of elements.sectionNav.querySelectorAll(".nav-item")) {
+      const dot = navItem.querySelector(".nav-item__dirty");
+      const dirtyLabel = navItem.querySelector(".nav-item__dirty-label");
+      const dirty = counts.get(navItem.dataset.target) > 0;
+      if (dot) dot.hidden = !dirty;
+      if (dirtyLabel) dirtyLabel.hidden = !dirty;
+    }
+  }
+
+  function appendNavItem(entry) {
+    const item = createElement("button", "nav-item");
+    item.type = "button";
+    item.dataset.target = entry.id;
+    const label = createElement("span", "nav-item__label", entry.label);
+    const dot = createElement("span", "nav-item__dirty");
+    dot.setAttribute("aria-hidden", "true");
+    dot.hidden = true;
+    const dirtyLabel = createElement("span", "sr-only nav-item__dirty-label", "Unsaved changes");
+    dirtyLabel.hidden = true;
+    item.append(label, dot, dirtyLabel);
+    item.addEventListener("click", () => showPanel(entry.id));
+    elements.sectionNav.append(item);
+  }
+
+  function rebuildNav() {
+    if (!elements.sectionNav) return;
+    const entries = panelEntries();
+    elements.sectionNav.replaceChildren();
+
+    // Native Codex sits on its own at the top.
+    const nativeEntry = entries.find((entry) => entry.id === NATIVE_PANEL.id);
+    if (nativeEntry) appendNavItem(nativeEntry);
+
+    // Then one titled group per top-level category, in a stable order.
+    for (const group of GROUP_ORDER) {
+      const groupEntries = entries.filter((entry) => entry.group === group);
+      if (!groupEntries.length) continue;
+      const header = createElement("p", "nav-group", GROUP_LABEL[group]);
+      elements.sectionNav.append(header);
+      for (const entry of groupEntries) appendNavItem(entry);
+    }
+
+    if (!entries.some((entry) => entry.id === state.activePanel)) {
+      state.activePanel = entries.some((entry) => entry.id === EMPTY_BRIDGE_PANEL.id)
+        ? EMPTY_BRIDGE_PANEL.id
+        : NATIVE_PANEL.id;
+    }
+    showPanel(state.activePanel);
+    updateNavDirty();
+  }
+
 
   function valuesEqual(left, right) {
     if (left === right) return true;
@@ -682,6 +875,7 @@
     elements.nativeSaveState.textContent = dirtyKeys.length
       ? `${dirtyKeys.length} native ${dirtyKeys.length === 1 ? "setting" : "settings"} changed`
       : "No native changes";
+    updateNavDirty();
   }
 
   async function loadNative({ preserveOnError = false } = {}) {
@@ -871,6 +1065,7 @@
       dirtyKeys.length === 0 || state.bridgeSaving || state.refreshing || !state.csrfToken;
     elements.discardBridgeButton.disabled = state.bridgeSaving || state.refreshing;
     updateBridgeControlAvailability();
+    updateNavDirty();
   }
 
   function updateBridgeControlAvailability() {
@@ -1064,12 +1259,6 @@
     return wrapper;
   }
 
-  function sectionInitials(label, id) {
-    const words = String(label || id || "IM").trim().split(/\s+/).filter(Boolean);
-    if (words.length > 1) return `${words[0][0]}${words[1][0]}`.toUpperCase();
-    return words.length ? words[0].slice(0, 2).toUpperCase() : "IM";
-  }
-
   function renderBridgeSettings() {
     const sections = Array.isArray(state.bridgeResponse && state.bridgeResponse.sections)
       ? state.bridgeResponse.sections
@@ -1080,45 +1269,63 @@
     state.bridgeBaseline.clear();
     state.bridgeDraft.clear();
     state.secretActions.clear();
+    state.fieldSection.clear();
 
     if (!sections.length) {
+      const panel = createElement("section", "panel panel--bridge-empty");
+      panel.dataset.panel = EMPTY_BRIDGE_PANEL.id;
+      panel.dataset.navLabel = EMPTY_BRIDGE_PANEL.label;
+      const heading = createElement("div", "panel-heading");
+      const row = createElement("div", "panel-heading__row");
+      row.append(
+        createElement("h2", "", EMPTY_BRIDGE_PANEL.label),
+        createElement("span", "authority-badge authority-badge--bridge", "IMCodex-owned"),
+      );
+      heading.append(row);
       const empty = createElement("div", "empty-state");
       empty.append(
         createElement("strong", "", "No bridge settings exposed"),
         createElement("p", "", "This IMCodex build did not return any editable bridge sections."),
       );
-      elements.bridgeSections.append(empty);
+      panel.append(heading, empty);
+      elements.bridgeSections.append(panel);
       updateBridgeDirtyState();
+      rebuildNav();
       return;
     }
 
     sections.forEach((section, sectionIndex) => {
       const fields = Array.isArray(section.fields) ? section.fields.filter((field) => field && field.key) : [];
-      const card = createElement("article", "config-card");
-      card.dataset.sectionId = String(section.id || "section");
-      if (fields.length > 5 || /^(runtime|bridge|general|app[-_ ]?server)$/i.test(String(section.id || ""))) {
-        card.classList.add("config-card--wide");
-      }
+      const sectionId = String(section.id || `section-${sectionIndex}`);
 
-      const header = createElement("header", "config-card__header");
-      const identity = createElement("div", "config-card__identity");
-      const mark = createElement("span", "config-card__mark", sectionInitials(section.label, section.id));
-      mark.setAttribute("aria-hidden", "true");
-      const title = createElement("div", "config-card__title");
-      const titleId = `section-${sectionIndex}-${safeId(section.id)}-title`;
-      const heading = createElement("h3", "", section.label || section.id || "Settings");
-      heading.id = titleId;
-      title.append(heading);
-      if (section.description) title.append(createElement("p", "", section.description));
-      identity.append(mark, title);
-      header.append(identity);
-      card.setAttribute("aria-labelledby", titleId);
+      const panel = createElement("section", "panel panel--bridge");
+      panel.dataset.panel = sectionId;
+      panel.dataset.navLabel = section.label || sectionId;
+      const panelHeadingId = `panel-${sectionIndex}-${safeId(sectionId)}-heading`;
+      panel.setAttribute("aria-labelledby", panelHeadingId);
+
+      const panelHeading = createElement("div", "panel-heading");
+      const headingRow = createElement("div", "panel-heading__row");
+      const heading = createElement("h2", "", section.label || sectionId || "Settings");
+      heading.id = panelHeadingId;
+      headingRow.append(
+        heading,
+        createElement("span", "authority-badge authority-badge--bridge", "IMCodex-owned"),
+        createElement("span", "restart-pill", "Restart after save"),
+      );
+      panelHeading.append(headingRow);
+      if (section.description) panelHeading.append(createElement("p", "", section.description));
+      panel.append(panelHeading);
+
+      const card = createElement("article", "config-card");
+      card.dataset.sectionId = sectionId;
 
       const fieldsContainer = createElement("div", "config-card__fields");
       fields.forEach((field, fieldIndex) => {
         const key = String(field.key);
         const normalizedField = { ...field, key };
         state.bridgeFields.set(key, normalizedField);
+        state.fieldSection.set(key, sectionId);
         if (normalizeBridgeKind(normalizedField) === "secret") {
           state.secretActions.set(key, { action: "preserve", value: "" });
         } else {
@@ -1129,11 +1336,13 @@
         fieldsContainer.append(renderBridgeField(normalizedField, sectionIndex, fieldIndex));
       });
 
-      card.append(header, fieldsContainer);
-      elements.bridgeSections.append(card);
+      card.append(fieldsContainer);
+      panel.append(card);
+      elements.bridgeSections.append(panel);
     });
 
     updateBridgeDirtyState();
+    rebuildNav();
   }
 
   function clearBridgeDraftState() {
@@ -1141,6 +1350,7 @@
     state.bridgeBaseline.clear();
     state.bridgeDraft.clear();
     state.secretActions.clear();
+    state.fieldSection.clear();
   }
 
   function clearNativeDraftState() {
@@ -1170,6 +1380,8 @@
         "Bridge settings unavailable",
         displayError(error, "IMCodex did not return its bridge configuration."),
       );
+      state.bridgeResponse = null;
+      rebuildNav();
       updateBridgeDirtyState();
     } finally {
       updateOverallStatus();
@@ -1221,6 +1433,8 @@
     }
 
     if (firstInvalid) {
+      const sectionId = state.fieldSection.get(firstInvalid.dataset.fieldKey);
+      if (sectionId && sectionId !== state.activePanel) showPanel(sectionId);
       firstInvalid.scrollIntoView({ behavior: "smooth", block: "center" });
       const input = firstInvalid.querySelector("input:not([type=radio]), select, textarea");
       if (input) input.focus({ preventScroll: true });
@@ -1403,5 +1617,10 @@
     }
   });
 
+  if (elements.themeToggle) {
+    elements.themeToggle.addEventListener("click", cycleTheme);
+  }
+
+  initTheme();
   void refreshAll({ confirmDiscard: false });
 })();

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="light">
+    <meta name="color-scheme" content="light dark">
     <meta name="robots" content="noindex, nofollow, noarchive">
     <meta name="referrer" content="no-referrer">
     <title>Configuration · IMCodex</title>
@@ -13,68 +13,82 @@
   <body>
     <a class="skip-link" href="#main-content">Skip to configuration</a>
 
-    <div class="page-glow page-glow--one" aria-hidden="true"></div>
-    <div class="page-glow page-glow--two" aria-hidden="true"></div>
+    <aside class="sidebar">
+      <a class="brand" href="/admin" aria-label="IMCodex configuration home">
+        <span class="brand__mark" aria-hidden="true">IM</span>
+        <span class="brand__wordmark">IMCodex</span>
+      </a>
 
-    <header class="app-header">
-      <div class="app-header__inner">
-        <a class="brand" href="/admin" aria-label="IMCodex configuration home">
-          <span class="brand__mark" aria-hidden="true">IM</span>
-          <span class="brand__wordmark">IMCodex</span>
-        </a>
-
-        <div class="header-actions">
-          <span class="connection-state" id="connection-state" role="status" aria-live="polite">
-            <span class="connection-state__dot" aria-hidden="true"></span>
-            <span id="connection-state-label">Connecting</span>
-          </span>
-          <button class="button button--quiet button--compact" id="refresh-button" type="button">
-            Refresh
-          </button>
+      <p class="nav-label">Configuration</p>
+      <nav class="section-nav" id="section-nav" aria-label="Configuration sections">
+        <div class="section-nav__skeleton" aria-hidden="true">
+          <span class="skeleton skeleton--nav"></span>
+          <span class="skeleton skeleton--nav"></span>
+          <span class="skeleton skeleton--nav"></span>
         </div>
+      </nav>
+
+      <div class="sidebar__foot">
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch color theme">
+          <span class="theme-toggle__icon theme-toggle__icon--sun" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"></path>
+            </svg>
+          </span>
+          <span class="theme-toggle__icon theme-toggle__icon--moon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+            </svg>
+          </span>
+          <span class="theme-toggle__label" id="theme-toggle-label">Auto theme</span>
+        </button>
+
+        <span class="connection-state" id="connection-state" role="status" aria-live="polite">
+          <span class="connection-state__dot" aria-hidden="true"></span>
+          <span id="connection-state-label">Connecting</span>
+        </span>
+        <p class="sidebar__hint">Local only · this computer</p>
       </div>
-    </header>
+    </aside>
 
-    <main class="page-shell" id="main-content" tabindex="-1">
-      <section class="hero" aria-labelledby="page-title">
-        <div>
-          <p class="eyebrow">Local configuration</p>
-          <h1 id="page-title">One place to tune your bridge.</h1>
-          <p class="hero__lede">
-            Codex keeps control of how it works. IMCodex keeps your channels connected.
-          </p>
+    <div class="content">
+      <header class="content-header">
+        <div class="breadcrumb">
+          <span class="breadcrumb__root">Configuration</span>
+          <span class="breadcrumb__sep" aria-hidden="true">/</span>
+          <span class="breadcrumb__group" id="breadcrumb-group" hidden></span>
+          <span class="breadcrumb__sep" id="breadcrumb-group-sep" aria-hidden="true" hidden>/</span>
+          <span class="breadcrumb__current" id="breadcrumb-current">Native Codex</span>
         </div>
-        <div class="local-note" aria-label="Security boundary">
-          <span class="local-note__icon" aria-hidden="true"></span>
-          <span>
-            <strong>Local only</strong>
-            <small>This console is available on this computer.</small>
-          </span>
-        </div>
-      </section>
+        <button class="button button--quiet button--compact" id="refresh-button" type="button">
+          Refresh
+        </button>
+      </header>
 
-      <aside class="notice notice--restart" id="restart-banner" hidden>
-        <span class="notice__icon" aria-hidden="true">↻</span>
-        <div class="notice__content">
-          <strong>Restart IMCodex to apply bridge changes</strong>
-          <span>Your configuration is saved. Active messages continue with the current settings until restart.</span>
-        </div>
-        <button class="notice__dismiss" id="dismiss-restart" type="button" aria-label="Dismiss restart notice">×</button>
-      </aside>
+      <main class="panels" id="main-content" tabindex="-1">
+        <aside class="notice notice--restart" id="restart-banner" hidden>
+          <span class="notice__icon" aria-hidden="true">↻</span>
+          <div class="notice__content">
+            <strong>Restart IMCodex to apply bridge changes</strong>
+            <span>Your configuration is saved. Active messages continue with the current settings until restart.</span>
+          </div>
+          <button class="notice__dismiss" id="dismiss-restart" type="button" aria-label="Dismiss restart notice">×</button>
+        </aside>
 
-      <section class="error-panel" id="global-error" role="alert" hidden>
-        <div>
-          <strong id="global-error-title">Configuration is unavailable</strong>
-          <p id="global-error-message">IMCodex could not load this page.</p>
-        </div>
-        <button class="button button--secondary button--compact" id="retry-button" type="button">Try again</button>
-      </section>
-
-      <section class="settings-section settings-section--native" aria-labelledby="native-heading">
-        <div class="section-heading">
+        <section class="error-panel" id="global-error" role="alert" hidden>
           <div>
-            <div class="section-heading__title-row">
-              <span class="section-index" aria-hidden="true">01</span>
+            <strong id="global-error-title">Configuration is unavailable</strong>
+            <p id="global-error-message">IMCodex could not load this page.</p>
+          </div>
+          <button class="button button--secondary button--compact" id="retry-button" type="button">Try again</button>
+        </section>
+
+        <!-- Native Codex panel -->
+        <section class="panel panel--native is-active" data-panel="native" data-nav-label="Native Codex"
+                 aria-labelledby="native-heading">
+          <div class="panel-heading">
+            <div class="panel-heading__row">
               <h2 id="native-heading">Native Codex</h2>
               <span class="authority-badge">Codex-owned</span>
             </div>
@@ -83,56 +97,37 @@
               existing and resumed threads retain their native thread settings.
             </p>
           </div>
-        </div>
 
-        <div class="warning-list" id="native-warnings" aria-live="polite"></div>
+          <div class="warning-list" id="native-warnings" aria-live="polite"></div>
 
-        <div class="native-card">
-          <div class="settings-grid settings-grid--native" id="native-settings" aria-busy="true">
-            <div class="skeleton skeleton--field"></div>
-            <div class="skeleton skeleton--field"></div>
-            <div class="skeleton skeleton--field"></div>
-            <div class="skeleton skeleton--field"></div>
-            <div class="skeleton skeleton--field"></div>
-          </div>
-          <div class="card-footer" id="native-footer" hidden>
-            <p class="save-state" id="native-save-state" aria-live="polite">No native changes</p>
-            <button class="button button--primary" id="save-native-button" type="button" disabled>
-              Apply to Codex
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section class="settings-section" aria-labelledby="bridge-heading">
-        <div class="section-heading">
-          <div>
-            <div class="section-heading__title-row">
-              <span class="section-index" aria-hidden="true">02</span>
-              <h2 id="bridge-heading">Bridge &amp; channels</h2>
-              <span class="authority-badge authority-badge--bridge">IMCodex-owned</span>
+          <div class="native-card">
+            <div class="settings-grid settings-grid--native" id="native-settings" aria-busy="true">
+              <div class="skeleton skeleton--field"></div>
+              <div class="skeleton skeleton--field"></div>
+              <div class="skeleton skeleton--field"></div>
+              <div class="skeleton skeleton--field"></div>
+              <div class="skeleton skeleton--field"></div>
             </div>
-            <p>Manage the local bridge, connection behavior, and the messaging channels you use.</p>
+            <div class="card-footer" id="native-footer" hidden>
+              <p class="save-state" id="native-save-state" aria-live="polite">No native changes</p>
+              <button class="button button--primary" id="save-native-button" type="button" disabled>
+                Apply to Codex
+              </button>
+            </div>
           </div>
-          <span class="restart-pill">Restart after save</span>
-        </div>
+        </section>
 
+        <!-- Bridge & channel panels (rendered dynamically into here) -->
         <div class="bridge-sections" id="bridge-sections" aria-busy="true">
-          <article class="config-card skeleton-card" aria-hidden="true">
-            <div class="skeleton skeleton--title"></div>
-            <div class="skeleton skeleton--line"></div>
-            <div class="skeleton skeleton--field-wide"></div>
-            <div class="skeleton skeleton--field-wide"></div>
-          </article>
-          <article class="config-card skeleton-card" aria-hidden="true">
+          <article class="panel config-card skeleton-card" aria-hidden="true">
             <div class="skeleton skeleton--title"></div>
             <div class="skeleton skeleton--line"></div>
             <div class="skeleton skeleton--field-wide"></div>
             <div class="skeleton skeleton--field-wide"></div>
           </article>
         </div>
-      </section>
-    </main>
+      </main>
+    </div>
 
     <div class="save-dock" id="save-dock" hidden>
       <div class="save-dock__inner">

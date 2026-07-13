@@ -104,7 +104,7 @@ def test_admin_page_is_loopback_only_and_sends_strict_browser_headers(
     response = local.get("/admin")
 
     assert response.status_code == 200
-    assert "One place to tune your bridge" in response.text
+    assert "Configuration · IMCodex" in response.text
     assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in response.headers["content-security-policy"]
@@ -127,6 +127,14 @@ def test_admin_frontend_uses_native_catalog_and_authoritative_restart_state(
     assert "Object.fromEntries(preferenceKeys.map" in script
     assert "loadNative({ preserveOnError: true })" in script
     assert 'status.includes("overridden")' in script
+    assert 'id: "__bridge_empty__"' in script
+    assert "state.bridgeLoaded && sections.length === 0" in script
+    assert "panel.dataset.panel = EMPTY_BRIDGE_PANEL.id" in script
+    assert "elements.bridgeSections.append(panel)" in script
+    assert "rebuildNav();" in script
+    assert '"authority-badge authority-badge--bridge", "IMCodex-owned"' in script
+    assert '"sr-only nav-item__dirty-label", "Unsaved changes"' in script
+    assert "dirtyLabel.hidden = !dirty" in script
     assert 'nativeSettingReadOnly("reasoningEffort", response)' in script
     assert 'state.nativeForcedDirty.add("fast")' in script
     assert "requestedForcedDirty.has(failure.key)" in script
