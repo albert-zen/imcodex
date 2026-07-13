@@ -21,6 +21,7 @@ _ASSET_ROOT = Path(__file__).with_name("assets")
 _ASSETS = {
     "admin.css": "text/css",
     "admin.js": "text/javascript",
+    "logo.svg": "image/svg+xml",
 }
 _SECTION_METADATA = {
     "runtime": (

@@ -109,6 +109,9 @@ def test_admin_page_is_loopback_only_and_sends_strict_browser_headers(
     assert response.headers["x-frame-options"] == "DENY"
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert local.get("/admin/assets/admin.js").status_code == 200
+    logo = local.get("/admin/assets/logo.svg")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"].startswith("image/svg+xml")
     assert local.get("/admin/assets/not-present.js").status_code == 404
 
     remote = _client_with_address(app, "203.0.113.20")
