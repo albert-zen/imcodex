@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -37,13 +38,16 @@ def test_windows_doctor_parses_in_windows_powershell_when_available() -> None:
     parser = (
         "$tokens = $null; $errors = $null; "
         "[System.Management.Automation.Language.Parser]::ParseFile("
-        "$args[0], [ref]$tokens, [ref]$errors) | Out-Null; "
+        "$env:IMCODEX_TEST_SCRIPT, [ref]$tokens, [ref]$errors) | Out-Null; "
         "if ($errors.Count -gt 0) { "
         "$errors | ForEach-Object { Write-Error $_.Message }; exit 1 }"
     )
+    environment = os.environ.copy()
+    environment["IMCODEX_TEST_SCRIPT"] = str(DOCTOR_SCRIPT)
 
     subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-Command", parser, str(DOCTOR_SCRIPT)],
+        [powershell, "-NoLogo", "-NoProfile", "-Command", parser],
+        env=environment,
         check=True,
         capture_output=True,
         text=True,

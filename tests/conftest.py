@@ -25,9 +25,21 @@ tempfile.tempdir = str(TMP_ROOT)
 def tmp_path() -> Path:
     path = TMP_ROOT / f"case-{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=False)
+    original_cwd = os.getcwd()
     try:
         yield path
     finally:
+        # Windows keeps the current working directory open, so a test whose
+        # monkeypatch fixture tears down after tmp_path would otherwise make
+        # this directory impossible to remove.
+        current_cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+        temporary_root = os.path.normcase(os.path.abspath(str(path)))
+        try:
+            cwd_is_temporary = os.path.commonpath((current_cwd, temporary_root)) == temporary_root
+        except ValueError:
+            cwd_is_temporary = False
+        if cwd_is_temporary:
+            os.chdir(original_cwd if os.path.exists(original_cwd) else str(ROOT))
         for child in sorted(path.rglob("*"), reverse=True):
             if child.is_file():
                 child.unlink(missing_ok=True)

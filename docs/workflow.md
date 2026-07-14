@@ -11,12 +11,16 @@ be investigated, implemented, reviewed, and closed.
 
 ## Recommended Runtime Workflow
 
-For day-to-day work, prefer the external native App Server path described in
-[startup.md](startup.md):
+For day-to-day work, prefer the platform's external App Server path described
+in [startup.md](startup.md):
 
-1. start the native App Server daemon
-2. start the IM bridge against its `unix://` control socket
-3. debug bridge behavior without replacing native thread/turn truth
+- on macOS/Linux, start the native App Server daemon and connect the bridge to
+  its `unix://` control socket
+- on native Windows, use `scripts\start.ps1` to start or reuse the
+  project-managed detached TCP App Server and connect through its canonical
+  loopback `ws://` target
+- debug bridge behavior without replacing native thread/turn truth on either
+  platform
 
 This keeps the bridge restartable while leaving the native core alive.
 
@@ -117,7 +121,9 @@ git config commit.template .gitmessage
 
 Pull requests and pushes to `main` should pass the GitHub Actions CI workflow.
 The baseline CI gate installs the package with development dependencies on
-Python 3.13 and runs the full `python -m pytest` regression suite.
+Python 3.13 and runs the full `python -m pytest` regression suite on both
+Ubuntu and native Windows. Platform-specific tests must be capability-gated so
+Git Bash on Windows does not make POSIX launchers or Unix sockets look native.
 
 CI also runs an advisory AgentKit check. Its isolated job installs the
 repository's `agentkit` optional dependency and invokes the resulting console

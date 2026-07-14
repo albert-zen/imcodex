@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -675,15 +676,18 @@ def test_successful_write_restricts_existing_windows_dacl(tmp_path: Path) -> Non
     )
 
     def access_sids() -> set[str]:
-        powershell = "powershell.exe"
+        powershell = shutil.which("pwsh") or "powershell.exe"
         script = (
-            "$acl = Get-Acl -LiteralPath $args[0]; "
+            "$acl = Get-Acl -LiteralPath $env:IMCODEX_TEST_CONFIG_PATH; "
             "$acl.Access | ForEach-Object { "
             "$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value "
             "}"
         )
+        environment = os.environ.copy()
+        environment["IMCODEX_TEST_CONFIG_PATH"] = str(path)
         result = subprocess.run(
-            [powershell, "-NoLogo", "-NoProfile", "-Command", script, str(path)],
+            [powershell, "-NoLogo", "-NoProfile", "-Command", script],
+            env=environment,
             capture_output=True,
             text=True,
             check=True,

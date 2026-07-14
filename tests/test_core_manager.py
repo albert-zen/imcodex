@@ -162,7 +162,7 @@ def test_core_manager_detects_current_process_loopback_listener(tmp_path: Path) 
         assert manager._listener_is_owned_by_process_tree(os.getpid(), port) is True
 
 
-def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:
+def test_core_manager_stop_updates_manifest(monkeypatch, tmp_path: Path) -> None:
     process = _FakeProcess(pid=42001)
 
     def launcher(*, command: list[str], cwd: Path, env: dict[str, str]):
@@ -174,6 +174,11 @@ def test_core_manager_stop_updates_manifest(tmp_path: Path) -> None:
         repo_root=Path(r"D:\desktop\imcodex"),
         launcher=launcher,
         now=lambda: "2026-04-19T12:00:01+08:00",
+    )
+    monkeypatch.setattr(
+        manager,
+        "_terminate_running_process",
+        lambda running_process, _pid: running_process.terminate(),
     )
 
     manifest = manager.start(port=8765)
@@ -357,7 +362,12 @@ def test_core_manager_reports_posix_process_that_ignores_sigterm(
     manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
     now = iter([0.0, 0.0, 11.0])
     monkeypatch.setattr(core_manager_module.os, "name", "posix")
-    monkeypatch.setattr(core_manager_module.os, "killpg", lambda _pid, _signal: None)
+    monkeypatch.setattr(
+        core_manager_module.os,
+        "killpg",
+        lambda _pid, _signal: None,
+        raising=False,
+    )
     monkeypatch.setattr(core_manager_module.os, "kill", lambda _pid, _signal: None)
     monkeypatch.setattr(core_manager_module.time, "time", lambda: next(now))
     monkeypatch.setattr(core_manager_module.time, "sleep", lambda _delay: None)

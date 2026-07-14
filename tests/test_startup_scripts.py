@@ -295,7 +295,7 @@ def _fake_powershell_conda_executable(tmp_path: Path) -> Path:
     return conda_executable
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 @pytest.mark.parametrize("endpoint", ["unix://", "stdio://", "ws://127.0.0.1:9900"])
 def test_start_sh_does_not_start_legacy_core_for_a_canonical_target(
     endpoint: str,
@@ -312,7 +312,7 @@ def test_start_sh_does_not_start_legacy_core_for_a_canonical_target(
     assert target_environment == f"{endpoint}|||"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_defaults_to_ensuring_the_native_daemon_then_starts_the_bridge(
     tmp_path,
 ) -> None:
@@ -327,7 +327,7 @@ def test_start_sh_defaults_to_ensuring_the_native_daemon_then_starts_the_bridge(
     assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_APP_SERVER_URL"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_treats_a_dotenv_canonical_target_as_connect_only(tmp_path) -> None:
     completed, invocations, target_environment = _run_start_sh(
         tmp_path,
@@ -341,7 +341,7 @@ def test_start_sh_treats_a_dotenv_canonical_target_as_connect_only(tmp_path) -> 
     assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == ""
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_marks_only_values_imported_from_dotenv_as_editable_provenance(
     tmp_path: Path,
 ) -> None:
@@ -359,7 +359,7 @@ def test_start_sh_marks_only_values_imported_from_dotenv_as_editable_provenance(
     assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == ""
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_ignores_spoofed_provenance_and_keeps_first_external_key(
     tmp_path: Path,
 ) -> None:
@@ -378,7 +378,7 @@ def test_start_sh_ignores_spoofed_provenance_and_keeps_first_external_key(
     assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_APP_SERVER_URL"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_uses_last_duplicate_dotenv_value(tmp_path: Path) -> None:
     completed, _invocations, _target_environment = _run_start_sh(
         tmp_path,
@@ -389,7 +389,7 @@ def test_start_sh_uses_last_duplicate_dotenv_value(tmp_path: Path) -> None:
     assert (tmp_path / "http-port.txt").read_text(encoding="utf-8").strip() == "8123"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_propagates_native_daemon_failure_without_starting_the_bridge(
     tmp_path,
 ) -> None:
@@ -403,7 +403,7 @@ def test_start_sh_propagates_native_daemon_failure_without_starting_the_bridge(
     assert target_environment == ""
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(
     tmp_path,
 ) -> None:
@@ -426,7 +426,7 @@ def test_start_sh_preserves_explicit_legacy_dedicated_core_configuration(
     assert (tmp_path / "launcher-provenance.txt").read_text(encoding="utf-8").strip() == "IMCODEX_CORE_URL"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_distinguishes_dotenv_legacy_target_from_synthesized_values(
     tmp_path: Path,
 ) -> None:
@@ -449,7 +449,7 @@ def test_start_sh_distinguishes_dotenv_legacy_target_from_synthesized_values(
     }
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_never_starts_legacy_core_when_canonical_and_legacy_values_conflict(
     tmp_path,
 ) -> None:
@@ -466,7 +466,7 @@ def test_start_sh_never_starts_legacy_core_when_canonical_and_legacy_values_conf
     assert target_environment == "unix://||dedicated-ws|"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_keeps_process_target_group_separate_from_dotenv_target_group(
     tmp_path,
 ) -> None:
@@ -482,7 +482,7 @@ def test_start_sh_keeps_process_target_group_separate_from_dotenv_target_group(
     assert target_environment == "||spawned-stdio|"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_prefers_conda_injected_target_group_over_dotenv_target_group(
     tmp_path,
 ) -> None:
@@ -499,7 +499,7 @@ def test_start_sh_prefers_conda_injected_target_group_over_dotenv_target_group(
     assert target_environment == "||spawned-stdio|"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_start_sh_restores_entry_process_target_group_after_conda_activation(
     tmp_path,
 ) -> None:

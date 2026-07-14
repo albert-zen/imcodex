@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -3392,6 +3393,7 @@ async def test_status_uses_same_managed_effective_native_settings_as_setting_com
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
 async def test_status_reports_an_independently_managed_unix_app_server() -> None:
     websocket = ScriptedWebSocket(
         {

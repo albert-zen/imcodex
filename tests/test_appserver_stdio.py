@@ -1523,6 +1523,7 @@ async def test_unix_connector_accepts_thread_resume_frames_larger_than_16_mib(tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
 async def test_unix_connect_failure_does_not_run_an_http_health_probe(tmp_path) -> None:
     health_probe_called = False
 
@@ -1547,6 +1548,7 @@ async def test_unix_connect_failure_does_not_run_an_http_health_probe(tmp_path) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
 @pytest.mark.parametrize("core_mode", ["dedicated-ws", "shared-ws"])
 async def test_legacy_websocket_modes_collapse_to_external_on_unix(
     core_mode: str,
@@ -1597,6 +1599,7 @@ async def test_legacy_websocket_modes_collapse_to_external_on_unix(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
 async def test_persistent_unix_websocket_reconnects_through_the_same_socket(tmp_path) -> None:
     first = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
     second = ScriptedWebSocket({"initialize": [{"result": {"ok": True}}]})
@@ -1838,6 +1841,7 @@ async def test_overload_retry_does_not_replay_a_request_on_a_new_connection_epoc
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix domain sockets are not available on native Windows")
 async def test_client_defaults_to_the_native_unix_app_server(monkeypatch, tmp_path) -> None:
     websocket = ScriptedWebSocket(
         {

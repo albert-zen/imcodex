@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_posix_agentkit_launcher_uses_python_module_and_repo_root(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     capture_path = tmp_path / "args.txt"
@@ -51,7 +51,7 @@ def test_posix_agentkit_launcher_uses_python_module_and_repo_root(tmp_path: Path
     ]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_posix_agentkit_launcher_ignores_cwd_module_shadowing(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     package_root = tmp_path / "installed"
@@ -105,7 +105,7 @@ def test_posix_agentkit_launcher_ignores_cwd_module_shadowing(tmp_path: Path) ->
     ]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_posix_agentkit_launcher_explains_pipless_install(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     fake_python = tmp_path / "python"
@@ -158,7 +158,7 @@ def test_windows_agentkit_launcher_quotes_missing_install_diagnostics(
     environment.pop("PYTHONPATH", None)
 
     completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", str(scripts_dir / "agentkit.cmd"), "status"],
+        f'cmd.exe /d /s /c call "{scripts_dir / "agentkit.cmd"}" status',
         cwd=tmp_path,
         env=environment,
         capture_output=True,
@@ -185,7 +185,7 @@ def test_bundled_agentkit_hook_uses_repository_launcher() -> None:
     assert command_windows == 'call "${PLUGIN_ROOT}\\hooks\\run-stop.cmd"'
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not available")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="POSIX bash is not available")
 def test_posix_agentkit_hook_finds_repo_launcher_from_nested_cwd(tmp_path: Path) -> None:
     source_root = Path(__file__).resolve().parents[1]
     repo_root = tmp_path / "repo & tools"
