@@ -8,12 +8,51 @@ from pathlib import Path
 import httpx
 import pytest
 
-from imcodex.channels.weixin_ilink import ILinkError, WeixinILinkTransport
+from imcodex.channels.media import MediaDownloadError
+from imcodex.channels.weixin_ilink import (
+    ILinkError,
+    WeixinILinkTransport,
+    WeixinImageReference,
+)
 from imcodex.channels.weixin_state import (
     WeixinCredentials,
     WeixinStateStore,
     WeixinTransportState,
 )
+
+
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+ENCRYPTED_PNG = base64.b64decode(
+    "yLuipry+RbJL9obQb6z5cKOr95SiKJpxmdT8+emDMR3txLaTQfYurVDio+edPs/dnIGLDX9YQz0ywV7fe1ruJW4RW+D+zNqHbJHENP8ePNE="
+)
+AES_KEY_HEX = "000102030405060708090a0b0c0d0e0f"
+AES_KEY_RAW_BASE64 = "AAECAwQFBgcICQoLDA0ODw=="
+AES_KEY_HEX_BASE64 = "MDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGY="
+
+
+class ChunkedByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _collect_into(target: list[bytes]):
+    async def write(chunk: bytes) -> None:
+        target.append(chunk)
+
+    return write
+
+
+async def _discard_chunk(_chunk: bytes) -> None:
+    return None
 
 
 def test_weixin_state_store_round_trips_sensitive_state_with_private_permissions(
@@ -273,6 +312,197 @@ async def test_ilink_get_updates_sends_cursor_and_bearer_token() -> None:
     body = json.loads(request.content)
     assert body["get_updates_buf"] == "cursor"
     assert body["base_info"]["bot_agent"] == "IMCodex/0.1.0"
+
+
+@pytest.mark.asyncio
+async def test_ilink_streams_and_decrypts_image_without_api_authorization() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            stream=ChunkedByteStream(
+                [
+                    ENCRYPTED_PNG[:3],
+                    ENCRYPTED_PNG[3:21],
+                    ENCRYPTED_PNG[21:67],
+                    ENCRYPTED_PNG[67:],
+                ]
+            ),
+        )
+
+    plaintext_chunks: list[bytes] = []
+    reference = WeixinImageReference(
+        encrypted_query_param="ticket+/=",
+        aes_key="invalid-but-lower-priority",
+        aeskey=AES_KEY_HEX,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(
+            token="bot-secret",
+            http_client=client,
+        )
+        await transport.download_image(reference, _collect_into(plaintext_chunks))
+
+    assert b"".join(plaintext_chunks) == PNG
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url.host == "novac2c.cdn.weixin.qq.com"
+    assert request.url.path == "/c2c/download"
+    assert request.url.params["encrypted_query_param"] == "ticket+/="
+    assert request.headers["Accept-Encoding"] == "identity"
+    assert "authorization" not in request.headers
+    assert "authorizationtype" not in request.headers
+    assert "x-wechat-uin" not in request.headers
+    assert "ticket" not in repr(reference)
+    assert AES_KEY_HEX not in repr(reference)
+
+
+@pytest.mark.asyncio
+async def test_ilink_rejects_encoded_cdn_response_before_decryption() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            content=ENCRYPTED_PNG,
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(http_client=client)
+        with pytest.raises(MediaDownloadError):
+            await transport.download_image(
+                WeixinImageReference(
+                    encrypted_query_param="encoded-ticket",
+                    aeskey=AES_KEY_HEX,
+                ),
+                _discard_chunk,
+            )
+
+
+@pytest.mark.parametrize("encoded_key", [AES_KEY_RAW_BASE64, AES_KEY_HEX_BASE64])
+@pytest.mark.asyncio
+async def test_ilink_accepts_documented_media_aes_key_encodings(
+    encoded_key: str,
+) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=ChunkedByteStream([ENCRYPTED_PNG]))
+
+    plaintext_chunks: list[bytes] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(http_client=client)
+        await transport.download_image(
+            WeixinImageReference(
+                encrypted_query_param="key-encoding-ticket",
+                aes_key=encoded_key,
+            ),
+            _collect_into(plaintext_chunks),
+        )
+
+    assert b"".join(plaintext_chunks) == PNG
+
+
+@pytest.mark.asyncio
+async def test_ilink_prefers_full_url_and_supports_plain_image_payload() -> None:
+    requests: list[httpx.Request] = []
+    full_url = (
+        "https://novac2c.cdn.weixin.qq.com/c2c/download"
+        "?encrypted_query_param=full%2Bticket"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, stream=ChunkedByteStream([PNG]))
+
+    plaintext_chunks: list[bytes] = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(token="bot-secret", http_client=client)
+        await transport.download_image(
+            WeixinImageReference(
+                encrypted_query_param="unused-fallback-ticket",
+                full_url=full_url,
+            ),
+            _collect_into(plaintext_chunks),
+        )
+
+    assert b"".join(plaintext_chunks) == PNG
+    assert len(requests) == 1
+    assert str(requests[0].url) == full_url
+    assert "authorization" not in requests[0].headers
+
+
+@pytest.mark.parametrize(
+    "full_url",
+    [
+        "http://novac2c.cdn.weixin.qq.com/c2c/download?x=1",
+        "https://attacker.example/download?x=1",
+        "https://user@novac2c.cdn.weixin.qq.com/download?x=1",
+        "https://novac2c.cdn.weixin.qq.com:444/download?x=1",
+        "https://novac2c.cdn.weixin.qq.com/download?x=1#fragment",
+        "https://novac2c.cdn.weixin.qq.com/download?bad value",
+    ],
+)
+@pytest.mark.asyncio
+async def test_ilink_rejects_untrusted_image_full_url_before_network(
+    full_url: str,
+) -> None:
+    requests = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(200, content=PNG)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(http_client=client)
+        with pytest.raises(MediaDownloadError):
+            await transport.download_image(
+                WeixinImageReference(full_url=full_url),
+                _discard_chunk,
+            )
+
+    assert requests == 0
+
+
+@pytest.mark.asyncio
+async def test_ilink_rejects_redirect_invalid_key_and_invalid_padding() -> None:
+    responses = [
+        httpx.Response(302, headers={"Location": "https://attacker.example/image"}),
+        httpx.Response(200, stream=ChunkedByteStream([b"\x00" * 16])),
+    ]
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return responses.pop(0)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(http_client=client)
+        with pytest.raises(MediaDownloadError):
+            await transport.download_image(
+                WeixinImageReference(encrypted_query_param="redirect-ticket"),
+                _discard_chunk,
+            )
+        with pytest.raises(MediaDownloadError):
+            await transport.download_image(
+                WeixinImageReference(
+                    encrypted_query_param="bad-key-ticket",
+                    aes_key="not-base64!",
+                ),
+                _discard_chunk,
+            )
+        with pytest.raises(MediaDownloadError):
+            await transport.download_image(
+                WeixinImageReference(
+                    encrypted_query_param="bad-padding-ticket",
+                    aeskey=AES_KEY_HEX,
+                ),
+                _discard_chunk,
+            )
+
+    # Invalid keys fail before opening the CDN request, and redirects are not followed.
+    assert len(requests) == 2
 
 
 @pytest.mark.asyncio

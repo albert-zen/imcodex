@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from functools import partial
+import json
 import logging
+from pathlib import Path
 import re
 from threading import BoundedSemaphore, Lock
-from typing import Callable
+import time
+from typing import Awaitable, Callable
+from urllib.parse import quote, urlsplit
+
+import httpx
 
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .base import BaseChannelAdapter
+from .media import (
+    MAX_IMAGE_BYTES,
+    MAX_IMAGE_COUNT,
+    ImageMediaMaterializer,
+    ImageTooLargeError,
+    MediaDownloadError,
+    materialize_inbound_images,
+)
 from .text import split_text
 
 
@@ -24,7 +39,33 @@ RECONNECT_MAX_DELAY_S = 60.0
 INBOUND_QUEUE_LIMIT = 64
 SDK_DISCONNECT_TIMEOUT_S = 5.0
 SDK_JOIN_TIMEOUT_S = 2.0
+FEISHU_MEDIA_TIMEOUT = httpx.Timeout(
+    20.0,
+    connect=5.0,
+    read=15.0,
+    write=5.0,
+    pool=5.0,
+)
+FEISHU_TOKEN_TIMEOUT = httpx.Timeout(
+    10.0,
+    connect=5.0,
+    read=5.0,
+    write=5.0,
+    pool=5.0,
+)
+FEISHU_TOKEN_DEADLINE_S = 10.0
+FEISHU_TOKEN_RESPONSE_MAX_BYTES = 64 * 1024
+FEISHU_TOKEN_REFRESH_SKEW_S = 60.0
 CONVERSATION_PATTERN = re.compile(r"^chat:([^:]+)(?::thread:(.+))?$")
+IMAGE_PLACEHOLDER_PATTERN = re.compile(
+    r"!\[([^\]\r\n]*)\]\(([^\r\n)]*)\)"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FeishuImageReference:
+    message_id: str
+    file_key: str = field(repr=False)
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -36,7 +77,7 @@ def _config_bool(value: object, default: bool = False) -> bool:
 
 
 class FeishuChannelAdapter(BaseChannelAdapter):
-    """Text-only Feishu/Lark adapter over the official Channel SDK."""
+    """Feishu/Lark text and image adapter over the official Channel SDK."""
 
     channel_id = "feishu"
 
@@ -51,6 +92,15 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         access_policy: ChannelAccessPolicy | None = None,
         require_mention: bool = True,
         startup_timeout_s: float = 30.0,
+        media_dir: Path | None = None,
+        media_materializer: ImageMediaMaterializer[FeishuImageReference] | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        resource_downloader: Callable[
+            [FeishuImageReference, Callable[[bytes], Awaitable[None]]],
+            Awaitable[None],
+        ]
+        | None = None,
+        tenant_token_provider: Callable[[object], Awaitable[str]] | None = None,
         channel_factory: Callable[..., object] | None = None,
         sleep=asyncio.sleep,
     ) -> None:
@@ -66,12 +116,25 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         self.startup_timeout_s = max(1.0, float(startup_timeout_s))
         self.channel_factory = channel_factory
         self.sleep = sleep
+        self._http_client = http_client
+        self._owns_http_client = http_client is None
+        self._resource_downloader = resource_downloader
+        self._tenant_token_provider = tenant_token_provider
+        self._tenant_access_token = ""
+        self._tenant_access_token_expires_at = 0.0
+        self._tenant_token_lock = asyncio.Lock()
+        self.media_materializer = media_materializer or ImageMediaMaterializer(
+            root=media_dir or Path(".imcodex") / "channels" / "feishu" / "inbound-media",
+            download=self._download_image,
+        )
         self._sdk: object | None = None
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._unsubscribe: list[Callable[[], object]] = []
-        self._inbound_queue: asyncio.Queue[InboundMessage] | None = None
+        self._inbound_queue: asyncio.Queue[
+            tuple[InboundMessage, tuple[FeishuImageReference, ...]]
+        ] | None = None
         self._inbound_worker_task: asyncio.Task | None = None
         self._inbound_slots = BoundedSemaphore(INBOUND_QUEUE_LIMIT)
         self._overflow_lock = Lock()
@@ -89,6 +152,9 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             access_policy=ChannelAccessPolicy.from_config(config),
             require_mention=_config_bool(config.get("require_mention"), True),
             startup_timeout_s=float(config.get("startup_timeout_s") or 30.0),
+            media_dir=Path(
+                str(config.get("media_dir") or ".imcodex/channels/feishu/inbound-media")
+            ),
         )
 
     async def start(self) -> None:
@@ -101,11 +167,14 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         self._inbound_slots = BoundedSemaphore(INBOUND_QUEUE_LIMIT)
         self._sdk = self._create_sdk()
         try:
+            await self.media_materializer.start()
             self._subscribe_sdk(self._sdk)
             self._inbound_worker_task = asyncio.create_task(self._run_inbound_worker())
             if self._runner_task is None or self._runner_task.done():
                 self._runner_task = asyncio.create_task(self._run_forever())
         except BaseException:
+            await self.media_materializer.stop()
+            await self._close_http_client()
             await self._detach_sdk()
             raise
         mark_channel_health(
@@ -155,16 +224,34 @@ class FeishuChannelAdapter(BaseChannelAdapter):
                 errors.append(exc)
             self._runner_task = None
         try:
+            await self.media_materializer.stop()
+        except Exception as exc:
+            errors.append(exc)
+        try:
+            await self._close_http_client()
+        except Exception as exc:
+            errors.append(exc)
+        try:
             await self._detach_sdk()
         except Exception as exc:
             errors.append(exc)
+        self._tenant_access_token = ""
+        self._tenant_access_token_expires_at = 0.0
         self._main_loop = None
         mark_channel_health("feishu", connected=False, status="stopped")
         if errors:
             raise ExceptionGroup("Feishu shutdown failed", errors)
 
     def parse_inbound_message(self, message: object) -> InboundMessage | None:
-        if str(getattr(message, "raw_content_type", "")) != "text":
+        parsed = self._parse_inbound_message_with_images(message)
+        return parsed[0] if parsed is not None else None
+
+    def _parse_inbound_message_with_images(
+        self,
+        message: object,
+    ) -> tuple[InboundMessage, tuple[FeishuImageReference, ...]] | None:
+        content_type = str(getattr(message, "raw_content_type", "") or "")
+        if content_type not in {"text", "image", "post"}:
             return None
         conversation = getattr(message, "conversation", None)
         sender = getattr(message, "sender", None)
@@ -174,30 +261,75 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         user_id = str(getattr(sender, "open_id", "") or "")
         message_id = str(getattr(message, "message_id", "") or getattr(message, "id", "") or "")
         text = str(getattr(message, "content_text", "") or "").strip()
-        if not chat_id or not user_id or not message_id or not text:
+        image_references = self._image_references(message, message_id=message_id)
+        placeholder_matches = list(IMAGE_PLACEHOLDER_PATTERN.finditer(text))
+        placeholder_keys = [
+            file_key
+            for match in placeholder_matches
+            if self._is_downloadable_image_key(
+                file_key := match.group(2).strip()
+            )
+        ]
+        image_references = self._merge_placeholder_image_references(
+            image_references,
+            placeholder_keys,
+            message_id=message_id,
+        )
+        malformed_image_placeholder = any(
+            match.group(1).strip().casefold() == "image"
+            and not match.group(2).strip()
+            for match in placeholder_matches
+        )
+        if (
+            (content_type == "image" and not image_references)
+            or malformed_image_placeholder
+        ) and len(image_references) <= MAX_IMAGE_COUNT:
+            # Preserve a malformed SDK image envelope through access, dedup,
+            # and topology preflight. The downloader rejects this sentinel at
+            # the shared media boundary, producing a stable user-visible error
+            # instead of silently dropping the platform message.
+            image_references = (
+                *image_references,
+                FeishuImageReference(message_id=message_id, file_key=""),
+            )
+        if content_type in {"image", "post"}:
+            text = self._strip_image_placeholders(text, image_references)
+        if not chat_id or not user_id or not message_id:
             return None
         if chat_type in {"group", "topic"}:
             if self.require_mention and not bool(getattr(message, "mentioned_bot", False)):
                 return None
             text = self._strip_bot_mention(text)
-            if not text:
-                return None
+        if not text and not image_references:
+            return None
         conversation_id = f"chat:{chat_id}"
         if thread_id:
             conversation_id += f":thread:{thread_id}"
-        return InboundMessage(
-            channel_id=self.channel_id,
-            conversation_id=conversation_id,
-            user_id=user_id,
-            message_id=message_id,
-            text=text,
+        return (
+            InboundMessage(
+                channel_id=self.channel_id,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                message_id=message_id,
+                text=text,
+            ),
+            image_references,
         )
 
     async def handle_sdk_message(self, message: object) -> None:
-        inbound = self.parse_inbound_message(message)
-        if inbound is None:
+        parsed = self._parse_inbound_message_with_images(message)
+        if parsed is None:
             return
-        await self.dispatch_inbound(inbound, reply_to_message_id=inbound.message_id)
+        inbound, image_references = parsed
+        prepare_inbound = None
+        if image_references:
+            prepare_inbound = self._media_preparer(image_references)
+        await self.dispatch_inbound(
+            inbound,
+            reply_to_message_id=inbound.message_id,
+            prepare_inbound=prepare_inbound,
+            pending_attachment_count=len(image_references),
+        )
 
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
@@ -295,6 +427,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         try:
             from lark_channel import (
                 ChatQueueConfig,
+                DedupConfig,
                 FeishuChannel,
                 InboundConfig,
                 MediaCapabilities,
@@ -317,7 +450,14 @@ class FeishuChannelAdapter(BaseChannelAdapter):
                 group_policy="open",
                 require_mention=False,
             ),
-            safety=SafetyConfig(chat_queue=ChatQueueConfig(enabled=False)),
+            # imcodex owns stable message dedup in UnifiedChannelMiddleware.
+            # The SDK has two independent dedup layers: enabled=False gates
+            # its normalize Deduper, while max_entries=0 makes SeenCache
+            # immediately evict every entry and therefore retain no memory.
+            safety=SafetyConfig(
+                dedup=DedupConfig(enabled=False, max_entries=0),
+                chat_queue=ChatQueueConfig(enabled=False),
+            ),
             security=SecurityConfig(
                 mode="strict",
                 allow_insecure_ws=False,
@@ -331,7 +471,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
                 expand_merge_forward=False,
                 fetch_interactive_card=False,
                 media_capabilities=MediaCapabilities(
-                    image=False,
+                    image=True,
                     audio=False,
                     video=False,
                     file=False,
@@ -372,9 +512,10 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         loop = self._main_loop
         if loop is None or loop.is_closed() or self._stop_event.is_set():
             return
-        inbound = self.parse_inbound_message(message)
-        if inbound is None:
+        parsed = self._parse_inbound_message_with_images(message)
+        if parsed is None:
             return
+        inbound, image_references = parsed
         if not self.inbound_allowed(inbound):
             suppressed = self.prepare_access_denial_report()
             if suppressed is not None:
@@ -384,15 +525,19 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             with self._overflow_lock:
                 self._overflow_count += 1
             return
-        loop.call_soon_threadsafe(self._enqueue_inbound, inbound)
+        loop.call_soon_threadsafe(self._enqueue_inbound, inbound, image_references)
 
-    def _enqueue_inbound(self, inbound: InboundMessage) -> None:
+    def _enqueue_inbound(
+        self,
+        inbound: InboundMessage,
+        image_references: tuple[FeishuImageReference, ...],
+    ) -> None:
         queue = self._inbound_queue
         if self._stop_event.is_set() or queue is None:
             self._inbound_slots.release()
             return
         try:
-            queue.put_nowait(inbound)
+            queue.put_nowait((inbound, image_references))
         except asyncio.QueueFull:
             self._inbound_slots.release()
             with self._overflow_lock:
@@ -403,12 +548,17 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         if queue is None:
             return
         while True:
-            inbound = await queue.get()
+            inbound, image_references = await queue.get()
             try:
                 self._report_inbound_overflow()
+                prepare_inbound = None
+                if image_references:
+                    prepare_inbound = self._media_preparer(image_references)
                 await self.dispatch_inbound(
                     inbound,
                     reply_to_message_id=inbound.message_id,
+                    prepare_inbound=prepare_inbound,
+                    pending_attachment_count=len(image_references),
                 )
             except asyncio.CancelledError:
                 raise
@@ -417,6 +567,298 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             finally:
                 queue.task_done()
                 self._inbound_slots.release()
+
+    def _media_preparer(
+        self,
+        references: tuple[FeishuImageReference, ...],
+    ) -> Callable[[InboundMessage], Awaitable[InboundMessage]]:
+        async def prepare(inbound: InboundMessage) -> InboundMessage:
+            return await materialize_inbound_images(
+                inbound,
+                references,
+                self.media_materializer,
+            )
+
+        return prepare
+
+    async def _download_image(
+        self,
+        reference: FeishuImageReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        if not reference.message_id.strip() or not reference.file_key.strip():
+            raise MediaDownloadError
+        if self._resource_downloader is not None:
+            await self._resource_downloader(reference, write_chunk)
+            return
+        try:
+            token = await self._get_tenant_access_token()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Token acquisition failures may retain credentials in their
+            # exception context. Convert to the stable media boundary without
+            # preserving that chain.
+            raise MediaDownloadError from None
+        if not isinstance(token, str) or not token.strip():
+            raise MediaDownloadError
+        token = token.strip()
+
+        message_id = quote(reference.message_id, safe="")
+        file_key = quote(reference.file_key, safe="")
+        url = f"{self.domain}/open-apis/im/v1/messages/{message_id}/resources/{file_key}"
+        client = self._ensure_http_client()
+        try:
+            async with client.stream(
+                "GET",
+                url,
+                params={"type": "image"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept-Encoding": "identity",
+                },
+                follow_redirects=False,
+                timeout=FEISHU_MEDIA_TIMEOUT,
+            ) as response:
+                if 300 <= response.status_code < 400 or not response.is_success:
+                    raise MediaDownloadError
+                content_encoding = (
+                    response.headers.get("Content-Encoding", "").strip().casefold()
+                )
+                if content_encoding not in {"", "identity"}:
+                    raise MediaDownloadError
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        declared_size = int(content_length)
+                        if declared_size < 0:
+                            raise MediaDownloadError
+                        if declared_size > MAX_IMAGE_BYTES:
+                            raise ImageTooLargeError
+                    except ValueError:
+                        raise MediaDownloadError from None
+                received = False
+                async for chunk in response.aiter_raw():
+                    received = received or bool(chunk)
+                    await write_chunk(chunk)
+                if not received:
+                    raise MediaDownloadError
+        except MediaDownloadError:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPError:
+            # HTTP failures retain the bearer header and opaque resource key
+            # on their request object. Never carry that object across the
+            # stable media error boundary.
+            raise MediaDownloadError from None
+
+    def _ensure_http_client(self) -> httpx.AsyncClient:
+        client = self._http_client
+        if client is None or (self._owns_http_client and client.is_closed):
+            client = httpx.AsyncClient()
+            self._http_client = client
+            self._owns_http_client = True
+        return client
+
+    async def _close_http_client(self) -> None:
+        client = self._http_client
+        if client is None or not self._owns_http_client:
+            return
+        self._http_client = None
+        await client.aclose()
+
+    async def _get_tenant_access_token(self) -> str:
+        provider = self._tenant_token_provider
+        if provider is not None:
+            sdk = self._sdk
+            if sdk is None:
+                raise MediaDownloadError
+            try:
+                async with asyncio.timeout(FEISHU_TOKEN_DEADLINE_S):
+                    token = await provider(sdk)
+            except TimeoutError:
+                raise MediaDownloadError from None
+            if not isinstance(token, str) or not token.strip():
+                raise MediaDownloadError
+            return token.strip()
+
+        async with self._tenant_token_lock:
+            now = time.monotonic()
+            if self._tenant_access_token and now < self._tenant_access_token_expires_at:
+                return self._tenant_access_token
+
+            client = self._ensure_http_client()
+            body = bytearray()
+            try:
+                async with asyncio.timeout(FEISHU_TOKEN_DEADLINE_S):
+                    async with client.stream(
+                        "POST",
+                        f"{self.domain}/open-apis/auth/v3/tenant_access_token/internal",
+                        json={"app_id": self.app_id, "app_secret": self.app_secret},
+                        headers={"Accept-Encoding": "identity"},
+                        follow_redirects=False,
+                        timeout=FEISHU_TOKEN_TIMEOUT,
+                    ) as response:
+                        if 300 <= response.status_code < 400 or not response.is_success:
+                            raise MediaDownloadError
+                        content_encoding = (
+                            response.headers.get("Content-Encoding", "")
+                            .strip()
+                            .casefold()
+                        )
+                        if content_encoding not in {"", "identity"}:
+                            raise MediaDownloadError
+                        if response.is_stream_consumed:
+                            body.extend(response.content)
+                        else:
+                            async for chunk in response.aiter_raw():
+                                body.extend(chunk)
+                                if len(body) > FEISHU_TOKEN_RESPONSE_MAX_BYTES:
+                                    raise MediaDownloadError
+                        if len(body) > FEISHU_TOKEN_RESPONSE_MAX_BYTES:
+                            raise MediaDownloadError
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, httpx.HTTPError, MediaDownloadError):
+                # HTTP request objects contain the app secret in their JSON
+                # body. Collapse every failure before it crosses the media
+                # boundary or reaches channel logs.
+                raise MediaDownloadError from None
+
+        try:
+            payload = json.loads(body)
+            if not isinstance(payload, dict):
+                raise TypeError
+            code = int(payload.get("code", -1))
+            token = str(payload.get("tenant_access_token") or "").strip()
+            expires_in = float(payload.get("expire") or 0)
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            raise MediaDownloadError from None
+        if code != 0 or not token or expires_in <= 0:
+            raise MediaDownloadError
+        self._tenant_access_token = token
+        self._tenant_access_token_expires_at = time.monotonic() + max(
+            1.0,
+            expires_in - FEISHU_TOKEN_REFRESH_SKEW_S,
+        )
+        return token
+
+    @staticmethod
+    def _image_references(
+        message: object,
+        *,
+        message_id: str,
+    ) -> tuple[FeishuImageReference, ...]:
+        resources = getattr(message, "resources", None)
+        if not isinstance(resources, (list, tuple)):
+            return ()
+        references: list[FeishuImageReference] = []
+        seen: set[str] = set()
+        for resource in resources:
+            if isinstance(resource, dict):
+                resource_type = str(resource.get("type") or "")
+                file_key = str(resource.get("file_key") or "").strip()
+            else:
+                resource_type = str(getattr(resource, "type", "") or "")
+                file_key = str(getattr(resource, "file_key", "") or "").strip()
+            if (
+                resource_type != "image"
+                or not FeishuChannelAdapter._is_downloadable_image_key(file_key)
+                or file_key in seen
+            ):
+                continue
+            seen.add(file_key)
+            references.append(
+                FeishuImageReference(message_id=message_id, file_key=file_key)
+            )
+            # Preserve one item beyond the limit so the shared materializer
+            # rejects the complete message without retaining an unbounded list.
+            if len(references) > MAX_IMAGE_COUNT:
+                break
+        return tuple(references)
+
+    @staticmethod
+    def _is_downloadable_image_key(value: str) -> bool:
+        """Distinguish opaque Feishu keys from Markdown image URLs."""
+
+        if (
+            not value
+            or len(value) > 1024
+            or value.startswith(("/", "\\"))
+            or "/" in value
+            or "\\" in value
+            or any(character.isspace() or ord(character) < 32 for character in value)
+        ):
+            return False
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return False
+        return not (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+        )
+
+    @staticmethod
+    def _merge_placeholder_image_references(
+        references: tuple[FeishuImageReference, ...],
+        placeholder_keys: list[str],
+        *,
+        message_id: str,
+    ) -> tuple[FeishuImageReference, ...]:
+        """Recover image keys rendered by SDK post normalization.
+
+        lark-channel-sdk 1.1.0 renders ``content_v2`` image nodes into
+        ``![image](key)`` text but omits them from ``message.resources``.
+        The platform resource endpoint accepts that same key, so merge the
+        normalized placeholders without depending on SDK-internal raw ASTs.
+        """
+
+        by_file_key = {reference.file_key: reference for reference in references}
+        merged: list[FeishuImageReference] = []
+        seen: set[str] = set()
+        for file_key in placeholder_keys:
+            if not file_key or file_key in seen:
+                continue
+            seen.add(file_key)
+            merged.append(
+                by_file_key.get(file_key)
+                or FeishuImageReference(message_id=message_id, file_key=file_key)
+            )
+            # Preserve one item past the shared limit so the complete message
+            # is rejected without retaining an unbounded placeholder list.
+            if len(merged) > MAX_IMAGE_COUNT:
+                return tuple(merged)
+        # The SDK may list ordinary post image nodes before image references
+        # extracted from earlier Markdown nodes. Placeholder order reflects
+        # the actual rendered post, so append only resource-only images here.
+        for reference in references:
+            if reference.file_key in seen:
+                continue
+            seen.add(reference.file_key)
+            merged.append(reference)
+            if len(merged) > MAX_IMAGE_COUNT:
+                break
+        return tuple(merged)
+
+    @staticmethod
+    def _strip_image_placeholders(
+        text: str,
+        references: tuple[FeishuImageReference, ...],
+    ) -> str:
+        file_keys = {reference.file_key for reference in references}
+
+        def replace(match: re.Match[str]) -> str:
+            return "" if match.group(2).strip() in file_keys else match.group(0)
+
+        cleaned = IMAGE_PLACEHOLDER_PATTERN.sub(replace, text)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
 
     def _report_inbound_overflow(self) -> None:
         loop = self._main_loop

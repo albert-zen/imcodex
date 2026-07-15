@@ -309,6 +309,7 @@ class Settings:
             raise ValueError("app-server reconnect jitter must be between zero and one")
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
+        weixin_state_dir = self.weixin_state_dir or self.data_dir / "channels" / "weixin"
         return {
             "qq": {
                 "enabled": self.qq_enabled,
@@ -332,6 +333,7 @@ class Settings:
                 "require_mention": self.telegram_require_mention,
                 "poll_timeout_s": self.telegram_poll_timeout_s,
                 "state_dir": self.data_dir / "channels" / "telegram",
+                "media_dir": self.data_dir / "channels" / "telegram" / "inbound-media",
             },
             "feishu": {
                 "enabled": self.feishu_enabled,
@@ -343,10 +345,12 @@ class Settings:
                 "access_match": self.feishu_access_match,
                 "require_mention": self.feishu_require_mention,
                 "startup_timeout_s": self.feishu_startup_timeout_s,
+                "media_dir": self.data_dir / "channels" / "feishu" / "inbound-media",
             },
             "weixin": {
                 "enabled": self.weixin_enabled,
-                "state_dir": self.weixin_state_dir or self.data_dir / "channels" / "weixin",
+                "state_dir": weixin_state_dir,
+                "media_dir": weixin_state_dir / "inbound-media",
                 "allowed_user_ids": self.weixin_allowed_user_ids,
                 "allowed_conversation_ids": self.weixin_allowed_conversation_ids,
                 "access_match": self.weixin_access_match,

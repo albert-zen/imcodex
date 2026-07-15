@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from .protocol_map import normalize_appserver_message
 
 
 _MAX_UNKNOWN_PAYLOAD_KEYS = 20
-_MANAGED_MEDIA_PATH_MARKER = "/channels/qq/inbound-media"
+_MANAGED_MEDIA_PATH_PATTERN = re.compile(
+    r"(?:^|/)inbound-media(?=$|/|[^a-z0-9._-])",
+    flags=re.IGNORECASE,
+)
 _REDACTED_MANAGED_MEDIA_TEXT = "[redacted managed inbound media path]"
 
 
@@ -179,20 +183,7 @@ def _redact_managed_media(value: Any) -> Any:
 
 def _contains_managed_media_path(value: str) -> bool:
     normalized = value.replace("\\", "/").lower()
-    start = 0
-    while True:
-        index = normalized.find(_MANAGED_MEDIA_PATH_MARKER, start)
-        if index < 0:
-            return False
-        end = index + len(_MANAGED_MEDIA_PATH_MARKER)
-        if end == len(normalized):
-            return True
-        next_character = normalized[end]
-        if next_character == "/" or not (
-            next_character.isalnum() or next_character in "._-"
-        ):
-            return True
-        start = end
+    return _MANAGED_MEDIA_PATH_PATTERN.search(normalized) is not None
 
 
 def _sha256_text(value: str) -> str:

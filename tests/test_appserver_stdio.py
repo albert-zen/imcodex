@@ -1333,7 +1333,13 @@ def test_protocol_error_summary_redacts_managed_media_path() -> None:
     [
         "/private/user/.imcodex/channels/qq/inbound-media",
         "/private/user/.imcodex/channels/qq/inbound-media/abc123.png",
+        "/private/user/.imcodex/channels/telegram/inbound-media/abc123.png",
+        "/private/user/.imcodex/channels/feishu/inbound-media/abc123.png",
+        "/private/user/.imcodex/channels/weixin/inbound-media/abc123.png",
+        "/private/user/.imcodex/channels/webhook/inbound-media/abc123.png",
+        "/private/custom-weixin-state/inbound-media/abc123.png",
         r"C:\Users\owner\.imcodex\channels\qq\inbound-media\abc123.png",
+        r"D:\private\custom-weixin-state\inbound-media\abc123.png",
     ],
 )
 def test_text_summary_redacts_managed_media_root_and_descendants(local_path: str) -> None:

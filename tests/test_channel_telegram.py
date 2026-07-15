@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from io import BytesIO
 import json
 import logging
 import os
 from pathlib import Path
 
 import httpx
+from PIL import Image
 import pytest
 
 from imcodex.channels import (
@@ -17,7 +20,36 @@ from imcodex.observability.logger import (
     configure_observability_logging,
     reset_observability_logging,
 )
+from imcodex.channels.media import IMAGE_DOWNLOAD_FAILED
 from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.store import ConversationStore
+
+
+def _encoded_image(image_format: str = "PNG") -> bytes:
+    stream = BytesIO()
+    Image.new("RGB", (2, 2), (20, 40, 60)).save(stream, format=image_format)
+    return stream.getvalue()
+
+
+PNG = _encoded_image()
+
+
+class _PreparingMiddleware:
+    def __init__(self) -> None:
+        self.messages: list[InboundMessage] = []
+
+    async def handle_inbound(
+        self,
+        _adapter,
+        inbound,
+        *,
+        reply_to_message_id=None,
+        prepare_inbound=None,
+        pending_attachment_count=0,
+    ) -> None:
+        if prepare_inbound is not None:
+            inbound = await prepare_inbound(inbound)
+        self.messages.append(inbound)
 
 
 def _adapter(**kwargs) -> TelegramChannelAdapter:
@@ -93,6 +125,417 @@ def test_telegram_keeps_forum_topics_as_distinct_conversations() -> None:
 
     assert parsed is not None
     assert parsed[0].conversation_id == "chat:-1001:topic:77"
+
+
+def test_telegram_accepts_image_only_and_selects_largest_photo_size() -> None:
+    adapter = _adapter()
+
+    parsed = adapter._parse_inbound_update(
+        {
+            "message": {
+                "message_id": 10,
+                "from": {"id": 42, "is_bot": False},
+                "chat": {"id": 42, "type": "private"},
+                "photo": [
+                    {"file_id": "medium", "width": 640, "height": 480, "file_size": 100},
+                    {"file_id": "largest", "width": 1920, "height": 1080, "file_size": 200},
+                    {"file_id": "small", "width": 160, "height": 120, "file_size": 50},
+                ],
+            }
+        }
+    )
+
+    assert parsed is not None
+    inbound, reply_to, references = parsed
+    assert inbound.text == ""
+    assert reply_to == "10"
+    assert [reference.file_id for reference in references] == ["largest"]
+    # Keep the existing public parsing contract: platform references stay private.
+    assert adapter.parse_inbound_update(
+        {
+            "message": {
+                "message_id": 10,
+                "from": {"id": 42, "is_bot": False},
+                "chat": {"id": 42, "type": "private"},
+                "photo": [{"file_id": "largest", "width": 1920, "height": 1080}],
+            }
+        }
+    ) == (inbound, reply_to)
+
+
+def test_telegram_accepts_only_image_like_documents() -> None:
+    adapter = _adapter()
+    base = {
+        "message_id": 10,
+        "from": {"id": 42, "is_bot": False},
+        "chat": {"id": 42, "type": "private"},
+    }
+
+    mime_image = adapter._parse_inbound_update(
+        {"message": {**base, "document": {"file_id": "png", "mime_type": "image/png"}}}
+    )
+    extension_image = adapter._parse_inbound_update(
+        {
+            "message": {
+                **base,
+                "document": {
+                    "file_id": "webp",
+                    "mime_type": "application/octet-stream",
+                    "file_name": "IMAGE.WEBP",
+                },
+            }
+        }
+    )
+    non_image = adapter._parse_inbound_update(
+        {
+            "message": {
+                **base,
+                "document": {
+                    "file_id": "pdf",
+                    "mime_type": "application/pdf",
+                    "file_name": "report.pdf",
+                },
+            }
+        }
+    )
+
+    assert mime_image is not None and mime_image[2][0].file_id == "png"
+    assert extension_image is not None and extension_image[2][0].file_id == "webp"
+    assert non_image is None
+
+
+def test_telegram_preserves_malformed_image_envelopes_for_stable_error() -> None:
+    adapter = _adapter()
+    base = {
+        "message_id": 10,
+        "from": {"id": 42, "is_bot": False},
+        "chat": {"id": 42, "type": "private"},
+    }
+
+    malformed_photo = adapter._parse_inbound_update(
+        {"message": {**base, "photo": [{"width": 100, "height": 100}]}}
+    )
+    malformed_document = adapter._parse_inbound_update(
+        {
+            "message": {
+                **base,
+                "document": {"mime_type": "image/png", "file_name": "image.png"},
+            }
+        }
+    )
+
+    assert malformed_photo is not None and malformed_photo[2][0].file_id == ""
+    assert malformed_document is not None and malformed_document[2][0].file_id == ""
+
+
+@pytest.mark.asyncio
+async def test_telegram_malformed_image_envelope_fails_without_media_api(
+    tmp_path: Path,
+) -> None:
+    requests = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        raise AssertionError("malformed image must fail before getFile")
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(
+            middleware=middleware,
+            http_client=client,
+            media_dir=tmp_path / "media",
+        )
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "photo": [{"width": 100, "height": 100}],
+                }
+            }
+        )
+
+    assert requests == 0
+    assert middleware.messages[0].input_error == IMAGE_DOWNLOAD_FAILED
+    assert middleware.messages[0].attachments == ()
+
+
+def test_telegram_group_images_follow_caption_mention_or_reply_targeting() -> None:
+    adapter = _adapter(require_mention=True)
+    adapter._bot_id = "7"
+    adapter._bot_username = "imcodex_bot"
+    base = {
+        "message_id": 9,
+        "from": {"id": 42, "is_bot": False},
+        "chat": {"id": -1001, "type": "supergroup"},
+        "photo": [{"file_id": "photo", "width": 100, "height": 100}],
+    }
+
+    assert adapter.parse_inbound_update({"message": base}) is None
+    mentioned = adapter.parse_inbound_update(
+        {"message": {**base, "caption": "@imcodex_bot"}}
+    )
+    replied = adapter.parse_inbound_update(
+        {
+            "message": {
+                **base,
+                "reply_to_message": {"from": {"id": 7, "is_bot": True}},
+            }
+        }
+    )
+
+    assert mentioned is not None and mentioned[0].text == ""
+    assert replied is not None and replied[0].text == ""
+
+
+@pytest.mark.asyncio
+async def test_telegram_downloads_file_from_getfile_into_shared_image_contract(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/proxy/bottest-token/getFile":
+            assert json.loads(request.content) == {"file_id": "largest"}
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "result": {
+                        "file_id": "largest",
+                        "file_path": "photos/file 1.png",
+                    },
+                },
+            )
+        if request.url.path == "/proxy/file/bottest-token/photos/file 1.png":
+            return httpx.Response(200, content=PNG, headers={"content-type": "application/pdf"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(
+            middleware=middleware,
+            http_client=client,
+            api_base="https://telegram.example/proxy",
+            media_dir=tmp_path / "media",
+        )
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "caption": "describe this",
+                    "photo": [{"file_id": "largest", "width": 1920, "height": 1080}],
+                }
+            }
+        )
+
+    assert [request.method for request in requests] == ["POST", "GET"]
+    assert all(request.url.host == "telegram.example" for request in requests)
+    assert requests[1].headers["Accept-Encoding"] == "identity"
+    assert len(middleware.messages) == 1
+    inbound = middleware.messages[0]
+    assert inbound.text == "describe this"
+    assert inbound.input_error is None
+    assert len(inbound.attachments) == 1
+    assert inbound.attachments[0].content_type == "image/png"
+    assert inbound.attachments[0].size_bytes == len(PNG)
+    assert Path(inbound.attachments[0].local_path).is_absolute()
+    assert Path(inbound.attachments[0].local_path).read_bytes() == PNG
+
+
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "/tmp/image.png",
+        r"C:\\tmp\\image.png",
+        "../image.png",
+        "%2e%2e/image.png",
+        "https://attacker.invalid/image.png",
+        "photos\\image.png",
+    ],
+)
+@pytest.mark.asyncio
+async def test_telegram_rejects_non_relative_getfile_paths_before_download(
+    tmp_path: Path,
+    file_path: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"file_path": file_path}},
+        )
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(middleware=middleware, http_client=client, media_dir=tmp_path)
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "photo": [{"file_id": "image", "width": 100, "height": 100}],
+                }
+            }
+        )
+
+    assert [request.method for request in requests] == ["POST"]
+    assert middleware.messages[0].input_error == IMAGE_DOWNLOAD_FAILED
+    assert middleware.messages[0].attachments == ()
+
+
+@pytest.mark.asyncio
+async def test_telegram_media_download_does_not_follow_redirects_with_bot_token(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"file_path": "photos/image.png"}},
+            )
+        return httpx.Response(302, headers={"location": "https://attacker.invalid/stolen"})
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(middleware=middleware, http_client=client, media_dir=tmp_path)
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "photo": [{"file_id": "image", "width": 100, "height": 100}],
+                }
+            }
+        )
+
+    assert len(requests) == 2
+    assert all(request.url.host == "api.telegram.org" for request in requests)
+    assert middleware.messages[0].input_error == IMAGE_DOWNLOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_telegram_rejects_http_content_encoding_before_decoding(
+    tmp_path: Path,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"file_path": "photos/image.png"}},
+            )
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            content=PNG,
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(middleware=middleware, http_client=client, media_dir=tmp_path)
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "photo": [{"file_id": "image", "width": 100, "height": 100}],
+                }
+            }
+        )
+
+    assert middleware.messages[0].input_error == IMAGE_DOWNLOAD_FAILED
+    assert middleware.messages[0].attachments == ()
+
+
+@pytest.mark.asyncio
+async def test_telegram_access_policy_runs_before_getfile(tmp_path: Path) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("blocked image must not access Telegram media APIs")
+
+    middleware = _PreparingMiddleware()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(
+            middleware=middleware,
+            http_client=client,
+            media_dir=tmp_path,
+            access_policy=ChannelAccessPolicy(allowed_user_ids=frozenset({"owner"})),
+        )
+        await adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 10,
+                    "from": {"id": 42, "is_bot": False},
+                    "chat": {"id": 42, "type": "private"},
+                    "photo": [{"file_id": "image", "width": 100, "height": 100}],
+                }
+            }
+        )
+
+    assert middleware.messages == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_stable_update_is_deduplicated_before_second_download(
+    tmp_path: Path,
+) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    class Service:
+        def __init__(self) -> None:
+            self.store = ConversationStore(state_path=tmp_path / "state.json", clock=lambda: 1.0)
+            self.messages: list[InboundMessage] = []
+
+        async def handle_inbound(self, inbound: InboundMessage) -> list[OutboundMessage]:
+            self.messages.append(inbound)
+            return []
+
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"file_path": "photos/image.png"}},
+            )
+        return httpx.Response(200, content=PNG)
+
+    service = Service()
+    update = {
+        "message": {
+            "message_id": 10,
+            "from": {"id": 42, "is_bot": False},
+            "chat": {"id": 42, "type": "private"},
+            "caption": "describe this",
+            "photo": [{"file_id": "image", "width": 100, "height": 100}],
+        }
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(
+            middleware=UnifiedChannelMiddleware(service=service),
+            http_client=client,
+            media_dir=tmp_path / "media",
+        )
+        await adapter.handle_update(update)
+        await adapter.handle_update(update)
+
+    assert [request.method for request in requests] == ["POST", "GET"]
+    assert len(service.messages) == 1
+    assert len(service.messages[0].attachments) == 1
 
 
 @pytest.mark.asyncio
@@ -215,6 +658,40 @@ async def test_telegram_start_requires_a_token() -> None:
 
     with pytest.raises(RuntimeError, match="requires IMCODEX_TELEGRAM_BOT_TOKEN"):
         await adapter.start()
+
+
+@pytest.mark.asyncio
+async def test_telegram_starts_and_stops_media_materializer() -> None:
+    class Materializer:
+        def __init__(self) -> None:
+            self.started = 0
+            self.stopped = 0
+
+        async def start(self) -> None:
+            self.started += 1
+
+        async def stop(self) -> None:
+            self.stopped += 1
+
+    materializer = Materializer()
+    runner_started = asyncio.Event()
+    runner_blocked = asyncio.Event()
+    adapter = _adapter(
+        http_client=object(),
+        media_materializer=materializer,  # type: ignore[arg-type]
+    )
+
+    async def idle_runner() -> None:
+        runner_started.set()
+        await runner_blocked.wait()
+
+    adapter._run_forever = idle_runner  # type: ignore[method-assign]
+    await adapter.start()
+    await asyncio.wait_for(runner_started.wait(), timeout=1)
+    await adapter.stop()
+
+    assert materializer.started == 1
+    assert materializer.stopped == 1
 
 
 def test_telegram_startup_configuration_normalizes_api_base() -> None:

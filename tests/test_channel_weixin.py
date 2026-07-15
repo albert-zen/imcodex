@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from imcodex.channels import ChannelAccessPolicy, WeixinChannelAdapter
+from imcodex.channels.media import MaterializedImage, MediaResult
 from imcodex.channels.weixin_ilink import ILinkError
 from imcodex.channels.weixin_state import (
     WeixinCredentials,
@@ -13,6 +14,22 @@ from imcodex.channels.weixin_state import (
     WeixinTransportState,
 )
 from imcodex.models import InboundMessage, OutboundMessage
+
+
+def _image_item(
+    query_param: str = "image-ticket",
+    *,
+    aes_key: str = "AAECAwQFBgcICQoLDA0ODw==",
+) -> dict:
+    return {
+        "type": 2,
+        "image_item": {
+            "media": {
+                "encrypt_query_param": query_param,
+                "aes_key": aes_key,
+            }
+        },
+    }
 
 
 def _raw_message(
@@ -67,6 +84,26 @@ class FakeTransport:
         return "out-1"
 
 
+class FakeMediaMaterializer:
+    def __init__(self, result: MediaResult | None = None) -> None:
+        self.result = result or MediaResult()
+        self.start_calls = 0
+        self.stop_calls = 0
+        self.materialize_calls = 0
+        self.references = ()
+
+    async def start(self) -> None:
+        self.start_calls += 1
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+
+    async def materialize(self, references) -> MediaResult:
+        self.materialize_calls += 1
+        self.references = references
+        return self.result
+
+
 def _credentials() -> WeixinCredentials:
     return WeixinCredentials(
         account_id="bot@im.bot",
@@ -95,13 +132,22 @@ def _adapter(tmp_path: Path, **kwargs) -> WeixinChannelAdapter:
     )
 
 
-def test_weixin_normalizes_text_only_direct_messages(tmp_path: Path) -> None:
+def test_weixin_normalizes_text_pure_image_and_captioned_images(tmp_path: Path) -> None:
     adapter = _adapter(tmp_path)
 
     inbound = adapter.parse_inbound_message(_raw_message())
     bot_message = {**_raw_message(), "message_type": 2}
     group_message = {**_raw_message(), "group_id": "group-1"}
-    image_message = {**_raw_message(), "item_list": [{"type": 2}]}
+    image_message = {**_raw_message(), "item_list": [_image_item("secret-ticket-1")]}
+    captioned_message = {
+        **_raw_message(text="describe these"),
+        "item_list": [
+            {"type": 1, "text_item": {"text": "describe these"}},
+            _image_item("secret-ticket-1"),
+            _image_item("secret-ticket-2"),
+        ],
+    }
+    voice_message = {**_raw_message(), "item_list": [{"type": 3}]}
     malformed_message = {**_raw_message(), "message_type": "invalid"}
 
     assert inbound == InboundMessage(
@@ -113,8 +159,24 @@ def test_weixin_normalizes_text_only_direct_messages(tmp_path: Path) -> None:
     )
     assert adapter.parse_inbound_message(bot_message) is None
     assert adapter.parse_inbound_message(group_message) is None
-    assert adapter.parse_inbound_message(image_message) is None
+    pure_image = adapter.parse_inbound_message(image_message)
+    assert pure_image is not None and pure_image.text == ""
+    parsed_captioned = adapter._parse_inbound_message(captioned_message)
+    assert parsed_captioned is not None
+    captioned, references = parsed_captioned
+    assert captioned.text == "describe these"
+    assert len(references) == 2
+    assert "secret-ticket" not in repr(references)
+    assert adapter.parse_inbound_message(voice_message) is None
     assert adapter.parse_inbound_message(malformed_message) is None
+
+    too_many = {
+        **_raw_message(text=""),
+        "item_list": [_image_item(f"ticket-{index}") for index in range(6)],
+    }
+    parsed_too_many = adapter._parse_inbound_message(too_many)
+    assert parsed_too_many is not None
+    assert len(parsed_too_many[1]) == 5
 
 
 @pytest.mark.asyncio
@@ -131,6 +193,133 @@ async def test_weixin_does_not_persist_context_for_unauthorized_sender(
     )
 
     assert "intruder@im.wechat" not in adapter._state.context_tokens
+
+
+@pytest.mark.asyncio
+async def test_weixin_materializes_images_lazily_after_access_check(
+    tmp_path: Path,
+) -> None:
+    class PreparingMiddleware:
+        def __init__(self) -> None:
+            self.messages: list[InboundMessage] = []
+            self.pending_attachment_count = 0
+
+        async def handle_inbound(
+            self,
+            _adapter,
+            inbound,
+            *,
+            reply_to_message_id=None,
+            prepare_inbound=None,
+            pending_attachment_count=0,
+        ) -> None:
+            self.pending_attachment_count = pending_attachment_count
+            if prepare_inbound is not None:
+                inbound = await prepare_inbound(inbound)
+            self.messages.append(inbound)
+
+    staged_path = str((tmp_path / "staged.png").absolute())
+    materializer = FakeMediaMaterializer(
+        MediaResult(
+            images=(
+                MaterializedImage(
+                    content_type="image/png",
+                    local_path=staged_path,
+                    size_bytes=68,
+                ),
+            )
+        )
+    )
+    middleware = PreparingMiddleware()
+    adapter = _adapter(
+        tmp_path,
+        middleware=middleware,
+        media_materializer=materializer,
+    )
+
+    await adapter.handle_raw_message(
+        {
+            **_raw_message(text=""),
+            "item_list": [_image_item("private-ticket")],
+        }
+    )
+
+    assert materializer.materialize_calls == 1
+    assert middleware.pending_attachment_count == 1
+    assert middleware.messages[0].text == ""
+    assert middleware.messages[0].attachments[0].local_path == staged_path
+    assert adapter._state.context_tokens == {"owner@im.wechat": "context-secret"}
+    assert "private-ticket" not in repr(materializer.references)
+
+
+@pytest.mark.asyncio
+async def test_weixin_rejects_image_sender_before_materialization(tmp_path: Path) -> None:
+    materializer = FakeMediaMaterializer()
+    adapter = _adapter(
+        tmp_path,
+        media_materializer=materializer,
+        access_policy=ChannelAccessPolicy(
+            allowed_user_ids=frozenset({"owner@im.wechat"})
+        ),
+    )
+
+    await adapter.handle_raw_message(
+        {
+            **_raw_message(user_id="intruder@im.wechat", text=""),
+            "item_list": [_image_item("blocked-ticket")],
+        }
+    )
+
+    assert materializer.materialize_calls == 0
+    assert "intruder@im.wechat" not in adapter._state.context_tokens
+
+
+@pytest.mark.asyncio
+async def test_weixin_duplicate_image_is_dropped_before_materialization(
+    tmp_path: Path,
+) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+    from imcodex.store import ConversationStore
+
+    class Service:
+        def __init__(self) -> None:
+            self.store = ConversationStore(
+                state_path=tmp_path / "conversation-state.json",
+                clock=lambda: 1.0,
+            )
+            self.calls = 0
+
+        async def handle_inbound(self, _inbound):
+            self.calls += 1
+            return []
+
+    materializer = FakeMediaMaterializer(
+        MediaResult(
+            images=(
+                MaterializedImage(
+                    content_type="image/png",
+                    local_path=str((tmp_path / "staged.png").absolute()),
+                    size_bytes=68,
+                ),
+            )
+        )
+    )
+    service = Service()
+    adapter = _adapter(
+        tmp_path,
+        middleware=UnifiedChannelMiddleware(service=service),
+        media_materializer=materializer,
+    )
+    payload = {
+        **_raw_message(text=""),
+        "item_list": [_image_item("replayed-ticket")],
+    }
+
+    await adapter.handle_raw_message(payload)
+    await adapter.handle_raw_message(payload)
+
+    assert materializer.materialize_calls == 1
+    assert service.calls == 1
 
 
 @pytest.mark.asyncio
@@ -173,9 +362,11 @@ async def test_weixin_start_defaults_access_to_qr_login_owner_and_stops_cleanly(
     tmp_path: Path,
 ) -> None:
     transport = FakeTransport()
+    materializer = FakeMediaMaterializer()
     adapter = _adapter(
         tmp_path,
         transport=transport,
+        media_materializer=materializer,
         access_policy=ChannelAccessPolicy(
             allowed_user_ids=frozenset(),
             allowed_conversation_ids=frozenset({"user:owner@im.wechat"}),
@@ -198,6 +389,8 @@ async def test_weixin_start_defaults_access_to_qr_login_owner_and_stops_cleanly(
     assert transport.notify_start_calls == 1
     assert transport.notify_stop_calls == 1
     assert transport.close_calls == 1
+    assert materializer.start_calls == 1
+    assert materializer.stop_calls == 1
 
 
 @pytest.mark.asyncio

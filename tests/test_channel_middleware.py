@@ -316,6 +316,83 @@ async def test_channel_middleware_materializes_lazily_after_dedup_and_not_on_rep
 
 
 @pytest.mark.asyncio
+async def test_channel_middleware_finalizes_duplicate_resources_before_delivery(
+    tmp_path,
+) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    service = StubService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="Done",
+            )
+        ]
+    )
+    service.store = ConversationStore(
+        state_path=tmp_path / "state.json",
+        clock=lambda: 1.0,
+    )
+    middleware = UnifiedChannelMiddleware(service=service)
+
+    def inbound() -> InboundMessage:
+        return InboundMessage(
+            channel_id="qq",
+            conversation_id="c2c:user-1",
+            user_id="user-1",
+            message_id="msg-image-1",
+            text="describe this",
+        )
+
+    async def prepare(message: InboundMessage) -> InboundMessage:
+        message.attachments = (
+            InboundAttachment("image", "image/png", "/private/image.png", 123),
+        )
+        return message
+
+    await middleware.handle_inbound(
+        CapturingAdapter(),
+        inbound(),
+        prepare_inbound=prepare,
+        pending_attachment_count=1,
+    )
+
+    class BlockingAdapter(CapturingAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.delivery_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.delivery_started.set()
+            await self.release.wait()
+            await super().send_message(message)
+
+    adapter = BlockingAdapter()
+    finalized = asyncio.Event()
+
+    async def finalize() -> None:
+        finalized.set()
+
+    task = asyncio.create_task(
+        middleware.handle_inbound(
+            adapter,
+            inbound(),
+            prepare_inbound=prepare,
+            finalize_inbound=finalize,
+            pending_attachment_count=1,
+        )
+    )
+    await asyncio.wait_for(adapter.delivery_started.wait(), timeout=1)
+
+    assert finalized.is_set()
+    adapter.release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_channel_middleware_preflight_rejection_skips_lazy_materialization() -> None:
     from imcodex.channels.middleware import UnifiedChannelMiddleware
 

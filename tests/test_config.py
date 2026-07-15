@@ -135,6 +135,7 @@ def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
     assert config["require_mention"] is False
     assert config["poll_timeout_s"] == 20
     assert config["state_dir"] == Path(".imcodex/channels/telegram")
+    assert config["media_dir"] == Path(".imcodex/channels/telegram/inbound-media")
 
 
 def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_path) -> None:
@@ -157,6 +158,7 @@ def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_
     assert config["allowed_user_ids"] == "ou_owner"
     assert config["access_match"] == "any"
     assert config["startup_timeout_s"] == 12.5
+    assert config["media_dir"] == Path(".imcodex/channels/feishu/inbound-media")
 
 
 def test_settings_uses_lark_aliases_when_feishu_environment_values_are_blank(
@@ -209,6 +211,7 @@ def test_settings_reads_weixin_channel_config(monkeypatch, tmp_path) -> None:
     config = settings.channel_configs()["weixin"]
     assert config["enabled"] is True
     assert config["state_dir"] == Path(".weixin-state")
+    assert config["media_dir"] == Path(".weixin-state/inbound-media")
     assert config["allowed_user_ids"] == "owner@im.wechat"
     assert config["access_match"] == "any"
     assert config["poll_timeout_ms"] == 25000

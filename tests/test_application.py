@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from imcodex.application import create_application
+from imcodex.channels.api import create_app as create_channel_app
 from imcodex.config import Settings
 from imcodex.models import OutboundMessage
 
@@ -119,3 +121,100 @@ def test_application_graceful_shutdown_is_loopback_and_instance_bound() -> None:
     assert accepted.json() == {"status": "shutting_down"}
     assert remote.status_code == 403
     assert shutdowns == ["requested"]
+
+
+def test_application_custom_lifespan_starts_and_stops_webhook_media_once(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class Materializer:
+        async def start(self) -> None:
+            events.append("media.start")
+
+        async def stop(self) -> None:
+            events.append("media.stop")
+
+    class Runtime:
+        service = _Service()
+
+        async def start(self) -> None:
+            events.append("runtime.start")
+
+        async def stop(self) -> None:
+            events.append("runtime.stop")
+
+    materializer = Materializer()
+
+    def create_with_materializer(service, **kwargs):
+        return create_channel_app(
+            service,
+            **kwargs,
+            media_materializer=materializer,
+        )
+
+    monkeypatch.setattr("imcodex.application.create_app", create_with_materializer)
+    settings = SimpleNamespace(
+        inbound_webhook_token="",
+        debug_api_enabled=False,
+        data_dir=tmp_path,
+    )
+    app = create_application(settings=settings, runtime=Runtime())
+
+    with TestClient(app):
+        assert events == ["media.start", "runtime.start"]
+
+    assert events == [
+        "media.start",
+        "runtime.start",
+        "runtime.stop",
+        "media.stop",
+    ]
+
+
+def test_application_stops_webhook_media_when_runtime_start_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class Materializer:
+        async def start(self) -> None:
+            events.append("media.start")
+
+        async def stop(self) -> None:
+            events.append("media.stop")
+
+    class FailingRuntime:
+        service = _Service()
+
+        async def start(self) -> None:
+            events.append("runtime.start")
+            raise RuntimeError("startup failed")
+
+        async def stop(self) -> None:
+            events.append("runtime.stop")
+
+    materializer = Materializer()
+
+    def create_with_materializer(service, **kwargs):
+        return create_channel_app(
+            service,
+            **kwargs,
+            media_materializer=materializer,
+        )
+
+    monkeypatch.setattr("imcodex.application.create_app", create_with_materializer)
+    settings = SimpleNamespace(
+        inbound_webhook_token="",
+        debug_api_enabled=False,
+        data_dir=tmp_path,
+    )
+    app = create_application(settings=settings, runtime=FailingRuntime())
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        with TestClient(app):
+            pass
+
+    assert events == ["media.start", "runtime.start", "media.stop"]

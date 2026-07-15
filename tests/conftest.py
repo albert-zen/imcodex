@@ -46,4 +46,8 @@ def tmp_path() -> Path:
             elif child.is_dir():
                 child.rmdir()
         path.rmdir()
-
+        # The shared media quota lock intentionally lives beside the spool so
+        # it remains available while the spool directory is replaced. Test
+        # cases use a unique tmp_path parent, so remove their sibling locks too.
+        for lock_path in path.parent.glob(f".{path.name}*.imcodex-spool.lock"):
+            lock_path.unlink(missing_ok=True)

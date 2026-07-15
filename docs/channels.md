@@ -9,11 +9,11 @@ native to Codex.
 
 | Channel | Public callback needed | Conversation scope | Initial capability |
 | --- | --- | --- | --- |
-| QQ | No | Private and group `@bot` | Text, JPEG/PNG/WebP images |
-| Telegram | No | Private, group, forum topic | Text |
-| Feishu / Lark | No | Private, group, topic | Text |
-| Weixin iLink | No | Direct only | Text, experimental |
-| Generic webhook | Only for remote gateways | Caller-defined | Trusted text injection |
+| QQ | No | Private and group `@bot` | Text and JPEG/PNG/WebP images |
+| Telegram | No | Private, group, forum topic | Text and JPEG/PNG/WebP images |
+| Feishu / Lark | No | Private, group, topic | Text and JPEG/PNG/WebP images |
+| Weixin iLink | No | Direct only | Text and JPEG/PNG/WebP images, experimental |
+| Generic webhook | Only for remote gateways | Caller-defined | Trusted text and image injection |
 
 Telegram and Weixin use HTTPS long polling. QQ and Feishu use websocket
 connections. All of them make outbound connections from the machine running
@@ -104,6 +104,64 @@ use commands such as `/cwd`, `/config`, and `/native` and can reach the native
 threads visible to this Codex account. Narrow the platform scope in advanced
 settings when that exposure is not appropriate.
 
+## Shared Image Input
+
+Every built-in channel and the generic webhook feed images through the same
+native-first pipeline. There is no image feature switch, image access mode, or
+separate bridge-owned vision model. Each transport only retrieves its own
+platform bytes; the shared layer then validates and stages them before the App
+Server receives native Codex `localImage` inputs.
+
+The common contract is:
+
+- static JPEG, PNG, and WebP are accepted only after a maintained image decoder
+  verifies and fully loads the downloaded structure
+- a message may contain only images, or text plus images
+- one platform message may contain at most four images
+- each image may be at most 10 MiB and 40 decoded megapixels
+- a message that exceeds a limit is rejected as a whole; images are never
+  silently truncated or dropped
+- access restrictions, topology preflight, and stable-message dedup run before
+  built-in platform downloads or any managed-spool work
+
+The private spool normally lives under `IMCODEX_DATA_DIR` at
+`channels/<channel>/inbound-media`; a custom Weixin state directory carries the
+same `inbound-media` child. Each channel spool is bounded to 512 MiB;
+at most 16,384 directory entries are accepted before new media fails closed;
+files expire after 24 hours and are swept at startup, before a new media batch,
+and hourly while the channel is running. Cleanup, quota accounting, and each
+batch write share a filesystem lock, so overlapping processes cannot each
+consume the same remaining quota. Downloaded bytes remain in a whole-message
+memory buffer bounded by four images at 10 MiB each. One disposable child owns
+the filesystem lock, directory sweep, quota check, private batch write, bounded
+pixel decode, rename, and rollback transaction. The 30-second whole-batch
+deadline can terminate that child without abandoning a filesystem worker or
+releasing its lock early. If termination or rollback cannot be confirmed, that
+materializer retains the worker handle and rejects later image work until the
+service restarts. A truncated JPEG or WebP cannot pass on a matching header,
+and animated images are rejected rather than validating only their first frame.
+Permanent download, decryption, format, and limit failures become concise
+user-visible errors and do not block later messages. A 30-second whole-batch
+deadline prevents a slowly dripping source from occupying a conversation
+indefinitely.
+
+Media preparation is lazy inside the middleware's existing per-conversation
+serialization boundary. A committed stable message replay is resolved from the
+normal dedup/reply record before media I/O; there is no media-specific durable
+queue or second dedup authority.
+
+`localImage` is a filesystem reference. Image input therefore requires the
+bridge and Codex App Server to see the same absolute spool path. imcodex submits
+images only over bridge-child stdio or the normal local Unix-socket target.
+Every TCP App Server target, including loopback, is rejected for image input
+because TCP reachability cannot prove a shared filesystem; text remains usable.
+A containerized Unix-socket deployment must mount the spool at the same
+absolute path.
+
+On POSIX, spool directories and files use `0700` and `0600`. On Windows,
+imcodex installs a protected current-user-only DACL and rejects symlink,
+junction, and other reparse-point spool roots before cleanup.
+
 ## QQ
 
 Create and configure a bot in the
@@ -121,57 +179,16 @@ The adapter consumes `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`.
 Normalized routes are `c2c:<openid>` and `group:<group_openid>`. QQ group
 events are already mention-scoped by the platform.
 
-Inbound images work without an additional switch, image-model setting, user
-list, or group-member list. The same access policy applies to text and images:
-with no optional restrictions configured, any private sender or member of a QQ
+Inbound images use the shared contract without an additional switch. The same
+access policy applies to text and images. With no optional restrictions
+configured, any private sender or member of a QQ
 group that the platform delivers may use the bot, and group images still
 require the platform's `@bot` event. Access is checked before an attachment is
 downloaded.
 
-The P0 image contract is:
-
-- JPEG, PNG, and WebP are accepted only after a maintained image decoder
-  verifies the downloaded structure; matching magic bytes alone is not enough
-- a message may contain only images, or text plus images
-- one message may contain at most four images
-- each downloaded image may be at most 10 MiB
-- each image may contain at most 40 megapixels before decode
-- limits reject the affected message explicitly; images are never silently
-  truncated or dropped
-
-QQ attachment URLs are transport data, not Codex input. The adapter downloads
-accepted images outside the gateway socket reader, stages them in a private,
-bounded spool, and forwards their local paths through native Codex
-`localImage` inputs. Spool files expire after 24 hours and the spool has a 512
-MiB total bound. Structural verification includes an actual bounded pixel
-decode, so a truncated JPEG/WebP payload cannot pass on its header alone.
-Expired files are swept at startup, before a new media batch,
-and hourly while QQ is running, so physical deletion can lag expiry by at most
-one cleanup interval while the channel is idle. If the adapter cannot validate
-or download an image, or cannot safely stay within those bounds, it replies
-with a concise error instead of silently ignoring the message or blocking later
-QQ messages. A whole-batch deadline also prevents a slowly dripping media
-response from occupying the inbound worker indefinitely.
-
-Media preparation is lazy and runs inside the middleware's per-conversation
-serialization boundary. A committed stable QQ `message_id` replay is resolved
-from the existing dedup/reply record before any attachment network or spool
-work. Likewise, onboarding and a known incompatible App Server topology are
-preflighted before download rather than staging a file that cannot be submitted.
-
-`localImage` is a filesystem reference. This P0 path therefore requires the
-bridge and Codex App Server to run in the same filesystem namespace. imcodex
-only submits these paths over bridge-child stdio or the normal local Unix-socket
-target. Every TCP App Server target, including `ws://127.0.0.1`, is rejected for
-image input because loopback can still be an SSH tunnel, WSL, or a container
-boundary; text remains usable. A containerized Unix-socket deployment is valid
-only when it mounts the media spool at the same absolute path as the bridge.
-The Unix transport is the product's local-daemon assumption, not a protocol
-proof of mount-namespace identity.
-
-On POSIX, the spool directory and files are restricted to `0700` and `0600`.
-On Windows, imcodex installs a protected current-user-only DACL and rejects
-symlink, junction, and other reparse-point spool roots before cleanup.
+QQ attachment URLs remain transport data, never Codex input. The adapter
+accepts only HTTPS URLs on the documented Tencent media host families, refuses
+redirects, and never records signed URLs in normal diagnostics.
 
 The production API base is shown above. Use the sandbox base only for an app
 that is actually configured in the QQ sandbox:
@@ -216,6 +233,21 @@ Different forum topics therefore never share one Codex thread accidentally.
 Group messages must mention the bot, reply to it, or be a bot command when
 `IMCODEX_TELEGRAM_REQUIRE_MENTION=1`.
 
+Private chats accept a Bot API `photo` or an image `document`, with or without
+a caption. In groups, a caption may mention the bot; a captionless image must
+reply to a bot message when mention enforcement is enabled. `photo` contains
+several sizes of the same image, so imcodex selects the largest pixel area and
+downloads it through `getFile`. Declared document MIME, filename, dimensions,
+and size are candidate hints only; the shared byte and decoder checks remain
+authoritative. A Telegram media album arrives as several stable messages, so
+each item enters the normal middleware independently; imcodex does not add a
+local album buffer.
+
+Bot tokens appear in Telegram's API and file-download URL paths. The adapter
+keeps downloads on the configured Bot API origin, rejects absolute, traversal,
+query-bearing, and redirected `file_path` values, and never places a token,
+`file_id`, or download URL in normal events.
+
 Telegram responses are sent as plain text in chunks of at most 4,000
 characters. Polling rate limits honor the platform's `retry_after` value and
 connection failures use bounded exponential backoff. Outbound `sendMessage`
@@ -258,7 +290,7 @@ The adapter uses the official
 [`lark-channel-sdk`](https://github.com/larksuite/channel-sdk-python), whose
 background lifecycle supports readiness, disconnect, and reconnect. SDK
 message batching and per-chat agent queues are disabled: imcodex receives each
-normalized text message and remains the only bridge layer. imcodex enables the
+normalized message and remains the only bridge layer. imcodex enables the
 SDK's strict websocket security, bounds websocket fragments and handler
 concurrency, then feeds admitted messages through its own bounded FIFO worker.
 This keeps callbacks fast while preventing two messages from racing the same
@@ -267,10 +299,26 @@ bridge state.
 Routes are `chat:<chat_id>` and `chat:<chat_id>:thread:<thread_id>`. Group and
 topic messages require a bot mention by default.
 
+The official Channel SDK exposes normalized image resource descriptors.
+imcodex accepts direct-message images and rich-text posts with inline images,
+then calls the message-resource API with the stable `message_id` and
+`file_key`; it does not create a second SDK media cache. Duplicate descriptors
+in a rich post are collapsed before the shared four-image limit. Tenant-token
+refresh uses the official HTTP endpoint through a cancellable 10-second async
+path and caches the result only until its refresh window.
+
+A pure group image has no place to carry a Feishu `@bot` mention. With the
+default mention requirement, use a rich-text post containing both the mention
+and image. Pure group images require both
+`IMCODEX_FEISHU_REQUIRE_MENTION=0` and the platform permission to receive all
+group messages; imcodex does not silently weaken either platform or local
+admission policy.
+
 ## Personal Weixin (Experimental)
 
-The Weixin adapter is text-only and direct-message-only. It requires an iLink
-QR login and may not be available to every account or deployment.
+The Weixin adapter is direct-message-only and accepts text and images. It
+requires an iLink QR login and may not be available to every account or
+deployment.
 
 Leave the adapter disabled while logging in:
 
@@ -318,6 +366,14 @@ commands print the same restart reminder. If a state file is corrupt or has
 unsafe POSIX permissions, startup fails explicitly instead of resetting the
 cursor and risking command replay; use logout plus a fresh login to reset it.
 
+Inbound `type=2` image items contain a signed Tencent CDN locator and may also
+contain an AES key. The adapter follows Tencent's published iLink flow: it
+downloads only from an HTTPS `weixin.qq.com` host without redirects or bot
+Bearer credentials, decrypts AES-128-ECB/PKCS7 media when a key is present,
+then passes plaintext bytes to the shared validator. Signed query parameters,
+AES keys, context tokens, and local paths never enter normal events. Image-only
+messages still update the sender's required `context_token` before dispatch.
+
 Remove local credentials and protocol state with:
 
 ```powershell
@@ -327,8 +383,8 @@ python -m imcodex channels logout weixin
 Stop or restart an already running bridge after logout, because that process
 may still hold the old credential in memory until shutdown.
 
-Media, groups, proactive directory lookup, and local-file delivery are not in
-this first version. In particular, imcodex does not let agent output name an
+Groups, proactive directory lookup, and outbound local-file delivery are not
+in this version. In particular, imcodex does not let agent output name an
 arbitrary local path and exfiltrate that file through Weixin.
 
 ## Generic Inbound Webhook
@@ -340,25 +396,69 @@ transport:
 POST /api/channels/webhook/inbound
 ```
 
-Without a configured token it accepts loopback clients only. Remote gateways
-must set:
+Without a configured token it accepts loopback clients only. Loopback JSON
+requests need no extra credential, while loopback multipart requests must send
+the explicit `X-IMCodex-Webhook: 1` header. Because browser forms cannot set
+that non-simple header, a page from another origin cannot silently upload to
+the local bridge. Tokenless requests carrying a browser `Origin` are rejected.
+Remote gateways and browser-origin callers must set:
 
 ```env
 IMCODEX_INBOUND_WEBHOOK_TOKEN=<long-random-token>
 ```
 
-and send:
+and send either JSON text or multipart text-and-image input:
 
 ```http
 Authorization: Bearer <long-random-token>
 Content-Type: application/json
 ```
 
+For images, repeat the `images` file field and send routing values as multipart
+form fields:
+
+```bash
+curl -X POST https://bridge.example/api/channels/webhook/inbound \
+  -H "Authorization: Bearer $IMCODEX_INBOUND_WEBHOOK_TOKEN" \
+  -F channel_id=wecom-gateway \
+  -F conversation_id=conv-1 \
+  -F user_id=u1 \
+  -F message_id=m1 \
+  -F text='describe these' \
+  -F images=@first.png \
+  -F images=@second.jpg
+```
+
+For a local call without a configured Bearer token, use the same multipart
+fields against loopback and replace the authorization line with:
+
+```bash
+-H "X-IMCodex-Webhook: 1"
+```
+
+The caller uploads bytes; it cannot submit `local_path`, `attachments`, or
+`input_error`. Authentication and the streaming body bound run before form
+parsing. JSON bodies remain limited to 64 KiB. Multipart bodies are limited to
+41 MiB total, form text to 32 KiB, and image files then pass through the same
+per-image count, byte, format, pixel, and spool checks as built-in channels.
+Stable-message dedup occurs before an authenticated upload is copied into the
+managed spool. At most two multipart requests parse and retain their
+temporary form files concurrently in one bridge process. Once an upload is
+copied into the managed spool—or dedup/preflight decides no copy is needed—the
+form is closed and its slot is released before downstream Codex handling or
+delivery. Capacity wait, multipart parsing, conversation-queue wait, staging,
+and form close share a 30-second retention deadline and return HTTP 408 when
+exceeded, so slow uploads or a busy conversation cannot retain both parser
+slots indefinitely. If an operating-system-backed temporary-file close itself
+does not finish within a short post-timeout grace period, parser capacity is
+still released and the app retains the cleanup task until it completes or the
+process exits; the stuck close cannot delay HTTP 408 or new ingress.
+This bounds aggregate parser spooling without changing the JSON path.
+
 Use TLS at the reverse proxy; the built-in HTTP server does not terminate TLS.
 The webhook caller is a trusted adapter and chooses `channel_id`, stable sender
-ID, conversation ID, and message ID. Authentication runs before JSON parsing,
-and the endpoint rejects bodies over 64 KiB and text over 32 KiB. Generic
-callers cannot claim the reserved `qq`, `telegram`, `feishu`, or `weixin`
+ID, conversation ID, and message ID. Generic callers cannot claim the reserved
+`qq`, `telegram`, `feishu`, or `weixin`
 channel IDs; choose a dedicated namespace such as `wecom-gateway`. The bridge
 persists the most recent 1,024 committed `message_id` values per conversation
 and drops retries in that bounded window. A gateway must retain its own
@@ -425,10 +525,10 @@ even when `IMCODEX_LOG_LEVEL=DEBUG`, preventing Bot API URLs and websocket auth
 frames from entering bridge logs. Do not paste credential files into issue
 reports.
 
-QQ image diagnostics record only bounded operational metadata such as attachment
+Image diagnostics record only bounded operational metadata such as attachment
 count, validated media type, byte count, processing stage, and error class. They
 do not record image content, signed attachment URLs, original filenames, or
-staged local paths. A single media failure does not make a connected QQ channel
+staged local paths. A single media failure does not make a connected channel
 unhealthy.
 
 ## Windows Notes
@@ -439,8 +539,8 @@ unhealthy.
   extras expression intact.
 - Run `python -m imcodex channels doctor` from the same environment used by
   `scripts\start.cmd`.
-- The normal detached Windows App Server uses loopback TCP, so QQ image input is
-  intentionally unavailable in this P0; text remains available. A future
+- The normal detached Windows App Server uses loopback TCP, so image input is
+  intentionally unavailable there; text remains available. A future
   explicit media-transfer/topology capability can remove this conservative
   boundary without guessing from `localhost`.
 - Put token files and `IMCODEX_DATA_DIR` under the intended Windows user's

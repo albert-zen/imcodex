@@ -1,18 +1,35 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 import json
+from pathlib import Path
+import tempfile
 
 import pytest
 import httpx
 from fastapi.testclient import TestClient
+from PIL import Image
+from starlette.datastructures import FormData
 
 from imcodex.channels import ChannelAccessPolicy, QQChannelAdapter, create_app
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.channels.qq import OP_DISPATCH, OP_HELLO, RECONNECT_MAX_DELAY_S
-from imcodex.channels.api import _InboundWebhookGuard
+from imcodex.channels.api import (
+    MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS,
+    _InboundWebhookGuard,
+)
 from imcodex.models import InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
+
+
+def _png() -> bytes:
+    stream = BytesIO()
+    Image.new("RGB", (2, 2), (20, 40, 60)).save(stream, format="PNG")
+    return stream.getvalue()
+
+
+PNG = _png()
 
 
 class StubService:
@@ -63,6 +80,174 @@ def test_webhook_inbound_returns_messages() -> None:
     assert response.json()["messages"][0]["message_type"] == "accepted"
 
 
+def test_webhook_multipart_image_uses_shared_staging_pipeline(tmp_path: Path) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    service = CountingService(store)
+    media_dir = tmp_path / "inbound-media"
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=media_dir,
+        )
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "image-1",
+        },
+        files={"images": ("sender-name.exe", PNG, "application/octet-stream")},
+    )
+
+    assert response.status_code == 200
+    assert len(service.calls) == 1
+    inbound = service.calls[0]
+    assert inbound.text == ""
+    assert inbound.input_error is None
+    assert len(inbound.attachments) == 1
+    attachment = inbound.attachments[0]
+    assert attachment.kind == "image"
+    assert attachment.content_type == "image/png"
+    assert attachment.size_bytes == len(PNG)
+    path = Path(attachment.local_path)
+    assert path.parent == media_dir.absolute()
+    assert path.suffix == ".png"
+    assert path.read_bytes() == PNG
+
+
+def test_webhook_multipart_rejects_internal_path_fields(tmp_path: Path) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    service = CountingService(store)
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=tmp_path / "media",
+        )
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "image-1",
+            "local_path": "/etc/passwd",
+        },
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 422
+    assert service.calls == []
+    assert not (tmp_path / "media").exists()
+
+
+def test_webhook_duplicate_is_dropped_before_second_image_staging(tmp_path: Path) -> None:
+    store = ConversationStore(state_path=tmp_path / "state.json", clock=lambda: 1.0)
+    service = CountingService(store)
+    media_dir = tmp_path / "media"
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=media_dir,
+        )
+    )
+    data = {
+        "channel_id": "gateway",
+        "conversation_id": "conv-1",
+        "user_id": "u1",
+        "message_id": "image-1",
+    }
+
+    first = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data=data,
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+    second = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data=data,
+        files={"images": ("different.png", b"not-an-image", "image/png")},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(service.calls) == 1
+    assert len(list(media_dir.iterdir())) == 1
+
+
+def test_webhook_multipart_too_many_images_is_a_stable_input_error(tmp_path: Path) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    service = CountingService(store)
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=tmp_path / "media",
+        )
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "image-1",
+        },
+        files=[("images", (f"{index}.png", PNG, "image/png")) for index in range(5)],
+    )
+
+    assert response.status_code == 200
+    assert service.calls[0].input_error == "too_many_images"
+    assert service.calls[0].attachments == ()
+    assert not (tmp_path / "media").exists()
+
+
+def test_webhook_multipart_rejects_an_oversized_file_during_parsing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("imcodex.channels.api.MAX_IMAGE_BYTES", 32)
+    service = CountingService(ConversationStore(clock=lambda: 1.0))
+    media_dir = tmp_path / "media"
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=media_dir,
+        )
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "image-1",
+        },
+        files={"images": ("image.png", b"x" * 33, "image/png")},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Inbound image file is too large."}
+    assert service.calls == []
+    assert not media_dir.exists()
+
+
 def test_webhook_inbound_rejects_invalid_bearer_token() -> None:
     client = TestClient(create_app(StubService(), inbound_token="webhook-secret"))
 
@@ -95,6 +280,574 @@ def test_webhook_inbound_without_token_is_loopback_only() -> None:
 
     assert remote_client.post("/api/channels/webhook/inbound", json=body).status_code == 403
     assert loopback_client.post("/api/channels/webhook/inbound", json=body).status_code == 200
+
+
+def test_loopback_multipart_requires_explicit_non_simple_header(tmp_path: Path) -> None:
+    service = CountingService(ConversationStore(clock=lambda: 1.0))
+    client = TestClient(
+        create_app(service, media_dir=tmp_path / "media"),
+        client=("127.0.0.1", 50000),
+    )
+    data = {
+        "channel_id": "gateway",
+        "conversation_id": "conv-1",
+        "user_id": "u1",
+        "message_id": "image-1",
+    }
+
+    missing_header = client.post(
+        "/api/channels/webhook/inbound",
+        data=data,
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+    hostile = client.post(
+        "/api/channels/webhook/inbound",
+        headers={
+            "Host": "attacker.example",
+            "Origin": "https://attacker.example",
+            "X-IMCodex-Webhook": "1",
+        },
+        data=data,
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+    local_adapter = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"X-IMCodex-Webhook": "1"},
+        data=data,
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+
+    expected_denial = {
+        "detail": "Loopback multipart requests require X-IMCodex-Webhook: 1."
+    }
+    assert missing_header.status_code == 403
+    assert missing_header.json() == expected_denial
+    assert hostile.status_code == 403
+    assert hostile.json() == {
+        "detail": "Browser-origin webhook requests require IMCODEX_INBOUND_WEBHOOK_TOKEN."
+    }
+    assert local_adapter.status_code == 200
+    assert len(service.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_releases_multipart_capacity_before_downstream_handling(
+    tmp_path: Path,
+) -> None:
+    class BlockingService:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.calls = 0
+            self.at_capacity = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def handle_inbound(self, message):
+            self.active += 1
+            self.calls += 1
+            self.max_active = max(self.max_active, self.active)
+            if self.active == 3:
+                self.at_capacity.set()
+            try:
+                await self.release.wait()
+            finally:
+                self.active -= 1
+            return [
+                OutboundMessage(
+                    channel_id=message.channel_id,
+                    conversation_id=message.conversation_id,
+                    message_type="accepted",
+                    text="Accepted",
+                )
+            ]
+
+    service = BlockingService()
+    app = create_app(
+        service,
+        inbound_token="webhook-secret",
+        media_dir=tmp_path / "media",
+    )
+    transport = httpx.ASGITransport(app=app)
+    headers = {"Authorization": "Bearer webhook-secret"}
+
+    async def submit(index: int):
+        fields = [
+            ("channel_id", (None, "gateway")),
+            ("conversation_id", (None, f"conv-{index}")),
+            ("user_id", (None, "u1")),
+            ("message_id", (None, f"message-{index}")),
+            ("text", (None, "hello")),
+            ("images", (f"image-{index}.png", PNG, "image/png")),
+        ]
+        return await client.post(
+            "/api/channels/webhook/inbound",
+            headers=headers,
+            files=fields,
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        tasks = [asyncio.create_task(submit(index)) for index in range(3)]
+        await asyncio.wait_for(service.at_capacity.wait(), timeout=5.0)
+        await asyncio.sleep(0)
+        assert service.calls == 3
+        service.release.set()
+        responses = await asyncio.gather(*tasks)
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert service.calls == 3
+    assert service.max_active == 3
+
+
+@pytest.mark.asyncio
+async def test_webhook_releases_multipart_capacity_after_preflight_before_sink(
+    tmp_path: Path,
+) -> None:
+    class BlockingSink:
+        def __init__(self) -> None:
+            self.active = 0
+            self.at_capacity = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def send_message(self, _message: OutboundMessage) -> None:
+            self.active += 1
+            if self.active == 3:
+                self.at_capacity.set()
+            try:
+                await self.release.wait()
+            finally:
+                self.active -= 1
+
+    class PreflightService:
+        def __init__(self) -> None:
+            self.store = ConversationStore(clock=lambda: 1.0)
+            self.outbound_sink = BlockingSink()
+
+        def preflight_inbound_attachments(
+            self,
+            inbound: InboundMessage,
+        ) -> list[OutboundMessage]:
+            return [
+                OutboundMessage(
+                    channel_id=inbound.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    message_type="error",
+                    text="Local image paths are unavailable.",
+                )
+            ]
+
+        async def handle_inbound(self, _message: InboundMessage):
+            raise AssertionError("attachment preflight must skip the service")
+
+    service = PreflightService()
+    media_dir = tmp_path / "media"
+    app = create_app(
+        service,
+        inbound_token="webhook-secret",
+        media_dir=media_dir,
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async def submit(index: int):
+        fields = [
+            ("channel_id", (None, "gateway")),
+            ("conversation_id", (None, f"conv-{index}")),
+            ("user_id", (None, "u1")),
+            ("message_id", (None, f"preflight-{index}")),
+            ("images", (f"image-{index}.png", PNG, "image/png")),
+        ]
+        return await client.post(
+            "/api/channels/webhook/inbound",
+            headers={"Authorization": "Bearer webhook-secret"},
+            files=fields,
+        )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        tasks = [asyncio.create_task(submit(index)) for index in range(3)]
+        await asyncio.wait_for(service.outbound_sink.at_capacity.wait(), timeout=5)
+        assert service.outbound_sink.active == 3
+        service.outbound_sink.release.set()
+        responses = await asyncio.gather(*tasks)
+
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert not media_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_webhook_multipart_ingress_timeout_includes_capacity_wait(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S",
+        0.02,
+    )
+    app = create_app(StubService(), inbound_token="webhook-secret")
+    semaphore = app.state.webhook_multipart_semaphore
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        await semaphore.acquire()
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/api/channels/webhook/inbound",
+                headers={"Authorization": "Bearer webhook-secret"},
+                files={"channel_id": (None, "gateway")},
+            )
+    finally:
+        for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+            semaphore.release()
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Inbound multipart upload timed out."}
+
+
+@pytest.mark.asyncio
+async def test_webhook_multipart_retention_timeout_includes_conversation_wait(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S",
+        0.05,
+    )
+
+    class BlockingService(StubService):
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def handle_inbound(self, message: InboundMessage):
+            if message.message_id == "blocking-message":
+                self.started.set()
+                await self.release.wait()
+            return await super().handle_inbound(message)
+
+    service = BlockingService()
+    app = create_app(
+        service,
+        inbound_token="webhook-secret",
+        media_dir=tmp_path / "media",
+    )
+    transport = httpx.ASGITransport(app=app)
+    headers = {"Authorization": "Bearer webhook-secret"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        blocking = asyncio.create_task(
+            client.post(
+                "/api/channels/webhook/inbound",
+                headers=headers,
+                json={
+                    "channel_id": "gateway",
+                    "conversation_id": "same-conversation",
+                    "user_id": "u1",
+                    "message_id": "blocking-message",
+                    "text": "hold",
+                },
+            )
+        )
+        await asyncio.wait_for(service.started.wait(), timeout=1)
+        response = await client.post(
+            "/api/channels/webhook/inbound",
+            headers=headers,
+            data={
+                "channel_id": "gateway",
+                "conversation_id": "same-conversation",
+                "user_id": "u1",
+                "message_id": "waiting-image",
+            },
+            files={"images": ("image.png", PNG, "image/png")},
+        )
+
+        semaphore = app.state.webhook_multipart_semaphore
+        for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+            await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+        for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+            semaphore.release()
+        service.release.set()
+        blocking_response = await asyncio.wait_for(blocking, timeout=1)
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Inbound multipart upload timed out."}
+    assert blocking_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_webhook_timeout_does_not_wait_forever_for_form_close(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S",
+        0.05,
+    )
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_FORM_CLOSE_GRACE_S",
+        0.01,
+    )
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    original_close = FormData.close
+
+    async def blocking_close(self: FormData) -> None:
+        close_started.set()
+        await release_close.wait()
+        await original_close(self)
+
+    monkeypatch.setattr(FormData, "close", blocking_close)
+
+    class PreflightService:
+        def __init__(self) -> None:
+            self.store = ConversationStore(clock=lambda: 1.0)
+
+        def preflight_inbound_attachments(
+            self,
+            inbound: InboundMessage,
+        ) -> list[OutboundMessage]:
+            return [
+                OutboundMessage(
+                    channel_id=inbound.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    message_type="error",
+                    text="Local image paths are unavailable.",
+                )
+            ]
+
+        async def handle_inbound(self, _message: InboundMessage):
+            raise AssertionError("attachment preflight must skip the service")
+
+    app = create_app(
+        PreflightService(),
+        inbound_token="webhook-secret",
+        media_dir=tmp_path / "media",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await asyncio.wait_for(
+            client.post(
+                "/api/channels/webhook/inbound",
+                headers={"Authorization": "Bearer webhook-secret"},
+                data={
+                    "channel_id": "gateway",
+                    "conversation_id": "conv-close",
+                    "user_id": "u1",
+                    "message_id": "image-close",
+                },
+                files={"images": ("image.png", PNG, "image/png")},
+            ),
+            timeout=1,
+        )
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Inbound multipart upload timed out."}
+    assert close_started.is_set()
+    cleanup_tasks = tuple(app.state.webhook_form_cleanup_tasks)
+    assert cleanup_tasks
+    semaphore = app.state.webhook_multipart_semaphore
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        semaphore.release()
+
+    release_close.set()
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=1)
+    await asyncio.sleep(0)
+    assert app.state.webhook_form_cleanup_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_webhook_validation_error_keeps_bounded_form_close_ownership(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S",
+        0.05,
+    )
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_FORM_CLOSE_GRACE_S",
+        0.01,
+    )
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    original_close = FormData.close
+
+    async def blocking_close(self: FormData) -> None:
+        close_started.set()
+        await release_close.wait()
+        await original_close(self)
+
+    monkeypatch.setattr(FormData, "close", blocking_close)
+    app = create_app(
+        StubService(),
+        inbound_token="webhook-secret",
+        media_dir=tmp_path / "media",
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await asyncio.wait_for(
+            client.post(
+                "/api/channels/webhook/inbound",
+                headers={"Authorization": "Bearer webhook-secret"},
+                data={
+                    "channel_id": "gateway",
+                    "conversation_id": "conv-invalid-close",
+                    "user_id": "u1",
+                    "message_id": "invalid-close",
+                    "local_path": "/not/accepted",
+                },
+                files={"images": ("image.png", PNG, "image/png")},
+            ),
+            timeout=1,
+        )
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Inbound multipart upload timed out."}
+    assert close_started.is_set()
+    cleanup_tasks = tuple(app.state.webhook_form_cleanup_tasks)
+    assert cleanup_tasks
+    semaphore = app.state.webhook_multipart_semaphore
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        semaphore.release()
+
+    release_close.set()
+    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=1)
+    await asyncio.sleep(0)
+    assert app.state.webhook_form_cleanup_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_webhook_form_close_error_does_not_mask_validation_response(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    close_calls = 0
+
+    async def failed_close(_form: FormData) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        raise OSError("synthetic close failure")
+
+    monkeypatch.setattr(FormData, "close", failed_close)
+    app = create_app(
+        StubService(),
+        inbound_token="webhook-secret",
+        media_dir=tmp_path / "media",
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/webhook/inbound",
+            headers={"Authorization": "Bearer webhook-secret"},
+            data={
+                "channel_id": "gateway",
+                "conversation_id": "conv-invalid-close-error",
+                "user_id": "u1",
+                "message_id": "invalid-close-error",
+                "local_path": "/not/accepted",
+            },
+            files={"images": ("image.png", PNG, "image/png")},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Inbound multipart body contains unsupported fields."
+    }
+    assert close_calls == 1
+    await asyncio.sleep(0)
+    assert app.state.webhook_form_cleanup_tasks == set()
+    semaphore = app.state.webhook_multipart_semaphore
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_webhook_multipart_ingress_timeout_cancels_parser_and_releases_slot(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.channels.api.MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S",
+        0.02,
+    )
+    created_files = []
+
+    def tracked_spooled_file(*args, **kwargs):
+        file = tempfile.SpooledTemporaryFile(*args, **kwargs)
+        created_files.append(file)
+        return file
+
+    monkeypatch.setattr(
+        "starlette.formparsers.SpooledTemporaryFile",
+        tracked_spooled_file,
+    )
+    monkeypatch.setattr(
+        "starlette.formparsers.MultiPartParser.spool_max_size",
+        1,
+    )
+    boundary = "imcodex-timeout-boundary"
+    prefix = (
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="images"; filename="image.png"\r\n'
+        "Content-Type: image/png\r\n\r\n"
+    ).encode() + PNG[:16]
+
+    async def slow_body():
+        yield prefix
+        await asyncio.Event().wait()
+
+    app = create_app(StubService(), inbound_token="webhook-secret")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/webhook/inbound",
+            headers={
+                "Authorization": "Bearer webhook-secret",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            content=slow_body(),
+        )
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Inbound multipart upload timed out."}
+    assert created_files
+    assert all(getattr(file, "_rolled", False) for file in created_files)
+    assert all(file.closed for file in created_files)
+    semaphore = app.state.webhook_multipart_semaphore
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+    for _ in range(MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS):
+        semaphore.release()
+
+
+def test_standalone_webhook_app_starts_and_stops_materializer_once(tmp_path: Path) -> None:
+    class LifecycleMaterializer:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def start(self) -> None:
+            self.calls.append("start")
+
+        async def stop(self) -> None:
+            self.calls.append("stop")
+
+    materializer = LifecycleMaterializer()
+    app = create_app(
+        StubService(),
+        media_dir=tmp_path / "media",
+        media_materializer=materializer,
+    )
+
+    with TestClient(app):
+        assert materializer.calls == ["start"]
+
+    assert materializer.calls == ["start", "stop"]
 
 
 def test_webhook_authenticates_before_parsing_json() -> None:
@@ -149,6 +902,29 @@ def test_webhook_rejects_oversized_body_before_model_parsing() -> None:
         },
     )
 
+    assert response.status_code == 413
+
+
+def test_webhook_stream_bounds_chunked_body_without_content_length() -> None:
+    client = TestClient(
+        create_app(StubService(), inbound_token="webhook-secret"),
+        raise_server_exceptions=False,
+    )
+
+    def chunks():
+        yield b"{" + b"x" * (64 * 1024)
+        yield b"}"
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={
+            "Authorization": "Bearer webhook-secret",
+            "Content-Type": "application/json",
+        },
+        content=chunks(),
+    )
+
+    assert "content-length" not in response.request.headers
     assert response.status_code == 413
 
 
@@ -271,6 +1047,33 @@ def test_webhook_delivers_immediate_messages_to_configured_outbound_sink() -> No
     assert response.status_code == 200
     assert [message.text for message in sink.messages] == ["Accepted"]
     assert response.json()["messages"][0]["text"] == "Accepted"
+
+
+def test_webhook_multipart_does_not_relabel_downstream_timeout_as_ingress() -> None:
+    class TimeoutSink:
+        async def send_message(self, _message: OutboundMessage) -> None:
+            raise TimeoutError("downstream gateway timed out")
+
+    service = CountingService(ConversationStore(clock=lambda: 1.0))
+    service.outbound_sink = TimeoutSink()
+    client = TestClient(
+        create_app(service, inbound_token="webhook-secret"),
+        raise_server_exceptions=False,
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "image-timeout",
+        },
+        files={"images": ("image.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 500
 
 
 def test_webhook_retries_cached_delivery_without_reexecuting_command(tmp_path) -> None:

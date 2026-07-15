@@ -4,10 +4,13 @@ version = "0.1.0"
 description = "IM to Codex app-server bridge"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi>=0.115.0",
+    "fastapi>=0.116.1",
     "httpx>=0.28.0",
     "Pillow>=12.3.0,<13.0.0",
     "pydantic>=2.11.0",
+    "pycryptodome>=3.23.0,<4.0.0",
+    "python-multipart>=0.0.32,<1.0.0",
+    "starlette>=0.47.2",
     "uvicorn>=0.34.0",
     "websocket-client>=1.8.0",
     "websockets>=15.0.0,<16.0.0",

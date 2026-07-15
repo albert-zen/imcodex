@@ -224,27 +224,27 @@ Built-in channel support now includes:
 | Channel | Ingress | Scope | Status |
 | --- | --- | --- | --- |
 | QQ | Gateway websocket | Private and group `@bot` text and images | Stable |
-| Telegram | Bot API long polling | Private, group, and forum-topic text | Stable |
-| Feishu / Lark | Official Channel SDK websocket | Private, group, and topic text | Stable |
-| Weixin | Tencent iLink long polling | Direct text only | Experimental |
-| Generic webhook | HTTP | Trusted adapter injection | Loopback-only by default |
+| Telegram | Bot API long polling | Private, group, and forum-topic text and images | Stable |
+| Feishu / Lark | Official Channel SDK websocket | Private, group, and topic text and images | Stable |
+| Weixin | Tencent iLink long polling | Direct text and images | Experimental |
+| Generic webhook | HTTP | Trusted text and image adapter injection | Loopback-only by default |
 
 Remote IM adapters accept the platform-delivered scope by default. Optional
 stable user and conversation restrictions can be combined with `any` (default)
 or `all`; `none` explicitly accepts nobody without disconnecting the channel.
 Group adapters require an explicit mention by default.
 
-QQ accepts inbound JPEG, PNG, and WebP images without a separate feature
-switch or per-user media configuration. A private message may contain only
-images or a caption plus images; a group message follows the same existing
-`@bot` admission rule. One message may contain at most four images and each
-downloaded image may be at most 10 MiB and 40 megapixels. Images are staged
-privately and passed to the native Codex App Server as `localImage` inputs, so
-this P0 path requires the App Server and bridge to see the same local
-filesystem. imcodex enables
-this path only for bridge-child stdio and the normal local Unix-socket target;
-TCP App Server targets, including loopback, remain text-only because a TCP
-address cannot prove filesystem sharing. See
+All five ingress paths accept inbound static JPEG, PNG, and WebP images without a
+separate feature switch or per-user media configuration. A platform message
+may contain only images or text plus images; its existing private/group mention
+rules still apply. One message may contain at most four images and each image
+may be at most 10 MiB and 40 decoded megapixels. Channel-specific retrieval
+(including Telegram `getFile`, Feishu message resources, and Tencent iLink CDN
+decryption) feeds one shared validation and private-spool layer, which submits
+native Codex `localImage` inputs. The App Server and bridge must therefore see
+the same local filesystem. imcodex enables this path only for bridge-child
+stdio and the normal local Unix-socket target; TCP targets, including loopback,
+remain text-only because an address cannot prove filesystem sharing. See
 [Channel setup and security](docs/channels.md) for failure behavior, spool
 bounds, and remote App Server limitations.
 
@@ -268,8 +268,13 @@ optional access restrictions, QR login, Windows notes, and troubleshooting.
 
 `POST /api/channels/webhook/inbound`
 
-The endpoint accepts unauthenticated requests only from loopback. To call it
-through a remote gateway, set `IMCODEX_INBOUND_WEBHOOK_TOKEN` and send
+The endpoint accepts JSON text or multipart form data with repeated `images`
+file fields. It never accepts a caller-supplied local path. It accepts
+unauthenticated requests only from loopback. A loopback multipart caller must
+also send `X-IMCodex-Webhook: 1`; this explicit, non-simple header prevents a
+browser form on another origin from posting files to the local bridge. To call
+it through a remote gateway, or from any browser origin, set
+`IMCODEX_INBOUND_WEBHOOK_TOKEN` and send
 `Authorization: Bearer <token>` over HTTPS.
 
 Generic callers must use a dedicated channel ID such as `wecom-gateway`; the

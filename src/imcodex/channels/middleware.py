@@ -34,23 +34,62 @@ class UnifiedChannelMiddleware:
         *,
         reply_to_message_id: str | None = None,
         prepare_inbound=None,
+        finalize_inbound=None,
         pending_attachment_count: int = 0,
     ) -> None:
         trace_id = ensure_trace_id(inbound)
+        finalized = False
+
+        async def finalize_once() -> None:
+            nonlocal finalized
+            if finalized or finalize_inbound is None:
+                return
+            finalized = True
+            await finalize_inbound()
+
         conversation_lock = await self._get_conversation_lock(
             inbound.channel_id,
             inbound.conversation_id,
         )
         async with conversation_lock:
-            content_sha = self._inbound_content_sha256(inbound)
-            if (
-                prepare_inbound is not None
-                and inbound.message_id
-                and self._should_drop_duplicate_inbound(
-                    inbound=inbound,
-                    text_fingerprint=content_sha,
-                )
-            ):
+            try:
+                content_sha = self._inbound_content_sha256(inbound)
+                if (
+                    prepare_inbound is not None
+                    and inbound.message_id
+                    and self._should_drop_duplicate_inbound(
+                        inbound=inbound,
+                        text_fingerprint=content_sha,
+                    )
+                ):
+                    self._emit_inbound_received(
+                        adapter=adapter,
+                        inbound=inbound,
+                        reply_to_message_id=reply_to_message_id,
+                        trace_id=trace_id,
+                        content_sha=content_sha,
+                        pending_attachment_count=pending_attachment_count,
+                    )
+                    await finalize_once()
+                    await self._handle_serialized(
+                        adapter=adapter,
+                        inbound=inbound,
+                        reply_to_message_id=reply_to_message_id,
+                        trace_id=trace_id,
+                        content_sha=content_sha,
+                        pending_attachment_count=pending_attachment_count,
+                    )
+                    return
+
+                outbound_override = None
+                if prepare_inbound is not None:
+                    preflight = getattr(self.service, "preflight_inbound_attachments", None)
+                    if callable(preflight):
+                        outbound_override = preflight(inbound)
+                    if outbound_override is None:
+                        inbound = await prepare_inbound(inbound)
+                await finalize_once()
+                content_sha = self._inbound_content_sha256(inbound)
                 self._emit_inbound_received(
                     adapter=adapter,
                     inbound=inbound,
@@ -65,35 +104,12 @@ class UnifiedChannelMiddleware:
                     reply_to_message_id=reply_to_message_id,
                     trace_id=trace_id,
                     content_sha=content_sha,
+                    outbound_override=outbound_override,
                     pending_attachment_count=pending_attachment_count,
                 )
-                return
-
-            outbound_override = None
-            if prepare_inbound is not None:
-                preflight = getattr(self.service, "preflight_inbound_attachments", None)
-                if callable(preflight):
-                    outbound_override = preflight(inbound)
-                if outbound_override is None:
-                    inbound = await prepare_inbound(inbound)
-            content_sha = self._inbound_content_sha256(inbound)
-            self._emit_inbound_received(
-                adapter=adapter,
-                inbound=inbound,
-                reply_to_message_id=reply_to_message_id,
-                trace_id=trace_id,
-                content_sha=content_sha,
-                pending_attachment_count=pending_attachment_count,
-            )
-            await self._handle_serialized(
-                adapter=adapter,
-                inbound=inbound,
-                reply_to_message_id=reply_to_message_id,
-                trace_id=trace_id,
-                content_sha=content_sha,
-                outbound_override=outbound_override,
-                pending_attachment_count=pending_attachment_count,
-            )
+            except BaseException:
+                await finalize_once()
+                raise
 
     async def _handle_serialized(
         self,

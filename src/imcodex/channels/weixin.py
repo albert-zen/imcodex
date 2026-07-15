@@ -4,14 +4,20 @@ import asyncio
 import logging
 from pathlib import Path
 import re
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .base import BaseChannelAdapter
+from .media import (
+    MAX_IMAGE_COUNT,
+    ImageMediaMaterializer,
+    MediaDownloadError,
+    materialize_inbound_images,
+)
 from .text import split_text
-from .weixin_ilink import ILinkError, WeixinILinkTransport
+from .weixin_ilink import ILinkError, WeixinILinkTransport, WeixinImageReference
 from .weixin_state import (
     WeixinCredentials,
     WeixinStateStore,
@@ -31,7 +37,7 @@ CONVERSATION_PATTERN = re.compile(r"^user:([^@\s*]+@im\.wechat)$")
 
 
 class WeixinChannelAdapter(BaseChannelAdapter):
-    """Experimental, text-only direct-message adapter for Tencent iLink."""
+    """Experimental direct-message adapter for Tencent iLink."""
 
     channel_id = "weixin"
 
@@ -45,6 +51,8 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         poll_timeout_ms: int = 35_000,
         state_store: WeixinStateStore | None = None,
         transport_factory: Callable[[WeixinCredentials], object] | None = None,
+        media_dir: Path | None = None,
+        media_materializer: ImageMediaMaterializer[WeixinImageReference] | None = None,
         sleep=asyncio.sleep,
     ) -> None:
         super().__init__(
@@ -63,6 +71,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._auth_stale = False
+        self.media_materializer = media_materializer or ImageMediaMaterializer(
+            root=media_dir or self.state_dir / "inbound-media",
+            download=self._download_inbound_image,
+        )
 
     @classmethod
     def from_config(cls, *, config: dict[str, object], middleware):
@@ -73,6 +85,9 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             enabled=bool(config.get("enabled")),
             middleware=middleware,
             state_dir=Path(state_dir),
+            media_dir=Path(
+                str(config.get("media_dir") or Path(state_dir) / "inbound-media")
+            ),
             access_policy=ChannelAccessPolicy.from_config(config),
             poll_timeout_ms=int(config.get("poll_timeout_ms") or 35_000),
         )
@@ -104,7 +119,20 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             if admitted_tokens != self._state.context_tokens:
                 self._state.context_tokens = admitted_tokens
                 await self._persist_state()
-        self._transport = self._create_transport(credentials)
+        transport = self._create_transport(credentials)
+        self._transport = transport
+        try:
+            await self.media_materializer.start()
+        except BaseException:
+            self._transport = None
+            try:
+                await transport.close()
+            except Exception as exc:
+                logger.warning(
+                    "Weixin transport cleanup after media startup failure failed: %s",
+                    type(exc).__name__,
+                )
+            raise
         self._stop_event.clear()
         self._auth_stale = False
         if self._runner_task is None or self._runner_task.done():
@@ -142,6 +170,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             except Exception as exc:
                 errors.append(exc)
             self._runner_task = None
+        try:
+            await self.media_materializer.stop()
+        except Exception as exc:
+            errors.append(exc)
         transport = self._transport
         self._transport = None
         if transport is not None:
@@ -158,6 +190,13 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             raise ExceptionGroup("Weixin shutdown failed", errors)
 
     def parse_inbound_message(self, payload: dict[str, Any]) -> InboundMessage | None:
+        parsed = self._parse_inbound_message(payload)
+        return parsed[0] if parsed is not None else None
+
+    def _parse_inbound_message(
+        self,
+        payload: dict[str, Any],
+    ) -> tuple[InboundMessage, tuple[WeixinImageReference, ...]] | None:
         if self._int_value(payload.get("message_type")) != 1:
             return None
         if str(payload.get("group_id") or "").strip():
@@ -167,14 +206,18 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             return None
         message_id = self._stable_message_id(payload)
         text = self._text_from_items(payload.get("item_list"))
-        if not message_id or not text:
+        image_references = self._image_references_from_items(payload.get("item_list"))
+        if not message_id or (not text and not image_references):
             return None
-        return InboundMessage(
-            channel_id=self.channel_id,
-            conversation_id=f"user:{user_id}",
-            user_id=user_id,
-            message_id=message_id,
-            text=text,
+        return (
+            InboundMessage(
+                channel_id=self.channel_id,
+                conversation_id=f"user:{user_id}",
+                user_id=user_id,
+                message_id=message_id,
+                text=text,
+            ),
+            image_references,
         )
 
     async def handle_raw_message(self, payload: dict[str, Any]) -> None:
@@ -192,10 +235,22 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         ):
             self._state.set_context_token(user_id, context_token)
             await self._persist_state()
-        inbound = self.parse_inbound_message(payload)
-        if inbound is None:
+        parsed = self._parse_inbound_message(payload)
+        if parsed is None:
             return
-        await self.dispatch_inbound(inbound, reply_to_message_id=inbound.message_id)
+        inbound, image_references = parsed
+        prepare_inbound = None
+        if image_references:
+            prepare_inbound = lambda message: self._materialize_inbound(
+                message,
+                image_references,
+            )
+        await self.dispatch_inbound(
+            inbound,
+            reply_to_message_id=inbound.message_id,
+            prepare_inbound=prepare_inbound,
+            pending_attachment_count=len(image_references),
+        )
 
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
@@ -331,6 +386,28 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     async def _persist_state(self) -> None:
         await asyncio.to_thread(self.state_store.save_transport_state, self._state)
 
+    async def _download_inbound_image(
+        self,
+        reference: WeixinImageReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        transport = self._transport
+        download = getattr(transport, "download_image", None)
+        if not callable(download):
+            raise MediaDownloadError
+        await download(reference, write_chunk)
+
+    async def _materialize_inbound(
+        self,
+        inbound: InboundMessage,
+        image_references: tuple[WeixinImageReference, ...],
+    ) -> InboundMessage:
+        return await materialize_inbound_images(
+            inbound,
+            image_references,
+            self.media_materializer,
+        )
+
     def _create_transport(self, credentials: WeixinCredentials) -> object:
         if self.transport_factory is not None:
             return self.transport_factory(credentials)
@@ -369,6 +446,41 @@ class WeixinChannelAdapter(BaseChannelAdapter):
                 if text:
                     return text
         return ""
+
+    @classmethod
+    def _image_references_from_items(
+        cls,
+        value: object,
+    ) -> tuple[WeixinImageReference, ...]:
+        if not isinstance(value, list):
+            return ()
+        references: list[WeixinImageReference] = []
+        for item in value:
+            if not isinstance(item, dict) or cls._int_value(item.get("type")) != 2:
+                continue
+            image_item = item.get("image_item")
+            image_item = image_item if isinstance(image_item, dict) else {}
+            media = image_item.get("media")
+            media = media if isinstance(media, dict) else {}
+            references.append(
+                WeixinImageReference(
+                    encrypted_query_param=cls._string_value(
+                        media.get("encrypt_query_param")
+                    ),
+                    aes_key=cls._string_value(media.get("aes_key")),
+                    full_url=cls._string_value(media.get("full_url")),
+                    aeskey=cls._string_value(image_item.get("aeskey")),
+                )
+            )
+            # Preserve one item beyond the common limit so the whole message
+            # is rejected rather than silently dropping later images.
+            if len(references) > MAX_IMAGE_COUNT:
+                break
+        return tuple(references)
+
+    @staticmethod
+    def _string_value(value: object) -> str:
+        return value.strip() if isinstance(value, str) else ""
 
     @staticmethod
     def _int_value(value: object) -> int:

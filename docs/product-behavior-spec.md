@@ -59,8 +59,8 @@ Product behavior:
 - disabling a channel remains the only way to disconnect it; access policy is
   not a second enabled state
 
-The Weixin iLink adapter is an experimental direct-text transport. QR login
-sets the scanning user's stable iLink ID as the default owner. Enterprise
+The Weixin iLink adapter is an experimental direct text-and-image transport.
+QR login sets the scanning user's stable iLink ID as the default owner. Enterprise
 WeCom and personal Weixin are different products and must not be represented as
 one ambiguous channel.
 
@@ -129,18 +129,21 @@ This behavior spec does not require a separate immediate `accepted` message for 
 
 ## Image Messages
 
-QQ image input follows the same conversation, admission, and native-thread
-behavior as normal text input. It does not introduce an image access mode,
-per-user media setup, or a separate bridge-owned vision model.
+Image input from QQ, Telegram, Feishu/Lark, Weixin, and the generic webhook
+follows the same conversation, admission, and native-thread behavior as normal
+text input. It does not introduce an image access mode, per-user media setup,
+or a separate bridge-owned vision model.
 
 Product behavior:
 
-- private QQ messages may contain only images or a caption plus images
-- QQ group images use the existing `@bot` requirement; admitted group members
-  do not need to be registered individually
-- JPEG, PNG, and WebP are supported, with at most four images per message and a
-  maximum downloaded size of 10 MiB and decoded size of 40 megapixels per image
-- text and image order is preserved when the input is submitted to native Codex
+- private messages and webhook requests may contain only images or text plus
+  images
+- group images use the channel's existing mention/reply rule; admitted group
+  members do not need to be registered individually
+- static JPEG, PNG, and WebP are supported; animated images are rejected, with
+  at most four images per message and a maximum downloaded size of 10 MiB and
+  decoded size of 40 megapixels per image
+- platform image order is preserved and message text is submitted alongside it
 - if no working directory and no active thread exist, the normal onboarding
   guidance is returned instead of starting an image turn
 - if a turn is already running, the mixed input may steer that native turn under
@@ -154,8 +157,8 @@ The bridge passes accepted images to native Codex as `localImage` inputs. The
 native Codex model remains the authority for whether it can interpret the
 image; imcodex does not select a second vision model or run a fallback OCR
 pipeline. The bridge and App Server must share the staged-file namespace for
-this P0 capability. Bridge-child stdio and the normal Unix-socket daemon are the
-only accepted P0 topologies. TCP targets, including loopback, return an explicit
+image input. Bridge-child stdio and the normal Unix-socket daemon are the only
+accepted image topologies. TCP targets, including loopback, return an explicit
 image-input limitation while text use remains available; imcodex does not infer
 filesystem sharing from `localhost`.
 

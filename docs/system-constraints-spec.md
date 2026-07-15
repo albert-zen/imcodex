@@ -52,12 +52,14 @@ It MUST:
   recovery without adding a second durable message queue, and must not wait for
   asynchronous native turn completion
 - validate platform media using downloaded content rather than trusting a URL,
-  filename, declared MIME type, or declared size; QQ P0 accepts only JPEG, PNG,
-  and WebP, at most four images per message, at most 10 MiB, and at most 40
-  decoded megapixels per image
+  filename, declared MIME type, or declared size; every image-capable ingress
+  accepts only static JPEG, PNG, and WebP, at most four images per message, at most
+  10 MiB, and at most 40 decoded megapixels per image
 - use a maintained decoder to verify accepted image structure after download;
   a recognized file signature or metadata-only verification alone MUST NOT
-  satisfy media validation, and decode work MUST remain off the socket reader
+  satisfy media validation, animated inputs MUST be rejected unless every
+  frame has a separate aggregate work bound, and decode work MUST remain off
+  the socket reader
 - resolve a committed stable platform message replay under the existing
   per-conversation dedup boundary before downloading or staging its media; the
   channel MUST NOT create a parallel media-specific durable dedup authority
@@ -155,10 +157,26 @@ atomically when persisted, protected as sensitive when it contains credentials
 or reply tokens, and omitted from launch snapshots and normal diagnostics.
 
 Inbound media staging is temporary transport state, not conversation or native
-turn truth. The QQ image spool MUST expire files after 24 hours and have a 512
-MiB total bound. It MUST sweep at startup, before materializing a new batch, and
-at least hourly while QQ is running; physical deletion MAY lag expiry by no more
-than that sweep interval while the channel is idle.
+turn truth. Every channel image spool MUST expire files after 24 hours and have
+a 512 MiB total bound and a finite entry-count bound. It MUST sweep at startup,
+before materializing a new batch, and at least hourly while its channel is
+running; physical deletion MAY lag expiry by no more than that sweep interval
+while the channel is idle.
+Cleanup, quota measurement, and a batch write MUST be serialized across every
+bridge process that shares a spool. A bounded whole-message download buffer MAY
+precede staging, but filesystem preparation, directory scanning, quota
+measurement, write, decode, rename, and rollback MUST form one killable child
+process transaction under that cross-process lock. Deadline or caller
+cancellation MUST NOT release the lock while that child is still running or
+discard its process handle. If termination or rollback cannot be confirmed,
+the materializer MUST retain ownership and fail later image work closed.
+Multipart webhook capacity wait, body parsing, conversation-queue wait, media
+staging, and form close MUST share a wall-clock retention bound. Duplicate and
+preflight paths MUST release the parsed form before downstream delivery, and an
+exceeded bound MUST release parser capacity immediately. A temporary-file close
+that outlives a short bounded grace period MUST remain owned by an app-level
+cleanup task, and MUST NOT delay the timeout response or later ingress; process
+teardown remains the final owner if the filesystem call never returns.
 Image bytes, signed platform URLs, original filenames, and local spool paths
 MUST NOT enter bridge state, launch snapshots, or normal diagnostics. If the
 bound cannot be maintained safely, the new image message MUST fail explicitly.
@@ -425,10 +443,10 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
 
-QQ image inputs MUST be translated at the App Server boundary into native
+Channel image inputs MUST be translated at the App Server boundary into native
 `localImage` user-input items; the bridge MUST NOT add a second image model,
 OCR pipeline, or media-understanding authority. A local image path is valid only
-when the App Server shares the bridge's filesystem namespace. P0 MUST reject
+when the App Server shares the bridge's filesystem namespace. imcodex MUST reject
 every TCP target for image input, including loopback, because TCP locality does
 not establish filesystem locality. Bridge-child stdio is local by construction;
 the normal Unix-socket daemon is an explicit same-filesystem product assumption.

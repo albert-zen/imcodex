@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import hmac
 import ipaddress
 import os
-from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException, Request
 
@@ -42,15 +43,35 @@ def create_application(
     @asynccontextmanager
     async def lifespan(app):
         app.state.runtime = runtime
-        await runtime.start()
+        webhook_media = getattr(app.state, "webhook_media_materializer", None)
+        wait_for_webhook_form_cleanup = getattr(
+            app.state,
+            "wait_for_webhook_form_cleanup",
+            None,
+        )
+        if webhook_media is not None:
+            await webhook_media.start()
         try:
-            yield
+            await runtime.start()
+            try:
+                yield
+            finally:
+                await runtime.stop()
         finally:
-            await runtime.stop()
+            try:
+                if webhook_media is not None:
+                    await webhook_media.stop()
+            finally:
+                if callable(wait_for_webhook_form_cleanup):
+                    await wait_for_webhook_form_cleanup()
 
     app = create_app(
         runtime.service,
         inbound_token=str(getattr(settings, "inbound_webhook_token", "") or ""),
+        media_dir=Path(getattr(settings, "data_dir", Path(".imcodex")))
+        / "channels"
+        / "webhook"
+        / "inbound-media",
     )
 
     @app.get("/healthz", include_in_schema=False)

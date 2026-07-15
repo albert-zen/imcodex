@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+from dataclasses import dataclass, field
 import json
+import re
 import secrets
-from typing import Any
-from urllib.parse import quote, urlparse
+from typing import Any, Awaitable, Callable
+from urllib.parse import quote, urlsplit
 import uuid
 
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 import httpx
 
+from .media import MediaDownloadError
 from .weixin_state import WeixinCredentials
 
 
 DEFAULT_ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
+DEFAULT_ILINK_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
 # Protocol compatibility version used by Tencent/openclaw-weixin 2.4.6.
 ILINK_APP_CLIENT_VERSION = "132102"
@@ -21,6 +28,24 @@ BASE_INFO = {
     "channel_version": "0.1.0",
     "bot_agent": "IMCodex/0.1.0",
 }
+_IMAGE_DOWNLOAD_TIMEOUT = httpx.Timeout(
+    20.0,
+    connect=5.0,
+    read=15.0,
+    write=5.0,
+    pool=5.0,
+)
+_AES_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+@dataclass(frozen=True, slots=True)
+class WeixinImageReference:
+    """Opaque iLink CDN reference whose secrets must never enter repr or logs."""
+
+    encrypted_query_param: str = field(default="", repr=False)
+    aes_key: str = field(default="", repr=False)
+    full_url: str = field(default="", repr=False)
+    aeskey: str = field(default="", repr=False)
 
 
 class ILinkError(RuntimeError):
@@ -125,6 +150,74 @@ class WeixinILinkTransport:
         )
         self._raise_protocol_error(payload, operation="sendmessage")
         return message_client_id
+
+    async def download_image(
+        self,
+        reference: WeixinImageReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        """Download one iLink image and stream decrypted plaintext to the media boundary."""
+
+        url = _image_download_url(reference)
+        key = _image_aes_key(reference)
+        cipher = AES.new(key, AES.MODE_ECB) if key is not None else None
+        pending = bytearray()
+
+        try:
+            async with self.http_client.stream(
+                "GET",
+                url,
+                headers={"Accept-Encoding": "identity"},
+                follow_redirects=False,
+                timeout=_IMAGE_DOWNLOAD_TIMEOUT,
+            ) as response:
+                if 300 <= response.status_code < 400 or not response.is_success:
+                    raise MediaDownloadError
+                content_encoding = (
+                    response.headers.get("Content-Encoding", "").strip().casefold()
+                )
+                if content_encoding not in {"", "identity"}:
+                    raise MediaDownloadError
+                async for chunk in response.aiter_raw():
+                    if not chunk:
+                        continue
+                    if cipher is None:
+                        await write_chunk(chunk)
+                        continue
+                    pending.extend(chunk)
+                    decrypt_size = max(
+                        0,
+                        ((len(pending) - AES.block_size) // AES.block_size)
+                        * AES.block_size,
+                    )
+                    if decrypt_size:
+                        # AES operates on a bounded network chunk in native
+                        # code. Keep it owned by this task rather than leaving
+                        # an unkillable executor job after cancellation.
+                        plaintext = cipher.decrypt(bytes(pending[:decrypt_size]))
+                        del pending[:decrypt_size]
+                        await write_chunk(plaintext)
+        except MediaDownloadError:
+            raise
+        except httpx.HTTPError:
+            # httpx exceptions retain the signed CDN URL. Do not propagate it
+            # into a later exception chain or diagnostic.
+            raise MediaDownloadError from None
+
+        if cipher is None:
+            return
+        if not pending or len(pending) % AES.block_size:
+            raise MediaDownloadError
+        try:
+            final_block = cipher.decrypt(bytes(pending))
+            final_plaintext = unpad(
+                final_block,
+                AES.block_size,
+                style="pkcs7",
+            )
+        except ValueError:
+            raise MediaDownloadError from None
+        await write_chunk(final_plaintext)
 
     async def notify_start(self) -> dict[str, Any]:
         return await self._notify("ilink/bot/msg/notifystart")
@@ -235,7 +328,7 @@ class WeixinILinkTransport:
 
     @staticmethod
     def _validate_base_url(value: str) -> str:
-        parsed = urlparse(value.strip())
+        parsed = urlsplit(value.strip())
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValueError("iLink base URL must be an HTTPS origin without credentials.")
         if parsed.query or parsed.fragment:
@@ -244,3 +337,63 @@ class WeixinILinkTransport:
         if hostname != "weixin.qq.com" and not hostname.endswith(".weixin.qq.com"):
             raise ValueError("iLink base URL must use an official weixin.qq.com host.")
         return value.strip().rstrip("/")
+
+
+def _image_download_url(reference: WeixinImageReference) -> str:
+    full_url = reference.full_url.strip()
+    if full_url:
+        return _validate_weixin_media_url(full_url)
+    query_param = reference.encrypted_query_param.strip()
+    if not query_param or any(character.isspace() for character in query_param):
+        raise MediaDownloadError
+    return (
+        f"{DEFAULT_ILINK_CDN_BASE_URL}/download"
+        f"?encrypted_query_param={quote(query_param, safe='')}"
+    )
+
+
+def _validate_weixin_media_url(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or any(character.isspace() for character in normalized):
+        raise MediaDownloadError
+    try:
+        parsed = urlsplit(normalized)
+        hostname = str(parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError:
+        raise MediaDownloadError from None
+    if parsed.scheme.lower() != "https" or not parsed.netloc or not hostname:
+        raise MediaDownloadError
+    if parsed.username is not None or parsed.password is not None or parsed.fragment:
+        raise MediaDownloadError
+    if port not in (None, 443):
+        raise MediaDownloadError
+    if hostname != "weixin.qq.com" and not hostname.endswith(".weixin.qq.com"):
+        raise MediaDownloadError
+    return normalized
+
+
+def _image_aes_key(reference: WeixinImageReference) -> bytes | None:
+    preferred_hex = reference.aeskey.strip()
+    if preferred_hex:
+        if _AES_HEX_PATTERN.fullmatch(preferred_hex) is None:
+            raise MediaDownloadError
+        return bytes.fromhex(preferred_hex)
+
+    encoded = reference.aes_key.strip()
+    if not encoded:
+        return None
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise MediaDownloadError from None
+    if len(decoded) == AES.block_size:
+        return decoded
+    if len(decoded) == 32:
+        try:
+            hex_value = decoded.decode("ascii")
+        except UnicodeDecodeError:
+            raise MediaDownloadError from None
+        if _AES_HEX_PATTERN.fullmatch(hex_value) is not None:
+            return bytes.fromhex(hex_value)
+    raise MediaDownloadError
