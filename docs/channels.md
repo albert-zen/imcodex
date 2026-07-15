@@ -47,55 +47,62 @@ python -m imcodex channels doctor
 ```
 
 Run the doctor again after changing `.env`. It reports whether an enabled
-adapter is missing credentials, an optional dependency, or an admission list;
-it never prints secret values. During the one-message ID discovery step below,
-an empty allowlist is expected to make doctor report “not ready”; add the owner
-ID and rerun doctor before normal use.
+adapter is missing credentials or an optional dependency; it never prints
+secret values. Access restrictions are optional and are not a readiness check.
 
-## Admission Is Deny-by-Default
+## Access Follows the Platform by Default
 
-QQ, Telegram, and Feishu use the platform's stable sender ID. Their
-`*_ALLOWED_USER_IDS` setting is comma-separated:
+QQ, Telegram, Feishu, and Weixin share one optional access policy over stable
+platform IDs. With no restrictions configured, imcodex accepts messages that
+the platform delivers: private messages, and mention-scoped group messages
+where supported. A group restriction admits the group without requiring every
+member to be listed.
+
+Concrete user and conversation restrictions are comma-separated:
 
 ```env
 IMCODEX_TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
+IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS=chat:-100123456
 ```
 
-An empty user list denies all inbound users. `*` deliberately allows every
-sender and should normally be used only for a short, supervised diagnostic.
-Optional `*_ALLOWED_CONVERSATION_IDS` settings can narrow an admitted user to
-specific private chats, groups, or topics.
+Each empty list, or a list containing `*`, leaves that dimension unrestricted.
+Enter `none` by itself in either list to keep the channel connected while
+accepting nobody. Across both lists, do not combine `none` with any other value.
+
+When both concrete dimensions exist, choose how they combine:
+
+```env
+IMCODEX_TELEGRAM_ACCESS_MATCH=any
+```
+
+- `any` is the long-term default: a listed user anywhere, or anyone in a listed
+  conversation, is accepted.
+- `all` accepts only listed users inside listed conversations.
+
+With only one concrete dimension, `any` and `all` behave identically. To stop
+the connection entirely, set the channel's `*_ENABLED=0` instead of using an
+access restriction.
 
 When a sender is denied, `.imcodex-run/current/events.jsonl` samples
 `message.inbound.access_denied` with the stable `user_id` and normalized
 `conversation_id`. Repeated denials are rate-limited so a public bot cannot
-grow logs without bound. A safe discovery loop is:
+grow logs without bound. IDs remain available for diagnostics and for an
+operator who later chooses to add restrictions; they are not part of initial
+connection.
 
-1. Start with an empty allowlist.
-2. Send one message to the bot from the intended owner account.
-3. Read the denied event locally.
-4. Copy that stable ID into `.env` and restart the bridge.
-
-Channel health distinguishes transport connectivity from admission readiness.
-Under `.imcodex-run/current/health.json`, each enabled adapter reports
-`inbound_access_ready`, `access_policy_mode`, and non-secret allowlist counts.
-An empty user allowlist reports `access_policy_mode: "deny_all"`; the bridge's
-top-level health becomes `degraded` even if the platform websocket remains
-connected. A sampled denial also records `last_inbound_access_denied_at` and a
-non-secret reason. Deployments should run `channels doctor` and require both a
-connected transport and `inbound_access_ready: true` before declaring an IM
-channel usable.
-
-Upgrades from versions before stable-ID admission may have working thread
-bindings but no persisted owner allowlist. Bindings are routing history, not
-authorization, so IMCodex does not promote them automatically. Complete the
-discovery loop once and persist the owner ID before expecting the upgraded
-channel to resume normal traffic.
+Channel health distinguishes transport connectivity from the derived policy
+display. Under `.imcodex-run/current/health.json`, adapters report
+`inbound_access_ready`, `access_policy_mode`, `access_match`, and non-secret
+restriction counts. Modes are `platform`, `restricted_any`, `restricted_all`,
+and `deny_all`. Empty restrictions and intentional `none` are both ready states;
+only connectivity and channel prerequisites affect readiness. A sampled denial
+also records `last_inbound_access_denied_at` and a non-secret reason.
 
 Do not use display names as identities. Names can change and may not be unique.
-Every admitted identity is an operator, not a low-privilege chat user: it can
+Every accepted identity is an operator, not a low-privilege chat user: it can
 use commands such as `/cwd`, `/config`, and `/native` and can reach the native
-threads visible to this Codex account. Do not use `*` for a public bot.
+threads visible to this Codex account. Narrow the platform scope in advanced
+settings when that exposure is not appropriate.
 
 ## QQ
 
@@ -108,7 +115,6 @@ IMCODEX_QQ_APP_ID=
 IMCODEX_QQ_CLIENT_SECRET=
 IMCODEX_QQ_API_BASE=https://api.sgroup.qq.com
 IMCODEX_QQ_MARKDOWN_ENABLED=1
-IMCODEX_QQ_ALLOWED_USER_IDS=
 ```
 
 The adapter consumes `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`.
@@ -122,23 +128,19 @@ that is actually configured in the QQ sandbox:
 IMCODEX_QQ_API_BASE=https://sandbox.api.sgroup.qq.com
 ```
 
-Existing QQ installations must add `IMCODEX_QQ_ALLOWED_USER_IDS` when upgrading
-to this release. The adapter logs an explicit warning and denies all inbound
-messages until a stable owner openid is configured; it never silently migrates
-an old conversation binding into an authorization rule.
+No openid or group ID is required for first use. Add optional restrictions only
+after the bot is connected if the QQ platform scope is broader than intended.
 
 ## Telegram
 
 1. Open [BotFather](https://t.me/BotFather) and create a bot.
 2. Keep group privacy enabled unless you explicitly need broader group input.
 3. Disable arbitrary group joining for a personal bot when appropriate.
-4. Put the token in a private file and configure the owner's numeric Telegram
-   user ID.
+4. Put the token in a private file.
 
 ```env
 IMCODEX_TELEGRAM_ENABLED=1
 IMCODEX_TELEGRAM_BOT_TOKEN_FILE=.telegram-bot-token
-IMCODEX_TELEGRAM_ALLOWED_USER_IDS=123456789
 IMCODEX_TELEGRAM_REQUIRE_MENTION=1
 ```
 
@@ -185,14 +187,12 @@ domain.
    your intended private/group use.
 4. Subscribe to `im.message.receive_v1` using the long-connection mode.
 5. Publish/install the app in the intended tenant.
-6. Add the owner's stable `open_id` to the allowlist.
 
 ```env
 IMCODEX_FEISHU_ENABLED=1
 IMCODEX_FEISHU_APP_ID=
 IMCODEX_FEISHU_APP_SECRET=
 IMCODEX_FEISHU_DOMAIN=feishu
-IMCODEX_FEISHU_ALLOWED_USER_IDS=ou_xxx
 IMCODEX_FEISHU_REQUIRE_MENTION=1
 ```
 
@@ -250,10 +250,9 @@ After login:
 IMCODEX_WEIXIN_ENABLED=1
 ```
 
-The scanning user's iLink ID becomes the default owner only when no explicit
-user allowlist is configured. Setting `IMCODEX_WEIXIN_ALLOWED_USER_IDS`
-replaces that default, so include the scanning owner explicitly if it should
-remain admitted:
+The scanning user's iLink ID becomes the default user restriction when the
+user list is empty. Setting `IMCODEX_WEIXIN_ALLOWED_USER_IDS=*` deliberately
+uses the broader platform scope; a concrete list replaces the owner default:
 
 ```env
 IMCODEX_WEIXIN_ALLOWED_USER_IDS=owner@im.wechat

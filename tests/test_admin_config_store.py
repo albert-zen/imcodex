@@ -508,6 +508,43 @@ def test_qq_cannot_be_enabled_without_credentials(tmp_path: Path) -> None:
     assert updated.values["IMCODEX_QQ_ENABLED"] is True
 
 
+def test_channel_access_none_must_not_be_combined_with_other_ids(tmp_path: Path) -> None:
+    store = ConfigStore(tmp_path / ".env", environ={})
+
+    with pytest.raises(ConfigValidationError, match="cannot be combined"):
+        store.update(
+            expected_revision=store.read().revision,
+            values={"IMCODEX_QQ_ALLOWED_USER_IDS": "none,owner"},
+        )
+
+    updated = store.update(
+        expected_revision=store.read().revision,
+        values={
+            "IMCODEX_QQ_ALLOWED_USER_IDS": "none",
+            "IMCODEX_QQ_ACCESS_MATCH": "all",
+        },
+    )
+    assert updated.values["IMCODEX_QQ_ALLOWED_USER_IDS"] == "none"
+    assert updated.values["IMCODEX_QQ_ACCESS_MATCH"] == "all"
+
+
+def test_enabling_channel_validates_existing_access_policy(tmp_path: Path) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        "IMCODEX_QQ_APP_ID=app-id\n"
+        "IMCODEX_QQ_CLIENT_SECRET=secret\n"
+        "IMCODEX_QQ_ACCESS_MATCH=bogus\n",
+        encoding="utf-8",
+    )
+    store = ConfigStore(path, environ={})
+
+    with pytest.raises(ConfigValidationError, match="access restrictions are invalid"):
+        store.update(
+            expected_revision=store.read().revision,
+            values={"IMCODEX_QQ_ENABLED": True},
+        )
+
+
 def test_telegram_requires_a_token_or_usable_private_token_file(
     tmp_path: Path,
 ) -> None:

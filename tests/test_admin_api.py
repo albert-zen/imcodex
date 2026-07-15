@@ -151,6 +151,9 @@ def test_admin_frontend_uses_native_catalog_and_authoritative_restart_state(
     assert "state.restartPending = state.restartPending ||" not in script
     assert "if (!model || !Array.isArray(model.supportedReasoningEfforts)) return;" in script
     assert 'const modelValue = state.nativeDraft.get("model");' not in script
+    assert 'sectionId === "weixin"' in script
+    assert 'return userUsesQrOwner ? "QR owner only"' in script
+    assert 'if (disclosure) disclosure.open = true;' in script
 
 
 def test_admin_config_api_never_returns_secrets_and_requires_csrf(
@@ -173,7 +176,11 @@ def test_admin_config_api_never_returns_secrets_and_requires_csrf(
     assert "UNKNOWN" not in response.text
     qq = next(section for section in body["sections"] if section["id"] == "qq")
     secret = next(field for field in qq["fields"] if field["key"] == "IMCODEX_QQ_CLIENT_SECRET")
+    access_match = next(field for field in qq["fields"] if field["key"] == "IMCODEX_QQ_ACCESS_MATCH")
     assert secret["secretConfigured"] is True
+    assert access_match["default"] == "any"
+    assert access_match["options"] == ["any", "all"]
+    assert access_match["advanced"] is True
     assert "value" not in secret
 
     payload = {

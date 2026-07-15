@@ -7,7 +7,7 @@ import importlib.util
 from pathlib import Path
 from typing import Callable
 
-from .channels import parse_id_set
+from .channels.access import ChannelAccessPolicy
 from .channels.feishu import FeishuChannelAdapter
 from .channels.telegram import read_telegram_bot_token_file
 from .channels.weixin_ilink import ILinkError, WeixinILinkTransport
@@ -64,7 +64,7 @@ def run_channels_cli(
                 )
                 credentials = await flow.login(timeout_s=args.timeout)
                 output(f"Account: {credentials.account_id}")
-                output(f"Owner: {credentials.owner_user_id or '(configure allowlist)'}")
+                output(f"Owner: {credentials.owner_user_id or '(not reported by platform)'}")
                 output(f"State: {state_store.root}")
                 output("Restart the bridge to load the new Weixin credentials.")
             finally:
@@ -103,11 +103,16 @@ def _list_channels(settings: Settings, *, output: Callable[[str], object]) -> in
 
 def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
     failures: list[str] = []
+    for channel_id, config in settings.channel_configs().items():
+        if not bool(config.get("enabled")):
+            continue
+        try:
+            ChannelAccessPolicy.from_config(config)
+        except ValueError as exc:
+            failures.append(f"{channel_id}: invalid access restrictions ({exc})")
     if settings.qq_enabled:
         if not settings.qq_app_id or not settings.qq_client_secret:
             failures.append("qq: missing App ID or Client Secret")
-        if not parse_id_set(settings.qq_allowed_user_ids):
-            failures.append("qq: no allowed user IDs (all inbound messages will be denied)")
     if settings.telegram_enabled:
         token_file_ok = False
         token_file_invalid = False
@@ -119,8 +124,6 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
                 failures.append(f"telegram: {exc}")
         if not settings.telegram_bot_token.strip() and not token_file_ok and not token_file_invalid:
             failures.append("telegram: missing bot token or readable token file")
-        if not parse_id_set(settings.telegram_allowed_user_ids):
-            failures.append("telegram: no allowed user IDs (all inbound messages will be denied)")
     if settings.feishu_enabled:
         if not settings.feishu_app_id or not settings.feishu_app_secret:
             failures.append("feishu: missing App ID or App Secret")
@@ -130,8 +133,6 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
             failures.append(f"feishu: invalid domain ({exc})")
         if importlib.util.find_spec("lark_channel") is None:
             failures.append("feishu: optional dependency missing; install .[feishu]")
-        if not parse_id_set(settings.feishu_allowed_user_ids):
-            failures.append("feishu: no allowed user IDs (all inbound messages will be denied)")
     if settings.weixin_enabled:
         state_store = WeixinStateStore(_weixin_state_dir(settings))
         try:
@@ -142,8 +143,6 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
         else:
             if credentials is None:
                 failures.append("weixin: not logged in; run channels login weixin")
-            elif not credentials.owner_user_id and not parse_id_set(settings.weixin_allowed_user_ids):
-                failures.append("weixin: no owner ID or configured allowed user IDs")
     if failures:
         output("Channel doctor found configuration problems:")
         for failure in failures:

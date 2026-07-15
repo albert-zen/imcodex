@@ -70,6 +70,7 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_DEBUG_API_ENABLED",
         "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS",
         "IMCODEX_FEISHU_ALLOWED_USER_IDS",
+        "IMCODEX_FEISHU_ACCESS_MATCH",
         "IMCODEX_FEISHU_APP_ID",
         "IMCODEX_FEISHU_APP_SECRET",
         "IMCODEX_FEISHU_DOMAIN",
@@ -86,6 +87,7 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_OUTBOUND_WEBHOOK_TOKEN",
         "IMCODEX_QQ_ALLOWED_CONVERSATION_IDS",
         "IMCODEX_QQ_ALLOWED_USER_IDS",
+        "IMCODEX_QQ_ACCESS_MATCH",
         "IMCODEX_QQ_API_BASE",
         "IMCODEX_QQ_APP_ID",
         "IMCODEX_QQ_CLIENT_SECRET",
@@ -96,6 +98,7 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_SERVICE_NAME",
         "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS",
         "IMCODEX_TELEGRAM_ALLOWED_USER_IDS",
+        "IMCODEX_TELEGRAM_ACCESS_MATCH",
         "IMCODEX_TELEGRAM_API_BASE",
         "IMCODEX_TELEGRAM_BOT_TOKEN",
         "IMCODEX_TELEGRAM_BOT_TOKEN_FILE",
@@ -104,6 +107,7 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_TELEGRAM_REQUIRE_MENTION",
         "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS",
         "IMCODEX_WEIXIN_ALLOWED_USER_IDS",
+        "IMCODEX_WEIXIN_ACCESS_MATCH",
         "IMCODEX_WEIXIN_ENABLED",
         "IMCODEX_WEIXIN_POLL_TIMEOUT_MS",
         "IMCODEX_WEIXIN_STATE_DIR",
@@ -263,12 +267,14 @@ class Settings:
     app_server_reconnect_jitter_fraction: float = 0.25
     qq_allowed_user_ids: str = ""
     qq_allowed_conversation_ids: str = ""
+    qq_access_match: str = "any"
     telegram_enabled: bool = False
     telegram_bot_token: str = ""
     telegram_bot_token_file: Path | None = None
     telegram_api_base: str = "https://api.telegram.org"
     telegram_allowed_user_ids: str = ""
     telegram_allowed_conversation_ids: str = ""
+    telegram_access_match: str = "any"
     telegram_require_mention: bool = True
     telegram_poll_timeout_s: int = 30
     feishu_enabled: bool = False
@@ -277,12 +283,14 @@ class Settings:
     feishu_domain: str = "feishu"
     feishu_allowed_user_ids: str = ""
     feishu_allowed_conversation_ids: str = ""
+    feishu_access_match: str = "any"
     feishu_require_mention: bool = True
     feishu_startup_timeout_s: float = 30.0
     weixin_enabled: bool = False
     weixin_state_dir: Path | None = None
     weixin_allowed_user_ids: str = ""
     weixin_allowed_conversation_ids: str = ""
+    weixin_access_match: str = "any"
     weixin_poll_timeout_ms: int = 35_000
     outbound_webhook_token: str = ""
     inbound_webhook_token: str = ""
@@ -310,6 +318,7 @@ class Settings:
                 "markdown_enabled": self.qq_markdown_enabled,
                 "allowed_user_ids": self.qq_allowed_user_ids,
                 "allowed_conversation_ids": self.qq_allowed_conversation_ids,
+                "access_match": self.qq_access_match,
             },
             "telegram": {
                 "enabled": self.telegram_enabled,
@@ -318,6 +327,7 @@ class Settings:
                 "api_base": self.telegram_api_base,
                 "allowed_user_ids": self.telegram_allowed_user_ids,
                 "allowed_conversation_ids": self.telegram_allowed_conversation_ids,
+                "access_match": self.telegram_access_match,
                 "require_mention": self.telegram_require_mention,
                 "poll_timeout_s": self.telegram_poll_timeout_s,
                 "state_dir": self.data_dir / "channels" / "telegram",
@@ -329,6 +339,7 @@ class Settings:
                 "domain": self.feishu_domain,
                 "allowed_user_ids": self.feishu_allowed_user_ids,
                 "allowed_conversation_ids": self.feishu_allowed_conversation_ids,
+                "access_match": self.feishu_access_match,
                 "require_mention": self.feishu_require_mention,
                 "startup_timeout_s": self.feishu_startup_timeout_s,
             },
@@ -337,6 +348,7 @@ class Settings:
                 "state_dir": self.weixin_state_dir or self.data_dir / "channels" / "weixin",
                 "allowed_user_ids": self.weixin_allowed_user_ids,
                 "allowed_conversation_ids": self.weixin_allowed_conversation_ids,
+                "access_match": self.weixin_access_match,
                 "poll_timeout_ms": self.weixin_poll_timeout_ms,
             },
         }
@@ -402,6 +414,7 @@ class Settings:
             ),
             qq_allowed_user_ids=_env("IMCODEX_QQ_ALLOWED_USER_IDS", "", dotenv),
             qq_allowed_conversation_ids=_env("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            qq_access_match=_env("IMCODEX_QQ_ACCESS_MATCH", "any", dotenv),
             telegram_enabled=_env_bool("IMCODEX_TELEGRAM_ENABLED", False, dotenv),
             telegram_bot_token=_env("IMCODEX_TELEGRAM_BOT_TOKEN", "", dotenv),
             telegram_bot_token_file=(
@@ -410,6 +423,7 @@ class Settings:
             telegram_api_base=_env("IMCODEX_TELEGRAM_API_BASE", "https://api.telegram.org", dotenv),
             telegram_allowed_user_ids=_env("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "", dotenv),
             telegram_allowed_conversation_ids=_env("IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            telegram_access_match=_env("IMCODEX_TELEGRAM_ACCESS_MATCH", "any", dotenv),
             telegram_require_mention=_env_bool("IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv),
             telegram_poll_timeout_s=_env_int("IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv),
             feishu_enabled=_env_bool("IMCODEX_FEISHU_ENABLED", False, dotenv),
@@ -426,12 +440,14 @@ class Settings:
             feishu_domain=_env("IMCODEX_FEISHU_DOMAIN", "feishu", dotenv),
             feishu_allowed_user_ids=_env("IMCODEX_FEISHU_ALLOWED_USER_IDS", "", dotenv),
             feishu_allowed_conversation_ids=_env("IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            feishu_access_match=_env("IMCODEX_FEISHU_ACCESS_MATCH", "any", dotenv),
             feishu_require_mention=_env_bool("IMCODEX_FEISHU_REQUIRE_MENTION", True, dotenv),
             feishu_startup_timeout_s=_env_float("IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv),
             weixin_enabled=_env_bool("IMCODEX_WEIXIN_ENABLED", False, dotenv),
             weixin_state_dir=(Path(path) if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip()) else None),
             weixin_allowed_user_ids=_env("IMCODEX_WEIXIN_ALLOWED_USER_IDS", "", dotenv),
             weixin_allowed_conversation_ids=_env("IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            weixin_access_match=_env("IMCODEX_WEIXIN_ACCESS_MATCH", "any", dotenv),
             weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
             outbound_webhook_token=_env("IMCODEX_OUTBOUND_WEBHOOK_TOKEN", "", dotenv),
             inbound_webhook_token=_env("IMCODEX_INBOUND_WEBHOOK_TOKEN", "", dotenv),

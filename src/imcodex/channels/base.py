@@ -57,7 +57,7 @@ class BaseChannelAdapter(ABC):
         access_policy: ChannelAccessPolicy | None = None,
     ) -> None:
         self.middleware = middleware
-        self.access_policy = access_policy or ChannelAccessPolicy(allowed_user_ids=frozenset())
+        self.access_policy = access_policy or ChannelAccessPolicy()
         self._access_denial_limiter = _AccessDenialLimiter()
 
     def inbound_allowed(self, inbound: InboundMessage) -> bool:
@@ -68,34 +68,22 @@ class BaseChannelAdapter(ABC):
 
     @property
     def inbound_access_ready(self) -> bool:
-        return self.access_policy.has_allowed_users
+        return True
 
     def access_policy_health(self) -> dict[str, object]:
-        if not self.access_policy.has_allowed_users:
-            mode = "deny_all"
-        elif "*" in self.access_policy.allowed_user_ids and (
-            not self.access_policy.allowed_conversation_ids
-            or "*" in self.access_policy.allowed_conversation_ids
-        ):
-            mode = "open"
-        else:
-            mode = "restricted"
         return {
             "inbound_access_ready": self.inbound_access_ready,
-            "access_policy_mode": mode,
-            "allowed_user_count": len(self.access_policy.allowed_user_ids),
-            "allowed_conversation_count": len(self.access_policy.allowed_conversation_ids),
+            "access_policy_mode": self.access_policy.mode,
+            "access_match": self.access_policy.access_match,
+            "allowed_user_count": len(self.access_policy.restricted_user_ids),
+            "allowed_conversation_count": len(self.access_policy.restricted_conversation_ids),
         }
 
     def prepare_access_denial_report(self) -> int | None:
         return self._access_denial_limiter.note()
 
     def emit_access_denial(self, inbound: InboundMessage, suppressed: int) -> None:
-        denial_reason = (
-            "no_allowed_users"
-            if not self.access_policy.has_allowed_users
-            else "user_or_conversation_not_allowed"
-        )
+        denial_reason = "access_denied_all" if self.access_policy.denies_all else "access_restriction_not_matched"
         logger.warning(
             "%s inbound message blocked by access policy user_id=%s conversation_id=%s suppressed_since_last=%d",
             self.channel_id,
@@ -123,9 +111,7 @@ class BaseChannelAdapter(ABC):
 
     def ensure_outbound_allowed(self, message: OutboundMessage) -> None:
         user_id = str(self._last_inbound_user_id(message) or self._conversation_user_id(message.conversation_id) or "")
-        if not user_id and "*" in self.access_policy.allowed_user_ids:
-            user_id = "*"
-        if user_id and self.access_policy.allows(
+        if self.access_policy.allows(
             user_id=user_id,
             conversation_id=message.conversation_id,
         ):

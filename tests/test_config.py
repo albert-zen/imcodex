@@ -104,6 +104,7 @@ def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner,backup")
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "c2c:owner")
+    monkeypatch.setenv("IMCODEX_QQ_ACCESS_MATCH", "all")
 
     settings = Settings.from_env()
     monkeypatch.chdir(Path(__file__).resolve().parents[1])
@@ -111,6 +112,7 @@ def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
     config = settings.channel_configs()["qq"]
     assert config["allowed_user_ids"] == "owner,backup"
     assert config["allowed_conversation_ids"] == "c2c:owner"
+    assert config["access_match"] == "all"
 
 
 def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
@@ -128,6 +130,7 @@ def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
     assert config["enabled"] is True
     assert config["bot_token_file"] == Path("telegram-token.txt")
     assert config["allowed_user_ids"] == "42"
+    assert config["access_match"] == "any"
     assert config["require_mention"] is False
     assert config["poll_timeout_s"] == 20
     assert config["state_dir"] == Path(".imcodex/channels/telegram")
@@ -151,6 +154,7 @@ def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_
     assert config["app_secret"] == "secret"
     assert config["domain"] == "lark"
     assert config["allowed_user_ids"] == "ou_owner"
+    assert config["access_match"] == "any"
     assert config["startup_timeout_s"] == 12.5
 
 
@@ -205,6 +209,7 @@ def test_settings_reads_weixin_channel_config(monkeypatch, tmp_path) -> None:
     assert config["enabled"] is True
     assert config["state_dir"] == Path(".weixin-state")
     assert config["allowed_user_ids"] == "owner@im.wechat"
+    assert config["access_match"] == "any"
     assert config["poll_timeout_ms"] == 25000
 
 

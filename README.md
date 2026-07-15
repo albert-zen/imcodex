@@ -229,8 +229,9 @@ Built-in channel support now includes:
 | Weixin | Tencent iLink long polling | Direct text only | Experimental |
 | Generic webhook | HTTP | Trusted adapter injection | Loopback-only by default |
 
-All remote IM adapters use stable platform user IDs for admission. An empty
-allowlist denies every inbound user; `*` is an explicit opt-out, not a default.
+Remote IM adapters accept the platform-delivered scope by default. Optional
+stable user and conversation restrictions can be combined with `any` (default)
+or `all`; `none` explicitly accepts nobody without disconnecting the channel.
 Group adapters require an explicit mention by default.
 
 Inspect and validate channel configuration without revealing credentials:
@@ -247,7 +248,7 @@ pip install -e ".[feishu]"
 ```
 
 See [Channel setup and security](docs/channels.md) for platform creation,
-permissions, allowlist discovery, QR login, Windows notes, and troubleshooting.
+optional access restrictions, QR login, Windows notes, and troubleshooting.
 
 ## Inbound Webhook
 
@@ -335,13 +336,22 @@ delay, and jitter must be between `0` and `1`.
 - `IMCODEX_QQ_CLIENT_SECRET`: QQ bot AppSecret
 - `IMCODEX_QQ_API_BASE`: QQ API base, default `https://api.sgroup.qq.com`
 - `IMCODEX_QQ_MARKDOWN_ENABLED`: send QQ outbound messages as Markdown rich text with plain-text fallback, default `true`
-- `IMCODEX_QQ_ALLOWED_USER_IDS`: comma-separated QQ sender openids; empty denies all
+- `IMCODEX_QQ_ALLOWED_USER_IDS`: optional QQ sender openids; empty or `*` adds no user restriction, `none` accepts nobody
+- `IMCODEX_QQ_ALLOWED_CONVERSATION_IDS`: optional normalized private/group conversation IDs
+- `IMCODEX_QQ_ACCESS_MATCH`: combine concrete user and conversation restrictions with `any` (default) or `all`
 - `IMCODEX_TELEGRAM_ENABLED`: enable Telegram Bot API long polling, default `false`
 - `IMCODEX_TELEGRAM_BOT_TOKEN_FILE`: preferred local file containing the Telegram bot token
-- `IMCODEX_TELEGRAM_ALLOWED_USER_IDS`: comma-separated numeric Telegram user IDs; empty denies all
+- `IMCODEX_TELEGRAM_ALLOWED_USER_IDS`: optional numeric user IDs; empty or `*` adds no user restriction, `none` accepts nobody
+- `IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS`: optional normalized chat or topic IDs
+- `IMCODEX_TELEGRAM_ACCESS_MATCH`: combine concrete user and conversation restrictions with `any` (default) or `all`
 - `IMCODEX_FEISHU_ENABLED`: enable Feishu/Lark websocket ingress, default `false`
 - `IMCODEX_FEISHU_DOMAIN`: `feishu` or `lark`
-- `IMCODEX_FEISHU_ALLOWED_USER_IDS`: comma-separated sender open_ids; empty denies all
+- `IMCODEX_FEISHU_ALLOWED_USER_IDS`: optional sender open_ids; empty or `*` adds no user restriction, `none` accepts nobody
+- `IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS`: optional normalized chat or thread IDs
+- `IMCODEX_FEISHU_ACCESS_MATCH`: combine concrete user and conversation restrictions with `any` (default) or `all`
 - `IMCODEX_WEIXIN_ENABLED`: enable experimental Tencent iLink direct messaging, default `false`
 - `IMCODEX_WEIXIN_STATE_DIR`: private credential/cursor/context-token directory; defaults under `IMCODEX_DATA_DIR`
+- `IMCODEX_WEIXIN_ALLOWED_USER_IDS`: optional iLink user IDs; empty uses the QR owner, `*` uses platform scope, `none` accepts nobody
+- `IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS`: optional normalized direct-conversation IDs
+- `IMCODEX_WEIXIN_ACCESS_MATCH`: combine concrete owner/user and conversation restrictions with `any` (default) or `all`
 - `IMCODEX_PYTHON`: Python executable used by helper scripts, default `python`

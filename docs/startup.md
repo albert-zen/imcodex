@@ -287,12 +287,13 @@ HTTP/app-server path available while channel health reports the retry. Check
 `.imcodex-run/current/health.json` under `channels.<channel-id>` for status,
 retry delay, and the latest connection error type.
 
-Transport `connected: true` alone does not mean an IM channel can accept
-messages. Enabled remote channels also report `inbound_access_ready` and
-`access_policy_mode`; an empty user allowlist keeps the transport online for
-safe owner-ID discovery but marks the bridge's top-level health `degraded`.
-Run `python -m imcodex channels doctor` in deployment checks and after channel
-configuration changes.
+Enabled remote channels report `inbound_access_ready` and the derived
+`access_policy_mode` alongside transport connectivity. Empty restrictions are
+healthy and use the platform-delivered scope. An intentional `none` policy is
+reported as `deny_all` but also remains ready because the configured mute is
+working as requested. Run `python -m imcodex channels doctor` in deployment
+checks and after channel configuration changes; doctor validates credentials,
+dependencies, and transport prerequisites rather than requiring an access list.
 
 ### External TCP WebSocket compatibility
 

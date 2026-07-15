@@ -400,6 +400,29 @@ class ConfigStore:
         def configured(key: str) -> bool:
             return bool(str(raw(key) or "").strip())
 
+        from ..channels.access import ChannelAccessPolicy
+
+        for prefix in ("QQ", "TELEGRAM", "FEISHU", "WEIXIN"):
+            enabled_key = f"IMCODEX_{prefix}_ENABLED"
+            access_keys = (
+                f"IMCODEX_{prefix}_ALLOWED_USER_IDS",
+                f"IMCODEX_{prefix}_ALLOWED_CONVERSATION_IDS",
+                f"IMCODEX_{prefix}_ACCESS_MATCH",
+            )
+            channel_touched = any(key.startswith(f"IMCODEX_{prefix}_") for key in replacements)
+            if not touched(*access_keys) and not (channel_touched and enabled(enabled_key)):
+                continue
+            try:
+                ChannelAccessPolicy.from_config(
+                    {
+                        "allowed_user_ids": raw(access_keys[0]),
+                        "allowed_conversation_ids": raw(access_keys[1]),
+                        "access_match": raw(access_keys[2]),
+                    }
+                )
+            except ValueError as exc:
+                raise ConfigValidationError(f"{prefix.title()} access restrictions are invalid: {exc}") from exc
+
         qq_keys = (
             "IMCODEX_QQ_ENABLED",
             "IMCODEX_QQ_APP_ID",

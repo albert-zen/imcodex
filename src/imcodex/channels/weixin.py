@@ -49,7 +49,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     ) -> None:
         super().__init__(
             middleware=middleware,
-            access_policy=access_policy or ChannelAccessPolicy(allowed_user_ids=frozenset()),
+            access_policy=access_policy or ChannelAccessPolicy(),
         )
         self.enabled = enabled
         self.state_dir = Path(state_dir)
@@ -82,15 +82,11 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             return
         credentials = self._validated_credentials()
         self._credentials = credentials
-        if not self.access_policy.has_allowed_users and credentials.owner_user_id:
+        if not self.access_policy.allowed_user_ids and not self.access_policy.denies_all and credentials.owner_user_id:
             self.access_policy = ChannelAccessPolicy(
                 allowed_user_ids=frozenset({credentials.owner_user_id}),
                 allowed_conversation_ids=self.access_policy.allowed_conversation_ids,
-            )
-        if not self.access_policy.has_allowed_users:
-            logger.warning(
-                "Weixin has no owner or allowed user IDs; inbound messages will be denied. "
-                "Re-run login or set IMCODEX_WEIXIN_ALLOWED_USER_IDS."
+                access_match=self.access_policy.access_match,
             )
         self._state = self.state_store.load_transport_state()
         if self._state.account_id != credentials.account_id:

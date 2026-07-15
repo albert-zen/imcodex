@@ -116,11 +116,6 @@ class QQChannelAdapter(BaseChannelAdapter):
         if not self.enabled:
             return
         self.validate_startup_configuration()
-        if not self.access_policy.has_allowed_users:
-            logger.warning(
-                "QQ has no allowed user IDs; inbound messages will be denied. "
-                "Set IMCODEX_QQ_ALLOWED_USER_IDS after discovering the owner's stable openid."
-            )
         self._stop_event.clear()
         self._ready_event.clear()
         self._ensure_inbound_worker()

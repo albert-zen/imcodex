@@ -41,7 +41,7 @@ It MUST:
   Codex execution
 - bind the admitted stable sender ID to IM reply context and recheck it before
   platform delivery; a stale native binding must not bypass a revoked channel
-  allowlist
+  access restriction
 - hand normalized input off promptly from platform-owned callback threads so
   socket readers never wait for Codex turn work
 - allow a bridge-owned long-poll loop to wait for native acceptance and reply
@@ -230,6 +230,14 @@ it MUST:
   the managed `.env` remain editable there
 - never return stored secret values to the browser or diagnostics; secret
   fields MUST use explicit preserve, replace, and clear operations
+
+Remote channel access policy MUST remain a small adapter-owned gate over stable
+platform identifiers. Empty lists and `*` mean that dimension is unrestricted;
+`none` explicitly denies all; concrete user and conversation dimensions combine
+with `any` by default or `all` when configured. Derived labels such as
+`platform`, `restricted_any`, `restricted_all`, and `deny_all` are diagnostics,
+not persisted policy state. An intentional `deny_all` policy MUST NOT make
+transport readiness degraded.
 
 The console MUST remain loopback-only even when other IMCodex HTTP routes bind
 to a non-loopback interface. Every console request MUST pass both a loopback

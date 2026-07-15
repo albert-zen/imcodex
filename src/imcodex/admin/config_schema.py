@@ -65,6 +65,7 @@ class ConfigFieldDefinition:
     aliases: tuple[str, ...] = ()
     environment_group: tuple[str, ...] = ()
     validation: Literal["none", "http_url", "outbound_url", "app_server_url"] = "none"
+    advanced: bool = False
 
     @property
     def secret(self) -> bool:
@@ -159,6 +160,8 @@ class ConfigFieldDefinition:
             result["minimum"] = self.minimum
         if self.maximum is not None:
             result["maximum"] = self.maximum
+        if self.advanced:
+            result["advanced"] = True
         return result
 
     def _validate_range(self, value: int | float) -> None:
@@ -386,7 +389,7 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         "Enabled",
         "boolean",
         False,
-        description="Requires an App ID and client secret. An empty user allowlist still denies every inbound message.",
+        description="Requires an App ID and client secret. Messages are accepted within QQ's platform scope by default.",
     ),
     _field("IMCODEX_QQ_APP_ID", "qq", "App ID"),
     _field(
@@ -409,16 +412,28 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
     _field(
         "IMCODEX_QQ_ALLOWED_USER_IDS",
         "qq",
-        "Allowed user IDs",
-        description="Comma-separated stable IDs. Empty denies all users; * explicitly allows all users.",
+        "Limit to user IDs",
+        description="Comma-separated stable IDs. Empty or * adds no user restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
     ),
     _field(
         "IMCODEX_QQ_ALLOWED_CONVERSATION_IDS",
         "qq",
-        "Allowed conversations",
-        description="Optional comma-separated conversation IDs. Empty allows every conversation for an allowed user.",
+        "Limit to conversations",
+        description="Comma-separated conversation IDs. Empty or * adds no conversation restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
+    ),
+    _field(
+        "IMCODEX_QQ_ACCESS_MATCH",
+        "qq",
+        "When both limits are set",
+        "select",
+        "any",
+        options=("any", "all"),
+        description="any accepts a matching user or conversation; all requires both to match.",
+        advanced=True,
     ),
     _field(
         "IMCODEX_TELEGRAM_ENABLED",
@@ -426,7 +441,7 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         "Enabled",
         "boolean",
         False,
-        description="Requires a bot token or private token file. An empty user allowlist denies every inbound message.",
+        description="Requires a bot token or private token file. Messages are accepted within Telegram's platform scope by default.",
     ),
     _field(
         "IMCODEX_TELEGRAM_BOT_TOKEN_FILE",
@@ -453,16 +468,28 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
     _field(
         "IMCODEX_TELEGRAM_ALLOWED_USER_IDS",
         "telegram",
-        "Allowed user IDs",
-        description="Comma-separated stable IDs. Empty denies all users; * explicitly allows all users.",
+        "Limit to user IDs",
+        description="Comma-separated stable IDs. Empty or * adds no user restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
     ),
     _field(
         "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS",
         "telegram",
-        "Allowed conversations",
-        description="Optional comma-separated chat or topic IDs. Empty allows every conversation for an allowed user.",
+        "Limit to conversations",
+        description="Comma-separated chat or topic IDs. Empty or * adds no conversation restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
+    ),
+    _field(
+        "IMCODEX_TELEGRAM_ACCESS_MATCH",
+        "telegram",
+        "When both limits are set",
+        "select",
+        "any",
+        options=("any", "all"),
+        description="any accepts a matching user or conversation; all requires both to match.",
+        advanced=True,
     ),
     _field(
         "IMCODEX_TELEGRAM_REQUIRE_MENTION",
@@ -486,7 +513,7 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         "Enabled",
         "boolean",
         False,
-        description="Requires the Feishu extra plus an App ID and app secret. An empty user allowlist denies every inbound message.",
+        description="Requires the Feishu extra plus an App ID and app secret. Messages follow the app's tenant visibility by default.",
     ),
     _field("IMCODEX_FEISHU_APP_ID", "feishu", "App ID", aliases=("IMCODEX_LARK_APP_ID",)),
     _field(
@@ -509,16 +536,28 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
     _field(
         "IMCODEX_FEISHU_ALLOWED_USER_IDS",
         "feishu",
-        "Allowed user IDs",
-        description="Comma-separated stable IDs. Empty denies all users; * explicitly allows all users.",
+        "Limit to user IDs",
+        description="Comma-separated stable IDs. Empty or * adds no user restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
     ),
     _field(
         "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS",
         "feishu",
-        "Allowed conversations",
-        description="Optional comma-separated chat IDs. Empty allows every conversation for an allowed user.",
+        "Limit to conversations",
+        description="Comma-separated chat IDs. Empty or * adds no conversation restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
+    ),
+    _field(
+        "IMCODEX_FEISHU_ACCESS_MATCH",
+        "feishu",
+        "When both limits are set",
+        "select",
+        "any",
+        options=("any", "all"),
+        description="any accepts a matching user or conversation; all requires both to match.",
+        advanced=True,
     ),
     _field("IMCODEX_FEISHU_REQUIRE_MENTION", "feishu", "Require mention", "boolean", True),
     _field(
@@ -547,16 +586,28 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
     _field(
         "IMCODEX_WEIXIN_ALLOWED_USER_IDS",
         "weixin",
-        "Allowed user IDs",
-        description="Optional comma-separated IDs added to the logged-in owner.",
+        "Limit to user IDs",
+        description="Empty auto-admits the logged-in owner; * adds no user restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
     ),
     _field(
         "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS",
         "weixin",
-        "Allowed conversations",
-        description="Optional comma-separated conversation IDs. Empty allows every conversation for an allowed user.",
+        "Limit to conversations",
+        description="Comma-separated conversation IDs. Empty or * adds no conversation restriction; none explicitly accepts nobody.",
         max_length=8192,
+        advanced=True,
+    ),
+    _field(
+        "IMCODEX_WEIXIN_ACCESS_MATCH",
+        "weixin",
+        "When both limits are set",
+        "select",
+        "any",
+        options=("any", "all"),
+        description="any accepts a matching user or conversation; all requires both to match.",
+        advanced=True,
     ),
     _field(
         "IMCODEX_WEIXIN_POLL_TIMEOUT_MS",

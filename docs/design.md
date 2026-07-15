@@ -36,6 +36,12 @@ The built-in transport set currently includes QQ, Telegram, Feishu/Lark, and
 experimental Tencent iLink Weixin. These are peer adapters over the same
 bridge contract; no channel owns a separate Codex agent or thread runtime.
 
+Remote adapters share one optional access-restriction model. Platform delivery
+is the default scope; stable user and conversation IDs can narrow that scope,
+and `any`/`all` selects how multiple active dimensions combine. This is an IM
+transport gate, not a second permission engine and not a prerequisite in the
+first connection flow.
+
 ## Visual Identity
 
 The product mark is a geometric `IM` monogram: a teal `I`, an ink-coloured

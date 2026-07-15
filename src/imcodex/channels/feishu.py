@@ -56,7 +56,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
     ) -> None:
         super().__init__(
             middleware=middleware,
-            access_policy=access_policy or ChannelAccessPolicy(allowed_user_ids=frozenset()),
+            access_policy=access_policy or ChannelAccessPolicy(),
         )
         self.enabled = enabled
         self.app_id = app_id.strip()
@@ -95,10 +95,6 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         if not self.enabled:
             return
         self.validate_startup_configuration()
-        if not self.access_policy.has_allowed_users:
-            logger.warning(
-                "Feishu has no allowed user IDs; inbound messages will be denied. Set IMCODEX_FEISHU_ALLOWED_USER_IDS."
-            )
         self._main_loop = asyncio.get_running_loop()
         self._stop_event.clear()
         self._inbound_queue = asyncio.Queue(maxsize=INBOUND_QUEUE_LIMIT)

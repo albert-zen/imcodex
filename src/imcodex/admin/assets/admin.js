@@ -1259,6 +1259,65 @@
     return wrapper;
   }
 
+  function accessRestrictionTokens(value) {
+    return String(value || "")
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function accessDisclosureStatus(fields, sectionId) {
+    const limitFields = fields.filter((field) =>
+      field.key.endsWith("_ALLOWED_USER_IDS") || field.key.endsWith("_ALLOWED_CONVERSATION_IDS"));
+    const tokenSets = limitFields.map((field) => accessRestrictionTokens(state.bridgeDraft.get(field.key)));
+    if (tokenSets.some((tokens) => tokens.includes("none"))) return "Accepts nobody";
+    const userUsesQrOwner = sectionId === "weixin" && tokenSets[0] && tokenSets[0].length === 0;
+    const activeLimits = tokenSets.filter((tokens, index) =>
+      (index === 0 && userUsesQrOwner) || (tokens.length > 0 && !tokens.includes("*"))).length;
+    if (activeLimits === 0) return "Platform scope";
+    if (activeLimits === 1) return userUsesQrOwner ? "QR owner only" : "1 active limit";
+    const matchField = fields.find((field) => field.key.endsWith("_ACCESS_MATCH"));
+    const match = String(matchField ? state.bridgeDraft.get(matchField.key) : "any");
+    return match === "all" ? "All limits must match" : "Any limit may match";
+  }
+
+  function makeAccessDisclosure(fields, sectionIndex, sectionId) {
+    const disclosure = createElement("details", "access-disclosure");
+    const summary = createElement("summary", "access-disclosure__summary");
+    const copy = createElement("span", "access-disclosure__copy");
+    copy.append(
+      createElement("strong", "", "Limit who can use this channel (optional)"),
+      createElement(
+        "span",
+        "",
+        sectionId === "weixin"
+          ? "Leave the user limit empty to use the QR login owner."
+          : "Leave empty to follow the platform's available conversations.",
+      ),
+    );
+    const status = createElement("span", "access-disclosure__status");
+    const refreshStatus = () => {
+      status.textContent = accessDisclosureStatus(fields, sectionId);
+      status.classList.toggle("is-deny-all", status.textContent === "Accepts nobody");
+    };
+    refreshStatus();
+    summary.append(copy, status);
+
+    const intro = createElement(
+      "p",
+      "access-disclosure__intro",
+      "Use stable user or conversation IDs only when you need a narrower scope. Clear both limits, then enter none in either field to stay connected while accepting nobody.",
+    );
+    const fieldList = createElement("div", "access-disclosure__fields");
+    fields.forEach((field, fieldIndex) => {
+      fieldList.append(renderBridgeField(field, sectionIndex, fieldIndex));
+    });
+    disclosure.addEventListener("input", refreshStatus);
+    disclosure.addEventListener("change", refreshStatus);
+    disclosure.append(summary, intro, fieldList);
+    return disclosure;
+  }
+
   function renderBridgeSettings() {
     const sections = Array.isArray(state.bridgeResponse && state.bridgeResponse.sections)
       ? state.bridgeResponse.sections
@@ -1321,7 +1380,7 @@
       card.dataset.sectionId = sectionId;
 
       const fieldsContainer = createElement("div", "config-card__fields");
-      fields.forEach((field, fieldIndex) => {
+      fields.forEach((field) => {
         const key = String(field.key);
         const normalizedField = { ...field, key };
         state.bridgeFields.set(key, normalizedField);
@@ -1333,8 +1392,17 @@
           state.bridgeBaseline.set(key, value);
           state.bridgeDraft.set(key, value);
         }
-        fieldsContainer.append(renderBridgeField(normalizedField, sectionIndex, fieldIndex));
       });
+
+      const normalizedFields = fields.map((field) => state.bridgeFields.get(String(field.key)));
+      const regularFields = normalizedFields.filter((field) => !field.advanced);
+      const advancedFields = normalizedFields.filter((field) => field.advanced);
+      regularFields.forEach((field, fieldIndex) => {
+        fieldsContainer.append(renderBridgeField(field, sectionIndex, fieldIndex));
+      });
+      if (advancedFields.length) {
+        fieldsContainer.append(makeAccessDisclosure(advancedFields, sectionIndex, sectionId));
+      }
 
       card.append(fieldsContainer);
       panel.append(card);
@@ -1435,6 +1503,8 @@
     if (firstInvalid) {
       const sectionId = state.fieldSection.get(firstInvalid.dataset.fieldKey);
       if (sectionId && sectionId !== state.activePanel) showPanel(sectionId);
+      const disclosure = firstInvalid.closest("details");
+      if (disclosure) disclosure.open = true;
       firstInvalid.scrollIntoView({ behavior: "smooth", block: "center" });
       const input = firstInvalid.querySelector("input:not([type=radio]), select, textarea");
       if (input) input.focus({ preventScroll: true });

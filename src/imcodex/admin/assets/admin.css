@@ -780,6 +780,110 @@ select:disabled {
   font-weight: 600;
 }
 
+.access-disclosure {
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 2.5%, var(--panel));
+}
+
+.access-disclosure__summary {
+  display: flex;
+  min-height: 70px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.access-disclosure__summary::-webkit-details-marker {
+  display: none;
+}
+
+.access-disclosure__summary::after {
+  content: "+";
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  font-family: var(--font-mono);
+  font-size: 16px;
+}
+
+.access-disclosure[open] > .access-disclosure__summary::after {
+  content: "−";
+}
+
+.access-disclosure__summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.access-disclosure__copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.access-disclosure__copy strong {
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.access-disclosure__copy span,
+.access-disclosure__intro {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.access-disclosure__status {
+  margin-left: auto;
+  padding: 4px 9px;
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 24%, transparent);
+  border-radius: 999px;
+  background: var(--ok-soft);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.access-disclosure__status.is-deny-all {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+.access-disclosure__intro {
+  margin: 0;
+  padding: 13px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.access-disclosure__fields {
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+@media (max-width: 640px) {
+  .access-disclosure__summary {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .access-disclosure__status {
+    order: 3;
+    margin-left: 0;
+  }
+}
+
 .card-footer {
   display: flex;
   min-height: 66px;

@@ -40,10 +40,13 @@ Codex access.
 
 Product behavior:
 
-- an empty channel user allowlist denies every inbound user
-- `*` is an explicit operator choice to admit every stable sender ID
-- optional conversation allowlists can narrow an admitted user to selected
-  private chats, groups, or topics
+- channel access restrictions are optional; empty lists or `*` accept messages
+  within the scope already delivered by the platform
+- `none`, used by itself in either list, explicitly accepts nobody while the
+  channel remains connected
+- concrete user and conversation IDs are independent restriction dimensions
+- when both dimensions are active, `access_match=any` (the default) accepts a
+  matching user or conversation, while `access_match=all` requires both
 - group-capable adapters require an explicit bot mention by default
 - topic/thread identifiers are part of the IM conversation identity so two
   platform topics do not silently share one native Codex thread
@@ -53,6 +56,8 @@ Product behavior:
   delivery after restart/reconciliation as well as new inbound use
 - admitted identities are full operators for this personal bridge, not
   low-privilege chat participants
+- disabling a channel remains the only way to disconnect it; access policy is
+  not a second enabled state
 
 The Weixin iLink adapter is an experimental direct-text transport. QR login
 sets the scanning user's stable iLink ID as the default owner. Enterprise

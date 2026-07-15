@@ -163,6 +163,43 @@ def test_channels_cli_doctor_reports_enabled_channel_without_secrets(
     assert "Bearer" not in rendered
 
 
+def test_channels_cli_doctor_accepts_qq_without_access_restrictions(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_QQ_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_QQ_APP_ID", "app-id")
+    monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "secret")
+    outputs: list[str] = []
+
+    result = run_channels_cli(["doctor"], output=outputs.append)
+
+    assert result == 0
+    assert outputs == ["Channel configuration looks ready."]
+
+
+@pytest.mark.parametrize("access_value", ["none,owner", "owner"])
+def test_channels_cli_doctor_rejects_invalid_access_policy(
+    monkeypatch,
+    tmp_path: Path,
+    access_value: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_QQ_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_QQ_APP_ID", "app-id")
+    monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", access_value)
+    if access_value == "owner":
+        monkeypatch.setenv("IMCODEX_QQ_ACCESS_MATCH", "bogus")
+    outputs: list[str] = []
+
+    result = run_channels_cli(["doctor"], output=outputs.append)
+
+    assert result == 1
+    assert "qq: invalid access restrictions" in "\n".join(outputs)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
 def test_channels_cli_doctor_rejects_insecure_telegram_token_file(
     monkeypatch,
