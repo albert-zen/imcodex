@@ -228,6 +228,14 @@ Import-DotEnv
 Enable-CondaEnv
 Resolve-TargetEnvironment
 
+# This capability is launcher-owned. Ignore inherited or .env assertions and
+# enable it only after the managed local App Server passes `core verify`.
+$env:IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET = ""
+$env:IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET = ""
+$script:DotEnvImportedValues.Remove("IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET") | Out-Null
+$script:DotEnvImportedValues.Remove("IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET") | Out-Null
+$isNativeWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+
 $python = Resolve-ImcodexPython
 $coreMode = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_MODE)) { "" } else { $env:IMCODEX_CORE_MODE.Trim() }
 $coreUrl = if ([string]::IsNullOrWhiteSpace($env:IMCODEX_CORE_URL)) { "" } else { $env:IMCODEX_CORE_URL.Trim() }
@@ -253,8 +261,6 @@ if (-not $coreUrl) {
 
 if (-not $appServerUrl -and -not $legacyCoreConfigured) {
     $appServerUrl = $coreUrl
-    $env:IMCODEX_APP_SERVER_URL = $appServerUrl
-    Add-LauncherReloadableKey "IMCODEX_APP_SERVER_URL"
     $ensureDedicatedCore = $true
 }
 
@@ -298,6 +304,10 @@ if ($ensureDedicatedCore -or (-not $appServerUrl -and $legacyCoreConfigured -and
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
+    }
+    if ($ensureDedicatedCore -and $isNativeWindows) {
+        $env:IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET = $coreUrl
+        $env:IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET = $coreUrl
     }
 }
 

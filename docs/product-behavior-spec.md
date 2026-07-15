@@ -158,9 +158,12 @@ native Codex model remains the authority for whether it can interpret the
 image; imcodex does not select a second vision model or run a fallback OCR
 pipeline. The bridge and App Server must share the staged-file namespace for
 image input. Bridge-child stdio and the normal Unix-socket daemon are the only
-accepted image topologies. TCP targets, including loopback, return an explicit
-image-input limitation while text use remains available; imcodex does not infer
-filesystem sharing from `localhost`.
+accepted image topologies by transport alone. The default native Windows
+launcher-managed TCP App Server is also accepted after its process identity is
+verified for the current connection epoch. Every explicitly configured TCP
+target, including loopback, returns an explicit image-input limitation while
+text use remains available; imcodex does not infer filesystem sharing from
+`localhost`.
 
 ## Command Surface
 

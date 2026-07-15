@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 from imcodex.config import Settings
-from imcodex.composition import build_runtime
+from imcodex.composition import _managed_core_shared_filesystem_verifier, build_runtime
 from imcodex.observability.runtime import ObservabilityRuntime
 from imcodex.runtime import AppRuntime
 
@@ -30,6 +31,150 @@ class _FakeClient:
 
     async def close(self) -> None:
         self.calls.append("client.close")
+
+
+@pytest.mark.asyncio
+async def test_managed_core_shared_filesystem_verifier_rechecks_current_manifest_each_time(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:8765"
+    verified_urls = iter([endpoint, "ws://127.0.0.1:9999"])
+    calls: list[object] = []
+
+    class Manager:
+        def __init__(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+        def verify(self, *, port: int):
+            calls.append(port)
+            return type("Manifest", (), {"url": next(verified_urls)})()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("imcodex.composition.DedicatedCoreManager", Manager)
+    settings = type(
+        "SettingsLike",
+        (),
+        {
+            "app_server_managed_target": endpoint,
+            "app_server_verified_shared_filesystem_target": endpoint,
+            "codex_bin": "codex",
+        },
+    )()
+
+    verifier = _managed_core_shared_filesystem_verifier(
+        settings=settings,
+        endpoint=endpoint,
+        os_name="nt",
+    )
+
+    assert verifier is not None
+    assert await verifier() is True
+    assert await verifier() is False
+    assert calls[1:] == [8765, 8765]
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["ws://localhost:8765", "wss://127.0.0.1:8765", "wss://core.example.test/rpc"],
+)
+def test_managed_core_shared_filesystem_verifier_rejects_noncanonical_targets(
+    endpoint: str,
+) -> None:
+    settings = type(
+        "SettingsLike",
+        (),
+        {
+            "app_server_managed_target": endpoint,
+            "app_server_verified_shared_filesystem_target": endpoint,
+            "codex_bin": "codex",
+        },
+    )()
+
+    assert (
+        _managed_core_shared_filesystem_verifier(
+            settings=settings,
+            endpoint=endpoint,
+            os_name="nt",
+        )
+        is None
+    )
+
+
+def test_managed_core_shared_filesystem_verifier_rejects_non_windows(
+    monkeypatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:8765"
+    monkeypatch.delenv("IMCODEX_DOTENV_IMPORTED_KEYS", raising=False)
+    settings = type(
+        "SettingsLike",
+        (),
+        {
+            "app_server_managed_target": endpoint,
+            "app_server_verified_shared_filesystem_target": endpoint,
+            "codex_bin": "codex",
+        },
+    )()
+
+    assert (
+        _managed_core_shared_filesystem_verifier(
+            settings=settings,
+            endpoint=endpoint,
+            os_name="posix",
+        )
+        is None
+    )
+
+
+def test_managed_core_shared_filesystem_verifier_rejects_dotenv_explicit_target(
+    monkeypatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:8765"
+    monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_APP_SERVER_URL")
+    settings = type(
+        "SettingsLike",
+        (),
+        {
+            "app_server_managed_target": endpoint,
+            "app_server_verified_shared_filesystem_target": endpoint,
+            "codex_bin": "codex",
+        },
+    )()
+
+    assert (
+        _managed_core_shared_filesystem_verifier(
+            settings=settings,
+            endpoint=endpoint,
+            os_name="nt",
+        )
+        is None
+    )
+
+
+def test_managed_core_shared_filesystem_verifier_rejects_explicit_process_target(
+    monkeypatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:8765"
+    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", endpoint)
+    monkeypatch.delenv("IMCODEX_DOTENV_IMPORTED_KEYS", raising=False)
+    settings = type(
+        "SettingsLike",
+        (),
+        {
+            "app_server_managed_target": endpoint,
+            "app_server_verified_shared_filesystem_target": endpoint,
+            "codex_bin": "codex",
+        },
+    )()
+
+    assert (
+        _managed_core_shared_filesystem_verifier(
+            settings=settings,
+            endpoint=endpoint,
+            os_name="nt",
+        )
+        is None
+    )
 
 
 class _FakeService:
@@ -258,6 +403,8 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=False,
         native_thread_tool_host=True,
+        app_server_managed_target="ws://127.0.0.1:8765",
+        app_server_verified_shared_filesystem_target="ws://127.0.0.1:8765",
         app_server_reconnect_initial_delay_s=0.6,
         app_server_reconnect_max_delay_s=45.0,
         app_server_reconnect_jitter_fraction=0.15,
@@ -272,12 +419,19 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
     assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
     assert runtime.client._experimental_api_enabled is True
+    assert runtime.client.supports_local_image_paths() is False
+    assert (runtime.client._shared_filesystem_verifier is not None) is (os.name == "nt")
     assert runtime.service.native_requests.native_thread_tool_host is True
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
     assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
     assert runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
     assert runtime.observability._pending_launch_snapshot["restartSupported"] is False
+
+    settings.app_server_verified_shared_filesystem_target = "ws://127.0.0.1:9999"
+    mismatched_runtime = build_runtime(settings)
+    assert mismatched_runtime.client.supports_local_image_paths() is False
+    assert mismatched_runtime.client._shared_filesystem_verifier is None
 
 
 @pytest.mark.asyncio
@@ -288,10 +442,18 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     monkeypatch.setenv("IMCODEX_QQ_ENABLED", "0")
     monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "do-not-persist")
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner-42")
-    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "ws://127.0.0.1:8765")
+    monkeypatch.delenv("IMCODEX_APP_SERVER_URL", raising=False)
+    monkeypatch.setenv(
+        "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
+        "ws://127.0.0.1:8765",
+    )
     monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "1")
+    monkeypatch.setenv(
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
+        "ws://127.0.0.1:8765",
+    )
     monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_QQ_ENABLED")
-    monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "IMCODEX_APP_SERVER_URL")
+    monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "")
     settings = Settings(
         data_dir=tmp_path / ".imcodex",
         run_dir=tmp_path / ".imcodex-run",
@@ -313,6 +475,8 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=True,
         native_thread_tool_host=True,
+        app_server_managed_target="ws://127.0.0.1:8765",
+        app_server_verified_shared_filesystem_target="ws://127.0.0.1:8765",
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
         inbound_webhook_token="do-not-persist",
@@ -338,12 +502,14 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert "IMCODEX_HTTP_PORT" in launch["reloadEnvKeys"]
     assert "IMCODEX_QQ_ENABLED" in launch["reloadEnvKeys"]
     assert launch["dotenvImportedKeys"] == ["IMCODEX_QQ_ENABLED"]
-    assert launch["launcherReloadableKeys"] == ["IMCODEX_APP_SERVER_URL"]
+    assert launch["launcherReloadableKeys"] == []
     required_external = set(launch["requiredExternalEnvKeys"])
     assert {
         "IMCODEX_QQ_ALLOWED_USER_IDS",
         "IMCODEX_QQ_CLIENT_SECRET",
         "IMCODEX_NATIVE_THREAD_TOOL_HOST",
+        "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
         "PATH",
     } <= required_external
     assert "do-not-persist" not in json.dumps(launch)

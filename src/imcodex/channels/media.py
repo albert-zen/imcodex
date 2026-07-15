@@ -32,7 +32,7 @@ MEDIA_CLEANUP_INTERVAL_S = 60 * 60
 MEDIA_LOCK_POLL_INTERVAL_S = 0.05
 MEDIA_LOCK_FILE_NAME = ".imcodex-spool.lock"
 MEDIA_PROCESS_TERMINATE_S = 1.0
-MEDIA_CANCELLATION_CLEANUP_S = 2.0
+MEDIA_CANCELLATION_CLEANUP_S = 10.0 if os.name == "nt" else 2.0
 
 IMAGE_TOO_LARGE = "image_too_large"
 TOO_MANY_IMAGES = "too_many_images"
@@ -613,6 +613,7 @@ def _stage_buffered_image(
     descriptor: int | None = None
     try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_BINARY", 0)
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         descriptor = os.open(part_path, flags, 0o600)
@@ -640,13 +641,20 @@ def _try_process_lock_path(
     *,
     create: bool,
 ) -> tuple[str, int | None]:
-    if _is_reparse_path(root):
-        raise RuntimeError("Inbound media directory must not be a symlink or junction")
+    _assert_no_reparse_ancestors(root)
     if not root.exists():
+        ancestor = root.parent
+        while not ancestor.exists() and ancestor != ancestor.parent:
+            if _is_reparse_path(ancestor):
+                raise RuntimeError("Inbound media path must not traverse a symlink or junction")
+            ancestor = ancestor.parent
+        if _is_reparse_path(ancestor) or not ancestor.is_dir():
+            raise RuntimeError("Inbound media parent path must be a directory")
         if not create:
             return "missing", None
         root.mkdir(parents=True, exist_ok=True)
-    if _is_reparse_path(root) or not root.is_dir():
+    _assert_no_reparse_ancestors(root)
+    if not root.is_dir():
         raise RuntimeError("Inbound media path must be a directory")
     _chmod_private_directory(root)
     root_identity = _path_identity(root)
@@ -662,7 +670,8 @@ def _try_process_lock_path(
         _chmod_private_file(lock_path)
         if _is_reparse_path(lock_path):
             raise RuntimeError("Inbound media lock must not be a symlink or junction")
-        if _is_reparse_path(root) or _path_identity(root) != root_identity:
+        _assert_no_reparse_ancestors(root)
+        if _path_identity(root) != root_identity:
             raise RuntimeError("Inbound media directory changed while locking")
         if _try_lock_descriptor(descriptor):
             return "acquired", descriptor
@@ -680,12 +689,12 @@ def _prepare_and_sweep_path(
     cutoff: float,
     max_entries: int,
 ) -> int:
-    if _is_reparse_path(root):
-        raise RuntimeError("Inbound media directory must not be a symlink or junction")
+    _assert_no_reparse_ancestors(root)
     if not root.exists() and not create:
         return 0
     root.mkdir(parents=True, exist_ok=True)
-    if _is_reparse_path(root) or not root.is_dir():
+    _assert_no_reparse_ancestors(root)
+    if not root.is_dir():
         raise RuntimeError("Inbound media path must be a directory")
     _chmod_private_directory(root)
     root_identity = _path_identity(root)
@@ -708,7 +717,8 @@ def _prepare_and_sweep_path(
             usage += stat_result.st_size
         except FileNotFoundError:
             continue
-    if _is_reparse_path(root) or _path_identity(root) != root_identity:
+    _assert_no_reparse_ancestors(root)
+    if _path_identity(root) != root_identity:
         raise RuntimeError("Inbound media directory changed during cleanup")
     return usage
 
@@ -938,6 +948,17 @@ def _is_reparse_path(path: Path) -> bool:
         return bool(getattr(path.lstat(), "st_reparse_tag", 0))
     except FileNotFoundError:
         return False
+
+
+def _assert_no_reparse_ancestors(path: Path) -> None:
+    current = path
+    while True:
+        if _is_reparse_path(current):
+            raise RuntimeError("Inbound media path must not traverse a symlink or junction")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
 
 
 def _path_identity(path: Path) -> tuple[int, int]:

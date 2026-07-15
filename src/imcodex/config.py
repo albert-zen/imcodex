@@ -10,6 +10,7 @@ from .app_server_target import AppServerTarget, resolve_app_server_target
 
 DOTENV_IMPORTED_KEYS_ENV = "IMCODEX_DOTENV_IMPORTED_KEYS"
 LAUNCHER_RELOADABLE_KEYS_ENV = "IMCODEX_LAUNCHER_RELOADABLE_KEYS"
+MANAGED_APP_SERVER_TARGET_ENV = "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET"
 PREFLIGHT_CURRENT_HTTP_HOST_ENV = "IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_HOST"
 PREFLIGHT_CURRENT_HTTP_PORT_ENV = "IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_PORT"
 RESTART_CONTEXT_ENV_KEYS = frozenset(
@@ -53,6 +54,8 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_APP_SERVER_CONNECT_TIMEOUT",
         "IMCODEX_APP_SERVER_EXPERIMENTAL_API",
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT",
+        MANAGED_APP_SERVER_TARGET_ENV,
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
         "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
         "IMCODEX_APP_SERVER_RECONNECT_JITTER",
@@ -173,6 +176,12 @@ def _env_bool(name: str, default: bool, dotenv: dict[str, str]) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _process_env_optional(name: str) -> str | None:
+    """Read a launcher-owned capability without accepting a .env assertion."""
+
+    return _optional_setting(os.getenv(name))
+
+
 def _env_int(name: str, default: int, dotenv: dict[str, str]) -> int:
     return int(_env(name, str(default), dotenv))
 
@@ -204,11 +213,13 @@ def _app_server_config_from_env(
         "IMCODEX_CORE_PORT",
     )
     process_values = tuple(_optional_setting(os.getenv(name)) for name in names)
-    values = (
-        process_values
-        if any(value is not None for value in process_values)
-        else tuple(_optional_setting(dotenv.get(name)) for name in names)
-    )
+    managed_target = _process_env_optional(MANAGED_APP_SERVER_TARGET_ENV)
+    if any(value is not None for value in process_values):
+        values = process_values
+    elif managed_target is not None:
+        values = (managed_target, None, None, None)
+    else:
+        values = tuple(_optional_setting(dotenv.get(name)) for name in names)
     app_server_url, core_url, core_mode, core_port = values
     if core_port is not None and app_server_url is None and core_url is None:
         try:
@@ -262,6 +273,8 @@ class Settings:
     app_server_connect_timeout_s: float = 3.0
     app_server_health_timeout_s: float = 1.0
     native_thread_tool_host: bool = False
+    app_server_managed_target: str | None = None
+    app_server_verified_shared_filesystem_target: str | None = None
     app_server_reconnect_initial_delay_s: float = 0.5
     app_server_reconnect_max_delay_s: float = 30.0
     app_server_reconnect_jitter_fraction: float = 0.25
@@ -402,6 +415,10 @@ class Settings:
             app_server_connect_timeout_s=_env_float("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv),
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
             native_thread_tool_host=_env_bool("IMCODEX_NATIVE_THREAD_TOOL_HOST", False, dotenv),
+            app_server_managed_target=_process_env_optional(MANAGED_APP_SERVER_TARGET_ENV),
+            app_server_verified_shared_filesystem_target=_process_env_optional(
+                "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
+            ),
             app_server_reconnect_initial_delay_s=_env_float(
                 "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
                 0.5,

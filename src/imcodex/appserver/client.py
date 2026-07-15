@@ -18,6 +18,7 @@ NotificationHandler = Callable[[JsonDict], Awaitable[None] | None]
 ServerRequestHandler = Callable[[JsonDict], Awaitable[None] | None]
 ConnectionResetHandler = Callable[[int], Awaitable[None] | None]
 ConnectionReadyHandler = Callable[[int], Awaitable[JsonDict | None] | JsonDict | None]
+SharedFilesystemVerifier = Callable[[], Awaitable[bool] | bool]
 _TRIMMED_THREAD_METHODS = frozenset({"thread/resume", "thread/fork", "thread/rollback"})
 _MAX_RECENT_THREAD_TURNS = 4
 _SERVER_REQUEST_LANE_NOTIFICATION_METHODS = frozenset({"serverRequest/resolved"})
@@ -143,6 +144,7 @@ class AppServerClient:
         supervisor,
         client_info: dict[str, str],
         experimental_api_enabled: bool = False,
+        shared_filesystem_verifier: SharedFilesystemVerifier | None = None,
         request_timeout_s: float = 15.0,
         request_retry_policy: RetryBackoff | None = None,
         reconnect_retry_policy: RetryBackoff | None = None,
@@ -154,6 +156,9 @@ class AppServerClient:
         self._supervisor = supervisor
         self._client_info = client_info
         self._experimental_api_enabled = experimental_api_enabled
+        self._shared_filesystem_verifier = shared_filesystem_verifier
+        self._verified_shared_filesystem = False
+        self._verified_shared_filesystem_epoch: int | None = None
         self._request_timeout_s = request_timeout_s
         self._request_retry_policy = request_retry_policy or RetryBackoff()
         self._reconnect_retry_policy = reconnect_retry_policy or RetryBackoff()
@@ -229,11 +234,23 @@ class AppServerClient:
         """Whether bridge-local paths are readable by the configured App Server."""
 
         target = self._supervisor.target
-        # TCP locality does not prove filesystem locality: localhost may be an
-        # SSH tunnel, a container boundary, or WSL. Only transports whose
-        # process boundary is local by construction may receive localImage
-        # paths without a separate media-transfer capability.
-        return target.transport in {"stdio-jsonl", "unix-websocket"}
+        # TCP locality alone does not prove filesystem locality: localhost may
+        # be an SSH tunnel, container boundary, or WSL. The Windows launcher
+        # adds the explicit capability only after its managed server passes
+        # manifest, process, listener, command, and health verification.
+        verified_tcp = (
+            self._verified_shared_filesystem
+            and self._verified_shared_filesystem_epoch == self.connection_epoch
+        )
+        return verified_tcp or target.transport in {
+            "stdio-jsonl",
+            "unix-websocket",
+        }
+
+    def local_image_paths_epoch(self) -> int | None:
+        if not self.initialized or self.connection_epoch < 1:
+            return None
+        return self.connection_epoch if self.supports_local_image_paths() else None
 
     def connection_facts(self) -> JsonDict:
         transport = self._transport
@@ -259,10 +276,38 @@ class AppServerClient:
             "endpoint": self._supervisor.display_connection_target,
             "connection_epoch": self.connection_epoch,
             "reconnect_enabled": self._supervisor.supports_background_reconnect,
+            "local_image_paths": self.supports_local_image_paths(),
         }
         if ready and isinstance(self._ready_health.get("rehydration"), dict):
             facts["rehydration"] = dict(self._ready_health["rehydration"])
         return facts
+
+    async def _refresh_verified_shared_filesystem(
+        self,
+        *,
+        epoch: int | None = None,
+        transport: AppServerTransport | None = None,
+    ) -> None:
+        verified = False
+        verifier = self._shared_filesystem_verifier
+        if verifier is not None:
+            try:
+                result = verifier()
+                if inspect.isawaitable(result):
+                    result = await result
+                verified = bool(result)
+            except Exception as exc:
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.shared_filesystem.verification_failed",
+                    level="WARNING",
+                    message="Managed App Server shared-filesystem verification failed",
+                    data={"error_type": type(exc).__name__},
+                )
+        if epoch is not None and transport is not None:
+            self._require_initializing_connection(epoch, transport)
+        self._verified_shared_filesystem = verified
+        self._verified_shared_filesystem_epoch = self.connection_epoch if verified else None
 
     def _mark_appserver_health(self, **changes: Any) -> None:
         payload = self.connection_facts()
@@ -323,6 +368,10 @@ class AppServerClient:
             self._initialize_owner_transport = initialize_transport
             ready_health: JsonDict = {}
             try:
+                await self._refresh_verified_shared_filesystem(
+                    epoch=initialize_epoch,
+                    transport=initialize_transport,
+                )
                 for handler in list(self._connection_ready_handlers):
                     self._require_initializing_connection(initialize_epoch, initialize_transport)
                     ready = handler(initialize_epoch)
@@ -531,6 +580,7 @@ class AppServerClient:
         text: str | None = None,
         *,
         input_items: list[JsonDict] | None = None,
+        expected_local_image_epoch: int | None = None,
         **kwargs: Any,
     ) -> JsonDict:
         payload = {
@@ -541,7 +591,11 @@ class AppServerClient:
             value = kwargs.get(key)
             if value is not None:
                 payload[key] = value
-        return await self._request("turn/start", payload)
+        return await self._request(
+            "turn/start",
+            payload,
+            expected_local_image_epoch=expected_local_image_epoch,
+        )
 
     async def steer_turn(
         self,
@@ -550,6 +604,7 @@ class AppServerClient:
         text: str | None = None,
         *,
         input_items: list[JsonDict] | None = None,
+        expected_local_image_epoch: int | None = None,
     ) -> JsonDict:
         return await self._request(
             "turn/steer",
@@ -558,6 +613,7 @@ class AppServerClient:
                 "expectedTurnId": turn_id,
                 "input": self._resolve_turn_input(text=text, input_items=input_items),
             },
+            expected_local_image_epoch=expected_local_image_epoch,
         )
 
     @staticmethod
@@ -764,6 +820,8 @@ class AppServerClient:
         )
         self._protocol_initialized = False
         self.initialized = False
+        self._verified_shared_filesystem = False
+        self._verified_shared_filesystem_epoch = None
         self._initialize_result = None
         self._ready_health = {}
         self._mark_appserver_health(
@@ -810,11 +868,27 @@ class AppServerClient:
         ):
             raise AppServerError("app-server connection changed during initialization")
 
-    async def _request(self, method: str, params: JsonDict | None) -> JsonDict:
+    async def _request(
+        self,
+        method: str,
+        params: JsonDict | None,
+        *,
+        expected_local_image_epoch: int | None = None,
+    ) -> JsonDict:
         await self._ensure_ready()
-        return await self._request_without_initialize(method, params)
+        return await self._request_without_initialize(
+            method,
+            params,
+            expected_local_image_epoch=expected_local_image_epoch,
+        )
 
-    async def _request_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
+    async def _request_without_initialize(
+        self,
+        method: str,
+        params: JsonDict | None,
+        *,
+        expected_local_image_epoch: int | None = None,
+    ) -> JsonDict:
         await self._ensure_connected()
         request_epoch = self.connection_epoch
         request_transport = self._transport
@@ -827,7 +901,11 @@ class AppServerClient:
                 raise AppServerError(
                     f"{method} retry was cancelled because the app-server connection changed"
                 )
-            response = await self._request_once_without_initialize(method, params)
+            response = await self._request_once_without_initialize(
+                method,
+                params,
+                expected_local_image_epoch=expected_local_image_epoch,
+            )
             if "error" not in response:
                 return self._normalize_result(method, response["result"])
             error = response["error"]
@@ -853,13 +931,28 @@ class AppServerClient:
                 continue
             raise self._error_from_response(method, error)
 
-    async def _request_once_without_initialize(self, method: str, params: JsonDict | None) -> JsonDict:
+    async def _request_once_without_initialize(
+        self,
+        method: str,
+        params: JsonDict | None,
+        *,
+        expected_local_image_epoch: int | None = None,
+    ) -> JsonDict:
         request_id = self._next_request_id
         self._next_request_id += 1
         request_epoch = self.connection_epoch
         transport = self._transport
         if transport is None:
             raise AppServerError("transport is not connected")
+        if self._request_uses_local_image_paths(method, params):
+            if (
+                expected_local_image_epoch is None
+                or expected_local_image_epoch != request_epoch
+                or not self.supports_local_image_paths()
+            ):
+                raise AppServerError(
+                    "configured App Server cannot read bridge-local image paths for this connection"
+                )
         future: asyncio.Future[JsonDict] = asyncio.get_running_loop().create_future()
         self._pending_futures[request_id] = (request_epoch, future)
         payload: JsonDict = {"id": request_id, "method": method}
@@ -881,6 +974,19 @@ class AppServerClient:
         finally:
             self._pending_futures.pop(request_id, None)
         return response
+
+    @staticmethod
+    def _request_uses_local_image_paths(method: str, params: JsonDict | None) -> bool:
+        if method not in {"turn/start", "turn/steer"} or not isinstance(params, dict):
+            return False
+        input_items = params.get("input")
+        return bool(
+            isinstance(input_items, list)
+            and any(
+                isinstance(item, dict) and item.get("type") == "localImage"
+                for item in input_items
+            )
+        )
 
     def _is_overload_error(self, error: Any) -> bool:
         if not isinstance(error, dict):
@@ -1096,6 +1202,8 @@ class AppServerClient:
                 return
             await self._wait_for_connection_reset()
             return
+        self._verified_shared_filesystem = False
+        self._verified_shared_filesystem_epoch = None
         self._resetting = True
         cleanup_task = asyncio.create_task(
             self._reset_connection_impl(
@@ -1181,6 +1289,8 @@ class AppServerClient:
         self._fail_pending_futures(reset_epoch, AppServerError("app-server connection reset"))
         self._protocol_initialized = False
         self.initialized = False
+        self._verified_shared_filesystem = False
+        self._verified_shared_filesystem_epoch = None
         self._initialize_result = None
         self._ready_health = {}
         self.connection_mode = "disconnected"

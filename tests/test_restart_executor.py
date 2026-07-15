@@ -12,6 +12,10 @@ import pytest
 from imcodex.ops import BridgeRestartExecutor
 
 
+_SHARED_FILESYSTEM_TARGET_ENV = "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET"
+_MANAGED_TARGET_ENV = "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process states only")
 def test_posix_process_status_treats_unreaped_child_as_stopped_without_reaping() -> None:
     process = subprocess.Popen(
@@ -163,6 +167,55 @@ def test_restart_executor_reads_launch_snapshot_and_restarts_bridge(
         "wait",
         {"host": "0.0.0.0", "port": 8000, "pid": 65432, "timeout_s": 15.0},
     )
+
+
+def test_restart_preserves_external_shared_filesystem_proof_and_ignores_dotenv_spoof(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trusted_target = "ws://127.0.0.1:8765"
+    monkeypatch.setenv(_SHARED_FILESYSTEM_TARGET_ENV, trusted_target)
+    (tmp_path / ".env").write_text(
+        f"{_SHARED_FILESYSTEM_TARGET_ENV}=wss://attacker.example.test/rpc\n",
+        encoding="utf-8",
+    )
+    snapshot = {
+        "requiredExternalEnvKeys": [_SHARED_FILESYSTEM_TARGET_ENV],
+        "dotenvImportedKeys": [],
+        "launcherReloadableKeys": ["IMCODEX_APP_SERVER_URL"],
+    }
+
+    reconstructed = BridgeRestartExecutor()._reconstructed_environment(
+        snapshot,
+        cwd=tmp_path,
+    )
+
+    assert reconstructed[_SHARED_FILESYSTEM_TARGET_ENV] == trusted_target
+
+
+def test_restart_never_imports_launcher_owned_capability_keys_from_dotenv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(_SHARED_FILESYSTEM_TARGET_ENV, raising=False)
+    monkeypatch.delenv(_MANAGED_TARGET_ENV, raising=False)
+    (tmp_path / ".env").write_text(
+        f"{_SHARED_FILESYSTEM_TARGET_ENV}=ws://127.0.0.1:8765\n"
+        f"{_MANAGED_TARGET_ENV}=ws://127.0.0.1:8765\n",
+        encoding="utf-8",
+    )
+
+    reconstructed = BridgeRestartExecutor()._reconstructed_environment(
+        {
+            "requiredExternalEnvKeys": [],
+            "dotenvImportedKeys": [],
+            "launcherReloadableKeys": [],
+        },
+        cwd=tmp_path,
+    )
+
+    assert _SHARED_FILESYSTEM_TARGET_ENV not in reconstructed
+    assert _MANAGED_TARGET_ENV not in reconstructed
 
 
 def test_restart_executor_reloads_dotenv_owned_values_and_new_port(

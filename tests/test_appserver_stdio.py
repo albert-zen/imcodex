@@ -1055,6 +1055,7 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
         "endpoint": "ws://127.0.0.1:9999",
         "connection_epoch": 1,
         "reconnect_enabled": True,
+        "local_image_paths": False,
     }
     assert observed_health[-1] == {
         "connected": True,
@@ -1072,6 +1073,7 @@ async def test_client_emits_observability_events_for_shared_websocket_connection
         "endpoint": "ws://127.0.0.1:9999",
         "connection_epoch": 1,
         "reconnect_enabled": True,
+        "local_image_paths": False,
     }
     await client.close()
 
@@ -1104,7 +1106,76 @@ async def test_connection_facts_do_not_report_a_closed_transport_as_ready() -> N
         "endpoint": "ws://127.0.0.1:9999",
         "connection_epoch": 1,
         "reconnect_enabled": True,
+        "local_image_paths": False,
     }
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_send_boundary_rejects_local_image_after_capability_is_cleared() -> None:
+    websocket = ScriptedWebSocket(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="ws://127.0.0.1:8765",
+            websocket_factory=lambda _url: websocket,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        shared_filesystem_verifier=lambda: True,
+    )
+    await client.initialize()
+    assert client.supports_local_image_paths() is True
+    expected_epoch = client.local_image_paths_epoch()
+    assert expected_epoch == 1
+
+    client._verified_shared_filesystem = False
+    client._verified_shared_filesystem_epoch = None
+
+    with pytest.raises(AppServerError, match="cannot read bridge-local image paths"):
+        await client.start_turn(
+            "thr_1",
+            input_items=[{"type": "localImage", "path": r"D:\media\image.png"}],
+            expected_local_image_epoch=expected_epoch,
+        )
+    assert [payload["method"] for payload in websocket.sent] == [
+        "initialize",
+        "initialized",
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_send_boundary_rejects_image_prepared_under_an_older_epoch() -> None:
+    websocket = ScriptedWebSocket(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="ws://127.0.0.1:8765",
+            websocket_factory=lambda _url: websocket,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        shared_filesystem_verifier=lambda: True,
+    )
+    await client.initialize()
+    prepared_epoch = client.local_image_paths_epoch()
+    assert prepared_epoch == 1
+
+    client.connection_epoch = 2
+    client._verified_shared_filesystem = True
+    client._verified_shared_filesystem_epoch = 2
+
+    with pytest.raises(AppServerError, match="for this connection"):
+        await client.start_turn(
+            "thr_1",
+            input_items=[{"type": "localImage", "path": r"D:\media\image.png"}],
+            expected_local_image_epoch=prepared_epoch,
+        )
+    assert [payload["method"] for payload in websocket.sent] == [
+        "initialize",
+        "initialized",
+    ]
     await client.close()
 
 
@@ -1178,6 +1249,7 @@ async def test_legacy_dedicated_mode_reports_canonical_external_connection(monke
         "endpoint": "ws://127.0.0.1:9001",
         "connection_epoch": 1,
         "reconnect_enabled": True,
+        "local_image_paths": False,
     }
     await client.close()
 
@@ -2081,6 +2153,7 @@ async def test_reset_connection_preserves_reconnected_transport_state(monkeypatc
         "endpoint": "stdio://",
         "connection_epoch": 2,
         "reconnect_enabled": False,
+        "local_image_paths": True,
     }
 
 
@@ -2125,6 +2198,7 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
     sleeps: list[float] = []
     ready_epochs: list[int] = []
     reset_epochs: list[int] = []
+    shared_filesystem_verifications = 0
     observed_health: list[dict] = []
     monkeypatch.setattr(
         "imcodex.appserver.client.mark_appserver_health",
@@ -2146,6 +2220,11 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
     async def sleep(delay_s: float) -> None:
         sleeps.append(delay_s)
 
+    def verify_shared_filesystem() -> bool:
+        nonlocal shared_filesystem_verifications
+        shared_filesystem_verifications += 1
+        return shared_filesystem_verifications == 1
+
     supervisor = AppServerSupervisor(
         core_mode=core_mode,
         core_url="ws://127.0.0.1:9001",
@@ -2164,11 +2243,13 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
         ),
         sleep=sleep,
         random_float=lambda: 0.0,
+        shared_filesystem_verifier=verify_shared_filesystem,
     )
     client.add_connection_ready_handler(lambda epoch: ready_epochs.append(epoch))
     client.add_connection_reset_handler(lambda epoch: reset_epochs.append(epoch))
 
     await client.initialize()
+    assert client.supports_local_image_paths() is True
     first_listener = client._listener_task
     assert first_listener is not None
 
@@ -2185,6 +2266,8 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
     assert client.connection_epoch == 2
     assert client.connection_mode == "external"
     assert client.initialized is True
+    assert shared_filesystem_verifications == 2
+    assert client.supports_local_image_paths() is False
     assert [payload["method"] for payload in second.sent] == ["initialize", "initialized"]
     statuses = [payload.get("status") for payload in observed_health]
     assert "reconnecting" in statuses
@@ -2211,6 +2294,7 @@ async def test_persistent_websocket_reconnects_and_reinitializes_without_inbound
         "endpoint": "ws://127.0.0.1:9001",
         "connection_epoch": 2,
         "reconnect_enabled": True,
+        "local_image_paths": False,
     }
     await client.close()
 

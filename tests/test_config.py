@@ -59,6 +59,50 @@ def test_settings_reads_native_thread_tool_host_flag_from_env(monkeypatch, tmp_p
     assert settings.native_thread_tool_host is True
 
 
+def test_settings_reads_launcher_verified_shared_filesystem_flag_from_process_env(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET=ws://127.0.0.1:8765\n",
+        encoding="utf-8",
+    )
+
+    assert Settings.from_env().app_server_verified_shared_filesystem_target is None
+
+    monkeypatch.setenv(
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
+        "ws://127.0.0.1:8765",
+    )
+    assert (
+        Settings.from_env().app_server_verified_shared_filesystem_target
+        == "ws://127.0.0.1:8765"
+    )
+
+
+def test_settings_uses_internal_managed_target_only_without_explicit_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    endpoint = "ws://127.0.0.1:8765"
+    monkeypatch.setenv("IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET", endpoint)
+    (tmp_path / ".env").write_text(
+        "IMCODEX_APP_SERVER_URL=wss://external.example.test/rpc\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_env()
+
+    assert settings.app_server_url == endpoint
+    assert settings.app_server_managed_target == endpoint
+
+    monkeypatch.setenv("IMCODEX_APP_SERVER_URL", "ws://127.0.0.1:9999")
+    explicit = Settings.from_env()
+    assert explicit.app_server_url == "ws://127.0.0.1:9999"
+
+
 def test_settings_reads_optional_run_dir_from_env(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("IMCODEX_RUN_DIR", ".custom-run")

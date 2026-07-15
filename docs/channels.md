@@ -152,9 +152,11 @@ queue or second dedup authority.
 
 `localImage` is a filesystem reference. Image input therefore requires the
 bridge and Codex App Server to see the same absolute spool path. imcodex submits
-images only over bridge-child stdio or the normal local Unix-socket target.
-Every TCP App Server target, including loopback, is rejected for image input
-because TCP reachability cannot prove a shared filesystem; text remains usable.
+images over bridge-child stdio, the normal local Unix-socket target, or the
+project-managed Windows TCP App Server after the launcher verifies its process
+identity and health. Other TCP targets, including an explicitly configured
+loopback URL, are rejected for image input because reachability alone cannot
+prove a shared filesystem; text remains usable.
 A containerized Unix-socket deployment must mount the spool at the same
 absolute path.
 
@@ -539,10 +541,10 @@ unhealthy.
   extras expression intact.
 - Run `python -m imcodex channels doctor` from the same environment used by
   `scripts\start.cmd`.
-- The normal detached Windows App Server uses loopback TCP, so image input is
-  intentionally unavailable there; text remains available. A future
-  explicit media-transfer/topology capability can remove this conservative
-  boundary without guessing from `localhost`.
+- The normal launcher-managed Windows App Server supports image input. The
+  launcher enables local paths only after verifying the managed process;
+  explicitly configured TCP targets remain text-only even when they use
+  `localhost`.
 - Put token files and `IMCODEX_DATA_DIR` under the intended Windows user's
   profile and verify their NTFS ACLs on a shared machine.
 

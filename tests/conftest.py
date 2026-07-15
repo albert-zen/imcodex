@@ -40,8 +40,10 @@ def tmp_path() -> Path:
             cwd_is_temporary = False
         if cwd_is_temporary:
             os.chdir(original_cwd if os.path.exists(original_cwd) else str(ROOT))
-        for child in sorted(path.rglob("*"), reverse=True):
-            if child.is_file():
+        for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            if getattr(child, "is_junction", lambda: False)():
+                child.rmdir()
+            elif child.is_symlink() or child.is_file():
                 child.unlink(missing_ok=True)
             elif child.is_dir():
                 child.rmdir()

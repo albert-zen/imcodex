@@ -53,8 +53,8 @@ _INPUT_ERROR_TEXT = {
 }
 _GENERIC_ATTACHMENT_ERROR_TEXT = "I couldn't process that attachment. Please resend it."
 _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT = (
-    "Image input requires imcodex and Codex App Server to share the same local filesystem. "
-    "Connect to a local App Server and resend the image."
+    "Image input requires imcodex and Codex App Server to share a verified local filesystem. "
+    "Use the IMCodex-managed local App Server or a same-filesystem stdio/Unix endpoint, then resend the image."
 )
 
 

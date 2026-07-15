@@ -33,6 +33,10 @@ def test_main_exposes_uvicorn_graceful_shutdown_callback(monkeypatch) -> None:
         create_application,
     )
     monkeypatch.setattr(
+        "imcodex.main.preflight_runtime_configuration",
+        lambda resolved_settings: observed.setdefault("preflight", resolved_settings),
+    )
+    monkeypatch.setattr(
         "imcodex.main.uvicorn.Config",
         lambda resolved_app, **kwargs: (resolved_app, kwargs),
     )
@@ -45,6 +49,7 @@ def test_main_exposes_uvicorn_graceful_shutdown_callback(monkeypatch) -> None:
         "settings": settings,
         "settings_source": "environment",
     }
+    assert observed["preflight"] is settings
     assert observed["config"] == (
         app,
         {"host": "127.0.0.1", "port": 8123},

@@ -322,6 +322,35 @@ async def test_materializer_rejects_windows_junction_root_without_touching_targe
     assert victim.read_bytes() == PNG
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junctions only")
+@pytest.mark.asyncio
+async def test_materializer_rejects_existing_root_beneath_windows_junction(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    root_target = target / "media"
+    root_target.mkdir(parents=True)
+    victim = root_target / "old.png"
+    victim.write_bytes(PNG)
+    junction = tmp_path / "redirected"
+    subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    async with httpx.AsyncClient() as client:
+        materializer = QQMediaMaterializer(
+            root=junction / "media",
+            http_client=client,
+        )
+        with pytest.raises(MediaSpoolError):
+            await materializer.prepare()
+
+    assert victim.read_bytes() == PNG
+
+
 @pytest.mark.asyncio
 async def test_materializer_accepts_protocol_relative_trusted_url(tmp_path: Path) -> None:
     seen_urls: list[str] = []

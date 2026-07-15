@@ -446,7 +446,7 @@ async def test_remote_app_server_rejects_bridge_local_image_path() -> None:
 
     assert len(messages) == 1
     assert messages[0].message_type == "error"
-    assert "share the same local filesystem" in messages[0].text
+    assert "share a verified local filesystem" in messages[0].text
     await service.close()
     await client.close()
 

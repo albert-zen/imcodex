@@ -53,26 +53,32 @@ def test_resolve_app_server_target_defaults_to_an_external_tcp_server_on_windows
 
 
 @pytest.mark.parametrize(
-    ("endpoint", "supported"),
+    ("endpoint", "verified_shared_filesystem", "supported"),
     [
-        ("stdio://", True),
-        ("unix://", True),
-        ("ws://localhost:8765", False),
-        ("ws://127.0.0.1:8765", False),
-        ("ws://[::1]:8765", False),
-        ("wss://codex.example.test/rpc", False),
+        ("stdio://", False, True),
+        ("unix://", False, True),
+        ("ws://localhost:8765", False, False),
+        ("ws://127.0.0.1:8765", False, False),
+        ("ws://[::1]:8765", False, False),
+        ("wss://codex.example.test/rpc", False, False),
+        ("ws://127.0.0.1:8765", True, True),
     ],
 )
-def test_app_server_client_only_exposes_shared_local_image_paths(
+@pytest.mark.asyncio
+async def test_app_server_client_only_exposes_shared_local_image_paths(
     endpoint: str,
+    verified_shared_filesystem: bool,
     supported: bool,
 ) -> None:
     client = AppServerClient(
         supervisor=AppServerSupervisor(app_server_url=endpoint),
         client_info={"name": "test", "title": "Test", "version": "0"},
+        shared_filesystem_verifier=lambda: verified_shared_filesystem,
     )
+    await client._refresh_verified_shared_filesystem()
 
     assert client.supports_local_image_paths() is supported
+    assert client.connection_facts()["local_image_paths"] is supported
 
 
 def test_app_server_client_keeps_legacy_text_turn_input_compatibility() -> None:

@@ -46,6 +46,10 @@ _PROVENANCE_KEYS = {
     PREFLIGHT_CURRENT_HTTP_HOST_ENV,
     PREFLIGHT_CURRENT_HTTP_PORT_ENV,
 }
+_LAUNCHER_OWNED_KEYS = {
+    "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
+    "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
+}
 
 
 class BridgeRestartExecutor:
@@ -142,7 +146,11 @@ class BridgeRestartExecutor:
         target_is_external = bool(required_external & TARGET_ENVIRONMENT_KEYS)
         current_imported: set[str] = set()
         for key, value in dotenv.items():
-            if key in _PROVENANCE_KEYS or _ENVIRONMENT_NAME.fullmatch(key) is None:
+            if (
+                key in _PROVENANCE_KEYS
+                or key in _LAUNCHER_OWNED_KEYS
+                or _ENVIRONMENT_NAME.fullmatch(key) is None
+            ):
                 continue
             if "\x00" in value:
                 raise ValueError(f"Dotenv value for {key} contains a NUL character")

@@ -15,6 +15,7 @@ from typing import Callable
 
 
 Launcher = Callable[..., object]
+LiveProcessCommandVerifier = Callable[["DedicatedCoreManifest", set[int]], bool]
 WINDOWS_CREATE_NEW_PROCESS_GROUP = getattr(
     subprocess,
     "CREATE_NEW_PROCESS_GROUP",
@@ -60,12 +61,16 @@ class DedicatedCoreManager:
         launcher: Launcher | None = None,
         now: Callable[[], str] | None = None,
         codex_bin: str = "codex",
+        live_process_command_verifier: LiveProcessCommandVerifier | None = None,
     ) -> None:
         self.root = Path(root)
         self.repo_root = Path(repo_root)
         self.launcher = launcher or self._default_launcher
         self.now = now or self._default_now
         self.codex_bin = codex_bin
+        self.live_process_command_verifier = (
+            live_process_command_verifier or self._live_process_command_matches
+        )
         self._process: object | None = None
 
     @property
@@ -133,7 +138,17 @@ class DedicatedCoreManager:
                 f"Port {port} is occupied, but no valid IMCodex core manifest owns it"
             ) from exc
         self._validate_manifest(manifest, port=port)
-        self._verify_listener_identity(manifest)
+        listener_owner_pids = self._verify_listener_identity(manifest)
+        try:
+            command_matches = self.live_process_command_verifier(manifest, listener_owner_pids)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not verify the recorded IMCodex core process command on port {port}"
+            ) from exc
+        if not command_matches:
+            raise RuntimeError(
+                f"Recorded IMCodex core PID {manifest.pid} does not run the expected command"
+            )
         if not self._health_is_ready(port):
             raise RuntimeError(
                 f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
@@ -157,7 +172,7 @@ class DedicatedCoreManager:
                 f"Port {port} is occupied, but the IMCodex core manifest does not match it"
             )
 
-    def _verify_listener_identity(self, manifest: DedicatedCoreManifest) -> None:
+    def _verify_listener_identity(self, manifest: DedicatedCoreManifest) -> set[int]:
         port = manifest.port
         if not self._process_exists(manifest.pid):
             raise RuntimeError(
@@ -166,15 +181,16 @@ class DedicatedCoreManager:
         if not self._port_is_listening(port):
             raise RuntimeError(f"Recorded IMCodex core on port {port} is not listening")
         try:
-            listener_is_owned = self._listener_is_owned_by_process_tree(manifest.pid, port)
+            listener_owner_pids = self._listener_owner_pids_in_process_tree(manifest.pid, port)
         except Exception as exc:
             raise RuntimeError(
                 f"Could not verify that recorded IMCodex core PID {manifest.pid} owns port {port}: {exc}"
             ) from exc
-        if not listener_is_owned:
+        if not listener_owner_pids:
             raise RuntimeError(
                 f"Recorded IMCodex core PID {manifest.pid} does not own the listener on port {port}"
             )
+        return listener_owner_pids
 
     def _mark_stopped(self, manifest: DedicatedCoreManifest) -> DedicatedCoreManifest:
         manifest.status = "stopped"
@@ -211,6 +227,10 @@ class DedicatedCoreManager:
 
     @staticmethod
     def _listener_is_owned_by_process_tree(pid: int, port: int) -> bool:
+        return bool(DedicatedCoreManager._listener_owner_pids_in_process_tree(pid, port))
+
+    @staticmethod
+    def _listener_owner_pids_in_process_tree(pid: int, port: int) -> set[int]:
         if os.name == "nt":
             owner_pids = DedicatedCoreManager._windows_tcp_listener_owner_pids(port)
             parent_by_pid = DedicatedCoreManager._windows_process_parent_map()
@@ -224,10 +244,11 @@ class DedicatedCoreManager:
             raise RuntimeError(
                 f"listener ownership verification is unsupported on {sys.platform or os.name}"
             )
-        return any(
-            DedicatedCoreManager._pid_is_same_or_descendant(owner_pid, pid, parent_by_pid)
+        return {
+            owner_pid
             for owner_pid in owner_pids
-        )
+            if DedicatedCoreManager._pid_is_same_or_descendant(owner_pid, pid, parent_by_pid)
+        }
 
     @staticmethod
     def _pid_is_same_or_descendant(
@@ -479,6 +500,105 @@ class DedicatedCoreManager:
         finally:
             kernel32.CloseHandle(snapshot)
         return parents
+
+    def _live_process_command_matches(
+        self,
+        manifest: DedicatedCoreManifest,
+        listener_owner_pids: set[int],
+    ) -> bool:
+        if os.name != "nt":
+            return True
+        records = self._windows_process_records()
+        expected_name = Path(str((manifest.command or [self.codex_bin])[0])).stem.casefold()
+        expected_url = manifest.url.casefold()
+        for record in records:
+            pid = int(record["process_id"])
+            if pid not in listener_owner_pids:
+                continue
+            arguments = self._windows_command_line_arguments(str(record.get("command_line") or ""))
+            normalized_arguments = [argument.casefold() for argument in arguments]
+            expected_tail = ["app-server", "--listen", expected_url]
+            has_expected_tail = any(
+                normalized_arguments[index : index + 3] == expected_tail
+                for index in range(max(0, len(normalized_arguments) - 2))
+            )
+            identity_values = [
+                *arguments,
+                str(record.get("executable_path") or ""),
+                str(record.get("name") or ""),
+            ]
+            identity_stems = {
+                Path(value.strip('"')).stem.casefold()
+                for value in identity_values
+                if value.strip('"')
+            }
+            if expected_name in identity_stems and has_expected_tail:
+                return True
+        return False
+
+    @staticmethod
+    def _windows_command_line_arguments(command_line: str) -> list[str]:
+        if not command_line.strip():
+            return []
+        import ctypes
+        from ctypes import wintypes
+
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        argument_count = ctypes.c_int()
+        shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+        kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+        kernel32.LocalFree.restype = wintypes.HLOCAL
+        arguments = shell32.CommandLineToArgvW(command_line, ctypes.byref(argument_count))
+        if not arguments:
+            error = ctypes.get_last_error()
+            raise OSError(error, "CommandLineToArgvW failed")
+        try:
+            return [arguments[index] for index in range(argument_count.value)]
+        finally:
+            kernel32.LocalFree(arguments)
+
+    @staticmethod
+    def _windows_process_records() -> list[dict[str, object]]:
+        powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or shutil.which("pwsh")
+        if powershell is None:
+            raise RuntimeError("PowerShell is unavailable for process command verification")
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            "@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,"
+            "ExecutablePath,CommandLine) | ConvertTo-Json -Compress"
+        )
+        completed = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("Windows process inventory query failed")
+        payload = json.loads(completed.stdout or "[]")
+        rows = payload if isinstance(payload, list) else [payload]
+        records: list[dict[str, object]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                process_id = int(row.get("ProcessId"))
+                parent_process_id = int(row.get("ParentProcessId"))
+            except (TypeError, ValueError):
+                continue
+            records.append(
+                {
+                    "process_id": process_id,
+                    "parent_process_id": parent_process_id,
+                    "name": row.get("Name"),
+                    "executable_path": row.get("ExecutablePath"),
+                    "command_line": row.get("CommandLine"),
+                }
+            )
+        return records
 
     @staticmethod
     def _health_is_ready(port: int) -> bool:

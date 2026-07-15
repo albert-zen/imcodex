@@ -242,9 +242,10 @@ may be at most 10 MiB and 40 decoded megapixels. Channel-specific retrieval
 (including Telegram `getFile`, Feishu message resources, and Tencent iLink CDN
 decryption) feeds one shared validation and private-spool layer, which submits
 native Codex `localImage` inputs. The App Server and bridge must therefore see
-the same local filesystem. imcodex enables this path only for bridge-child
-stdio and the normal local Unix-socket target; TCP targets, including loopback,
-remain text-only because an address cannot prove filesystem sharing. See
+the same local filesystem. imcodex enables this path for bridge-child stdio,
+the normal local Unix-socket target, and the launcher-verified managed Windows
+App Server. Explicit TCP targets, including loopback, remain text-only because
+an address alone cannot prove filesystem sharing. See
 [Channel setup and security](docs/channels.md) for failure behavior, spool
 bounds, and remote App Server limitations.
 

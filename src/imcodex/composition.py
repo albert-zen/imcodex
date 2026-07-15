@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import os
 import shutil
@@ -8,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .appserver.retry import RetryBackoff
@@ -23,12 +25,14 @@ from .config import (
     DOTENV_IMPORTED_KEYS_ENV,
     KNOWN_SETTING_ENV_KEYS,
     LAUNCHER_RELOADABLE_KEYS_ENV,
+    MANAGED_APP_SERVER_TARGET_ENV,
     PREFLIGHT_CURRENT_HTTP_HOST_ENV,
     PREFLIGHT_CURRENT_HTTP_PORT_ENV,
     TARGET_ENVIRONMENT_KEYS,
     Settings,
     is_restart_context_env_key,
 )
+from .core_manager import DedicatedCoreManager
 from .observability.runtime import ObservabilityRuntime
 from .runtime import AppRuntime
 from .store import ConversationStore
@@ -67,6 +71,10 @@ def build_runtime(
         websocket_open_timeout_s=settings.app_server_connect_timeout_s,
         health_probe_timeout_s=settings.app_server_health_timeout_s,
     )
+    shared_filesystem_verifier = _managed_core_shared_filesystem_verifier(
+        settings=settings,
+        endpoint=app_server_target.endpoint,
+    )
     client = AppServerClient(
         supervisor=supervisor,
         client_info={
@@ -82,6 +90,7 @@ def build_runtime(
             or settings.native_thread_tool_host
             or not app_server_target.is_external
         ),
+        shared_filesystem_verifier=shared_filesystem_verifier,
         request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
         reconnect_retry_policy=RetryBackoff(
             initial_delay_s=settings.app_server_reconnect_initial_delay_s,
@@ -141,6 +150,10 @@ def build_runtime(
         "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(settings.app_server_connect_timeout_s),
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
         "IMCODEX_NATIVE_THREAD_TOOL_HOST": "1" if settings.native_thread_tool_host else "0",
+        MANAGED_APP_SERVER_TARGET_ENV: settings.app_server_managed_target or "",
+        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET": (
+            settings.app_server_verified_shared_filesystem_target or ""
+        ),
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(settings.app_server_reconnect_initial_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(settings.app_server_reconnect_max_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(settings.app_server_reconnect_jitter_fraction),
@@ -193,15 +206,16 @@ def build_runtime(
     )
 
 
-def preflight_runtime_configuration() -> None:
+def preflight_runtime_configuration(settings: Settings | None = None) -> None:
     """Validate reconstructed startup inputs without opening native or IM transports."""
 
-    try:
-        settings = Settings.from_env()
-    except Exception as exc:
-        raise RuntimeError(
-            f"settings could not be parsed ({type(exc).__name__})"
-        ) from exc
+    if settings is None:
+        try:
+            settings = Settings.from_env()
+        except Exception as exc:
+            raise RuntimeError(
+                f"settings could not be parsed ({type(exc).__name__})"
+            ) from exc
     _validate_http_bind(settings)
     _validate_local_app_server_prerequisites(settings)
     runtime = build_runtime(settings, settings_source="environment")
@@ -242,14 +256,70 @@ def _validate_http_bind(settings: Settings) -> None:
 
     current_host = os.environ.get(PREFLIGHT_CURRENT_HTTP_HOST_ENV, "").strip()
     current_port = _preflight_current_port()
-    must_test_port = current_port is not None and (
+    must_test_port = current_port is None or (
         current_port != settings.http_port
         or not _binds_may_overlap(current_host, settings.http_host)
     )
     if must_test_port and not _addresses_can_bind(addresses, port=settings.http_port):
+        if current_port is None:
+            raise ValueError(
+                "IMCODEX_HTTP_HOST and IMCODEX_HTTP_PORT are already in use; "
+                "another IMCodex bridge may already be running"
+            )
         raise ValueError(
             "IMCODEX_HTTP_HOST and IMCODEX_HTTP_PORT are not available for the replacement bridge"
         )
+
+
+def _managed_core_shared_filesystem_verifier(
+    *,
+    settings: Settings,
+    endpoint: str,
+    os_name: str = os.name,
+):
+    verified_target = settings.app_server_verified_shared_filesystem_target
+    managed_target = settings.app_server_managed_target
+    explicit_process_target = any(
+        str(os.environ.get(key, "")).strip() for key in TARGET_ENVIRONMENT_KEYS
+    )
+    dotenv_imported = set(_environment_key_list(DOTENV_IMPORTED_KEYS_ENV))
+    if (
+        os_name != "nt"
+        or not verified_target
+        or not managed_target
+        or managed_target != endpoint
+        or verified_target != endpoint
+        or explicit_process_target
+        or "IMCODEX_APP_SERVER_URL" in dotenv_imported
+        or MANAGED_APP_SERVER_TARGET_ENV in dotenv_imported
+        or "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET" in dotenv_imported
+    ):
+        return None
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() != "ws"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    manager = DedicatedCoreManager(
+        root=Path.cwd() / ".imcodex-core",
+        repo_root=Path.cwd(),
+        codex_bin=settings.codex_bin,
+    )
+
+    async def verify() -> bool:
+        manifest = await asyncio.to_thread(manager.verify, port=port)
+        return manifest.url == endpoint
+
+    return verify
 
 
 def _preflight_current_port() -> int | None:

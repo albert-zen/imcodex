@@ -124,6 +124,29 @@ def test_preflight_rejects_an_occupied_replacement_port(monkeypatch) -> None:
         preflight_runtime_configuration()
 
 
+def test_preflight_rejects_an_occupied_port_during_normal_start(monkeypatch) -> None:
+    settings = _settings(http_host="127.0.0.1", http_port=8123)
+    monkeypatch.delenv("IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_HOST", raising=False)
+    monkeypatch.delenv("IMCODEX_INTERNAL_PREFLIGHT_CURRENT_HTTP_PORT", raising=False)
+    monkeypatch.setattr(
+        "imcodex.composition.Settings.from_env",
+        classmethod(lambda _cls: settings),
+    )
+    monkeypatch.setattr(
+        "imcodex.composition.socket.getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port))
+        ],
+    )
+    monkeypatch.setattr(
+        "imcodex.composition._addresses_can_bind",
+        lambda _addresses, *, port: port == 0,
+    )
+
+    with pytest.raises(ValueError, match="already in use.*already be running"):
+        preflight_runtime_configuration()
+
+
 def test_preflight_rejects_a_resolvable_nonlocal_bind_address(monkeypatch) -> None:
     settings = _settings(http_host="192.0.2.20")
     monkeypatch.setattr(

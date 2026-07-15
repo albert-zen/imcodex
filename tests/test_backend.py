@@ -585,6 +585,33 @@ async def test_submit_input_starts_image_only_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_input_binds_image_submission_to_capability_epoch() -> None:
+    class EpochClient:
+        def __init__(self) -> None:
+            self.start_kwargs: dict[str, object] = {}
+
+        def supports_local_image_paths(self) -> bool:
+            return True
+
+        def local_image_paths_epoch(self) -> int:
+            return 7
+
+        async def start_turn(self, **kwargs):
+            self.start_kwargs = kwargs
+            return {"turn": {"id": "turn_7", "status": "inProgress"}}
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    client = EpochClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
+
+    await backend.submit_input("qq", "conv-1", "inspect", (image,))
+
+    assert client.start_kwargs["expected_local_image_epoch"] == 7
+
+
+@pytest.mark.asyncio
 async def test_submit_input_rejects_images_when_client_capability_is_unknown() -> None:
     class UnknownCapabilityClient:
         async def start_turn(self, *args, **kwargs):

@@ -7,6 +7,7 @@ import uvicorn
 from .application import create_application
 from .app_server_cli import run_app_server_cli
 from .config import Settings
+from .composition import preflight_runtime_configuration
 from .channels_cli import run_channels_cli
 from .core_cli import run_core_cli
 from .debug_harness.cli import run_debug_cli
@@ -26,6 +27,7 @@ def run(argv: list[str] | None = None) -> int | None:
     if argv and argv[0] == "channels":
         return run_channels_cli(argv[1:])
     settings = Settings.from_env()
+    preflight_runtime_configuration(settings)
     app = create_application(settings=settings, settings_source="environment")
     server = uvicorn.Server(
         uvicorn.Config(

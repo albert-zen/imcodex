@@ -27,6 +27,9 @@ from imcodex.channels.media import (
 )
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.models import InboundMessage, OutboundMessage
+
+
+_PROCESS_COMPLETION_TIMEOUT_S = 10 if sys.platform == "win32" else 1
 from imcodex.store import ConversationStore
 
 
@@ -519,7 +522,7 @@ async def test_feishu_image_download_is_lazy_and_uses_message_resource_api(
             resources=[_image_resource("img_1")],
         )
     )
-    await asyncio.wait_for(middleware.completed.wait(), timeout=1)
+    await asyncio.wait_for(middleware.completed.wait(), timeout=_PROCESS_COMPLETION_TIMEOUT_S)
     await adapter.stop()
 
     assert sdk.downloads == [("img_1", "image", "om_1")]
@@ -787,7 +790,7 @@ async def test_feishu_image_download_failure_becomes_stable_input_error(
             resources=resources,
         )
     )
-    await asyncio.wait_for(middleware.completed.wait(), timeout=1)
+    await asyncio.wait_for(middleware.completed.wait(), timeout=_PROCESS_COMPLETION_TIMEOUT_S)
     await adapter.stop()
 
     assert middleware.message is not None
@@ -1038,7 +1041,10 @@ async def test_feishu_same_id_callbacks_deduplicate_before_second_download(
     callback(replay)
     await asyncio.sleep(0)
     assert adapter._inbound_queue is not None
-    await asyncio.wait_for(adapter._inbound_queue.join(), timeout=1)
+    await asyncio.wait_for(
+        adapter._inbound_queue.join(),
+        timeout=_PROCESS_COMPLETION_TIMEOUT_S,
+    )
     await adapter.stop()
 
     assert sdk.downloads == [("img_1", "image", "om_1")]

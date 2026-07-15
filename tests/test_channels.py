@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -21,6 +22,9 @@ from imcodex.channels.api import (
 )
 from imcodex.models import InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
+
+
+_MULTIPROCESS_COMPLETION_TIMEOUT_S = 30.0 if os.name == "nt" else 5.0
 
 
 def _png() -> bytes:
@@ -387,7 +391,10 @@ async def test_webhook_releases_multipart_capacity_before_downstream_handling(
 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         tasks = [asyncio.create_task(submit(index)) for index in range(3)]
-        await asyncio.wait_for(service.at_capacity.wait(), timeout=5.0)
+        await asyncio.wait_for(
+            service.at_capacity.wait(),
+            timeout=_MULTIPROCESS_COMPLETION_TIMEOUT_S,
+        )
         await asyncio.sleep(0)
         assert service.calls == 3
         service.release.set()

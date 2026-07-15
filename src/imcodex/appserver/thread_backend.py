@@ -241,16 +241,33 @@ class CodexThreadBackendMixin:
     ) -> TurnSubmission:
         if attachments and not self.supports_local_image_paths():
             raise AppServerError("configured App Server cannot read bridge-local image paths")
+        expected_local_image_epoch: int | None = None
+        if attachments:
+            epoch_capability = getattr(self.client, "local_image_paths_epoch", None)
+            if callable(epoch_capability):
+                expected_local_image_epoch = epoch_capability()
+                if expected_local_image_epoch is None:
+                    initialize = getattr(self.client, "initialize", None)
+                    if callable(initialize):
+                        await initialize()
+                        expected_local_image_epoch = epoch_capability()
+                    if expected_local_image_epoch is None:
+                        raise AppServerError(
+                            "configured App Server cannot read bridge-local image paths for this connection"
+                        )
         input_items = self._native_user_input(text, attachments)
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
             active = self.store.get_active_turn(binding.thread_id)
             if active is not None and active[1] == "inProgress":
                 try:
+                    steer_kwargs: dict[str, object] = {"input_items": input_items}
+                    if expected_local_image_epoch is not None:
+                        steer_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
                     await self.client.steer_turn(
                         binding.thread_id,
                         active[0],
-                        input_items=input_items,
+                        **steer_kwargs,
                     )
                 except AppServerError as exc:
                     if not self._is_stale_turn_error(exc):
@@ -259,12 +276,20 @@ class CodexThreadBackendMixin:
                 else:
                     return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
             try:
-                return await self._start_turn(binding.thread_id, input_items)
+                return await self._start_turn(
+                    binding.thread_id,
+                    input_items,
+                    expected_local_image_epoch=expected_local_image_epoch,
+                )
             except AppServerError as exc:
                 if not self._requires_thread_resume(exc):
                     raise
         thread_id = await self.ensure_thread(channel_id, conversation_id)
-        return await self._start_turn(thread_id, input_items)
+        return await self._start_turn(
+            thread_id,
+            input_items,
+            expected_local_image_epoch=expected_local_image_epoch,
+        )
 
     async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
         return await self.submit_input(channel_id, conversation_id, text)
@@ -285,12 +310,21 @@ class CodexThreadBackendMixin:
             raise ValueError("inbound message has no supported input")
         return input_items
 
-    async def _start_turn(self, thread_id: str, input_items: list[dict[str, object]]) -> TurnSubmission:
-        result = await self.client.start_turn(
-            thread_id=thread_id,
-            input_items=input_items,
-            summary="concise",
-        )
+    async def _start_turn(
+        self,
+        thread_id: str,
+        input_items: list[dict[str, object]],
+        *,
+        expected_local_image_epoch: int | None = None,
+    ) -> TurnSubmission:
+        start_kwargs: dict[str, object] = {
+            "thread_id": thread_id,
+            "input_items": input_items,
+            "summary": "concise",
+        }
+        if expected_local_image_epoch is not None:
+            start_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
+        result = await self.client.start_turn(**start_kwargs)
         turn = result.get("turn") or {}
         turn_id = str(turn.get("id") or "")
         status = str(turn.get("status") or "inProgress")

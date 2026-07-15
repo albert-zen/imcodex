@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -69,8 +70,9 @@ def test_core_manager_verifies_manifest_pid_command_and_listener(monkeypatch, tm
     started = manager.start(port=8765)
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
-    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: True)
+    monkeypatch.setattr(manager, "_listener_owner_pids_in_process_tree", lambda _pid, _port: {42001})
     monkeypatch.setattr(manager, "_health_is_ready", lambda _port: True)
+    monkeypatch.setattr(manager, "live_process_command_verifier", lambda _manifest, _owners: True)
 
     verified = manager.verify(port=8765)
 
@@ -93,8 +95,9 @@ def test_core_manager_rejects_listener_that_fails_app_server_health(monkeypatch,
     manager.start(port=8765)
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
-    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: True)
+    monkeypatch.setattr(manager, "_listener_owner_pids_in_process_tree", lambda _pid, _port: {42001})
     monkeypatch.setattr(manager, "_health_is_ready", lambda _port: False)
+    monkeypatch.setattr(manager, "live_process_command_verifier", lambda _manifest, _owners: True)
 
     with pytest.raises(RuntimeError, match="readiness probe"):
         manager.verify(port=8765)
@@ -112,9 +115,29 @@ def test_core_manager_rejects_listener_outside_recorded_process_tree(
     manager.start(port=8765)
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
-    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: False)
+    monkeypatch.setattr(manager, "_listener_owner_pids_in_process_tree", lambda _pid, _port: set())
+    monkeypatch.setattr(manager, "live_process_command_verifier", lambda _manifest, _owners: True)
 
     with pytest.raises(RuntimeError, match="does not own the listener"):
+        manager.verify(port=8765)
+
+
+def test_core_manager_rejects_live_process_with_unexpected_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+    )
+    manager.start(port=8765)
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(manager, "_listener_owner_pids_in_process_tree", lambda _pid, _port: {42003})
+    monkeypatch.setattr(manager, "live_process_command_verifier", lambda _manifest, _owners: False)
+
+    with pytest.raises(RuntimeError, match="does not run the expected command"):
         manager.verify(port=8765)
 
 
@@ -190,6 +213,75 @@ def test_core_manager_stop_updates_manifest(monkeypatch, tmp_path: Path) -> None
     assert process.waited is True
 
 
+def test_windows_live_command_accepts_exact_listener_owner_wrapper_command(tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
+    manifest = core_manager_module.DedicatedCoreManifest(
+        pid=42001,
+        port=8765,
+        url="ws://127.0.0.1:8765",
+        started_at="now",
+        status="running",
+        command=["codex", "app-server", "--listen", "ws://127.0.0.1:8765"],
+    )
+    manager._windows_process_records = lambda: [
+        {
+            "process_id": 42003,
+            "parent_process_id": 42002,
+            "name": "node.exe",
+            "executable_path": r"C:\Program Files\nodejs\node.exe",
+            "command_line": (
+                r'"C:\Program Files\nodejs\node.exe" '
+                r'"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js" '
+                "app-server --listen ws://127.0.0.1:8765"
+            ),
+        }
+    ]
+
+    assert manager._live_process_command_matches(manifest, {42003}) is True
+
+
+def test_windows_live_command_rejects_decoy_and_partial_listener_commands(tmp_path: Path) -> None:
+    manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
+    manifest = core_manager_module.DedicatedCoreManifest(
+        pid=42001,
+        port=8765,
+        url="ws://127.0.0.1:8765",
+        started_at="now",
+        status="running",
+        command=["codex", "app-server", "--listen", "ws://127.0.0.1:8765"],
+    )
+    manager._windows_process_records = lambda: [
+        {
+            "process_id": 42002,
+            "parent_process_id": 42001,
+            "name": "codex.exe",
+            "executable_path": r"C:\bin\codex.exe",
+            "command_line": "codex app-server --listen ws://127.0.0.1:8765",
+        },
+        {
+            "process_id": 42003,
+            "parent_process_id": 42001,
+            "name": "codex.exe",
+            "executable_path": r"C:\bin\codex.exe",
+            "command_line": "codex app-server --listen ws://127.0.0.1:87650",
+        },
+    ]
+
+    assert manager._live_process_command_matches(manifest, {42003}) is False
+
+
+def test_windows_process_inventory_failure_is_explicit(monkeypatch) -> None:
+    monkeypatch.setattr(core_manager_module.shutil, "which", lambda _name: "powershell.exe")
+    monkeypatch.setattr(
+        core_manager_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr="denied"),
+    )
+
+    with pytest.raises(RuntimeError, match="inventory query failed"):
+        DedicatedCoreManager._windows_process_records()
+
+
 def test_core_manager_detached_stop_refuses_reused_pid_without_listener_ownership(
     monkeypatch,
     tmp_path: Path,
@@ -203,7 +295,7 @@ def test_core_manager_detached_stop_refuses_reused_pid_without_listener_ownershi
     manager._process = None
     monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
     monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
-    monkeypatch.setattr(manager, "_listener_is_owned_by_process_tree", lambda _pid, _port: False)
+    monkeypatch.setattr(manager, "_listener_owner_pids_in_process_tree", lambda _pid, _port: set())
     terminated: list[int] = []
     monkeypatch.setattr(manager, "_terminate_pid", terminated.append)
 

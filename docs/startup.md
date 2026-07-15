@@ -35,8 +35,10 @@ delegates to `scripts/start.sh`. With no App Server target configured,
 `start.sh` exports `IMCODEX_APP_SERVER_URL=unix://`, asks native Codex to start
 or reuse its App Server daemon, and then starts the bridge. Native Windows
 cannot use that Unix control socket or native daemon lifecycle, so `start.ps1`
-starts or reuses the project's detached TCP App Server and exports
-`IMCODEX_APP_SERVER_URL=ws://127.0.0.1:8765`.
+starts or reuses the project's detached TCP App Server and passes
+`ws://127.0.0.1:8765` through a launcher-private managed-target value. It
+deliberately leaves the public `IMCODEX_APP_SERVER_URL` unset so an explicit URL
+remains distinguishable and connect-only.
 
 An explicit `IMCODEX_APP_SERVER_URL` is always connect-only: neither launcher
 starts another App Server. Explicit legacy `IMCODEX_CORE_MODE`,
@@ -207,7 +209,8 @@ of claiming complete recovery. During recovery, `health.json` reports
 `appserver.status=reconnecting` together with the current retry attempt and
 delay. The App Server health object also reports `ready`, `ownership`,
 `transport`, a credential-safe `endpoint`, `connection_epoch`, and whether
-background reconnect is enabled. The IM `/status` command presents the same
+background reconnect and verified local image paths are enabled. The IM
+`/status` command presents the same
 connection facts and remains useful when a native thread read is temporarily
 unavailable. Recovery does not wait for another IM message. Reconnect delays
 must be positive, the maximum must be at least the initial delay, and jitter
@@ -232,10 +235,19 @@ transport was disconnected.
 Because native Codex daemon lifecycle is currently Unix-only, the Windows
 launcher keeps the same two-process ownership model with a detached local TCP
 App Server. With no target configured, `scripts/start.ps1` starts or reuses it
-on port `8765`, exports the canonical websocket target, and then starts the
-bridge. Reuse is accepted only when the core manifest, PID, command, listener,
-and App Server `/readyz` probe match; an unrelated process occupying that port
-fails explicitly.
+on port `8765`, publishes the canonical websocket target through an internal
+launcher-only value, and then starts the bridge. Reuse is accepted only when
+the core manifest, PID, command, listener, and App Server `/readyz` probe match.
+On native Windows the command check reads the actual listener owner's live argv
+rather than trusting only the manifest or another process in the same tree; an
+unrelated process occupying that port fails explicitly.
+Only after that verification does the launcher mark the App Server as sharing
+the bridge filesystem, which enables native `localImage` inputs on the default
+Windows topology. An explicit `IMCODEX_APP_SERVER_URL`, even a loopback URL,
+and every explicit legacy core target are connect-only and do not receive this
+capability. The client clears the capability on disconnect and repeats the
+manifest, process, listener, command, and health verification for each new
+connection epoch before accepting another local image path.
 Built-in bridge restart asks the running Windows process to shut down through a
 loopback-only, instance-bound control request. Uvicorn then runs the normal
 lifespan shutdown, flushing bridge state and closing channel/native resources;
@@ -251,9 +263,14 @@ $env:IMCODEX_PYTHON="C:\ProgramData\miniconda3\envs\imcodex\python.exe"
 
 & $env:IMCODEX_PYTHON -m imcodex core start --port 8765
 
-$env:IMCODEX_APP_SERVER_URL="ws://127.0.0.1:8765"
+# Leave IMCODEX_APP_SERVER_URL unset so the launcher verifies and reuses it.
 pwsh -File .\scripts\start.ps1
 ```
+
+Normal startup also probes the configured bridge bind before observability
+initialization. A second launch, or any unrelated listener using the same HTTP
+endpoint, fails with an explicit port-availability error instead of deleting
+or replacing `.imcodex-run/current` while the first process still owns it.
 
 After startup, check `.imcodex-run/current/health.json`:
 
