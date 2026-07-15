@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 
-from ..models import NativeThreadSnapshot
+from ..models import InboundAttachment, NativeThreadSnapshot
 from ..observability.runtime import emit_event
 from .backend_types import (
     ACTIVE_THREAD_STATUSES,
@@ -19,6 +19,14 @@ _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 
 
 class CodexThreadBackendMixin:
+    def supports_local_image_paths(self) -> bool:
+        capability = getattr(self.client, "supports_local_image_paths", None)
+        if callable(capability):
+            return bool(capability())
+        if capability is not None:
+            return bool(capability)
+        return False
+
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
         self.store.clear_thread_binding(channel_id, conversation_id)
         return await self.ensure_thread(channel_id, conversation_id)
@@ -224,13 +232,26 @@ class CodexThreadBackendMixin:
         thread_id = await self.ensure_thread(channel_id, conversation_id)
         return await self.client.clear_thread_goal(thread_id)
 
-    async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
+    async def submit_input(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        text: str,
+        attachments: tuple[InboundAttachment, ...] = (),
+    ) -> TurnSubmission:
+        if attachments and not self.supports_local_image_paths():
+            raise AppServerError("configured App Server cannot read bridge-local image paths")
+        input_items = self._native_user_input(text, attachments)
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
             active = self.store.get_active_turn(binding.thread_id)
             if active is not None and active[1] == "inProgress":
                 try:
-                    await self.client.steer_turn(binding.thread_id, active[0], text)
+                    await self.client.steer_turn(
+                        binding.thread_id,
+                        active[0],
+                        input_items=input_items,
+                    )
                 except AppServerError as exc:
                     if not self._is_stale_turn_error(exc):
                         raise
@@ -238,15 +259,38 @@ class CodexThreadBackendMixin:
                 else:
                     return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
             try:
-                return await self._start_turn(binding.thread_id, text)
+                return await self._start_turn(binding.thread_id, input_items)
             except AppServerError as exc:
                 if not self._requires_thread_resume(exc):
                     raise
         thread_id = await self.ensure_thread(channel_id, conversation_id)
-        return await self._start_turn(thread_id, text)
+        return await self._start_turn(thread_id, input_items)
 
-    async def _start_turn(self, thread_id: str, text: str) -> TurnSubmission:
-        result = await self.client.start_turn(thread_id=thread_id, text=text, summary="concise")
+    async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
+        return await self.submit_input(channel_id, conversation_id, text)
+
+    @staticmethod
+    def _native_user_input(
+        text: str,
+        attachments: tuple[InboundAttachment, ...],
+    ) -> list[dict[str, object]]:
+        input_items: list[dict[str, object]] = []
+        if text.strip():
+            input_items.append({"type": "text", "text": text})
+        for attachment in attachments:
+            if attachment.kind != "image":
+                raise ValueError(f"unsupported inbound attachment kind: {attachment.kind}")
+            input_items.append({"type": "localImage", "path": attachment.local_path})
+        if not input_items:
+            raise ValueError("inbound message has no supported input")
+        return input_items
+
+    async def _start_turn(self, thread_id: str, input_items: list[dict[str, object]]) -> TurnSubmission:
+        result = await self.client.start_turn(
+            thread_id=thread_id,
+            input_items=input_items,
+            summary="concise",
+        )
         turn = result.get("turn") or {}
         turn_id = str(turn.get("id") or "")
         status = str(turn.get("status") or "inProgress")

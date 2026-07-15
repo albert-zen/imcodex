@@ -39,6 +39,9 @@ It MUST:
 - keep stable sender identity separate from conversation identity
 - apply channel admission before an inbound message reaches bridge commands or
   Codex execution
+- apply channel admission before fetching any platform attachment; a rejected
+  sender or conversation MUST NOT consume media download, validation, or spool
+  resources
 - bind the admitted stable sender ID to IM reply context and recheck it before
   platform delivery; a stale native binding must not bypass a revoked channel
   access restriction
@@ -48,6 +51,19 @@ It MUST:
   commit before advancing its platform cursor; this preserves at-least-once
   recovery without adding a second durable message queue, and must not wait for
   asynchronous native turn completion
+- validate platform media using downloaded content rather than trusting a URL,
+  filename, declared MIME type, or declared size; QQ P0 accepts only JPEG, PNG,
+  and WebP, at most four images per message, at most 10 MiB, and at most 40
+  decoded megapixels per image
+- use a maintained decoder to verify accepted image structure after download;
+  a recognized file signature or metadata-only verification alone MUST NOT
+  satisfy media validation, and decode work MUST remain off the socket reader
+- resolve a committed stable platform message replay under the existing
+  per-conversation dedup boundary before downloading or staging its media; the
+  channel MUST NOT create a parallel media-specific durable dedup authority
+- stage accepted media with private permissions in a bounded spool and return a
+  terminal, user-visible failure for unsupported or permanently invalid media
+  instead of retrying it forever or silently dropping it
 
 It MUST NOT:
 
@@ -128,6 +144,8 @@ Allowed examples:
 - visibility preferences
 - protocol-required channel transport state, such as a polling cursor, a
   platform reply/context token, or a bot credential
+- short-lived, privately staged inbound media that is required to hand an
+  admitted IM attachment to native Codex
 
 This state exists only to support IM interaction.
 It does not replace native Codex truth.
@@ -135,6 +153,15 @@ It does not replace native Codex truth.
 Channel transport state MUST be bounded to the protocol need, written
 atomically when persisted, protected as sensitive when it contains credentials
 or reply tokens, and omitted from launch snapshots and normal diagnostics.
+
+Inbound media staging is temporary transport state, not conversation or native
+turn truth. The QQ image spool MUST expire files after 24 hours and have a 512
+MiB total bound. It MUST sweep at startup, before materializing a new batch, and
+at least hourly while QQ is running; physical deletion MAY lag expiry by no more
+than that sweep interval while the channel is idle.
+Image bytes, signed platform URLs, original filenames, and local spool paths
+MUST NOT enter bridge state, launch snapshots, or normal diagnostics. If the
+bound cannot be maintained safely, the new image message MUST fail explicitly.
 
 ## Forbidden Bridge State
 
@@ -372,6 +399,9 @@ The rewrite MUST assume that:
 The bridge and App Server adapter MUST therefore follow these rules:
 
 - the socket read path MUST be kept fast and MUST NOT block on slow downstream projection or logging work
+- platform attachment download, content validation, and disk staging MUST run
+  outside the gateway socket read path; a slow image MUST NOT stop the reader
+  from receiving and queueing later gateway events
 - JSON-RPC responses MUST stay on the socket read fast path, while native server requests such as approvals MUST use a bounded dispatch path isolated from ordinary notifications
 - native request-resolution notifications MUST preserve wire order with the request they resolve
 - IM delivery for a native server request MUST be bounded; failure MUST explicitly reject the native request and remove its local route instead of starving later requests
@@ -394,6 +424,17 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - a recovered terminal result MUST remain retryable until its IM sink confirms delivery; a transient sink failure MUST NOT consume the only recovery marker
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
+
+QQ image inputs MUST be translated at the App Server boundary into native
+`localImage` user-input items; the bridge MUST NOT add a second image model,
+OCR pipeline, or media-understanding authority. A local image path is valid only
+when the App Server shares the bridge's filesystem namespace. P0 MUST reject
+every TCP target for image input, including loopback, because TCP locality does
+not establish filesystem locality. Bridge-child stdio is local by construction;
+the normal Unix-socket daemon is an explicit same-filesystem product assumption.
+A containerized Unix-socket deployment MUST mount the media spool at the same
+absolute path and MUST NOT be documented or diagnosed as a verified shared
+namespace merely because its socket is reachable.
 
 WebSocket target URLs MUST NOT carry userinfo, query, or fragment credentials.
 Authentication belongs in the dedicated token or token-file settings so launch

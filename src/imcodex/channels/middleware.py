@@ -33,36 +33,66 @@ class UnifiedChannelMiddleware:
         inbound: InboundMessage,
         *,
         reply_to_message_id: str | None = None,
+        prepare_inbound=None,
+        pending_attachment_count: int = 0,
     ) -> None:
         trace_id = ensure_trace_id(inbound)
-        content_sha = text_sha256(inbound.text)
-        emit_event(
-            component=f"channels.{adapter.channel_id}",
-            event="message.inbound.received",
-            message="Inbound channel message received",
-            trace_id=trace_id,
-            channel_id=inbound.channel_id,
-            conversation_id=inbound.conversation_id,
-            user_id=inbound.user_id,
-            message_id=inbound.message_id,
-            data={
-                "reply_to_message_id": reply_to_message_id,
-                "text_length": len(inbound.text),
-                "text_preview": text_preview(inbound.text),
-                "text_sha256": content_sha,
-            },
-        )
         conversation_lock = await self._get_conversation_lock(
             inbound.channel_id,
             inbound.conversation_id,
         )
         async with conversation_lock:
+            content_sha = self._inbound_content_sha256(inbound)
+            if (
+                prepare_inbound is not None
+                and inbound.message_id
+                and self._should_drop_duplicate_inbound(
+                    inbound=inbound,
+                    text_fingerprint=content_sha,
+                )
+            ):
+                self._emit_inbound_received(
+                    adapter=adapter,
+                    inbound=inbound,
+                    reply_to_message_id=reply_to_message_id,
+                    trace_id=trace_id,
+                    content_sha=content_sha,
+                    pending_attachment_count=pending_attachment_count,
+                )
+                await self._handle_serialized(
+                    adapter=adapter,
+                    inbound=inbound,
+                    reply_to_message_id=reply_to_message_id,
+                    trace_id=trace_id,
+                    content_sha=content_sha,
+                    pending_attachment_count=pending_attachment_count,
+                )
+                return
+
+            outbound_override = None
+            if prepare_inbound is not None:
+                preflight = getattr(self.service, "preflight_inbound_attachments", None)
+                if callable(preflight):
+                    outbound_override = preflight(inbound)
+                if outbound_override is None:
+                    inbound = await prepare_inbound(inbound)
+            content_sha = self._inbound_content_sha256(inbound)
+            self._emit_inbound_received(
+                adapter=adapter,
+                inbound=inbound,
+                reply_to_message_id=reply_to_message_id,
+                trace_id=trace_id,
+                content_sha=content_sha,
+                pending_attachment_count=pending_attachment_count,
+            )
             await self._handle_serialized(
                 adapter=adapter,
                 inbound=inbound,
                 reply_to_message_id=reply_to_message_id,
                 trace_id=trace_id,
                 content_sha=content_sha,
+                outbound_override=outbound_override,
+                pending_attachment_count=pending_attachment_count,
             )
 
     async def _handle_serialized(
@@ -73,6 +103,8 @@ class UnifiedChannelMiddleware:
         reply_to_message_id: str | None,
         trace_id: str,
         content_sha: str,
+        outbound_override: list[OutboundMessage] | None = None,
+        pending_attachment_count: int = 0,
     ) -> None:
         if self._should_drop_duplicate_inbound(inbound=inbound, text_fingerprint=content_sha):
             await self._ensure_inbound_durable(inbound)
@@ -89,7 +121,14 @@ class UnifiedChannelMiddleware:
                     "reply_to_message_id": reply_to_message_id,
                     "text_length": len(inbound.text),
                     "text_preview": text_preview(inbound.text),
-                    "text_sha256": content_sha,
+                    "text_sha256": text_sha256(inbound.text),
+                    "content_sha256": content_sha,
+                    "attachment_count": max(
+                        len(inbound.attachments),
+                        pending_attachment_count,
+                    ),
+                    "attachments": self._attachment_metadata(inbound),
+                    "input_error": inbound.input_error,
                     "stable_message_id": bool(inbound.message_id),
                 },
             )
@@ -119,22 +158,32 @@ class UnifiedChannelMiddleware:
                 await after_commit()
             return
         self._note_inbound_message(inbound)
-        try:
-            outbound = await self.service.handle_inbound(inbound)
-        except Exception:
-            logger.exception("%s inbound handling failed", adapter.channel_id)
-            metadata = {}
-            if reply_to_message_id:
-                metadata["reply_to_message_id"] = reply_to_message_id
-            metadata["trace_id"] = trace_id
-            error_message = OutboundMessage(
-                channel_id=adapter.channel_id,
-                conversation_id=inbound.conversation_id,
-                message_type="error",
-                text=GENERIC_USER_ERROR_TEXT,
-                metadata=metadata,
-            )
-            outbound = [error_message]
+        if outbound_override is None:
+            try:
+                outbound = await self.service.handle_inbound(inbound)
+            except Exception as exc:
+                # Native failures may echo a managed localImage path. Keep the
+                # exception value and traceback out of normal channel logs; the
+                # correlated bridge/app-server events retain safe type-level facts.
+                logger.error(
+                    "%s inbound handling failed: %s",
+                    adapter.channel_id,
+                    type(exc).__name__,
+                )
+                metadata = {}
+                if reply_to_message_id:
+                    metadata["reply_to_message_id"] = reply_to_message_id
+                metadata["trace_id"] = trace_id
+                error_message = OutboundMessage(
+                    channel_id=adapter.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    message_type="error",
+                    text=GENERIC_USER_ERROR_TEXT,
+                    metadata=metadata,
+                )
+                outbound = [error_message]
+        else:
+            outbound = outbound_override
         prepared: list[OutboundMessage] = []
         for message in outbound:
             if message.channel_id != adapter.channel_id:
@@ -342,6 +391,70 @@ class UnifiedChannelMiddleware:
                 text_fingerprint=text_fingerprint,
             )
         )
+
+    @classmethod
+    def _emit_inbound_received(
+        cls,
+        *,
+        adapter,
+        inbound: InboundMessage,
+        reply_to_message_id: str | None,
+        trace_id: str,
+        content_sha: str,
+        pending_attachment_count: int,
+    ) -> None:
+        emit_event(
+            component=f"channels.{adapter.channel_id}",
+            event="message.inbound.received",
+            message="Inbound channel message received",
+            trace_id=trace_id,
+            channel_id=inbound.channel_id,
+            conversation_id=inbound.conversation_id,
+            user_id=inbound.user_id,
+            message_id=inbound.message_id,
+            data={
+                "reply_to_message_id": reply_to_message_id,
+                "text_length": len(inbound.text),
+                "text_preview": text_preview(inbound.text),
+                "text_sha256": text_sha256(inbound.text),
+                "content_sha256": content_sha,
+                "attachment_count": max(
+                    len(inbound.attachments),
+                    pending_attachment_count,
+                ),
+                "attachments": cls._attachment_metadata(inbound),
+                "input_error": inbound.input_error,
+            },
+        )
+
+    @staticmethod
+    def _attachment_metadata(inbound: InboundMessage) -> list[dict[str, object]]:
+        return [
+            {
+                "kind": attachment.kind,
+                "content_type": attachment.content_type,
+                "size_bytes": attachment.size_bytes,
+            }
+            for attachment in inbound.attachments
+        ]
+
+    @classmethod
+    def _inbound_content_sha256(cls, inbound: InboundMessage) -> str:
+        digest = hashlib.sha256()
+        values = [inbound.text, inbound.input_error or ""]
+        for attachment in inbound.attachments:
+            values.extend(
+                (
+                    attachment.kind,
+                    attachment.content_type,
+                    str(attachment.size_bytes),
+                )
+            )
+        for value in values:
+            encoded = value.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        return digest.hexdigest()
 
     def _emit_outbound_event(
         self,

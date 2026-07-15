@@ -225,6 +225,16 @@ class AppServerClient:
     def preserves_server_state(self) -> bool:
         return self._supervisor.target.preserves_server_state
 
+    def supports_local_image_paths(self) -> bool:
+        """Whether bridge-local paths are readable by the configured App Server."""
+
+        target = self._supervisor.target
+        # TCP locality does not prove filesystem locality: localhost may be an
+        # SSH tunnel, a container boundary, or WSL. Only transports whose
+        # process boundary is local by construction may receive localImage
+        # paths without a separate media-transfer capability.
+        return target.transport in {"stdio-jsonl", "unix-websocket"}
+
     def connection_facts(self) -> JsonDict:
         transport = self._transport
         transport_open = transport is not None and not transport.is_closed()
@@ -515,23 +525,56 @@ class AppServerClient:
             payload,
         )
 
-    async def start_turn(self, thread_id: str, text: str, **kwargs: Any) -> JsonDict:
-        payload = {"threadId": thread_id, "input": [{"type": "text", "text": text}]}
+    async def start_turn(
+        self,
+        thread_id: str,
+        text: str | None = None,
+        *,
+        input_items: list[JsonDict] | None = None,
+        **kwargs: Any,
+    ) -> JsonDict:
+        payload = {
+            "threadId": thread_id,
+            "input": self._resolve_turn_input(text=text, input_items=input_items),
+        }
         for key in ("cwd", "model", "summary"):
             value = kwargs.get(key)
             if value is not None:
                 payload[key] = value
         return await self._request("turn/start", payload)
 
-    async def steer_turn(self, thread_id: str, turn_id: str, text: str) -> JsonDict:
+    async def steer_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str | None = None,
+        *,
+        input_items: list[JsonDict] | None = None,
+    ) -> JsonDict:
         return await self._request(
             "turn/steer",
             {
                 "threadId": thread_id,
                 "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": text}],
+                "input": self._resolve_turn_input(text=text, input_items=input_items),
             },
         )
+
+    @staticmethod
+    def _resolve_turn_input(
+        *,
+        text: str | None,
+        input_items: list[JsonDict] | None,
+    ) -> list[JsonDict]:
+        if input_items is not None:
+            if text is not None:
+                raise ValueError("turn input must use either text or input_items, not both")
+            if not input_items:
+                raise ValueError("turn input must not be empty")
+            return [dict(item) for item in input_items]
+        if text is None:
+            raise ValueError("turn input requires text or input_items")
+        return [{"type": "text", "text": text}]
 
     async def interrupt_turn(self, thread_id: str, turn_id: str) -> JsonDict:
         return await self._request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})

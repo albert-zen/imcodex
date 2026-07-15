@@ -8,7 +8,8 @@ import pytest
 
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, CodexBackend
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.channels.middleware import UnifiedChannelMiddleware
+from imcodex.models import InboundAttachment, InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
 
 
@@ -205,6 +206,113 @@ async def test_text_turn_flows_from_cwd_to_final_result() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "expected_input"),
+    [
+        ("", [{"type": "localImage", "path": "/tmp/inbound.png"}]),
+        (
+            "/status",
+            [
+                {"type": "text", "text": "/status"},
+                {"type": "localImage", "path": "/tmp/inbound.png"},
+            ],
+        ),
+    ],
+)
+async def test_image_input_uses_exact_native_turn_start_payload(
+    text: str,
+    expected_input: list[dict],
+) -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "turn/start": [
+                {"id": 3, "result": {"turn": {"id": "turn_1", "status": "inProgress"}}}
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", "/work/alpha")
+    client, service = _build_service(store, process, CapturingSink())
+    image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text=text,
+            attachments=(image,),
+        )
+    )
+
+    assert messages == []
+    turn_starts = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/start"]
+    assert turn_starts == [
+        {
+            "threadId": "thr_1",
+            "input": expected_input,
+            "summary": "concise",
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_multimodal_input_uses_exact_native_turn_steer_payload() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "turn/steer": [{"id": 2, "result": {"turnId": "turn_1"}}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client, service = _build_service(store, process, CapturingSink())
+    image = InboundAttachment("image", "image/jpeg", "/tmp/inbound.jpg", 456)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="inspect this",
+            attachments=(image,),
+        )
+    )
+
+    assert messages == []
+    turn_steers = [payload["params"] for payload in process.inputs if payload.get("method") == "turn/steer"]
+    assert turn_steers == [
+        {
+            "threadId": "thr_1",
+            "expectedTurnId": "turn_1",
+            "input": [
+                {"type": "text", "text": "inspect this"},
+                {"type": "localImage", "path": "/tmp/inbound.jpg"},
+            ],
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_text_without_cwd_returns_friendly_onboarding_status() -> None:
     process = ScriptedProcess({})
     store = ConversationStore(clock=lambda: 1.0)
@@ -225,6 +333,122 @@ async def test_text_without_cwd_returns_friendly_onboarding_status() -> None:
     assert "Before we start, I need a working folder." in messages[0].text
     assert "/cwd playground" in messages[0].text
     assert "/cwd <path>" in messages[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_code", "expected_text"),
+    [
+        (
+            "image_too_large",
+            "Images must be JPEG, PNG, or WebP, at most 10 MiB, and no more than 40 megapixels.",
+        ),
+        ("too_many_images", "You can send up to 4 images in one message."),
+        ("unsupported_image", "Supported image formats are JPEG, PNG, and WebP."),
+        ("invalid_image", "That image appears to be damaged or incomplete. Please resend it."),
+        ("image_download_failed", "I couldn't download that image. Please resend it."),
+        ("future_error", "I couldn't process that attachment. Please resend it."),
+    ],
+)
+async def test_attachment_input_error_precedes_cwd_onboarding(
+    error_code: str,
+    expected_text: str,
+) -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="",
+            input_error=error_code,
+        )
+    )
+
+    assert len(messages) == 1
+    assert messages[0].message_type == "error"
+    assert messages[0].text == f"[System] {expected_text}"
+    assert process.inputs == []
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_attachment_input_error_is_durable_and_replayed(tmp_path) -> None:
+    class Adapter:
+        channel_id = "qq"
+
+        def __init__(self) -> None:
+            self.sent: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.sent.append(message)
+
+    state_path = tmp_path / "state.json"
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m1",
+        text="",
+        input_error="image_download_failed",
+    )
+    first_store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    first_client, first_service = _build_service(first_store, ScriptedProcess({}), CapturingSink())
+    first_adapter = Adapter()
+
+    await UnifiedChannelMiddleware(service=first_service).handle_inbound(first_adapter, inbound)
+
+    reloaded_store = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    second_client, second_service = _build_service(reloaded_store, ScriptedProcess({}), CapturingSink())
+    second_adapter = Adapter()
+    await UnifiedChannelMiddleware(service=second_service).handle_inbound(second_adapter, inbound)
+
+    assert [message.text for message in first_adapter.sent] == [
+        "[System] I couldn't download that image. Please resend it."
+    ]
+    assert [message.text for message in second_adapter.sent] == [
+        "[System] I couldn't download that image. Please resend it."
+    ]
+    assert first_adapter.sent[0].metadata["delivery_id"] == second_adapter.sent[0].metadata["delivery_id"]
+    await first_client.close()
+    await second_client.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_app_server_rejects_bridge_local_image_path() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", "/work/alpha")
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(app_server_url="wss://codex.example.test/rpc"),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    service = BridgeService(
+        store=store,
+        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        command_router=CommandRouter(store),
+        projector=MessageProjector(),
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="inspect",
+            attachments=(InboundAttachment("image", "image/png", "/tmp/inbound.png", 123),),
+        )
+    )
+
+    assert len(messages) == 1
+    assert messages[0].message_type == "error"
+    assert "share the same local filesystem" in messages[0].text
+    await service.close()
+    await client.close()
 
 
 @pytest.mark.asyncio

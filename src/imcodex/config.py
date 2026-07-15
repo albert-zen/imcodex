@@ -315,6 +315,7 @@ class Settings:
                 "app_id": self.qq_app_id,
                 "client_secret": self.qq_client_secret,
                 "api_base": self.qq_api_base,
+                "media_dir": self.data_dir / "channels" / "qq" / "inbound-media",
                 "markdown_enabled": self.qq_markdown_enabled,
                 "allowed_user_ids": self.qq_allowed_user_ids,
                 "allowed_conversation_ids": self.qq_allowed_conversation_ids,

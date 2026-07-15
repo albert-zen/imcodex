@@ -173,6 +173,45 @@ def test_webhook_cannot_claim_a_built_in_channel_route() -> None:
     assert service.calls == []
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {
+            "attachments": [
+                {
+                    "kind": "image",
+                    "content_type": "image/png",
+                    "local_path": "/etc/passwd",
+                    "size_bytes": 1,
+                }
+            ]
+        },
+        {"input_error": "image_download_failed"},
+    ],
+)
+def test_webhook_cannot_inject_internal_attachment_fields(extra: dict) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    service = CountingService(store)
+    client = TestClient(create_app(service, inbound_token="webhook-secret"))
+    body = {
+        "channel_id": "gateway",
+        "conversation_id": "conv-1",
+        "user_id": "u1",
+        "message_id": "m1",
+        "text": "inspect",
+        **extra,
+    }
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        json=body,
+    )
+
+    assert response.status_code == 422
+    assert service.calls == []
+
+
 def test_webhook_uses_persisted_message_id_deduplication(tmp_path) -> None:
     store = ConversationStore(state_path=tmp_path / "state.json", clock=lambda: 1.0)
     service = CountingService(store)

@@ -9,7 +9,7 @@ native to Codex.
 
 | Channel | Public callback needed | Conversation scope | Initial capability |
 | --- | --- | --- | --- |
-| QQ | No | Private and group `@bot` | Text |
+| QQ | No | Private and group `@bot` | Text, JPEG/PNG/WebP images |
 | Telegram | No | Private, group, forum topic | Text |
 | Feishu / Lark | No | Private, group, topic | Text |
 | Weixin iLink | No | Direct only | Text, experimental |
@@ -120,6 +120,58 @@ IMCODEX_QQ_MARKDOWN_ENABLED=1
 The adapter consumes `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`.
 Normalized routes are `c2c:<openid>` and `group:<group_openid>`. QQ group
 events are already mention-scoped by the platform.
+
+Inbound images work without an additional switch, image-model setting, user
+list, or group-member list. The same access policy applies to text and images:
+with no optional restrictions configured, any private sender or member of a QQ
+group that the platform delivers may use the bot, and group images still
+require the platform's `@bot` event. Access is checked before an attachment is
+downloaded.
+
+The P0 image contract is:
+
+- JPEG, PNG, and WebP are accepted only after a maintained image decoder
+  verifies the downloaded structure; matching magic bytes alone is not enough
+- a message may contain only images, or text plus images
+- one message may contain at most four images
+- each downloaded image may be at most 10 MiB
+- each image may contain at most 40 megapixels before decode
+- limits reject the affected message explicitly; images are never silently
+  truncated or dropped
+
+QQ attachment URLs are transport data, not Codex input. The adapter downloads
+accepted images outside the gateway socket reader, stages them in a private,
+bounded spool, and forwards their local paths through native Codex
+`localImage` inputs. Spool files expire after 24 hours and the spool has a 512
+MiB total bound. Structural verification includes an actual bounded pixel
+decode, so a truncated JPEG/WebP payload cannot pass on its header alone.
+Expired files are swept at startup, before a new media batch,
+and hourly while QQ is running, so physical deletion can lag expiry by at most
+one cleanup interval while the channel is idle. If the adapter cannot validate
+or download an image, or cannot safely stay within those bounds, it replies
+with a concise error instead of silently ignoring the message or blocking later
+QQ messages. A whole-batch deadline also prevents a slowly dripping media
+response from occupying the inbound worker indefinitely.
+
+Media preparation is lazy and runs inside the middleware's per-conversation
+serialization boundary. A committed stable QQ `message_id` replay is resolved
+from the existing dedup/reply record before any attachment network or spool
+work. Likewise, onboarding and a known incompatible App Server topology are
+preflighted before download rather than staging a file that cannot be submitted.
+
+`localImage` is a filesystem reference. This P0 path therefore requires the
+bridge and Codex App Server to run in the same filesystem namespace. imcodex
+only submits these paths over bridge-child stdio or the normal local Unix-socket
+target. Every TCP App Server target, including `ws://127.0.0.1`, is rejected for
+image input because loopback can still be an SSH tunnel, WSL, or a container
+boundary; text remains usable. A containerized Unix-socket deployment is valid
+only when it mounts the media spool at the same absolute path as the bridge.
+The Unix transport is the product's local-daemon assumption, not a protocol
+proof of mount-namespace identity.
+
+On POSIX, the spool directory and files are restricted to `0700` and `0600`.
+On Windows, imcodex installs a protected current-user-only DACL and rejects
+symlink, junction, and other reparse-point spool roots before cleanup.
 
 The production API base is shown above. Use the sandbox base only for an app
 that is actually configured in the QQ sandbox:
@@ -373,6 +425,12 @@ even when `IMCODEX_LOG_LEVEL=DEBUG`, preventing Bot API URLs and websocket auth
 frames from entering bridge logs. Do not paste credential files into issue
 reports.
 
+QQ image diagnostics record only bounded operational metadata such as attachment
+count, validated media type, byte count, processing stage, and error class. They
+do not record image content, signed attachment URLs, original filenames, or
+staged local paths. A single media failure does not make a connected QQ channel
+unhealthy.
+
 ## Windows Notes
 
 - All built-in transports use outbound connections, so a public inbound port
@@ -381,6 +439,10 @@ reports.
   extras expression intact.
 - Run `python -m imcodex channels doctor` from the same environment used by
   `scripts\start.cmd`.
+- The normal detached Windows App Server uses loopback TCP, so QQ image input is
+  intentionally unavailable in this P0; text remains available. A future
+  explicit media-transfer/topology capability can remove this conservative
+  boundary without guessing from `localhost`.
 - Put token files and `IMCODEX_DATA_DIR` under the intended Windows user's
   profile and verify their NTFS ACLs on a shared machine.
 

@@ -113,6 +113,7 @@ def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
     assert config["allowed_user_ids"] == "owner,backup"
     assert config["allowed_conversation_ids"] == "c2c:owner"
     assert config["access_match"] == "all"
+    assert config["media_dir"] == Path(".imcodex/channels/qq/inbound-media")
 
 
 def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:

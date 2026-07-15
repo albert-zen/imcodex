@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 import json
 import logging
+from pathlib import Path
 import re
 import time
-from collections import defaultdict
 from typing import Any
 
 import httpx
 import websockets
 
 from ..config import validate_http_endpoint
-from .base import BaseChannelAdapter
-from .access import ChannelAccessPolicy
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundAttachment, InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
+from .access import ChannelAccessPolicy
+from .base import BaseChannelAdapter
+from .qq_media import QQImageReference, QQMediaMaterializer, parse_qq_image_references
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,7 @@ MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
 RECONNECT_INITIAL_DELAY_S = 1.0
 RECONNECT_MAX_DELAY_S = 60.0
 INBOUND_QUEUE_LIMIT = 64
+MEDIA_CLEANUP_INTERVAL_S = 60 * 60
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -65,6 +68,9 @@ class QQChannelAdapter(BaseChannelAdapter):
         api_base: str = DEFAULT_API_BASE,
         token_url: str = TOKEN_URL,
         http_client: httpx.AsyncClient | None = None,
+        media_dir: Path | None = None,
+        media_materializer: QQMediaMaterializer | None = None,
+        media_cleanup_sleep=asyncio.sleep,
         websocket_factory=websockets.connect,
         sleep=asyncio.sleep,
         clock=time.time,
@@ -80,6 +86,12 @@ class QQChannelAdapter(BaseChannelAdapter):
         self.token_url = token_url
         self.http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
+        self.media_materializer = media_materializer or QQMediaMaterializer(
+            root=media_dir or Path(".imcodex") / "channels" / "qq" / "inbound-media",
+            http_client=self.http_client,
+            clock=clock,
+        )
+        self.media_cleanup_sleep = media_cleanup_sleep
         self.websocket_factory = websocket_factory
         self.sleep = sleep
         self.clock = clock
@@ -94,11 +106,14 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._session_id: str | None = None
         self._last_seq: int | None = None
         self._session_epoch = 0
-        self._inbound_queue: asyncio.Queue[tuple[InboundMessage, int | None, int]] = asyncio.Queue(
+        self._inbound_queue: asyncio.Queue[
+            tuple[InboundMessage, tuple[QQImageReference, ...], int | None, int]
+        ] = asyncio.Queue(
             maxsize=INBOUND_QUEUE_LIMIT
         )
         self._queued_message_ids: set[tuple[str, str]] = set()
         self._inbound_worker_task: asyncio.Task[None] | None = None
+        self._media_cleanup_task: asyncio.Task[None] | None = None
 
     @classmethod
     def from_config(cls, *, config: dict[str, object], middleware):
@@ -109,6 +124,7 @@ class QQChannelAdapter(BaseChannelAdapter):
             middleware=middleware,
             api_base=str(config.get("api_base") or DEFAULT_API_BASE),
             markdown_enabled=_config_bool(config.get("markdown_enabled")),
+            media_dir=Path(str(config.get("media_dir") or ".imcodex/channels/qq/inbound-media")),
             access_policy=ChannelAccessPolicy.from_config(config),
         )
 
@@ -116,9 +132,11 @@ class QQChannelAdapter(BaseChannelAdapter):
         if not self.enabled:
             return
         self.validate_startup_configuration()
+        await self.media_materializer.prepare()
         self._stop_event.clear()
         self._ready_event.clear()
         self._ensure_inbound_worker()
+        self._ensure_media_cleanup()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
         mark_channel_health(
@@ -153,18 +171,34 @@ class QQChannelAdapter(BaseChannelAdapter):
             except asyncio.CancelledError:
                 pass
             self._inbound_worker_task = None
+        if self._media_cleanup_task is not None:
+            self._media_cleanup_task.cancel()
+            try:
+                await self._media_cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._media_cleanup_task = None
         self._drain_inbound_queue()
         if self._owns_http_client:
             await self.http_client.aclose()
 
     def parse_inbound_event(self, event_type: str, payload: dict[str, Any]) -> InboundMessage | None:
+        parsed = self._parse_inbound_event(event_type, payload)
+        return parsed[0] if parsed is not None else None
+
+    def _parse_inbound_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> tuple[InboundMessage, tuple[QQImageReference, ...]] | None:
         if event_type not in SUPPORTED_EVENTS:
             return None
         author = payload.get("author") or {}
         text = (payload.get("content") or "").strip()
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             text = MENTION_PREFIX_PATTERN.sub("", text).strip()
-        if not text:
+        image_references = parse_qq_image_references(payload.get("attachments"))
+        if not text and not image_references:
             return None
         if event_type == "C2C_MESSAGE_CREATE":
             sender = author.get("user_openid") or author.get("id")
@@ -176,19 +210,39 @@ class QQChannelAdapter(BaseChannelAdapter):
         message_id = str(payload.get("id") or "")
         if not sender or not conversation_id or not message_id:
             return None
-        return InboundMessage(
-            channel_id="qq",
-            conversation_id=conversation_id,
-            user_id=str(sender),
-            message_id=message_id,
-            text=text,
+        return (
+            InboundMessage(
+                channel_id="qq",
+                conversation_id=conversation_id,
+                user_id=str(sender),
+                message_id=message_id,
+                text=text,
+            ),
+            image_references,
         )
 
     async def handle_dispatch_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        inbound = self.parse_inbound_event(event_type, payload)
-        if inbound is None:
+        parsed = self._parse_inbound_event(event_type, payload)
+        if parsed is None:
             return
-        await self.dispatch_inbound(inbound, reply_to_message_id=inbound.message_id)
+        inbound, image_references = parsed
+        if not self.inbound_allowed(inbound):
+            suppressed = self.prepare_access_denial_report()
+            if suppressed is not None:
+                self.emit_access_denial(inbound, suppressed)
+            return
+        prepare_inbound = None
+        if image_references:
+            prepare_inbound = lambda message: self._materialize_inbound(
+                message,
+                image_references,
+            )
+        await self.dispatch_inbound(
+            inbound,
+            reply_to_message_id=inbound.message_id,
+            prepare_inbound=prepare_inbound,
+            pending_attachment_count=len(image_references),
+        )
 
     async def send_message(self, message: OutboundMessage) -> None:
         if not self.enabled or message.channel_id != "qq" or not message.text.strip():
@@ -356,10 +410,11 @@ class QQChannelAdapter(BaseChannelAdapter):
         payload: dict[str, Any],
         sequence: int | None,
     ) -> None:
-        inbound = self.parse_inbound_event(event_type, payload)
-        if inbound is None:
+        parsed = self._parse_inbound_event(event_type, payload)
+        if parsed is None:
             self._advance_sequence_if_idle(sequence)
             return
+        inbound, image_references = parsed
         if not self.inbound_allowed(inbound):
             suppressed = self.prepare_access_denial_report()
             if suppressed is not None:
@@ -371,7 +426,9 @@ class QQChannelAdapter(BaseChannelAdapter):
             return
         self._ensure_inbound_worker()
         try:
-            self._inbound_queue.put_nowait((inbound, sequence, self._session_epoch))
+            self._inbound_queue.put_nowait(
+                (inbound, image_references, sequence, self._session_epoch)
+            )
         except asyncio.QueueFull:
             emit_event(
                 component="channels.qq",
@@ -387,17 +444,51 @@ class QQChannelAdapter(BaseChannelAdapter):
         if self._inbound_worker_task is None or self._inbound_worker_task.done():
             self._inbound_worker_task = asyncio.create_task(self._run_inbound_worker())
 
+    def _ensure_media_cleanup(self) -> None:
+        if self._media_cleanup_task is None or self._media_cleanup_task.done():
+            self._media_cleanup_task = asyncio.create_task(self._run_media_cleanup())
+
+    async def _run_media_cleanup(self) -> None:
+        while not self._stop_event.is_set():
+            await self.media_cleanup_sleep(MEDIA_CLEANUP_INTERVAL_S)
+            if self._stop_event.is_set():
+                return
+            try:
+                await self.media_materializer.prepare()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "QQ inbound media cleanup failed: %s",
+                    type(exc).__name__,
+                )
+                emit_event(
+                    component="channels.qq",
+                    event="qq.media.cleanup_failed",
+                    level="WARNING",
+                    message="QQ inbound media cleanup failed",
+                    data={"error_type": type(exc).__name__},
+                )
+
     async def _run_inbound_worker(self) -> None:
         while True:
-            inbound, sequence, epoch = await self._inbound_queue.get()
+            inbound, image_references, sequence, epoch = await self._inbound_queue.get()
             message_key = (inbound.conversation_id, inbound.message_id)
             failures = 0
             try:
+                prepare_inbound = None
+                if image_references:
+                    prepare_inbound = lambda message: self._materialize_inbound(
+                        message,
+                        image_references,
+                    )
                 while not self._stop_event.is_set():
                     try:
                         await self.dispatch_inbound(
                             inbound,
                             reply_to_message_id=inbound.message_id,
+                            prepare_inbound=prepare_inbound,
+                            pending_attachment_count=len(image_references),
                         )
                     except asyncio.CancelledError:
                         raise
@@ -432,6 +523,65 @@ class QQChannelAdapter(BaseChannelAdapter):
                 self._queued_message_ids.discard(message_key)
                 self._inbound_queue.task_done()
 
+    async def _materialize_inbound(
+        self,
+        inbound: InboundMessage,
+        image_references: tuple[QQImageReference, ...],
+    ) -> InboundMessage:
+        if image_references:
+            emit_event(
+                component="channels.qq",
+                event="qq.media.materializing",
+                message="QQ inbound media materialization started",
+                channel_id=self.channel_id,
+                conversation_id=inbound.conversation_id,
+                user_id=inbound.user_id,
+                message_id=inbound.message_id,
+                data={"attachment_count": len(image_references)},
+            )
+        result = await self.media_materializer.materialize(image_references)
+        inbound.attachments = tuple(
+            InboundAttachment(
+                kind="image",
+                content_type=image.content_type,
+                local_path=image.local_path,
+                size_bytes=image.size_bytes,
+            )
+            for image in result.images
+        )
+        inbound.input_error = result.input_error
+        if result.input_error is not None:
+            emit_event(
+                component="channels.qq",
+                event="qq.media.rejected",
+                level="WARNING",
+                message="QQ inbound media materialization rejected",
+                channel_id=self.channel_id,
+                conversation_id=inbound.conversation_id,
+                user_id=inbound.user_id,
+                message_id=inbound.message_id,
+                data={
+                    "attachment_count": len(image_references),
+                    "error_code": result.input_error,
+                },
+            )
+        elif result.images:
+            emit_event(
+                component="channels.qq",
+                event="qq.media.materialized",
+                message="QQ inbound media materialization completed",
+                channel_id=self.channel_id,
+                conversation_id=inbound.conversation_id,
+                user_id=inbound.user_id,
+                message_id=inbound.message_id,
+                data={
+                    "attachment_count": len(result.images),
+                    "content_types": [image.content_type for image in result.images],
+                    "size_bytes": [image.size_bytes for image in result.images],
+                },
+            )
+        return inbound
+
     def _advance_sequence_if_idle(self, sequence: int | None) -> None:
         if self._inbound_queue.empty() and not self._queued_message_ids:
             self._advance_sequence(sequence, epoch=self._session_epoch)
@@ -444,7 +594,7 @@ class QQChannelAdapter(BaseChannelAdapter):
     def _drain_inbound_queue(self) -> None:
         while True:
             try:
-                inbound, _sequence, _epoch = self._inbound_queue.get_nowait()
+                inbound, _image_references, _sequence, _epoch = self._inbound_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self._queued_message_ids.discard((inbound.conversation_id, inbound.message_id))

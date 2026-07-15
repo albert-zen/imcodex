@@ -7,6 +7,8 @@ from .protocol_map import normalize_appserver_message
 
 
 _MAX_UNKNOWN_PAYLOAD_KEYS = 20
+_MANAGED_MEDIA_PATH_MARKER = "/channels/qq/inbound-media"
+_REDACTED_MANAGED_MEDIA_TEXT = "[redacted managed inbound media path]"
 
 
 def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: int = 240) -> dict[str, Any]:
@@ -20,9 +22,12 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
             error = message.get("error")
             if isinstance(error, dict):
                 summary["error_code"] = error.get("code")
-                summary["error_message"] = _trim_preview(str(error.get("message") or ""), max_preview_chars)
+                summary["error_message"] = _safe_preview(
+                    str(error.get("message") or ""),
+                    max_preview_chars,
+                )
             else:
-                summary["error_message"] = _trim_preview(str(error), max_preview_chars)
+                summary["error_message"] = _safe_preview(str(error), max_preview_chars)
         else:
             result = message.get("result")
             summary["has_error"] = False
@@ -30,10 +35,10 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
                 summary["result_keys"] = sorted(result.keys())
             else:
                 summary["result_type"] = type(result).__name__
-        return summary
+        return _redact_managed_media(summary)
 
     if "method" not in message:
-        return summary
+        return _redact_managed_media(summary)
 
     event = normalize_appserver_message(message)
     payload = event.payload
@@ -59,7 +64,7 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
             }
             for key, value in sorted(payload.items())[:_MAX_UNKNOWN_PAYLOAD_KEYS]
         ]
-        return summary
+        return _redact_managed_media(summary)
     summary.update(
         {
             "thread_id": event.thread_id or None,
@@ -117,12 +122,12 @@ def summarize_transport_message(message: dict[str, Any], *, max_preview_chars: i
         summary["changed_paths"] = changes[:10]
     if isinstance(payload.get("permissions"), dict):
         summary["permissions_keys"] = sorted((payload.get("permissions") or {}).keys())
-    return summary
+    return _redact_managed_media(summary)
 
 
 def summarize_text(value: str, *, max_preview_chars: int = 240) -> dict[str, Any]:
     return {
-        "text_preview": _trim_preview(value, max_preview_chars),
+        "text_preview": _safe_preview(value, max_preview_chars),
         "text_length": len(value),
         "text_sha256": _sha256_text(value),
     }
@@ -145,6 +150,49 @@ def _trim_preview(value: str, max_chars: int) -> str:
     if max_chars <= 3:
         return text[:max_chars]
     return text[: max_chars - 3] + "..."
+
+
+def _safe_preview(value: str, max_chars: int) -> str:
+    if _contains_managed_media_path(value):
+        return _REDACTED_MANAGED_MEDIA_TEXT
+    return _trim_preview(value, max_chars)
+
+
+def _redact_managed_media(value: Any) -> Any:
+    """Redact managed media paths from every diagnostic string and path field."""
+
+    if isinstance(value, str):
+        if _contains_managed_media_path(value):
+            return _REDACTED_MANAGED_MEDIA_TEXT
+        return value
+    if isinstance(value, list):
+        return [_redact_managed_media(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_managed_media(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _redact_managed_media(key): _redact_managed_media(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _contains_managed_media_path(value: str) -> bool:
+    normalized = value.replace("\\", "/").lower()
+    start = 0
+    while True:
+        index = normalized.find(_MANAGED_MEDIA_PATH_MARKER, start)
+        if index < 0:
+            return False
+        end = index + len(_MANAGED_MEDIA_PATH_MARKER)
+        if end == len(normalized):
+            return True
+        next_character = normalized[end]
+        if next_character == "/" or not (
+            next_character.isalnum() or next_character in "._-"
+        ):
+            return True
+        start = end
 
 
 def _sha256_text(value: str) -> str:

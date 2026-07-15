@@ -35,6 +35,9 @@ the authority for:
 The built-in transport set currently includes QQ, Telegram, Feishu/Lark, and
 experimental Tencent iLink Weixin. These are peer adapters over the same
 bridge contract; no channel owns a separate Codex agent or thread runtime.
+QQ additionally normalizes admitted JPEG, PNG, and WebP attachments into the
+same inbound contract and hands them to native Codex as `localImage` inputs; it
+does not own image understanding.
 
 Remote adapters share one optional access-restriction model. Platform delivery
 is the default scope; stable user and conversation IDs can narrow that scope,
@@ -82,6 +85,8 @@ as:
 - minimal request routing needed to complete native flows
 - platform transport cursors and reply tokens required to resume an IM
   protocol, such as Telegram update offsets and Weixin context tokens
+- short-lived, privately staged inbound attachments needed to translate a
+  platform message into native Codex input
 
 If a change introduces a new local source of truth for something native Codex
 already owns, that is a design smell and should be challenged.
@@ -89,6 +94,32 @@ already owns, that is a design smell and should be challenged.
 Transport credentials and cursors are not native Codex state. A channel may
 persist them only when its platform protocol requires them, using private files
 that never enter launch snapshots or normal user-visible diagnostics.
+
+Staged attachments follow the same discipline. The channel owns platform URL
+handling, admission-before-download, content validation, limits, and private
+spool cleanup. The bridge preserves the user's text-and-image intent, while the
+App Server layer alone translates that intent into native protocol types. For
+QQ P0, a message contains at most four validated JPEG/PNG/WebP images of at
+most 10 MiB and 40 megapixels each; its spool is bounded to 512 MiB, expires
+files after 24 hours, and sweeps expired files at startup, before media batches,
+and hourly. Download and staging work stays off the gateway socket reader, and
+permanent media failures become explicit replies rather than hidden drops or
+endless queue retries.
+Validation uses a maintained decoder and bounded pixel load after the download;
+a file-header signature by itself is not a valid image. Media preparation is
+lazy under the existing per-conversation middleware lock so a committed stable
+message replay is deduplicated before network or filesystem side effects,
+without a second QQ dedup store.
+
+Because native `localImage` contains a path rather than image bytes, QQ P0
+requires the bridge and App Server to share a filesystem namespace. Supporting
+a truly remote App Server would require a separate, explicitly designed media
+transfer boundary; imcodex must not pretend that a bridge-local path is remotely
+readable. P0 therefore permits local paths only for bridge-child stdio and the
+normal Unix-socket daemon, and rejects all TCP targets even when they use a
+loopback host. The Unix daemon is an explicit local-filesystem product
+assumption; a containerized deployment must mount the spool at the same
+absolute path.
 
 ## App Server Runtime Direction
 

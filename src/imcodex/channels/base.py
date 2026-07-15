@@ -154,17 +154,20 @@ class BaseChannelAdapter(ABC):
         inbound: InboundMessage,
         *,
         reply_to_message_id: str | None = None,
+        prepare_inbound=None,
+        pending_attachment_count: int = 0,
     ) -> None:
         if not self.inbound_allowed(inbound):
             suppressed = self.prepare_access_denial_report()
             if suppressed is not None:
                 self.emit_access_denial(inbound, suppressed)
             return
-        await self.middleware.handle_inbound(
-            self,
-            inbound,
-            reply_to_message_id=reply_to_message_id,
-        )
+        dispatch_options: dict[str, object] = {"reply_to_message_id": reply_to_message_id}
+        if prepare_inbound is not None:
+            dispatch_options["prepare_inbound"] = prepare_inbound
+        if pending_attachment_count:
+            dispatch_options["pending_attachment_count"] = pending_attachment_count
+        await self.middleware.handle_inbound(self, inbound, **dispatch_options)
 
     @classmethod
     @abstractmethod

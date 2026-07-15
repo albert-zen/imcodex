@@ -42,6 +42,20 @@ _RECOVERY_DELIVERY_TIMEOUT_S = 10.0
 _DELIVERY_FAILED_REQUEST_CODE = -32603
 _RECENT_TERMINAL_DELIVERY_LIMIT = 512
 _TERMINAL_PROJECTION_EVENT_KINDS = frozenset({"item_completed", "turn_completed"})
+_INPUT_ERROR_TEXT = {
+    "image_too_large": (
+        "Images must be JPEG, PNG, or WebP, at most 10 MiB, and no more than 40 megapixels."
+    ),
+    "too_many_images": "You can send up to 4 images in one message.",
+    "unsupported_image": "Supported image formats are JPEG, PNG, and WebP.",
+    "invalid_image": "That image appears to be damaged or incomplete. Please resend it.",
+    "image_download_failed": "I couldn't download that image. Please resend it.",
+}
+_GENERIC_ATTACHMENT_ERROR_TEXT = "I couldn't process that attachment. Please resend it."
+_REMOTE_APP_SERVER_IMAGE_ERROR_TEXT = (
+    "Image input requires imcodex and Codex App Server to share the same local filesystem. "
+    "Connect to a local App Server and resend the image."
+)
 
 
 class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
@@ -82,9 +96,29 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
     async def close(self) -> None:
         await self.native_requests.close()
 
+    def preflight_inbound_attachments(
+        self,
+        message: InboundMessage,
+    ) -> list[OutboundMessage] | None:
+        """Return a terminal response before a channel stages local media."""
+
+        binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.bootstrap_cwd is None and binding.thread_id is None:
+            return [self._message(message, "status", self._render_onboarding())]
+        if not self._supports_local_image_paths():
+            return [self._message(message, "error", _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT)]
+        return None
+
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
         trace_id = ensure_trace_id(message)
-        message_kind = "command" if message.text.startswith("/") else "text"
+        if message.input_error is not None:
+            message_kind = "input_error"
+        elif message.attachments:
+            message_kind = "multimodal" if message.text.strip() else "image"
+        elif message.text.startswith("/"):
+            message_kind = "command"
+        else:
+            message_kind = "text"
         emit_event(
             component="bridge",
             event="bridge.inbound.started",
@@ -99,13 +133,23 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 "text_length": len(message.text),
                 "text_preview": text_preview(message.text),
                 "text_sha256": text_sha256(message.text),
+                "attachment_count": len(message.attachments),
+                "attachment_kinds": [attachment.kind for attachment in message.attachments],
             },
         )
         try:
-            if message_kind == "command":
+            if message.input_error is not None:
+                outbound = [
+                    self._message(
+                        message,
+                        "error",
+                        _INPUT_ERROR_TEXT.get(message.input_error, _GENERIC_ATTACHMENT_ERROR_TEXT),
+                    )
+                ]
+            elif message_kind == "command":
                 outbound = await self._handle_command(message)
             else:
-                outbound = await self._handle_text(message)
+                outbound = await self._handle_input(message)
         except Exception as exc:
             emit_event(
                 component="bridge",
@@ -135,10 +179,12 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         )
         return outbound
 
-    async def _handle_text(self, message: InboundMessage) -> list[OutboundMessage]:
+    async def _handle_input(self, message: InboundMessage) -> list[OutboundMessage]:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         if binding.bootstrap_cwd is None and binding.thread_id is None:
             return [self._message(message, "status", self._render_onboarding())]
+        if message.attachments and not self._supports_local_image_paths():
+            return [self._message(message, "error", _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT)]
         pending_approvals = self.store.list_pending_requests(
             message.channel_id,
             message.conversation_id,
@@ -155,7 +201,12 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             if failure is not None:
                 return failure
         try:
-            submission = await self.backend.submit_text(message.channel_id, message.conversation_id, message.text)
+            submission = await self.backend.submit_input(
+                message.channel_id,
+                message.conversation_id,
+                message.text,
+                message.attachments,
+            )
         except StaleThreadBindingError as exc:
             self.store.clear_thread_binding(message.channel_id, message.conversation_id)
             text = (
@@ -166,6 +217,14 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if submission.kind == "start":
             self.store.note_active_turn(submission.thread_id, submission.turn_id, "inProgress")
         return []
+
+    def _supports_local_image_paths(self) -> bool:
+        capability = getattr(self.backend, "supports_local_image_paths", None)
+        if callable(capability):
+            return bool(capability())
+        if capability is not None:
+            return bool(capability)
+        return False
 
     def _stale_thread_status(self, message: InboundMessage, exc: StaleThreadBindingError) -> str:
         self.store.clear_thread_binding(message.channel_id, message.conversation_id)

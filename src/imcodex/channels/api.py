@@ -6,6 +6,7 @@ import re
 import secrets
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict
 from starlette.responses import JSONResponse
 
 from ..models import InboundMessage, OutboundMessage
@@ -23,6 +24,31 @@ WEBHOOK_ID_LIMITS = {
     "message_id": 512,
 }
 CHANNEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+class InboundWebhookRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: str
+    conversation_id: str
+    user_id: str
+    message_id: str
+    text: str
+    reply_to_message_id: str | None = None
+    sent_at: str | None = None
+    trace_id: str | None = None
+
+    def to_inbound_message(self) -> InboundMessage:
+        return InboundMessage(
+            channel_id=self.channel_id,
+            conversation_id=self.conversation_id,
+            user_id=self.user_id,
+            message_id=self.message_id,
+            text=self.text,
+            reply_to_message_id=self.reply_to_message_id,
+            sent_at=self.sent_at,
+            trace_id=self.trace_id,
+        )
 
 
 class _InboundWebhookGuard:
@@ -151,9 +177,9 @@ def create_app(service, *, inbound_token: str = "") -> FastAPI:
     middleware = UnifiedChannelMiddleware(service=service)
 
     @app.post(INBOUND_WEBHOOK_PATH)
-    async def webhook_inbound(message: InboundMessage) -> dict:
+    async def webhook_inbound(request: InboundWebhookRequest) -> dict:
         for field_name, limit in WEBHOOK_ID_LIMITS.items():
-            value = str(getattr(message, field_name) or "")
+            value = str(getattr(request, field_name) or "")
             if not value.strip():
                 raise HTTPException(status_code=422, detail=f"{field_name} must not be empty.")
             if len(value) > limit:
@@ -161,19 +187,20 @@ def create_app(service, *, inbound_token: str = "") -> FastAPI:
                     status_code=422,
                     detail=f"{field_name} exceeds the {limit}-character limit.",
                 )
-        if CHANNEL_ID_PATTERN.fullmatch(message.channel_id) is None:
+        if CHANNEL_ID_PATTERN.fullmatch(request.channel_id) is None:
             raise HTTPException(status_code=422, detail="channel_id contains unsupported characters.")
-        if message.channel_id in BUILTIN_CHANNEL_IDS:
+        if request.channel_id in BUILTIN_CHANNEL_IDS:
             raise HTTPException(
                 status_code=409,
                 detail=(
                     "The generic webhook cannot claim a built-in channel ID. Use a dedicated gateway channel namespace."
                 ),
             )
-        if not message.text.strip():
+        if not request.text.strip():
             raise HTTPException(status_code=422, detail="Inbound message text must not be empty.")
-        if len(message.text) > MAX_INBOUND_TEXT_CHARS:
+        if len(request.text) > MAX_INBOUND_TEXT_CHARS:
             raise HTTPException(status_code=413, detail="Inbound message text is too large.")
+        message = request.to_inbound_message()
         adapter = _WebhookResponseAdapter(
             message.channel_id,
             outbound_sink=getattr(service, "outbound_sink", None),

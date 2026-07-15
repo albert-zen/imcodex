@@ -8,6 +8,7 @@ from imcodex.appserver.backend import (
     PERMISSION_MODE_PROFILE_IDS,
     ThreadListResult,
 )
+from imcodex.models import InboundAttachment
 from imcodex.store import ConversationStore
 
 
@@ -105,8 +106,8 @@ class NewThreadClient:
         self.resume_calls.append(params)
         raise AssertionError("resume_thread should not be called for a freshly started thread")
 
-    async def start_turn(self, thread_id: str, text: str, **kwargs):
-        self.start_turn_calls.append({"thread_id": thread_id, "text": text, **kwargs})
+    async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
+        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
         return {"turn": {"id": "turn_1", "status": "inProgress"}}
 
 
@@ -116,9 +117,9 @@ class ResumeFallbackClient:
         self.start_turn_calls: list[dict] = []
         self._start_attempts = 0
 
-    async def start_turn(self, thread_id: str, text: str, **kwargs):
+    async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
         self._start_attempts += 1
-        self.start_turn_calls.append({"thread_id": thread_id, "text": text, **kwargs})
+        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
         if self._start_attempts == 1:
             raise AppServerError(f"no rollout found for thread id {thread_id}")
         return {"turn": {"id": "turn_2", "status": "inProgress"}}
@@ -133,6 +134,34 @@ class ResumeFallbackClient:
                 "status": "idle",
             }
         }
+
+
+class MultimodalClient:
+    def __init__(self, *, stale_steer: bool = False) -> None:
+        self.stale_steer = stale_steer
+        self.start_turn_calls: list[dict] = []
+        self.steer_turn_calls: list[dict] = []
+
+    def supports_local_image_paths(self) -> bool:
+        return True
+
+    async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
+        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
+        return {"turn": {"id": "turn_2", "status": "inProgress"}}
+
+    async def steer_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        input_items: list[dict],
+    ) -> dict:
+        self.steer_turn_calls.append(
+            {"thread_id": thread_id, "turn_id": turn_id, "input_items": input_items}
+        )
+        if self.stale_steer:
+            raise AppServerError("no active turn")
+        return {"turnId": turn_id}
 
 
 class InterruptStaleClient:
@@ -489,7 +518,13 @@ async def test_submit_text_reuses_fresh_thread_without_resume() -> None:
         {"cwd": r"D:\desktop\imcodex", "service_name": "imcodex-test"},
     ]
     assert client.resume_calls == []
-    assert client.start_turn_calls == [{"thread_id": "thr_new", "text": "hi", "summary": "concise"}]
+    assert client.start_turn_calls == [
+        {
+            "thread_id": "thr_new",
+            "input_items": [{"type": "text", "text": "hi"}],
+            "summary": "concise",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -511,8 +546,111 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
         }
     ]
     assert client.start_turn_calls == [
-        {"thread_id": "thr_old", "text": "continue", "summary": "concise"},
-        {"thread_id": "thr_old", "text": "continue", "summary": "concise"},
+        {
+            "thread_id": "thr_old",
+            "input_items": [{"type": "text", "text": "continue"}],
+            "summary": "concise",
+        },
+        {
+            "thread_id": "thr_old",
+            "input_items": [{"type": "text", "text": "continue"}],
+            "summary": "concise",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_input_starts_image_only_turn() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    client = MultimodalClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    image = InboundAttachment(
+        kind="image",
+        content_type="image/png",
+        local_path="/tmp/inbound.png",
+        size_bytes=123,
+    )
+
+    submission = await backend.submit_input("qq", "conv-1", "", (image,))
+
+    assert submission.kind == "start"
+    assert client.start_turn_calls == [
+        {
+            "thread_id": "thr_1",
+            "input_items": [{"type": "localImage", "path": "/tmp/inbound.png"}],
+            "summary": "concise",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_input_rejects_images_when_client_capability_is_unknown() -> None:
+    class UnknownCapabilityClient:
+        async def start_turn(self, *args, **kwargs):
+            raise AssertionError("unknown capability must fail before submission")
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    backend = CodexBackend(
+        client=UnknownCapabilityClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+    image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
+
+    with pytest.raises(AppServerError, match="cannot read bridge-local image paths"):
+        await backend.submit_input("qq", "conv-1", "", (image,))
+
+
+@pytest.mark.asyncio
+async def test_submit_input_steers_active_turn_with_caption_then_image() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client = MultimodalClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    image = InboundAttachment("image", "image/webp", "/tmp/inbound.webp", 321)
+
+    submission = await backend.submit_input("qq", "conv-1", "/status", (image,))
+
+    assert submission.kind == "steer"
+    assert client.steer_turn_calls == [
+        {
+            "thread_id": "thr_1",
+            "turn_id": "turn_1",
+            "input_items": [
+                {"type": "text", "text": "/status"},
+                {"type": "localImage", "path": "/tmp/inbound.webp"},
+            ],
+        }
+    ]
+    assert client.start_turn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_multimodal_steer_falls_back_without_losing_image() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_stale", "inProgress")
+    client = MultimodalClient(stale_steer=True)
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    image = InboundAttachment("image", "image/jpeg", "/tmp/inbound.jpg", 456)
+    expected_input = [
+        {"type": "text", "text": "inspect this"},
+        {"type": "localImage", "path": "/tmp/inbound.jpg"},
+    ]
+
+    submission = await backend.submit_input("qq", "conv-1", "inspect this", (image,))
+
+    assert submission.kind == "start"
+    assert client.steer_turn_calls[0]["input_items"] == expected_input
+    assert client.start_turn_calls == [
+        {
+            "thread_id": "thr_1",
+            "input_items": expected_input,
+            "summary": "concise",
+        }
     ]
 
 

@@ -9,7 +9,6 @@ import ipaddress
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
@@ -20,6 +19,7 @@ from typing import Iterator, Mapping
 from urllib.parse import urlsplit
 
 from ..app_server_target import resolve_app_server_target
+from ..windows_security import secure_windows_path
 
 from .config_schema import (
     CONFIG_FIELDS,
@@ -666,95 +666,7 @@ def _replace_file(temporary: Path, destination: Path) -> None:
 
 
 def _secure_windows_file(path: Path) -> None:
-    import csv
-    import ctypes
-    from ctypes import wintypes
-
-    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    identity = subprocess.run(
-        ["whoami", "/user", "/fo", "csv", "/nh"],
-        capture_output=True,
-        text=True,
-        check=False,
-        creationflags=creation_flags,
-    )
-    try:
-        sid = next(csv.reader([identity.stdout.strip()]))[-1].strip()
-    except (IndexError, StopIteration) as exc:
-        raise OSError("Could not determine the current Windows user SID") from exc
-    if identity.returncode != 0 or not re.fullmatch(r"S-\d+(?:-\d+)+", sid):
-        raise OSError("Could not determine the current Windows user SID")
-
-    # icacls /grant:r only replaces ACEs for the named SID; it leaves any
-    # explicit Everyone or other-user ACEs in place.  Build a fresh protected
-    # DACL instead so an already-permissive destination is actually narrowed
-    # before ReplaceFileW preserves its security descriptor.
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
-    convert.argtypes = (
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.DWORD),
-    )
-    convert.restype = wintypes.BOOL
-    get_dacl = advapi32.GetSecurityDescriptorDacl
-    get_dacl.argtypes = (
-        wintypes.LPVOID,
-        ctypes.POINTER(wintypes.BOOL),
-        ctypes.POINTER(wintypes.LPVOID),
-        ctypes.POINTER(wintypes.BOOL),
-    )
-    get_dacl.restype = wintypes.BOOL
-    set_named_security = advapi32.SetNamedSecurityInfoW
-    set_named_security.argtypes = (
-        wintypes.LPWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-        wintypes.LPVOID,
-    )
-    set_named_security.restype = wintypes.DWORD
-    local_free = kernel32.LocalFree
-    local_free.argtypes = (wintypes.HLOCAL,)
-    local_free.restype = wintypes.HLOCAL
-
-    security_descriptor = wintypes.LPVOID()
-    descriptor_size = wintypes.DWORD()
-    if not convert(
-        f"D:P(A;;FA;;;{sid})",
-        1,  # SDDL_REVISION_1
-        ctypes.byref(security_descriptor),
-        ctypes.byref(descriptor_size),
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        dacl_present = wintypes.BOOL()
-        dacl_defaulted = wintypes.BOOL()
-        dacl = wintypes.LPVOID()
-        if not get_dacl(
-            security_descriptor,
-            ctypes.byref(dacl_present),
-            ctypes.byref(dacl),
-            ctypes.byref(dacl_defaulted),
-        ) or not dacl_present:
-            raise ctypes.WinError(ctypes.get_last_error())
-        error = set_named_security(
-            str(path),
-            1,  # SE_FILE_OBJECT
-            0x00000004 | 0x80000000,  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-            None,
-            None,
-            dacl,
-            None,
-        )
-        if error:
-            raise ctypes.WinError(error)
-    finally:
-        local_free(security_descriptor)
+    secure_windows_path(path)
 
 
 def _apply_replacements(text: str, replacements: Mapping[str, str | None]) -> str:

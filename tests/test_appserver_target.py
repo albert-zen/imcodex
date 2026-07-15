@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from imcodex.appserver import (
+    AppServerClient,
+    AppServerSupervisor,
     AppServerTargetConfigError,
     parse_app_server_target,
     resolve_app_server_target,
@@ -48,6 +50,35 @@ def test_resolve_app_server_target_defaults_to_an_external_tcp_server_on_windows
 
     assert target.endpoint == "ws://127.0.0.1:8765"
     assert target.is_external is True
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "supported"),
+    [
+        ("stdio://", True),
+        ("unix://", True),
+        ("ws://localhost:8765", False),
+        ("ws://127.0.0.1:8765", False),
+        ("ws://[::1]:8765", False),
+        ("wss://codex.example.test/rpc", False),
+    ],
+)
+def test_app_server_client_only_exposes_shared_local_image_paths(
+    endpoint: str,
+    supported: bool,
+) -> None:
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(app_server_url=endpoint),
+        client_info={"name": "test", "title": "Test", "version": "0"},
+    )
+
+    assert client.supports_local_image_paths() is supported
+
+
+def test_app_server_client_keeps_legacy_text_turn_input_compatibility() -> None:
+    assert AppServerClient._resolve_turn_input(text="hello", input_items=None) == [
+        {"type": "text", "text": "hello"}
+    ]
 
 
 @pytest.mark.parametrize("legacy_mode", ["dedicated-ws", "shared-ws"])

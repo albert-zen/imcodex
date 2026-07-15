@@ -127,6 +127,38 @@ When the user sends a normal text message:
 
 This behavior spec does not require a separate immediate `accepted` message for every text input.
 
+## Image Messages
+
+QQ image input follows the same conversation, admission, and native-thread
+behavior as normal text input. It does not introduce an image access mode,
+per-user media setup, or a separate bridge-owned vision model.
+
+Product behavior:
+
+- private QQ messages may contain only images or a caption plus images
+- QQ group images use the existing `@bot` requirement; admitted group members
+  do not need to be registered individually
+- JPEG, PNG, and WebP are supported, with at most four images per message and a
+  maximum downloaded size of 10 MiB and decoded size of 40 megapixels per image
+- text and image order is preserved when the input is submitted to native Codex
+- if no working directory and no active thread exist, the normal onboarding
+  guidance is returned instead of starting an image turn
+- if a turn is already running, the mixed input may steer that native turn under
+  the same rules as a text message
+- unsupported, malformed, oversized, unavailable, or unstaged images produce a
+  concise user-visible error; they are not silently dropped
+- a message over the image count or size limit is rejected rather than partially
+  submitted
+
+The bridge passes accepted images to native Codex as `localImage` inputs. The
+native Codex model remains the authority for whether it can interpret the
+image; imcodex does not select a second vision model or run a fallback OCR
+pipeline. The bridge and App Server must share the staged-file namespace for
+this P0 capability. Bridge-child stdio and the normal Unix-socket daemon are the
+only accepted P0 topologies. TCP targets, including loopback, return an explicit
+image-input limitation while text use remains available; imcodex does not infer
+filesystem sharing from `localhost`.
+
 ## Command Surface
 
 ### `/help`

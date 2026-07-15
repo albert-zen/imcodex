@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.models import InboundAttachment, InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
 
 
@@ -123,13 +123,66 @@ async def test_channel_middleware_emits_correlated_message_trace_events(
 
 
 @pytest.mark.asyncio
-async def test_channel_middleware_hides_raw_exception_details_from_user() -> None:
+async def test_channel_middleware_traces_attachment_metadata_without_local_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    observed_events: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.channels.middleware.emit_event",
+        lambda **payload: observed_events.append(payload),
+    )
+    service = StubService()
+    adapter = CapturingAdapter()
+    middleware = UnifiedChannelMiddleware(service=service)
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="c2c:user-1",
+        user_id="user-1",
+        message_id="msg-1",
+        text="",
+        attachments=(
+            InboundAttachment(
+                kind="image",
+                content_type="image/png",
+                local_path="/private/secret/inbound.png",
+                size_bytes=123,
+            ),
+        ),
+    )
+
+    await middleware.handle_inbound(adapter, inbound)
+
+    data = observed_events[0]["data"]
+    assert data["attachment_count"] == 1
+    assert data["attachments"] == [
+        {"kind": "image", "content_type": "image/png", "size_bytes": 123}
+    ]
+    assert "content_sha256" in data
+    assert "/private/secret" not in repr(observed_events)
+    changed_size = InboundMessage(
+        channel_id="qq",
+        conversation_id="c2c:user-1",
+        user_id="user-1",
+        message_id="msg-2",
+        text="",
+        attachments=(InboundAttachment("image", "image/png", "/another/path.png", 124),),
+    )
+    assert middleware._inbound_content_sha256(inbound) != middleware._inbound_content_sha256(changed_size)
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_hides_raw_exception_details_from_user(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     from imcodex.channels.middleware import (
         GENERIC_USER_ERROR_TEXT,
         UnifiedChannelMiddleware,
     )
 
-    service = StubService(error=RuntimeError("<html>" + ("x" * 500)))
+    local_path = "/private/.imcodex/channels/qq/inbound-media/abc123.png"
+    service = StubService(error=RuntimeError(f"<html>{local_path}" + ("x" * 500)))
     adapter = CapturingAdapter()
     middleware = UnifiedChannelMiddleware(service=service)
 
@@ -148,6 +201,7 @@ async def test_channel_middleware_hides_raw_exception_details_from_user() -> Non
     assert adapter.sent[0].text == GENERIC_USER_ERROR_TEXT
     assert "<html>" not in adapter.sent[0].text
     assert adapter.sent[0].metadata["reply_to_message_id"] == "msg-1"
+    assert local_path not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -188,6 +242,128 @@ async def test_channel_middleware_replays_cached_reply_without_reexecuting_servi
     assert adapter.sent[0].metadata["delivery_id"].startswith("imcodex:")
     binding = service.store.get_binding("qq", "c2c:user-1")
     assert binding.reply_context["last_inbound_user_id"] == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_materializes_lazily_after_dedup_and_not_on_replay(
+    tmp_path,
+) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    state_path = tmp_path / "state.json"
+    service = StubService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="Done",
+            )
+        ]
+    )
+    service.store = ConversationStore(state_path=state_path, clock=lambda: 1.0)
+    adapter = CapturingAdapter()
+    middleware = UnifiedChannelMiddleware(service=service)
+    prepare_calls = 0
+
+    async def prepare(inbound: InboundMessage) -> InboundMessage:
+        nonlocal prepare_calls
+        prepare_calls += 1
+        inbound.attachments = (
+            InboundAttachment("image", "image/png", "/private/media/image.png", 123),
+        )
+        return inbound
+
+    def inbound() -> InboundMessage:
+        return InboundMessage(
+            channel_id="qq",
+            conversation_id="c2c:user-1",
+            user_id="user-1",
+            message_id="msg-image-1",
+            text="describe this",
+        )
+
+    await middleware.handle_inbound(
+        adapter,
+        inbound(),
+        prepare_inbound=prepare,
+        pending_attachment_count=1,
+    )
+    await middleware.handle_inbound(
+        adapter,
+        inbound(),
+        prepare_inbound=prepare,
+        pending_attachment_count=1,
+    )
+
+    assert prepare_calls == 1
+    assert len(service.seen) == 1
+    assert len(adapter.sent) == 2
+
+    restarted_service = StubService()
+    restarted_service.store = ConversationStore(state_path=state_path, clock=lambda: 1.0)
+    restarted_adapter = CapturingAdapter()
+    await UnifiedChannelMiddleware(service=restarted_service).handle_inbound(
+        restarted_adapter,
+        inbound(),
+        prepare_inbound=prepare,
+        pending_attachment_count=1,
+    )
+
+    assert prepare_calls == 1
+    assert restarted_service.seen == []
+    assert [message.text for message in restarted_adapter.sent] == ["Done"]
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_preflight_rejection_skips_lazy_materialization() -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    class PreflightService(StubService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.store = ConversationStore(clock=lambda: 1.0)
+
+        def preflight_inbound_attachments(
+            self,
+            inbound: InboundMessage,
+        ) -> list[OutboundMessage]:
+            return [
+                OutboundMessage(
+                    channel_id=inbound.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    message_type="error",
+                    text="Local image paths are unavailable.",
+                )
+            ]
+
+    prepare_calls = 0
+
+    async def prepare(inbound: InboundMessage) -> InboundMessage:
+        nonlocal prepare_calls
+        prepare_calls += 1
+        return inbound
+
+    service = PreflightService()
+    adapter = CapturingAdapter()
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        adapter,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="c2c:user-1",
+            user_id="user-1",
+            message_id="msg-image-1",
+            text="",
+        ),
+        prepare_inbound=prepare,
+        pending_attachment_count=1,
+    )
+
+    assert prepare_calls == 0
+    assert service.seen == []
+    assert [message.text for message in adapter.sent] == [
+        "Local image paths are unavailable."
+    ]
 
 
 @pytest.mark.asyncio

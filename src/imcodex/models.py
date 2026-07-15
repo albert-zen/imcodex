@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(slots=True)
@@ -73,6 +73,14 @@ class NativeAppServerJournalEntry:
     note: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InboundAttachment:
+    kind: Literal["image"]
+    content_type: str
+    local_path: str
+    size_bytes: int
+
+
 @dataclass(slots=True)
 class InboundMessage:
     channel_id: str
@@ -80,6 +88,8 @@ class InboundMessage:
     user_id: str
     message_id: str
     text: str
+    attachments: tuple[InboundAttachment, ...] = ()
+    input_error: str | None = None
     reply_to_message_id: str | None = None
     sent_at: str | None = None
     trace_id: str | None = None

@@ -223,7 +223,7 @@ Built-in channel support now includes:
 
 | Channel | Ingress | Scope | Status |
 | --- | --- | --- | --- |
-| QQ | Gateway websocket | Private and group `@bot` text | Stable |
+| QQ | Gateway websocket | Private and group `@bot` text and images | Stable |
 | Telegram | Bot API long polling | Private, group, and forum-topic text | Stable |
 | Feishu / Lark | Official Channel SDK websocket | Private, group, and topic text | Stable |
 | Weixin | Tencent iLink long polling | Direct text only | Experimental |
@@ -233,6 +233,20 @@ Remote IM adapters accept the platform-delivered scope by default. Optional
 stable user and conversation restrictions can be combined with `any` (default)
 or `all`; `none` explicitly accepts nobody without disconnecting the channel.
 Group adapters require an explicit mention by default.
+
+QQ accepts inbound JPEG, PNG, and WebP images without a separate feature
+switch or per-user media configuration. A private message may contain only
+images or a caption plus images; a group message follows the same existing
+`@bot` admission rule. One message may contain at most four images and each
+downloaded image may be at most 10 MiB and 40 megapixels. Images are staged
+privately and passed to the native Codex App Server as `localImage` inputs, so
+this P0 path requires the App Server and bridge to see the same local
+filesystem. imcodex enables
+this path only for bridge-child stdio and the normal local Unix-socket target;
+TCP App Server targets, including loopback, remain text-only because a TCP
+address cannot prove filesystem sharing. See
+[Channel setup and security](docs/channels.md) for failure behavior, spool
+bounds, and remote App Server limitations.
 
 Inspect and validate channel configuration without revealing credentials:
 

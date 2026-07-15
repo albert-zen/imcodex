@@ -12,6 +12,7 @@ from imcodex.appserver import (
     AppServerClient,
     AppServerError,
     AppServerSupervisor,
+    summarize_text,
     summarize_transport_message,
 )
 from imcodex.appserver.client import DEFAULT_OPT_OUT_NOTIFICATION_METHODS
@@ -1308,6 +1309,86 @@ def test_unknown_protocol_summary_does_not_serialize_payload_content() -> None:
     assert "secret message body" not in str(summary)
 
 
+def test_protocol_error_summary_redacts_managed_media_path() -> None:
+    local_path = "/private/user/.imcodex/channels/qq/inbound-media/abc123.png"
+
+    summary = summarize_transport_message(
+        {
+            "id": 7,
+            "error": {
+                "code": -32603,
+                "message": f"could not read local image {local_path}",
+            },
+        }
+    )
+
+    assert summary["has_error"] is True
+    assert summary["error_code"] == -32603
+    assert summary["error_message"] == "[redacted managed inbound media path]"
+    assert local_path not in repr(summary)
+
+
+@pytest.mark.parametrize(
+    "local_path",
+    [
+        "/private/user/.imcodex/channels/qq/inbound-media",
+        "/private/user/.imcodex/channels/qq/inbound-media/abc123.png",
+        r"C:\Users\owner\.imcodex\channels\qq\inbound-media\abc123.png",
+    ],
+)
+def test_text_summary_redacts_managed_media_root_and_descendants(local_path: str) -> None:
+    summary = summarize_text(f"could not open {local_path}")
+
+    assert summary["text_preview"] == "[redacted managed inbound media path]"
+    assert local_path not in repr(summary)
+
+
+def test_text_summary_does_not_redact_similar_non_spool_path() -> None:
+    value = "/private/.imcodex/channels/qq/inbound-media-archive/image.png"
+
+    summary = summarize_text(value)
+
+    assert summary["text_preview"] == value
+
+
+def test_protocol_summary_redacts_managed_media_path_from_every_text_and_path_field() -> None:
+    local_path = "/private/user/.imcodex/channels/qq/inbound-media/abc123.png"
+
+    summary = summarize_transport_message(
+        {
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "delta": f"reading {local_path}",
+                "message": f"failed at {local_path}",
+                "command": f"inspect {local_path}",
+                "cwd": local_path,
+                "tool": local_path,
+                "server": local_path,
+                "questions": [
+                    {
+                        "id": local_path,
+                        "header": local_path,
+                        "question": f"Use {local_path}?",
+                    }
+                ],
+                "item": {
+                    "type": "commandExecution",
+                    "command": f"inspect {local_path}",
+                    "cwd": local_path,
+                    "tool": local_path,
+                    "server": local_path,
+                    "changes": [{"path": local_path}],
+                },
+            },
+        }
+    )
+
+    assert local_path not in repr(summary)
+    assert "[redacted managed inbound media path]" in repr(summary)
+
+
 @pytest.mark.asyncio
 async def test_stderr_diagnostics_emit_bounded_summary(monkeypatch) -> None:
     observed_events: list[dict] = []
@@ -1342,6 +1423,35 @@ async def test_stderr_diagnostics_emit_bounded_summary(monkeypatch) -> None:
     assert len(data["text_preview"]) <= 240
     assert "text" not in data
     assert secret_line not in str(data)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_stderr_diagnostics_redact_managed_media_path(monkeypatch) -> None:
+    observed_events: list[dict] = []
+    monkeypatch.setattr(
+        "imcodex.appserver.client.emit_event",
+        lambda **payload: observed_events.append(payload),
+    )
+    monkeypatch.setattr("imcodex.appserver.client.mark_appserver_health", lambda **_payload: None)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            codex_bin="codex",
+            core_mode="spawned-stdio",
+            spawn_process=lambda *args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+    local_path = r"C:\private\.imcodex\channels\qq\inbound-media\abc123.png"
+
+    await client.connect()
+    process.stderr.lines.put_nowait(f"could not read {local_path}\n".encode())
+    await asyncio.sleep(0)
+
+    event = next(item for item in observed_events if item["event"] == "appserver.stderr.line")
+    assert event["data"]["text_preview"] == "[redacted managed inbound media path]"
+    assert local_path not in repr(event)
     await client.close()
 
 
