@@ -209,7 +209,13 @@ async def test_text_turn_flows_from_cwd_to_final_result() -> None:
 @pytest.mark.parametrize(
     ("text", "expected_input"),
     [
-        ("", [{"type": "localImage", "path": "/tmp/inbound.png"}]),
+        (
+            "",
+            [
+                {"type": "text", "text": "[Image]"},
+                {"type": "localImage", "path": "/tmp/inbound.png"},
+            ],
+        ),
         (
             "/status",
             [

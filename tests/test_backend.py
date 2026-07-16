@@ -578,7 +578,10 @@ async def test_submit_input_starts_image_only_turn() -> None:
     assert client.start_turn_calls == [
         {
             "thread_id": "thr_1",
-            "input_items": [{"type": "localImage", "path": "/tmp/inbound.png"}],
+            "input_items": [
+                {"type": "text", "text": "[Image]"},
+                {"type": "localImage", "path": "/tmp/inbound.png"},
+            ],
             "summary": "concise",
         }
     ]
@@ -649,6 +652,31 @@ async def test_submit_input_steers_active_turn_with_caption_then_image() -> None
             "input_items": [
                 {"type": "text", "text": "/status"},
                 {"type": "localImage", "path": "/tmp/inbound.webp"},
+            ],
+        }
+    ]
+    assert client.start_turn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_submit_input_steers_image_only_turn_with_display_text() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client = MultimodalClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
+
+    submission = await backend.submit_input("qq", "conv-1", "", (image,))
+
+    assert submission.kind == "steer"
+    assert client.steer_turn_calls == [
+        {
+            "thread_id": "thr_1",
+            "turn_id": "turn_1",
+            "input_items": [
+                {"type": "text", "text": "[Image]"},
+                {"type": "localImage", "path": "/tmp/inbound.png"},
             ],
         }
     ]

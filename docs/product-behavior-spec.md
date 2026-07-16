@@ -144,6 +144,9 @@ Product behavior:
   at most four images per message and a maximum downloaded size of 10 MiB and
   decoded size of 40 megapixels per image
 - platform image order is preserved and message text is submitted alongside it
+- for an image-only platform message, the native turn includes one neutral
+  `[Image]` text item before the images so Codex App can render the user turn;
+  this is presentation compatibility, not a generated caption or image analysis
 - if no working directory and no active thread exist, the normal onboarding
   guidance is returned instead of starting an image turn
 - if a turn is already running, the mixed input may steer that native turn under

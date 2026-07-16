@@ -464,6 +464,10 @@ immediately before emitting any `turn/start` or `turn/steer` containing a
 Bridge-child
 stdio is local by construction; the normal Unix-socket daemon is an explicit
 same-filesystem product assumption.
+A platform message containing images but no non-whitespace text MUST receive one
+neutral `[Image]` native text item before its `localImage` items. This narrow
+presentation shim keeps attachment-only turns visible in Codex App; it MUST NOT
+replace, describe, inspect, reorder, or otherwise interpret the native images.
 A containerized Unix-socket deployment MUST mount the media spool at the same
 absolute path and MUST NOT be documented or diagnosed as a verified shared
 namespace merely because its socket is reachable.

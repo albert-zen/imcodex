@@ -117,6 +117,8 @@ The common contract is:
 - static JPEG, PNG, and WebP are accepted only after a maintained image decoder
   verifies and fully loads the downloaded structure
 - a message may contain only images, or text plus images
+- image-only messages receive a neutral `[Image]` text item at the native
+  boundary so the corresponding user turn remains visible in Codex App
 - one platform message may contain at most four images
 - each image may be at most 10 MiB and 40 decoded megapixels
 - a message that exceeds a limit is rejected as a whole; images are never

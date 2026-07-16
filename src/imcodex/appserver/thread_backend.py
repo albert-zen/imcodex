@@ -16,6 +16,7 @@ from .client import AppServerError
 
 
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
+_IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
 
 
 class CodexThreadBackendMixin:
@@ -302,6 +303,11 @@ class CodexThreadBackendMixin:
         input_items: list[dict[str, object]] = []
         if text.strip():
             input_items.append({"type": "text", "text": text})
+        elif attachments:
+            # Codex App currently omits user messages whose native input has no
+            # text item, even when localImage items are present. Keep the image
+            # native while adding the smallest visible cross-surface caption.
+            input_items.append({"type": "text", "text": _IMAGE_ONLY_DISPLAY_TEXT})
         for attachment in attachments:
             if attachment.kind != "image":
                 raise ValueError(f"unsupported inbound attachment kind: {attachment.kind}")
