@@ -213,6 +213,7 @@ def test_core_manager_stop_updates_manifest(monkeypatch, tmp_path: Path) -> None
     assert process.waited is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows command-line parsing only")
 def test_windows_live_command_accepts_exact_listener_owner_wrapper_command(tmp_path: Path) -> None:
     manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
     manifest = core_manager_module.DedicatedCoreManifest(
@@ -240,6 +241,7 @@ def test_windows_live_command_accepts_exact_listener_owner_wrapper_command(tmp_p
     assert manager._live_process_command_matches(manifest, {42003}) is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows command-line parsing only")
 def test_windows_live_command_rejects_decoy_and_partial_listener_commands(tmp_path: Path) -> None:
     manager = DedicatedCoreManager(root=tmp_path / "core-lab", repo_root=tmp_path)
     manifest = core_manager_module.DedicatedCoreManifest(
@@ -300,6 +302,35 @@ def test_core_manager_detached_stop_refuses_reused_pid_without_listener_ownershi
     monkeypatch.setattr(manager, "_terminate_pid", terminated.append)
 
     with pytest.raises(RuntimeError, match="does not own the listener"):
+        manager.stop()
+
+    assert terminated == []
+    assert manager.status().status == "running"
+
+
+def test_core_manager_detached_stop_refuses_unexpected_live_command(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    manager = DedicatedCoreManager(
+        root=tmp_path / "core-lab",
+        repo_root=tmp_path,
+        launcher=lambda **_kwargs: _FakeProcess(pid=42001),
+        live_process_command_verifier=lambda _manifest, _owners: False,
+    )
+    manager.start(port=8765)
+    manager._process = None
+    monkeypatch.setattr(manager, "_process_exists", lambda _pid: True)
+    monkeypatch.setattr(manager, "_port_is_listening", lambda _port: True)
+    monkeypatch.setattr(
+        manager,
+        "_listener_owner_pids_in_process_tree",
+        lambda _pid, _port: {42003},
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(manager, "_terminate_pid", terminated.append)
+
+    with pytest.raises(RuntimeError, match="does not run the expected command"):
         manager.stop()
 
     assert terminated == []

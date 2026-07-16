@@ -123,7 +123,8 @@ class DedicatedCoreManager:
         else:
             if not self._process_exists(manifest.pid):
                 return self._mark_stopped(manifest)
-            self._verify_listener_identity(manifest)
+            listener_owner_pids = self._verify_listener_identity(manifest)
+            self._verify_live_process_command(manifest, listener_owner_pids)
             self._terminate_pid(manifest.pid)
         return self._mark_stopped(manifest)
 
@@ -139,21 +140,28 @@ class DedicatedCoreManager:
             ) from exc
         self._validate_manifest(manifest, port=port)
         listener_owner_pids = self._verify_listener_identity(manifest)
-        try:
-            command_matches = self.live_process_command_verifier(manifest, listener_owner_pids)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Could not verify the recorded IMCodex core process command on port {port}"
-            ) from exc
-        if not command_matches:
-            raise RuntimeError(
-                f"Recorded IMCodex core PID {manifest.pid} does not run the expected command"
-            )
+        self._verify_live_process_command(manifest, listener_owner_pids)
         if not self._health_is_ready(port):
             raise RuntimeError(
                 f"Recorded IMCodex core on port {port} did not pass its App Server readiness probe"
             )
         return manifest
+
+    def _verify_live_process_command(
+        self,
+        manifest: DedicatedCoreManifest,
+        listener_owner_pids: set[int],
+    ) -> None:
+        try:
+            command_matches = self.live_process_command_verifier(manifest, listener_owner_pids)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not verify the recorded IMCodex core process command on port {manifest.port}"
+            ) from exc
+        if not command_matches:
+            raise RuntimeError(
+                f"Recorded IMCodex core PID {manifest.pid} does not run the expected command"
+            )
 
     def _validate_manifest(self, manifest: DedicatedCoreManifest, *, port: int) -> None:
         expected_url = f"ws://127.0.0.1:{port}"
