@@ -157,6 +157,19 @@ def render_credits(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def rate_limit_reset_credit_items(payload: dict) -> list[dict]:
+    rate_limits_payload = (
+        payload.get("rateLimitsResult")
+        if isinstance(payload.get("rateLimitsResult"), dict)
+        else payload
+    )
+    reset_credits = _rate_limit_reset_credits(rate_limits_payload)
+    credits = reset_credits.get("credits") if reset_credits is not None else None
+    if not isinstance(credits, list):
+        return []
+    return [credit for credit in credits if isinstance(credit, dict)]
+
+
 def render_rate_limit_reset_result(
     payload: dict,
     *,
@@ -489,18 +502,25 @@ def _rate_limit_reset_credit_lines(reset_credits: dict | None) -> list[str]:
     except (TypeError, ValueError):
         available = 0
     lines = [f"Rate-limit resets: {available} available"]
-    credits = reset_credits.get("credits")
-    if isinstance(credits, list):
-        for credit in credits:
-            if not isinstance(credit, dict):
-                continue
-            title = str(credit.get("title") or "Rate-limit reset").strip()
-            expires_at = credit.get("expiresAt")
-            if expires_at is not None:
-                title = f"{title} (expires {_format_reset_time(expires_at)})"
-            lines.append(f"- {title}")
+    credits = rate_limit_reset_credit_items({"rateLimitResetCredits": reset_credits})
+    for index, credit in enumerate(credits, start=1):
+        title = str(credit.get("title") or "Rate-limit reset").strip()
+        lines.append(f"{index}. {title}")
+        granted_at = credit.get("grantedAt")
+        if granted_at is not None:
+            lines.append(f"   Granted: {_format_reset_time(granted_at)}")
+        expires_at = credit.get("expiresAt")
+        if expires_at is not None:
+            lines.append(f"   Expires: {_format_reset_time(expires_at)}")
+        credit_id = str(credit.get("id") or "").strip()
+        if credit_id:
+            lines.append(f"   ID: {credit_id}")
+    if available > len(credits):
+        lines.append(f"Details shown: {len(credits)} of {available}")
     if available > 0:
-        lines.append("Use /credits reset to apply the next available reset.")
+        if credits:
+            lines.append("Use /credits reset <number> to select one of the resets shown above.")
+        lines.append("Use /credits reset without a selector to let Codex choose the next reset.")
     return lines
 
 

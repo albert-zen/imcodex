@@ -206,7 +206,7 @@ Settings:
 
 Account:
 
-- `/credits [reset]`
+- `/credits [reset [number|credit-id]]`
 
 Advanced:
 
@@ -422,17 +422,21 @@ Behavior:
 - goal objectives must be non-empty and no longer than native Codex's 4,000-character limit
 - if native Codex has the goals feature disabled or rejects the request, the user gets a friendly status response rather than raw protocol noise
 
-### `/credits [reset]`
+### `/credits [reset [number|credit-id]]`
 
 `/credits` shows the current ChatGPT credits, rate-limit status, earned
 rate-limit resets, and usage summary reported by Codex. `/credits reset`
-consumes the next available earned reset through native Codex.
+lets native Codex select the next reset; `/credits reset <number>` or
+`/credits reset <credit-id>` consumes a specific returned reset.
 
 Behavior:
 
 - credits and rate-limit state are read from Codex with `account/rateLimits/read`
 - usage summary is read from Codex with `account/usage/read`
 - available earned resets are read from the native `rateLimitResetCredits` snapshot; the authoritative count may be greater than the returned detail rows
+- reset details preserve native response order and display a one-based number, opaque native ID, grant time, and expiry time; the bridge does not infer a preferred ordering
+- numeric selection refetches the current native snapshot and resolves that number without persisting a local reset list; selection is limited to detail rows actually returned by Codex
+- an opaque ID selector is passed directly as native `creditId`
 - `/credits reset` calls native `account/rateLimitResetCredit/consume` with an idempotency key derived from the stable inbound IM request identity
 - the reset command is itself the explicit user action; the bridge does not add a second confirmation or persist reset-credit state
 - after every consume outcome, the bridge refetches native credits and limits instead of predicting the new quota locally

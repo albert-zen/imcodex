@@ -23,6 +23,7 @@ from .native_events import (
 from .rendering import BridgeRenderingMixin
 from .server_requests import NativeRequestPolicy
 from .settings import (
+    rate_limit_reset_credit_items,
     render_credits,
     render_fast_mode,
     render_models,
@@ -304,9 +305,51 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_credits(result))]
         if response.action == "credits.reset":
+            selector = str((response.payload or {}).get("credit_selector") or "").strip()
+            credit_id = None
+            if selector.isdigit():
+                selected_index = int(selector)
+                if selected_index < 1:
+                    return [
+                        self._message(
+                            message,
+                            "status",
+                            "Reset number must be 1 or greater. Run /credits to see available resets.",
+                        )
+                    ]
+                try:
+                    rate_limits = await self.backend.read_account_rate_limits()
+                except AppServerError as exc:
+                    text = (
+                        "Available resets could not be queried from Codex right now: "
+                        f"{self._safe_appserver_error(exc)}."
+                    )
+                    return [self._message(message, "status", text)]
+                reset_items = rate_limit_reset_credit_items(rate_limits)
+                if selected_index > len(reset_items):
+                    return [
+                        self._message(
+                            message,
+                            "status",
+                            f"Reset {selected_index} is not in the current Codex snapshot. "
+                            "Run /credits and choose one of the listed numbers.",
+                        )
+                    ]
+                credit_id = str(reset_items[selected_index - 1].get("id") or "").strip()
+                if not credit_id:
+                    return [
+                        self._message(
+                            message,
+                            "status",
+                            f"Reset {selected_index} has no selectable ID in the current Codex snapshot.",
+                        )
+                    ]
+            elif selector:
+                credit_id = selector
             try:
                 result = await self.backend.consume_account_rate_limit_reset_credit(
                     idempotency_key=self._rate_limit_reset_idempotency_key(message),
+                    credit_id=credit_id,
                 )
             except AppServerError as exc:
                 text = (

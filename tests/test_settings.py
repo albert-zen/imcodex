@@ -131,6 +131,7 @@ def test_render_credits_shows_available_native_rate_limit_resets() -> None:
                     {
                         "id": "RateLimitResetCredit_1",
                         "title": "Full reset (Weekly + 5 hr)",
+                        "grantedAt": 1775834562,
                         "expiresAt": 1778436562,
                     }
                 ],
@@ -139,9 +140,12 @@ def test_render_credits_shows_available_native_rate_limit_resets() -> None:
     )
 
     assert "Rate-limit resets: 2 available" in text
-    assert "Full reset (Weekly + 5 hr) (expires " in text
-    assert "Use /credits reset to apply the next available reset." in text
-    assert "RateLimitResetCredit_1" not in text
+    assert "1. Full reset (Weekly + 5 hr)" in text
+    assert "Granted: " in text
+    assert "Expires: " in text
+    assert "ID: RateLimitResetCredit_1" in text
+    assert "Details shown: 1 of 2" in text
+    assert "Use /credits reset <number>" in text
 
 
 def test_render_rate_limit_reset_result_includes_refreshed_usage() -> None:

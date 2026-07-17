@@ -3161,6 +3161,71 @@ async def test_credits_reset_consumes_native_credit_and_refreshes_limits() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selector", "expected_credit_id", "expected_snapshot_reads"),
+    [
+        ("2", "RateLimitResetCredit_2", 1),
+        ("RateLimitResetCredit_2", "RateLimitResetCredit_2", 0),
+    ],
+)
+async def test_credits_reset_selects_native_credit_by_number_or_id(
+    selector: str,
+    expected_credit_id: str,
+    expected_snapshot_reads: int,
+) -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    snapshot_reads = 0
+    consumed: list[dict[str, str | None]] = []
+
+    async def read_rate_limits() -> dict:
+        nonlocal snapshot_reads
+        snapshot_reads += 1
+        return {
+            "rateLimitResetCredits": {
+                "availableCount": 2,
+                "credits": [
+                    {"id": "RateLimitResetCredit_1", "title": "First"},
+                    {"id": "RateLimitResetCredit_2", "title": "Second"},
+                ],
+            }
+        }
+
+    async def consume_reset_credit(
+        *,
+        idempotency_key: str,
+        credit_id: str | None = None,
+    ) -> dict:
+        consumed.append({"idempotency_key": idempotency_key, "credit_id": credit_id})
+        return {"outcome": "reset"}
+
+    async def read_credits() -> dict:
+        return {"rateLimitsResult": {"rateLimitResetCredits": {"availableCount": 1}}}
+
+    service.backend.read_account_rate_limits = read_rate_limits  # type: ignore[method-assign]
+    service.backend.consume_account_rate_limit_reset_credit = consume_reset_credit  # type: ignore[method-assign]
+    service.backend.read_account_credits = read_credits  # type: ignore[method-assign]
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id=f"m-{selector}",
+            text=f"/credits reset {selector}",
+        )
+    )
+
+    assert "Reset applied successfully." in messages[0].text
+    assert snapshot_reads == expected_snapshot_reads
+    assert len(consumed) == 1
+    assert consumed[0]["credit_id"] == expected_credit_id
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_credits_command_shows_rate_limits_when_usage_fails() -> None:
     process = ScriptedProcess(
         {

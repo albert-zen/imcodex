@@ -320,10 +320,16 @@ class CommandRouter:
         del channel_id, conversation_id
         if not command.args:
             return CommandResponse(action="credits.read", text="")
-        if len(command.args) == 1 and command.args[0].lower() == "reset":
-            return CommandResponse(action="credits.reset", text="")
+        if command.args[0].lower() == "reset" and len(command.args) <= 2:
+            payload = {}
+            if len(command.args) == 2:
+                payload["credit_selector"] = command.args[1]
+            return CommandResponse(action="credits.reset", text="", payload=payload)
         if command.args:
-            return CommandResponse(action="credits.invalid", text="Usage: /credits [reset]")
+            return CommandResponse(
+                action="credits.invalid",
+                text="Usage: /credits [reset [number|credit-id]]",
+            )
         return CommandResponse(action="credits.read", text="")
 
     def _handle_goal(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -744,8 +750,8 @@ class CommandRouter:
                     "Browse or switch permission mode.",
                     "",
                     "Account",
-                    "/credits [reset]",
-                    "Show usage and available resets, or use one reset.",
+                    "/credits [reset [number|credit-id]]",
+                    "Show usage and resets, or use a selected reset.",
                     "",
                     "Advanced",
                     "/native help",

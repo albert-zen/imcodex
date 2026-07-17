@@ -428,6 +428,23 @@ def test_credits_reset_command_consumes_native_reset_credit() -> None:
     assert response.action == "credits.reset"
 
 
+def test_credits_reset_command_accepts_number_or_native_id() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    numbered = router.handle("qq", "conv-1", "/credits reset 2")
+    native_id = router.handle(
+        "qq",
+        "conv-1",
+        "/credits reset RateLimitResetCredit_2",
+    )
+
+    assert numbered.action == "credits.reset"
+    assert numbered.payload == {"credit_selector": "2"}
+    assert native_id.action == "credits.reset"
+    assert native_id.payload == {"credit_selector": "RateLimitResetCredit_2"}
+
+
 def test_credits_command_rejects_unknown_arguments() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
@@ -435,7 +452,7 @@ def test_credits_command_rejects_unknown_arguments() -> None:
     response = router.handle("qq", "conv-1", "/credits spend")
 
     assert response.action == "credits.invalid"
-    assert response.text == "Usage: /credits [reset]"
+    assert response.text == "Usage: /credits [reset [number|credit-id]]"
 
 
 def test_goal_without_args_reads_native_goal() -> None:
