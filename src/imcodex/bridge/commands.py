@@ -318,8 +318,12 @@ class CommandRouter:
 
     def _handle_credits(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id
+        if not command.args:
+            return CommandResponse(action="credits.read", text="")
+        if len(command.args) == 1 and command.args[0].lower() == "reset":
+            return CommandResponse(action="credits.reset", text="")
         if command.args:
-            return CommandResponse(action="credits.invalid", text="Usage: /credits")
+            return CommandResponse(action="credits.invalid", text="Usage: /credits [reset]")
         return CommandResponse(action="credits.read", text="")
 
     def _handle_goal(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -740,8 +744,8 @@ class CommandRouter:
                     "Browse or switch permission mode.",
                     "",
                     "Account",
-                    "/credits",
-                    "Show usage, credits, and rate limits.",
+                    "/credits [reset]",
+                    "Show usage and available resets, or use one reset.",
                     "",
                     "Advanced",
                     "/native help",

@@ -490,6 +490,17 @@ class AppServerClient:
     async def read_account_rate_limits(self) -> JsonDict:
         return await self._request("account/rateLimits/read", None)
 
+    async def consume_account_rate_limit_reset_credit(
+        self,
+        *,
+        idempotency_key: str,
+        credit_id: str | None = None,
+    ) -> JsonDict:
+        payload: JsonDict = {"idempotencyKey": idempotency_key}
+        if credit_id is not None:
+            payload["creditId"] = credit_id
+        return await self._request("account/rateLimitResetCredit/consume", payload)
+
     async def read_account_usage(self) -> JsonDict:
         return await self._request("account/usage/read", None)
 

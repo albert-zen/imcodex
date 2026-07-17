@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 
 import pytest
 
@@ -3095,6 +3096,67 @@ async def test_credits_command_reads_account_rate_limits() -> None:
     assert payloads == [{"id": 2, "method": "account/rateLimits/read"}]
     usage_payloads = [payload for payload in process.inputs if payload.get("method") == "account/usage/read"]
     assert usage_payloads == [{"id": 3, "method": "account/usage/read"}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_credits_reset_consumes_native_credit_and_refreshes_limits() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "account/rateLimitResetCredit/consume": [
+                {"id": 2, "result": {"outcome": "reset"}},
+            ],
+            "account/rateLimits/read": [
+                {
+                    "id": 3,
+                    "result": {
+                        "rateLimits": {
+                            "planType": "pro",
+                            "primary": {"usedPercent": 0, "windowDurationMins": 300},
+                        },
+                        "rateLimitResetCredits": {"availableCount": 0, "credits": []},
+                    },
+                }
+            ],
+            "account/usage/read": [
+                {"id": 4, "result": {"summary": {"lifetimeTokens": 1234}}},
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m-reset-1",
+        text="/credits reset",
+    )
+
+    messages = await service.handle_inbound(inbound)
+
+    assert messages[0].message_type == "command_result"
+    assert "Reset applied successfully." in messages[0].text
+    assert "5h limit: 100% remaining" in messages[0].text
+    assert "Rate-limit resets: 0 available" in messages[0].text
+    consume = next(
+        payload
+        for payload in process.inputs
+        if payload.get("method") == "account/rateLimitResetCredit/consume"
+    )
+    expected_key = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            "\0".join(("qq", "conv-1", "m-reset-1", "credits.reset")),
+        )
+    )
+    assert consume == {
+        "id": 2,
+        "method": "account/rateLimitResetCredit/consume",
+        "params": {"idempotencyKey": expected_key},
+    }
     await client.close()
 
 

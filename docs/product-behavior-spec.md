@@ -206,7 +206,7 @@ Settings:
 
 Account:
 
-- `/credits`
+- `/credits [reset]`
 
 Advanced:
 
@@ -422,15 +422,22 @@ Behavior:
 - goal objectives must be non-empty and no longer than native Codex's 4,000-character limit
 - if native Codex has the goals feature disabled or rejects the request, the user gets a friendly status response rather than raw protocol noise
 
-### `/credits`
+### `/credits [reset]`
 
-`/credits` shows the current ChatGPT credits, rate-limit status, and usage summary reported by Codex.
+`/credits` shows the current ChatGPT credits, rate-limit status, earned
+rate-limit resets, and usage summary reported by Codex. `/credits reset`
+consumes the next available earned reset through native Codex.
 
 Behavior:
 
 - credits and rate-limit state are read from Codex with `account/rateLimits/read`
 - usage summary is read from Codex with `account/usage/read`
-- `/credits` is read-only and on-demand; users run it again when they want fresh data
+- available earned resets are read from the native `rateLimitResetCredits` snapshot; the authoritative count may be greater than the returned detail rows
+- `/credits reset` calls native `account/rateLimitResetCredit/consume` with an idempotency key derived from the stable inbound IM request identity
+- the reset command is itself the explicit user action; the bridge does not add a second confirmation or persist reset-credit state
+- after every consume outcome, the bridge refetches native credits and limits instead of predicting the new quota locally
+- native `reset` and `alreadyRedeemed` outcomes are treated as success; `nothingToReset` and `noCredit` are rendered as friendly results
+- bare `/credits` is read-only and on-demand; users run it again when they want fresh data
 - the bridge does not subscribe to `account/rateLimits/updated`, push quota updates, persist usage, or infer a local quota
 - rate-limit window percentages are shown as remaining capacity rather than consumed usage
 - rate-limit reset timestamps are rendered as local date/time using the user's or runtime environment's detected timezone, with UTC as the fallback if local timezone detection is unavailable

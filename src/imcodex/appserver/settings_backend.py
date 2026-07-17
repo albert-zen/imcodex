@@ -97,6 +97,17 @@ class CodexSettingsBackendMixin:
     async def read_account_usage(self) -> dict:
         return await self.client.read_account_usage()
 
+    async def consume_account_rate_limit_reset_credit(
+        self,
+        *,
+        idempotency_key: str,
+        credit_id: str | None = None,
+    ) -> dict:
+        return await self.client.consume_account_rate_limit_reset_credit(
+            idempotency_key=idempotency_key,
+            credit_id=credit_id,
+        )
+
     async def read_account_credits(self) -> dict:
         result: dict = {}
         warnings: dict[str, str] = {}

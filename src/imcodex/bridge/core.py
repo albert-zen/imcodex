@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import uuid
 
 from ..appserver import (
     AppServerError,
@@ -29,6 +30,7 @@ from .settings import (
     render_permission_modes,
     render_permission_set_result,
     render_personality,
+    render_rate_limit_reset_result,
     render_reasoning_effort,
 )
 from .thread_handoff import ThreadHandoffMixin
@@ -301,6 +303,34 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                 text = f"Credits could not be queried from Codex right now: {self._safe_appserver_error(exc)}. Try again in a moment."
                 return [self._message(message, "status", text)]
             return [self._message(message, "command_result", render_credits(result))]
+        if response.action == "credits.reset":
+            try:
+                result = await self.backend.consume_account_rate_limit_reset_credit(
+                    idempotency_key=self._rate_limit_reset_idempotency_key(message),
+                )
+            except AppServerError as exc:
+                text = (
+                    "Rate-limit reset could not be used right now: "
+                    f"{self._safe_appserver_error(exc)}."
+                )
+                return [self._message(message, "status", text)]
+            refreshed = None
+            refresh_failed = False
+            try:
+                refreshed = await self.backend.read_account_credits()
+            except AppServerError:
+                refresh_failed = True
+            return [
+                self._message(
+                    message,
+                    "command_result",
+                    render_rate_limit_reset_result(
+                        result,
+                        refreshed=refreshed,
+                        refresh_failed=refresh_failed,
+                    ),
+                )
+            ]
         if response.action == "native.events":
             payload = response.payload or {}
             filters = [str(token) for token in list(payload.get("filters") or [])]
@@ -1007,6 +1037,16 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
             digest.update(len(encoded).to_bytes(8, "big"))
             digest.update(encoded)
         message.metadata["delivery_id"] = f"imcodex:native:{digest.hexdigest()}"
+
+    @staticmethod
+    def _rate_limit_reset_idempotency_key(inbound: InboundMessage) -> str:
+        stable_id = str(inbound.message_id or inbound.trace_id or "").strip()
+        if not stable_id:
+            return str(uuid.uuid4())
+        identity = "\0".join(
+            (inbound.channel_id, inbound.conversation_id, stable_id, "credits.reset")
+        )
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, identity))
 
     def _message(
         self,

@@ -419,6 +419,25 @@ def test_credits_command_reads_account_rate_limits() -> None:
     assert response.action == "credits.read"
 
 
+def test_credits_reset_command_consumes_native_reset_credit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/credits reset")
+
+    assert response.action == "credits.reset"
+
+
+def test_credits_command_rejects_unknown_arguments() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/credits spend")
+
+    assert response.action == "credits.invalid"
+    assert response.text == "Usage: /credits [reset]"
+
+
 def test_goal_without_args_reads_native_goal() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)

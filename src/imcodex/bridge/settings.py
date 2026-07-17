@@ -123,7 +123,8 @@ def render_credits(payload: dict) -> str:
     usage_payload = payload.get("usageResult") if isinstance(payload.get("usageResult"), dict) else None
     warnings = payload.get("warnings") if isinstance(payload.get("warnings"), dict) else {}
     rate_limits = _rate_limit_snapshot(rate_limits_payload)
-    if rate_limits is None and usage_payload is None:
+    reset_credits = _rate_limit_reset_credits(rate_limits_payload)
+    if rate_limits is None and usage_payload is None and reset_credits is None:
         return "Usage\n\nPlan: Unknown\nCredits: Unknown"
 
     lines = ["Usage", ""]
@@ -141,6 +142,9 @@ def render_credits(payload: dict) -> str:
             if isinstance(window, dict):
                 lines.append(_usage_rate_limit_window_label(fallback_label, window))
         lines.append(_credits_line(credits))
+    reset_lines = _rate_limit_reset_credit_lines(reset_credits)
+    if reset_lines:
+        lines.extend(reset_lines)
     usage_lines = _account_usage_lines(usage_payload)
     if usage_lines:
         if len(lines) > 2:
@@ -150,6 +154,27 @@ def render_credits(payload: dict) -> str:
     if warning_lines:
         lines.append("")
         lines.extend(warning_lines)
+    return "\n".join(lines)
+
+
+def render_rate_limit_reset_result(
+    payload: dict,
+    *,
+    refreshed: dict | None,
+    refresh_failed: bool = False,
+) -> str:
+    outcome = str(payload.get("outcome") or "").strip()
+    labels = {
+        "reset": "Reset applied successfully.",
+        "alreadyRedeemed": "This reset was already applied successfully.",
+        "nothingToReset": "There is currently no eligible rate-limit window to reset.",
+        "noCredit": "No earned rate-limit reset is available.",
+    }
+    lines = ["Rate-limit reset", "", labels.get(outcome, f"Codex returned: {outcome or 'unknown'}")]
+    if refreshed is not None:
+        lines.extend(("", render_credits(refreshed)))
+    elif refresh_failed:
+        lines.extend(("", "The reset result is known, but refreshed usage could not be read right now."))
     return "\n".join(lines)
 
 
@@ -449,6 +474,34 @@ def _rate_limit_snapshot(payload: dict) -> dict | None:
                 return snapshot
     rate_limits = payload.get("rateLimits")
     return rate_limits if isinstance(rate_limits, dict) else None
+
+
+def _rate_limit_reset_credits(payload: dict) -> dict | None:
+    reset_credits = payload.get("rateLimitResetCredits")
+    return reset_credits if isinstance(reset_credits, dict) else None
+
+
+def _rate_limit_reset_credit_lines(reset_credits: dict | None) -> list[str]:
+    if reset_credits is None:
+        return []
+    try:
+        available = max(0, int(reset_credits.get("availableCount") or 0))
+    except (TypeError, ValueError):
+        available = 0
+    lines = [f"Rate-limit resets: {available} available"]
+    credits = reset_credits.get("credits")
+    if isinstance(credits, list):
+        for credit in credits:
+            if not isinstance(credit, dict):
+                continue
+            title = str(credit.get("title") or "Rate-limit reset").strip()
+            expires_at = credit.get("expiresAt")
+            if expires_at is not None:
+                title = f"{title} (expires {_format_reset_time(expires_at)})"
+            lines.append(f"- {title}")
+    if available > 0:
+        lines.append("Use /credits reset to apply the next available reset.")
+    return lines
 
 
 def _rate_limit_window_label(label: str, window: dict, *, tz=None) -> str:

@@ -15,6 +15,7 @@ from imcodex.bridge.settings import render_native_config_write_result
 from imcodex.bridge.settings import render_permission_modes
 from imcodex.bridge.settings import render_permission_set_result
 from imcodex.bridge.settings import render_personality
+from imcodex.bridge.settings import render_rate_limit_reset_result
 from imcodex.bridge.settings import render_reasoning_effort
 
 
@@ -118,6 +119,43 @@ def test_render_credits_combines_rate_limits_and_usage() -> None:
     assert "Streak: 33 days current, 40 days longest" in text
     assert "Longest turn: 2h 29m" in text
     assert "Latest day: 2026-06-26 2.3M tokens" in text
+
+
+def test_render_credits_shows_available_native_rate_limit_resets() -> None:
+    text = render_credits(
+        {
+            "rateLimits": {"primary": {"usedPercent": 100, "windowDurationMins": 300}},
+            "rateLimitResetCredits": {
+                "availableCount": 2,
+                "credits": [
+                    {
+                        "id": "RateLimitResetCredit_1",
+                        "title": "Full reset (Weekly + 5 hr)",
+                        "expiresAt": 1778436562,
+                    }
+                ],
+            },
+        }
+    )
+
+    assert "Rate-limit resets: 2 available" in text
+    assert "Full reset (Weekly + 5 hr) (expires " in text
+    assert "Use /credits reset to apply the next available reset." in text
+    assert "RateLimitResetCredit_1" not in text
+
+
+def test_render_rate_limit_reset_result_includes_refreshed_usage() -> None:
+    text = render_rate_limit_reset_result(
+        {"outcome": "reset"},
+        refreshed={
+            "rateLimits": {"primary": {"usedPercent": 0, "windowDurationMins": 300}},
+            "rateLimitResetCredits": {"availableCount": 0, "credits": []},
+        },
+    )
+
+    assert text.startswith("Rate-limit reset\n\nReset applied successfully.")
+    assert "5h limit: 100% remaining" in text
+    assert "Rate-limit resets: 0 available" in text
 
 
 def test_render_credits_shows_partial_warning() -> None:
