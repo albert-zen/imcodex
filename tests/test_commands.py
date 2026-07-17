@@ -102,7 +102,7 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     assert response.text.startswith("Help\n\nStart")
     assert "/cwd <path>" in response.text
     assert "/threads [query]" in response.text
-    assert "/thread history" in response.text
+    assert "/history [turns]" in response.text
     assert "/fork" in response.text
     assert "/rename <name>" in response.text
     assert "/compact" in response.text
@@ -195,6 +195,45 @@ def test_pick_uses_current_thread_browser_page() -> None:
     assert response.payload == {"index": 1}
 
 
+def test_pick_accepts_optional_history_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1", "thr_2"],
+        page=1,
+        total=2,
+        query=None,
+    )
+    router = CommandRouter(store)
+
+    default_history = router.handle("qq", "conv-1", "/pick 2 --history")
+    explicit_history = router.handle("qq", "conv-1", "/pick 2 --history 3")
+    equals_history = router.handle("qq", "conv-1", "/pick 2 --history=4")
+
+    assert default_history.payload == {"index": 1, "history_limit": 1}
+    assert explicit_history.payload == {"index": 1, "history_limit": 3}
+    assert equals_history.payload == {"index": 1, "history_limit": 4}
+
+
+def test_pick_rejects_invalid_history_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/pick 1 --history 6")
+
+    assert response.action == "thread.pick.invalid"
+    assert response.text == "History turns must be between 1 and 5."
+
+
 def test_thread_attach_accepts_human_readable_selector() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
@@ -224,6 +263,19 @@ def test_thread_history_reads_active_thread() -> None:
 
     assert response.action == "thread.history.query"
     assert response.thread_id == "thr_1"
+    assert response.payload == {"limit": 1}
+
+
+def test_history_is_primary_command_and_accepts_bounded_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/history 3")
+
+    assert response.action == "thread.history.query"
+    assert response.thread_id == "thr_1"
+    assert response.payload == {"limit": 3}
 
 
 def test_native_thread_operations_require_active_thread() -> None:

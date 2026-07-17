@@ -120,6 +120,8 @@ async def test_multiplex_outbound_sink_prefers_exact_channel_adapter() -> None:
         channel_sinks={"telegram": telegram},
         default_sink=fallback,
     )
+    assert sink.can_deliver("telegram") is True
+    assert sink.can_deliver("gateway") is True
     telegram_message = OutboundMessage(
         channel_id="telegram",
         conversation_id="chat:42",
@@ -151,6 +153,7 @@ async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> 
 
     fallback = Sink()
     sink = MultiplexOutboundSink(default_sink=fallback)
+    assert sink.can_deliver("telegram") is False
     message = OutboundMessage(
         channel_id="telegram",
         conversation_id="chat:42",
@@ -167,6 +170,7 @@ async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> 
 @pytest.mark.asyncio
 async def test_multiplex_rejects_delivery_without_any_matching_sink() -> None:
     sink = MultiplexOutboundSink()
+    assert sink.can_deliver("gateway") is False
     message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",

@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from starlette.datastructures import FormData
 
-from imcodex.channels import ChannelAccessPolicy, QQChannelAdapter, create_app
+from imcodex.channels import ChannelAccessPolicy, MultiplexOutboundSink, QQChannelAdapter, create_app
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.channels.qq import OP_DISPATCH, OP_HELLO, RECONNECT_MAX_DELAY_S
 from imcodex.channels.api import (
@@ -1054,6 +1054,89 @@ def test_webhook_delivers_immediate_messages_to_configured_outbound_sink() -> No
     assert response.status_code == 200
     assert [message.text for message in sink.messages] == ["Accepted"]
     assert response.json()["messages"][0]["text"] == "Accepted"
+
+
+def test_webhook_inline_response_does_not_require_multiplex_default_sink() -> None:
+    service = CountingService(ConversationStore(clock=lambda: 1.0))
+    service.outbound_sink = MultiplexOutboundSink(channel_sinks={"qq": object()})
+    client = TestClient(create_app(service, inbound_token="webhook-secret"))
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        json={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "m1",
+            "text": "hello",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["messages"][0]["text"] == "Accepted"
+
+
+def test_webhook_releases_handoff_output_after_notice_reaches_outbound_sink() -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.messages.append(message)
+
+    class HandoffService:
+        def __init__(self, sink: Sink) -> None:
+            self.store = ConversationStore(clock=lambda: 1.0)
+            self.outbound_sink = sink
+
+        async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
+            return [
+                OutboundMessage(
+                    channel_id=message.channel_id,
+                    conversation_id=message.conversation_id,
+                    message_type="status",
+                    text="Switch notice",
+                )
+            ]
+
+        async def after_inbound_delivery(
+            self,
+            inbound: InboundMessage,
+            *,
+            succeeded: bool,
+        ) -> None:
+            if succeeded:
+                await self.outbound_sink.send_message(
+                    OutboundMessage(
+                        channel_id=inbound.channel_id,
+                        conversation_id=inbound.conversation_id,
+                        message_type="turn_progress",
+                        text="Buffered live output",
+                    )
+                )
+
+    sink = Sink()
+    service = HandoffService(sink)
+    client = TestClient(create_app(service, inbound_token="webhook-secret"))
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        json={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "m1",
+            "text": "/pick 1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert [message.text for message in sink.messages] == [
+        "Switch notice",
+        "Buffered live output",
+    ]
 
 
 def test_webhook_multipart_does_not_relabel_downstream_timeout_as_ingress() -> None:

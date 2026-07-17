@@ -504,9 +504,13 @@ async def _handle_webhook_inbound(
     if len(request.text) > MAX_INBOUND_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="Inbound message text is too large.")
     message = request.to_inbound_message()
+    outbound_sink = getattr(service, "outbound_sink", None)
+    can_deliver = getattr(outbound_sink, "can_deliver", None)
+    if callable(can_deliver) and not can_deliver(message.channel_id):
+        outbound_sink = None
     adapter = _WebhookResponseAdapter(
         message.channel_id,
-        outbound_sink=getattr(service, "outbound_sink", None),
+        outbound_sink=outbound_sink,
     )
     prepare_inbound = None
     if image_references:

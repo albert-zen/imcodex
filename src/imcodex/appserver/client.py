@@ -174,6 +174,7 @@ class AppServerClient:
         self._dispatch_queue: asyncio.Queue[JsonDict] | None = None
         self._server_request_dispatcher_task: asyncio.Task[None] | None = None
         self._server_request_queue: asyncio.Queue[JsonDict] | None = None
+        self._last_received_dispatch_sequence = 0
         self._stderr_task: asyncio.Task[None] | None = None
         self._resetting = False
         self._reset_owner_task: asyncio.Task | None = None
@@ -229,6 +230,10 @@ class AppServerClient:
     @property
     def preserves_server_state(self) -> bool:
         return self._supervisor.target.preserves_server_state
+
+    @property
+    def last_received_dispatch_sequence(self) -> int:
+        return self._last_received_dispatch_sequence
 
     def supports_local_image_paths(self) -> bool:
         """Whether bridge-local paths are readable by the configured App Server."""
@@ -1053,6 +1058,11 @@ class AppServerClient:
                 self._trace_protocol_message(stage="received", payload=message)
                 if self._dispatch_response(message, epoch):
                     continue
+                self._last_received_dispatch_sequence += 1
+                message = {
+                    **message,
+                    "_imcodex_dispatch_sequence": self._last_received_dispatch_sequence,
+                }
                 if self._uses_server_request_lane(message):
                     self._enqueue_dispatch_message(
                         server_request_queue,
@@ -1171,6 +1181,7 @@ class AppServerClient:
             enriched = {
                 "id": message["id"],
                 "method": message["method"],
+                "_imcodex_dispatch_sequence": message.get("_imcodex_dispatch_sequence"),
                 "params": {
                     **request_params,
                     "_request_id": request_id,
@@ -1184,7 +1195,11 @@ class AppServerClient:
                     await result
             return
         if "method" in message:
-            notification = {"method": message["method"], "params": message.get("params", {})}
+            notification = {
+                "method": message["method"],
+                "params": message.get("params", {}),
+                "_imcodex_dispatch_sequence": message.get("_imcodex_dispatch_sequence"),
+            }
             for handler in list(self._notification_handlers):
                 result = handler(notification)
                 if inspect.isawaitable(result):

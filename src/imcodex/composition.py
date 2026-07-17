@@ -117,8 +117,10 @@ def build_runtime(
     )
     managed_channels = build_enabled_channel_adapters(settings=settings, middleware=channel_middleware)
     channel_sinks = {channel.channel_id: channel for channel in managed_channels}
-    if channel_sinks or default_outbound_sink is not None:
-        service.outbound_sink = MultiplexOutboundSink(channel_sinks=channel_sinks, default_sink=default_outbound_sink)
+    service.outbound_sink = MultiplexOutboundSink(
+        channel_sinks=channel_sinks,
+        default_sink=default_outbound_sink,
+    )
     observability = ObservabilityRuntime(
         run_root=settings.run_dir,
         service_name=settings.service_name,

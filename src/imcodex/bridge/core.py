@@ -31,13 +31,14 @@ from .settings import (
     render_personality,
     render_reasoning_effort,
 )
-from .thread_history import render_thread_history
+from .thread_handoff import ThreadHandoffMixin
 from .thread_views import ThreadViewMixin
 
 
 _SYSTEM_MESSAGE_TYPES = frozenset({"accepted", "status", "error"})
 _SYSTEM_PREFIX = "[System] "
 _SERVER_REQUEST_DELIVERY_TIMEOUT_S = 10.0
+_SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S = (0.1, 0.5, 1.0, 2.0)
 _RECOVERY_DELIVERY_TIMEOUT_S = 10.0
 _DELIVERY_FAILED_REQUEST_CODE = -32603
 _RECENT_TERMINAL_DELIVERY_LIMIT = 512
@@ -58,7 +59,7 @@ _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT = (
 )
 
 
-class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
+class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
     def __init__(
         self,
         *,
@@ -81,6 +82,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         )
         self._rehydration_lock = asyncio.Lock()
         self._terminal_projection_lock = asyncio.Lock()
+        self._init_thread_handoff()
         # These are short-lived presentation facts, not native turn state. The
         # pending map keeps a recovered result retryable until an IM sink
         # confirms delivery; the bounded delivered map closes the race between
@@ -94,6 +96,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         )
 
     async def close(self) -> None:
+        await self._close_thread_handoff()
         await self.native_requests.close()
 
     def preflight_inbound_attachments(
@@ -441,16 +444,10 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         if response.action == "thread.read.query":
             return [self._message(message, "command_result", await self._render_thread(message, response.thread_id))]
         if response.action == "thread.history.query":
-            try:
-                payload = await self.backend.read_thread_history(
-                    message.channel_id,
-                    message.conversation_id,
-                    limit=6,
-                )
-            except AppServerError as exc:
-                text = f"Thread history could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
-                return [self._message(message, "command_result", text)]
-            return [self._message(message, "command_result", render_thread_history(payload, limit=6))]
+            return await self._handle_thread_history_command(
+                message,
+                limit=int((response.payload or {}).get("limit") or 1),
+            )
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             return [self._message(message, "status", f"Started thread {thread_id}.")]
@@ -493,21 +490,12 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             if index < 0 or index >= len(context.thread_ids):
                 return [self._message(message, "error", "Pick a number from the current page.")]
             thread_id = context.thread_ids[index]
-            try:
-                attached_id = await self.backend.attach_thread(message.channel_id, message.conversation_id, thread_id)
-            except ThreadSelectionError as exc:
-                return [self._message(message, "error", str(exc))]
-            except AppServerError as exc:
-                return [
-                    self._message(
-                        message, "status", f"Thread could not be attached: {self._safe_appserver_error(exc)}."
-                    )
-                ]
-            snapshot = self.store.get_thread_snapshot(attached_id)
-            label = self._thread_label(snapshot) if snapshot is not None else attached_id
-            if snapshot is not None and snapshot.cwd:
-                return [self._message(message, "status", f"Switched to {label}.\nCWD: {snapshot.cwd}")]
-            return [self._message(message, "status", f"Switched to {label}.")]
+            return await self._switch_thread(
+                message,
+                thread_id,
+                history_limit=(response.payload or {}).get("history_limit"),
+                verb="Switched to",
+            )
         if response.action == "threads.exit":
             self.store.clear_thread_browser_context(message.channel_id, message.conversation_id)
             return [self._message(message, "status", response.text)]
@@ -519,20 +507,18 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                     message.conversation_id,
                     selector,
                 )
-                await self.backend.attach_thread(message.channel_id, message.conversation_id, snapshot.thread_id)
             except ThreadSelectionError as exc:
                 return [self._message(message, "error", str(exc))]
             except Exception as exc:
                 return [
                     self._message(message, "status", f"Thread could not be attached: {self._safe_exception_text(exc)}.")
                 ]
-            if snapshot.cwd:
-                return [
-                    self._message(
-                        message, "status", f"Attached to {self._thread_label(snapshot)}.\nCWD: {snapshot.cwd}"
-                    )
-                ]
-            return [self._message(message, "status", f"Attached to {self._thread_label(snapshot)}.")]
+            return await self._switch_thread(
+                message,
+                snapshot.thread_id,
+                history_limit=None,
+                verb="Attached to",
+            )
         if response.action == "turn.stop":
             interrupted = await self.backend.interrupt_active_turn(message.channel_id, message.conversation_id)
             if not interrupted:
@@ -587,23 +573,57 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
     async def handle_notification(self, notification: dict) -> list[OutboundMessage]:
         self.native_requests.observe_notification(notification)
         journal_entry = record_native_appserver_journal(self.store, notification)
+        gate_outcome = await self._buffer_thread_output(
+            kind="notification",
+            payload=notification,
+            journal_sequence=journal_entry.sequence,
+        )
+        if gate_outcome is not None:
+            self.store.update_native_appserver_event(
+                journal_entry.sequence,
+                outcome="buffered",
+                note="waiting for thread switch response delivery",
+            )
+            return []
+        return await self._process_notification(notification, journal_entry.sequence)
+
+    async def _process_notification(
+        self,
+        notification: dict,
+        journal_sequence: int,
+        *,
+        replay_message: OutboundMessage | None = None,
+        replay_prepared: bool = False,
+        capture_projection=None,
+    ) -> list[OutboundMessage]:
         event = normalize_appserver_message(notification)
         if event.kind in _TERMINAL_PROJECTION_EVENT_KINDS:
             async with self._terminal_projection_lock:
-                message = self.projector.project_notification(notification, self.store)
+                message = (
+                    replay_message
+                    if replay_prepared
+                    else self.projector.project_notification(notification, self.store)
+                )
                 terminal_key = self._terminal_delivery_key(event, message)
-                if terminal_key is not None and terminal_key in self._recent_terminal_deliveries:
+                if (
+                    not replay_prepared
+                    and terminal_key is not None
+                    and terminal_key in self._recent_terminal_deliveries
+                ):
                     self.projector.discard_recovered_turn(
                         thread_id=terminal_key[0],
                         turn_id=terminal_key[1],
                     )
                     message = None
-                self._attach_delivery_id(
-                    message,
-                    notification,
-                    namespace="projection",
-                    terminal_key=terminal_key,
-                )
+                if not replay_prepared:
+                    self._attach_delivery_id(
+                        message,
+                        notification,
+                        namespace="projection",
+                        terminal_key=terminal_key,
+                    )
+                    if callable(capture_projection):
+                        capture_projection(message)
                 if terminal_key is not None and message is not None:
                     outbound = await self._emit_required(message)
                 else:
@@ -611,17 +631,43 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                 if terminal_key is not None and message is not None:
                     self._remember_terminal_delivery(terminal_key)
         else:
-            message = self.projector.project_notification(notification, self.store)
-            self._attach_native_delivery_id(message, notification, namespace="projection")
+            message = (
+                replay_message
+                if replay_prepared
+                else self.projector.project_notification(notification, self.store)
+            )
+            if not replay_prepared:
+                self._attach_native_delivery_id(message, notification, namespace="projection")
+                if callable(capture_projection):
+                    capture_projection(message)
             outbound = await self._emit(message)
         self.store.update_native_appserver_event(
-            journal_entry.sequence,
+            journal_sequence,
             outcome="projected" if message is not None else "ingested",
         )
         return outbound
 
     async def handle_server_request(self, request: dict) -> list[OutboundMessage]:
         journal_entry = record_native_appserver_journal(self.store, request)
+        gate_outcome = await self._buffer_thread_output(
+            kind="server_request",
+            payload=request,
+            journal_sequence=journal_entry.sequence,
+        )
+        if gate_outcome is not None:
+            self.store.update_native_appserver_event(
+                journal_entry.sequence,
+                outcome="buffered",
+                note="waiting for thread switch response delivery",
+            )
+            return []
+        return await self._process_server_request(request, journal_entry.sequence)
+
+    async def _process_server_request(
+        self,
+        request: dict,
+        journal_sequence: int,
+    ) -> list[OutboundMessage]:
         if request.get("method") == "currentTime/read":
             transport_request_id = self._transport_request_id(request)
             if transport_request_id is not None:
@@ -630,10 +676,10 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
                     {"currentTimeAt": int(self.store.clock())},
                     connection_epoch=self._connection_epoch(request),
                 )
-                self.store.update_native_appserver_event(journal_entry.sequence, outcome="resolved")
+                self.store.update_native_appserver_event(journal_sequence, outcome="resolved")
             else:
                 self.store.update_native_appserver_event(
-                    journal_entry.sequence,
+                    journal_sequence,
                     outcome="rejected",
                     note="currentTime/read missing transport request id",
                 )
@@ -643,10 +689,10 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         event = normalize_appserver_message(request)
         if self.native_requests.delegate_to_peer_host(
             request,
-            journal_sequence=journal_entry.sequence,
+            journal_sequence=journal_sequence,
         ):
             self.store.update_native_appserver_event(
-                journal_entry.sequence,
+                journal_sequence,
                 outcome="delegated",
                 note="host-owned request deferred for a peer or native fallback",
             )
@@ -658,32 +704,49 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         )
         if routed:
             try:
-                outbound = await asyncio.wait_for(
-                    self._emit_required(message),
+                outbound, still_pending = await asyncio.wait_for(
+                    self._emit_required_with_retry(
+                        message,
+                        pending_request_id=event.request_id,
+                    ),
                     timeout=self.server_request_delivery_timeout_s,
                 )
             except Exception as exc:
+                if event.request_id and self.store.get_pending_request(event.request_id) is None:
+                    self.store.update_native_appserver_event(
+                        journal_sequence,
+                        outcome="resolved",
+                        note="native request resolved before IM delivery timeout",
+                    )
+                    return []
                 await self._reject_failed_server_request_delivery(request, event, exc)
                 self.store.update_native_appserver_event(
-                    journal_entry.sequence,
+                    journal_sequence,
                     outcome="rejected",
                     note="IM delivery failed for native server request",
                 )
                 return []
-            self.store.update_native_appserver_event(journal_entry.sequence, outcome="pending")
+            if not still_pending:
+                self.store.update_native_appserver_event(
+                    journal_sequence,
+                    outcome="resolved",
+                    note="native request resolved while IM delivery retry was pending",
+                )
+                return outbound
+            self.store.update_native_appserver_event(journal_sequence, outcome="pending")
             return outbound
         rejection = await self.native_requests.reject_unrouted(request)
         outbound: list[OutboundMessage] = []
         if rejection is not None:
             self._attach_native_delivery_id(rejection, request, namespace="rejection")
             self.store.update_native_appserver_event(
-                journal_entry.sequence,
+                journal_sequence,
                 outcome="rejected",
                 note="unsupported or unroutable server request",
             )
             outbound.extend(await self._emit(rejection))
         else:
-            self.store.update_native_appserver_event(journal_entry.sequence, outcome="ingested")
+            self.store.update_native_appserver_event(journal_sequence, outcome="ingested")
         return outbound
 
     async def _reject_failed_server_request_delivery(self, request: dict, event, exc: Exception) -> None:
@@ -736,6 +799,7 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
         return epoch or None
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
+        await self._reset_thread_output_admission()
         self.native_requests.cancel_connection_epoch(connection_epoch)
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
         if self.backend.prefers_native_recovery():
@@ -858,6 +922,31 @@ class BridgeService(ThreadViewMixin, BridgeRenderingMixin):
             raise RuntimeError("No outbound IM sink is available")
         await self.outbound_sink.send_message(message)
         return [message]
+
+    async def _emit_required_with_retry(
+        self,
+        message: OutboundMessage,
+        *,
+        pending_request_id: str,
+    ) -> tuple[list[OutboundMessage], bool]:
+        attempt = 0
+        while True:
+            if self.store.get_pending_request(pending_request_id) is None:
+                return [], False
+            try:
+                outbound = await self._emit_required(message)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self.store.get_pending_request(pending_request_id) is None:
+                    return [], False
+                delay_s = _SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S[
+                    min(attempt, len(_SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S) - 1)
+                ]
+                attempt += 1
+                await asyncio.sleep(delay_s)
+                continue
+            return outbound, self.store.get_pending_request(pending_request_id) is not None
 
     def _terminal_delivery_key(self, event, message: OutboundMessage | None) -> tuple[str, str] | None:
         if message is None or message.message_type != "turn_result":

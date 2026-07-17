@@ -149,7 +149,13 @@ class UnifiedChannelMiddleware:
                 },
             )
             replay = self._processed_inbound_response(inbound)
+            if replay is None:
+                pending_response = getattr(self.service, "pending_inbound_response", None)
+                if callable(pending_response):
+                    replay = await pending_response(inbound)
+            cached_response_expired = False
             if replay is None and inbound.message_id:
+                cached_response_expired = True
                 metadata: dict[str, object] = {
                     "trace_id": trace_id,
                     "delivery_id": self._delivery_id(inbound, 0, namespace="expired-response"),
@@ -168,10 +174,12 @@ class UnifiedChannelMiddleware:
                 ]
             if replay is None:
                 replay = []
-            await self._deliver_messages(adapter=adapter, messages=replay)
-            after_commit = getattr(adapter, "after_inbound_committed", None)
-            if callable(after_commit):
-                await after_commit()
+            await self._deliver_with_service_ack(
+                adapter=adapter,
+                inbound=inbound,
+                messages=replay,
+                acknowledge_success=not cached_response_expired,
+            )
             return
         self._note_inbound_message(inbound)
         if outbound_override is None:
@@ -215,15 +223,23 @@ class UnifiedChannelMiddleware:
                     "delivery_id",
                     self._delivery_id(inbound, index),
                 )
-        await self._mark_inbound_processed(
+        remember_response = getattr(self.service, "remember_inbound_response", None)
+        if callable(remember_response):
+            await remember_response(inbound, prepared)
+        try:
+            await self._mark_inbound_processed(
+                inbound=inbound,
+                text_fingerprint=content_sha,
+                response_payload=[asdict(message) for message in prepared],
+            )
+        except BaseException:
+            await self._acknowledge_service_delivery(inbound, succeeded=False)
+            raise
+        await self._deliver_with_service_ack(
+            adapter=adapter,
             inbound=inbound,
-            text_fingerprint=content_sha,
-            response_payload=[asdict(message) for message in prepared],
+            messages=prepared,
         )
-        await self._deliver_messages(adapter=adapter, messages=prepared)
-        after_commit = getattr(adapter, "after_inbound_committed", None)
-        if callable(after_commit):
-            await after_commit()
 
     async def _get_conversation_lock(
         self,
@@ -350,6 +366,37 @@ class UnifiedChannelMiddleware:
                 emitted_at="after_send",
                 outbound_index=index,
             )
+
+    async def _deliver_with_service_ack(
+        self,
+        *,
+        adapter,
+        inbound: InboundMessage,
+        messages: list[OutboundMessage],
+        acknowledge_success: bool = True,
+    ) -> None:
+        try:
+            await self._deliver_messages(adapter=adapter, messages=messages)
+            after_commit = getattr(adapter, "after_inbound_committed", None)
+            if callable(after_commit):
+                await after_commit()
+        except BaseException:
+            await self._acknowledge_service_delivery(inbound, succeeded=False)
+            raise
+        await self._acknowledge_service_delivery(
+            inbound,
+            succeeded=acknowledge_success,
+        )
+
+    async def _acknowledge_service_delivery(
+        self,
+        inbound: InboundMessage,
+        *,
+        succeeded: bool,
+    ) -> None:
+        acknowledge = getattr(self.service, "after_inbound_delivery", None)
+        if callable(acknowledge):
+            await acknowledge(inbound, succeeded=succeeded)
 
     @staticmethod
     def _delivery_id(

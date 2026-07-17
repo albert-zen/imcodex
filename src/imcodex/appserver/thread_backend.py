@@ -17,9 +17,16 @@ from .client import AppServerError
 
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
+_MAX_THREAD_HISTORY_PAGES = 20
 
 
 class CodexThreadBackendMixin:
+    def native_dispatch_sequence(self) -> int:
+        try:
+            return int(getattr(self.client, "last_received_dispatch_sequence", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def supports_local_image_paths(self) -> bool:
         capability = getattr(self.client, "supports_local_image_paths", None)
         if callable(capability):
@@ -67,6 +74,7 @@ class CodexThreadBackendMixin:
             raise AppServerError(f"thread {thread_id} is not available in Codex")
         snapshot = self._remember_snapshot(payload)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
 
     async def resolve_thread_selector(
@@ -159,7 +167,9 @@ class CodexThreadBackendMixin:
         payload = result.get("thread")
         if not isinstance(payload, dict):
             return None
-        return self._remember_snapshot(payload)
+        snapshot = self._remember_snapshot(payload)
+        self._reconcile_native_active_turn(payload, snapshot)
+        return snapshot
 
     async def read_thread_history(
         self,
@@ -169,12 +179,46 @@ class CodexThreadBackendMixin:
         limit: int = 6,
     ) -> dict:
         thread_id = self._active_thread_id(channel_id, conversation_id)
+        safe_limit = max(1, int(limit))
         try:
-            return await self.client.list_thread_turns(thread_id, limit=limit)
+            pages: list[list[dict]] = []
+            cursor: str | None = None
+            seen_cursors: set[str] = set()
+            completed_count = 0
+            for _ in range(_MAX_THREAD_HISTORY_PAGES):
+                page_options: dict[str, object] = {"limit": safe_limit}
+                if cursor is not None:
+                    page_options["cursor"] = cursor
+                payload = await self.client.list_thread_turns(thread_id, **page_options)
+                turns = self._history_turn_items(payload)
+                pages.append(turns)
+                completed_count += sum(self._history_turn_completed(turn) for turn in turns)
+                if completed_count >= safe_limit:
+                    break
+                next_cursor = self._next_thread_cursor(payload)
+                if next_cursor is None:
+                    break
+                if next_cursor in seen_cursors:
+                    raise AppServerError("thread history returned a repeated pagination cursor")
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+            descending_turns = [turn for page in pages for turn in page]
+            selected = [
+                turn for turn in descending_turns if self._history_turn_completed(turn)
+            ][:safe_limit]
+            return {
+                "turns": list(reversed(selected))
+            }
         except AppServerError as exc:
             if not self._is_unsupported_method_error(exc):
                 raise
-        return await self.client.read_thread(thread_id, include_turns=True)
+        payload = await self.client.read_thread(thread_id, include_turns=True)
+        completed = [
+            turn
+            for turn in self._history_turn_items(payload)
+            if self._history_turn_completed(turn)
+        ]
+        return {"turns": completed[-safe_limit:]}
 
     async def fork_thread(self, channel_id: str, conversation_id: str) -> NativeThreadSnapshot:
         thread_id = self._active_thread_id(channel_id, conversation_id)
@@ -584,6 +628,17 @@ class CodexThreadBackendMixin:
                 return turn_id, status
         return None
 
+    def _reconcile_native_active_turn(
+        self,
+        payload: dict,
+        snapshot: NativeThreadSnapshot,
+    ) -> None:
+        native_active = self._native_active_turn(payload)
+        if native_active is not None:
+            self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
+        elif str(snapshot.status or "").strip().lower() not in ACTIVE_THREAD_STATUSES:
+            self.store.clear_active_turn(snapshot.thread_id)
+
     def _turn_by_id(self, payload: dict, turn_id: str) -> dict | None:
         turns = payload.get("turns")
         if not isinstance(turns, list):
@@ -648,6 +703,22 @@ class CodexThreadBackendMixin:
             if value:
                 return str(value)
         return None
+
+    def _history_turn_items(self, payload: dict) -> list[dict]:
+        for key in ("turns", "data"):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+        thread = payload.get("thread")
+        if isinstance(thread, dict):
+            turns = thread.get("turns")
+            if isinstance(turns, list):
+                return [item for item in turns if isinstance(item, dict)]
+        return []
+
+    def _history_turn_completed(self, turn: dict) -> bool:
+        status = self._native_status(turn.get("status"))
+        return status is not None and status.strip().lower() == "completed"
 
     def _active_thread_id(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)

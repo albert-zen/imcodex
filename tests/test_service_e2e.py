@@ -8,6 +8,7 @@ import pytest
 
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, CodexBackend
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
+from imcodex.channels import MultiplexOutboundSink
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.models import InboundAttachment, InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
@@ -109,6 +110,8 @@ class ScriptedWebSocket:
 
 
 class CapturingSink:
+    channel_id = "qq"
+
     def __init__(self) -> None:
         self.messages: list[OutboundMessage] = []
 
@@ -3707,9 +3710,21 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/turns/list": [
+            "thread/read": [
                 {
                     "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "id": 3,
                     "result": {
                         "turns": [
                             {
@@ -3722,6 +3737,12 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
                                     },
                                     {
                                         "type": "agentMessage",
+                                        "phase": "commentary",
+                                        "text": "I am checking the relevant files now.",
+                                    },
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
                                         "text": "I checked the relevant files and summarized the issue.",
                                     },
                                 ],
@@ -3743,7 +3764,7 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/thread history",
+            text="/history",
         )
     )
 
@@ -3751,8 +3772,9 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
     assert "Thread History" in messages[0].text
     assert "User: Please inspect the repo" in messages[0].text
     assert "Codex: I checked the relevant files" in messages[0].text
+    assert "checking the relevant files now" not in messages[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
-    assert payloads == [{"threadId": "thr_1", "limit": 6}]
+    assert payloads == [{"threadId": "thr_1", "limit": 1}]
     await client.close()
 
 
@@ -3770,13 +3792,14 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
-            "thread/turns/list": [{"id": 2, "error": turns_list_error}],
             "thread/read": [
                 {
-                    "id": 3,
+                    "id": 2,
                     "result": {
                         "thread": {
                             "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "status": "idle",
                             "turns": [
                                 {
                                     "id": "turn_fallback",
@@ -3788,6 +3811,75 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
                                 }
                             ],
                         }
+                    },
+                },
+            ],
+            "thread/turns/list": [{"id": 2, "error": turns_list_error}],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/history",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "User: Use the stable API" in messages[0].text
+    assert "Codex: Stable history loaded." in messages[0].text
+    turns_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
+    read_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/read"]
+    assert turns_payloads == [{"threadId": "thr_1", "limit": 1}]
+    assert read_payloads == [
+        {"threadId": "thr_1"},
+        {"threadId": "thr_1", "includeTurns": True},
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_history_omits_commentary_when_no_final_agent_message_exists() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "id": 3,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_1",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "What happened?"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "commentary",
+                                        "text": "Still investigating.",
+                                    },
+                                ],
+                            }
+                        ]
                     },
                 }
             ],
@@ -3804,17 +3896,143 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/thread history",
+            text="/history",
         )
     )
 
-    assert messages[0].message_type == "command_result"
-    assert "User: Use the stable API" in messages[0].text
-    assert "Codex: Stable history loaded." in messages[0].text
-    turns_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
-    read_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/read"]
-    assert turns_payloads == [{"threadId": "thr_1", "limit": 6}]
-    assert read_payloads == [{"threadId": "thr_1", "includeTurns": True}]
+    assert "User: What happened?" in messages[0].text
+    assert "Still investigating" not in messages[0].text
+    assert "Codex:" not in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_thread_history_pages_past_noncompleted_turns() -> None:
+    class PaginatedHistoryProcess(ScriptedProcess):
+        def on_input(self, raw: str) -> None:
+            payload = json.loads(raw)
+            if payload.get("method") != "thread/turns/list":
+                super().on_input(raw)
+                return
+            self.inputs.append(payload)
+            page = 1 if payload.get("params", {}).get("cursor") is None else 2
+            scripted = self.scripts["thread/turns/list"][page - 1]
+            self.stdout.lines.put_nowait(
+                (json.dumps(self._prepare_scripted_message(payload, scripted)) + "\n").encode("utf-8")
+            )
+
+    process = PaginatedHistoryProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": "/work/alpha",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "id": 3,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_failed",
+                                "status": "failed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Failed request"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Failed result",
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "turn_newest",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Newest request"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Newest result",
+                                    },
+                                ],
+                            },
+                        ],
+                        "nextCursor": "older",
+                    },
+                },
+                {
+                    "id": 4,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_second_newest",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Second-newest request"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Second-newest result",
+                                    },
+                                ],
+                            },
+                            {
+                                "id": "turn_older",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Older request"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Older result",
+                                    },
+                                ],
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/history 2",
+        )
+    )
+
+    assert messages[0].text.index("Second-newest request") < messages[0].text.index("Newest request")
+    assert "Second-newest result" in messages[0].text
+    assert "Newest result" in messages[0].text
+    assert "Failed request" not in messages[0].text
+    assert "Older request" not in messages[0].text
+    payloads = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "thread/turns/list"
+    ]
+    assert payloads == [
+        {"threadId": "thr_1", "limit": 2},
+        {"threadId": "thr_1", "limit": 2, "cursor": "older"},
+    ]
     await client.close()
 
 
@@ -3823,6 +4041,12 @@ async def test_thread_history_command_reports_native_failure() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {"thread": {"id": "thr_1", "cwd": "/work/alpha", "status": "idle"}},
+                }
+            ],
             "thread/turns/list": [{"id": 2, "error": {"message": "server overloaded"}}],
         }
     )
@@ -3837,12 +4061,793 @@ async def test_thread_history_command_reports_native_failure() -> None:
             conversation_id="conv-1",
             user_id="u1",
             message_id="m1",
-            text="/thread history",
+            text="/history",
         )
     )
 
     assert messages[0].message_type == "command_result"
     assert "Thread history could not be queried from Codex right now" in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pick_running_thread_ignores_history_and_releases_new_messages_after_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("imcodex.bridge.thread_handoff._THREAD_OUTPUT_GATE_EVENT_LIMIT", 1)
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_running",
+                        "turnId": "turn_1",
+                        "item": {
+                            "id": "item_1",
+                            "type": "agentMessage",
+                            "phase": "commentary",
+                            "text": "Progress produced during the switch.",
+                        },
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_running",
+                        "turnId": "turn_1",
+                        "item": {
+                            "id": "item_2",
+                            "type": "agentMessage",
+                            "phase": "commentary",
+                            "text": "More progress produced during the switch.",
+                        },
+                    },
+                },
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_running",
+                            "cwd": "/work/alpha",
+                            "preview": "Running work",
+                            "status": "inProgress",
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_running"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 1 --history 3",
+        ),
+    )
+
+    for _ in range(100):
+        if len(sink.messages) >= 3:
+            break
+        await asyncio.sleep(0)
+
+    assert [message.text for message in sink.messages] == [
+        "[System] Switched to Running work.\n"
+        "State: Working\n"
+        "CWD: /work/alpha\n"
+        "History was not shown because this thread is currently running; ignored --history 3.\n"
+        "Messages produced after this switch will continue here.",
+        "Progress produced during the switch.",
+        "More progress produced during the switch.",
+    ]
+    assert not any(payload.get("method") == "thread/turns/list" for payload in process.inputs)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_full_handoff_gate_preserves_native_server_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("imcodex.bridge.thread_handoff._THREAD_OUTPUT_GATE_EVENT_LIMIT", 1)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    store.note_active_turn("thr_running", "turn_1", "inProgress")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    gate = await service._begin_thread_output_gate(
+        "qq",
+        "conv-1",
+        "thr_running",
+        "m1",
+    )
+
+    buffered = await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_running",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "Buffered progress",
+                },
+            },
+        }
+    )
+    request_task = asyncio.create_task(
+        service.handle_server_request(
+            {
+                "id": 91,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thr_running",
+                    "turnId": "turn_1",
+                    "command": "Get-Date",
+                    "cwd": "/work/alpha",
+                },
+            }
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert buffered == []
+    assert not request_task.done()
+    await service._drain_thread_output_gate(gate)
+    await asyncio.wait_for(request_task, timeout=1)
+
+    assert sink.messages[0].text == "Buffered progress"
+    assert sink.messages[1].message_type == "approval_request"
+    assert [route.request_id for route in store.list_pending_requests("qq", "conv-1")] == ["91"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_history_delivery_keeps_live_output_behind_cached_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("imcodex.bridge.thread_handoff._THREAD_OUTPUT_RETRY_DELAYS_S", (0.0,))
+
+    class FlakyHistorySink(CapturingSink):
+        fail_history_once = True
+        live_failures_remaining = 4
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            if self.fail_history_once and message.text == "Thread History":
+                self.fail_history_once = False
+                raise OSError("platform unavailable")
+            if self.live_failures_remaining and message.text == "Buffered live output":
+                self.live_failures_remaining -= 1
+                raise OSError("live delivery unavailable")
+            await super().send_message(message)
+
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    store.note_active_turn("thr_running", "turn_1", "inProgress")
+    sink = FlakyHistorySink()
+    client, service = _build_service(store, process, sink)
+    await service._begin_thread_output_gate(
+        "qq",
+        "conv-1",
+        "thr_running",
+        "m1",
+    )
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_running",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "Buffered live output",
+                },
+            },
+        }
+    )
+
+    async def immediate_response(_message: InboundMessage) -> list[OutboundMessage]:
+        return [
+            OutboundMessage("qq", "conv-1", "status", "Switch notice"),
+            OutboundMessage("qq", "conv-1", "command_result", "Thread History"),
+        ]
+
+    service.handle_inbound = immediate_response  # type: ignore[method-assign]
+    middleware = UnifiedChannelMiddleware(service=service)
+    inbound = InboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        user_id="u1",
+        message_id="m1",
+        text="/pick 1 --history",
+    )
+
+    with pytest.raises(OSError, match="platform unavailable"):
+        await middleware.handle_inbound(sink, inbound)
+
+    assert [message.text for message in sink.messages] == ["Switch notice"]
+    assert "thr_running" in service._thread_output_gates_by_thread
+
+    for index in range(store.RECENT_INBOUND_RESPONSE_LIMIT + 1):
+        store.mark_inbound_message_processed(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id=f"evict-{index}",
+            text_fingerprint=f"fingerprint-{index}",
+            response_payload=[],
+        )
+    assert store.get_processed_inbound_response("qq", "conv-1", "m1") is None
+
+    await middleware.handle_inbound(sink, inbound)
+
+    for _ in range(100):
+        if any(message.text == "Buffered live output" for message in sink.messages):
+            break
+        await asyncio.sleep(0)
+
+    assert [message.text for message in sink.messages] == [
+        "Switch notice",
+        "Switch notice",
+        "Thread History",
+        "Buffered live output",
+    ]
+    assert sink.messages[0].metadata["delivery_id"] == sink.messages[1].metadata["delivery_id"]
+    assert service._thread_output_gates_by_thread == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_generic_webhook_handoff_requires_routable_outbound_sink() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "gateway",
+        "conv-1",
+        thread_ids=["thr_running"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    service.outbound_sink = MultiplexOutboundSink(channel_sinks={"qq": sink})
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="gateway",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 1",
+        )
+    )
+
+    assert len(messages) == 1
+    assert "requires outbound delivery" in messages[0].text
+    assert not any(payload.get("method") == "thread/resume" for payload in process.inputs)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_handoff_retries_buffered_approval_before_rejecting_native_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.bridge.core._SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S",
+        (0.0,),
+    )
+
+    class FlakyApprovalSink(CapturingSink):
+        attempted_delivery_ids: list[str]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempted_delivery_ids = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            if message.message_type == "approval_request":
+                self.attempted_delivery_ids.append(str(message.metadata.get("delivery_id") or ""))
+                if len(self.attempted_delivery_ids) == 1:
+                    raise OSError("approval delivery unavailable")
+            await super().send_message(message)
+
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    store.note_active_turn("thr_running", "turn_1", "inProgress")
+    sink = FlakyApprovalSink()
+    client, service = _build_service(store, process, sink)
+    await service._begin_thread_output_gate("qq", "conv-1", "thr_running", "m1")
+
+    await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_running",
+                "turnId": "turn_1",
+                "command": "echo hello",
+                "cwd": "/work",
+            },
+        }
+    )
+    await service.after_inbound_delivery(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 1",
+        ),
+        succeeded=True,
+    )
+
+    assert [message.message_type for message in sink.messages] == ["approval_request"]
+    assert len(sink.attempted_delivery_ids) == 2
+    assert sink.attempted_delivery_ids[0] == sink.attempted_delivery_ids[1]
+    assert store.list_pending_requests("qq", "conv-1")
+    assert not any(payload.get("id") == 91 for payload in process.inputs)
+    assert service._thread_output_gates_by_thread == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_server_request_retry_stops_after_ambiguous_send_is_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.bridge.core._SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S",
+        (0.0,),
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    store.note_active_turn("thr_running", "turn_1", "inProgress")
+
+    class AmbiguousApprovalSink(CapturingSink):
+        attempts = 0
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.attempts += 1
+            await super().send_message(message)
+            store.remove_pending_request(message.request_id or "")
+            raise OSError("platform accepted the message but acknowledgement was lost")
+
+    sink = AmbiguousApprovalSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+
+    projected = await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_running",
+                "turnId": "turn_1",
+                "command": "echo hello",
+                "cwd": "/work",
+            },
+        }
+    )
+
+    assert projected == []
+    assert sink.attempts == 1
+    assert [message.message_type for message in sink.messages] == ["approval_request"]
+    assert store.list_native_appserver_events()[-1].outcome == "resolved"
+    assert not any(payload.get("id") == 91 for payload in process.inputs)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_server_request_timeout_does_not_reject_request_resolved_during_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "imcodex.bridge.core._SERVER_REQUEST_DELIVERY_RETRY_DELAYS_S",
+        (0.1,),
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    store.note_active_turn("thr_running", "turn_1", "inProgress")
+
+    class ResolvingApprovalSink(CapturingSink):
+        async def send_message(self, message: OutboundMessage) -> None:
+            asyncio.get_running_loop().call_later(
+                0.005,
+                store.remove_pending_request,
+                message.request_id or "",
+            )
+            raise OSError("ambiguous platform failure")
+
+    sink = ResolvingApprovalSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    service.server_request_delivery_timeout_s = 0.01
+
+    projected = await service.handle_server_request(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr_running",
+                "turnId": "turn_1",
+                "command": "echo hello",
+                "cwd": "/work",
+            },
+        }
+    )
+
+    assert projected == []
+    assert store.list_native_appserver_events()[-1].outcome == "resolved"
+    assert not any(payload.get("id") == 91 for payload in process.inputs)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_handoff_preserves_wire_order_across_notification_and_request_lanes() -> None:
+    release_notification = asyncio.Event()
+
+    class ReleasingSink(CapturingSink):
+        async def send_message(self, message: OutboundMessage) -> None:
+            await super().send_message(message)
+            if message.message_type == "status" and "Switched to" in message.text:
+                release_notification.set()
+
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_running",
+                        "turnId": "turn_1",
+                        "item": {
+                            "id": "item_1",
+                            "type": "agentMessage",
+                            "phase": "commentary",
+                            "text": "Wire-first progress",
+                        },
+                    },
+                },
+                {
+                    "id": 91,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": "thr_running",
+                        "turnId": "turn_1",
+                        "command": "Get-Date",
+                        "cwd": "/work/alpha",
+                    },
+                },
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_running",
+                            "cwd": "/work/alpha",
+                            "preview": "Running work",
+                            "status": "inProgress",
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_running"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    sink = ReleasingSink()
+    client, service = _build_service(store, process, sink)
+
+    async def delayed_notification(notification: dict) -> list[OutboundMessage]:
+        await release_notification.wait()
+        return await service.handle_notification(notification)
+
+    client._notification_handlers[:] = [delayed_notification]
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 1",
+        ),
+    )
+
+    assert sink.messages[0].text.startswith("[System] Switched to Running work.")
+    assert sink.messages[1].text == "Wire-first progress"
+    assert sink.messages[2].message_type == "approval_request"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_thread_switch_clears_output_gate() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_waiting"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+    task = asyncio.create_task(
+        service.handle_inbound(
+            InboundMessage(
+                channel_id="qq",
+                conversation_id="conv-1",
+                user_id="u1",
+                message_id="m1",
+                text="/pick 1",
+            )
+        )
+    )
+    for _ in range(100):
+        if any(payload.get("method") == "thread/resume" for payload in process.inputs):
+            break
+        await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert service._thread_output_gates_by_thread == {}
+    assert service._thread_output_gates_by_route == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pick_idle_thread_sends_history_before_messages_started_during_history_read() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_idle",
+                            "cwd": "/work/alpha",
+                            "preview": "Idle work",
+                            "status": "idle",
+                            "turns": [],
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thr_idle",
+                        "turn": {"id": "turn_new", "status": "inProgress"},
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_idle",
+                        "turnId": "turn_new",
+                        "item": {
+                            "id": "item_new",
+                            "type": "agentMessage",
+                            "phase": "commentary",
+                            "text": "New work started while history was loading.",
+                        },
+                    },
+                },
+                {
+                    "id": 3,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_old",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Previous question"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Previous answer",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_idle"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 1 --history",
+        ),
+    )
+
+    assert sink.messages[0].text.startswith("[System] Switched to Idle work.\nState: Idle")
+    assert "User: Previous question" in sink.messages[1].text
+    assert "Codex: Previous answer" in sink.messages[1].text
+    assert sink.messages[2].text == "New work started while history was loading."
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_history_rejects_running_thread_without_reading_turns() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_running",
+                            "cwd": "/work/alpha",
+                            "status": "inProgress",
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/history 3",
+        ),
+    )
+
+    assert len(sink.messages) == 1
+    assert "currently running" in sink.messages[0].text
+    assert not any(payload.get("method") == "thread/turns/list" for payload in process.inputs)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_history_sends_idle_history_before_messages_started_during_read() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/read": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_idle",
+                            "cwd": "/work/alpha",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "thr_idle",
+                        "turn": {"id": "turn_new", "status": "inProgress"},
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": "thr_idle",
+                        "turnId": "turn_new",
+                        "item": {
+                            "id": "item_new",
+                            "type": "agentMessage",
+                            "phase": "commentary",
+                            "text": "New output after history started.",
+                        },
+                    },
+                },
+                {
+                    "id": 3,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_old",
+                                "status": "completed",
+                                "items": [
+                                    {"type": "userMessage", "text": "Earlier request"},
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Earlier result",
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_idle")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/history",
+        ),
+    )
+
+    assert "User: Earlier request" in sink.messages[0].text
+    assert "Codex: Earlier result" in sink.messages[0].text
+    assert sink.messages[1].text == "New output after history started."
     await client.close()
 
 

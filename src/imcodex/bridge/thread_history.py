@@ -1,26 +1,30 @@
 from __future__ import annotations
 
 
-def render_thread_history(payload: dict, *, limit: int = 6) -> str:
+_HISTORY_TEXT_LIMIT = 1200
+
+
+def render_thread_history(payload: dict, *, limit: int = 1) -> str:
     turns = _thread_history_items(payload)
     if not turns:
         return "\n".join(["Thread History", "(none)"])
-    lines = ["Thread History"]
-    for turn in turns[-limit:]:
+    selected = turns[-limit:]
+    lines = [f"Thread History ({len(selected)} turn{'s' if len(selected) != 1 else ''})"]
+    for index, turn in enumerate(selected, start=1):
         turn_id = str(turn.get("id") or turn.get("turnId") or "").strip()
         status = str(turn.get("status") or "").strip()
         prefix = _compact_turn_id(turn_id)
         if status:
             prefix = f"{prefix} {_human_state(status)}".strip()
-        user_text = _first_turn_item_text(turn, role="user")
-        agent_text = _first_turn_item_text(turn, role="agent")
-        parts = []
+        user_text = _turn_user_text(turn)
+        agent_text = _turn_agent_text(turn)
+        lines.append(f"\n{index}. {prefix}")
         if user_text:
-            parts.append(f"User: {_compact_history_text(user_text, 80)}")
+            lines.append(f"User: {_compact_history_text(user_text, _HISTORY_TEXT_LIMIT)}")
         if agent_text:
-            parts.append(f"Codex: {_compact_history_text(agent_text, 80)}")
-        summary = " | ".join(parts) if parts else "(no text items)"
-        lines.append(f"- {prefix}: {summary}")
+            lines.append(f"Codex: {_compact_history_text(agent_text, _HISTORY_TEXT_LIMIT)}")
+        if not user_text and not agent_text:
+            lines.append("(no user or final agent text)")
     return "\n".join(lines)
 
 
@@ -41,17 +45,30 @@ def _compact_turn_id(turn_id: str) -> str:
     return turn_id[:10] if turn_id else "turn"
 
 
-def _first_turn_item_text(turn: dict, *, role: str) -> str:
+def _turn_user_text(turn: dict) -> str:
     for item in _turn_items(turn):
         item_type = str(item.get("type") or item.get("kind") or "").lower()
-        if role == "user" and "user" not in item_type:
-            continue
-        if role == "agent" and "agent" not in item_type and "assistant" not in item_type:
+        if "user" not in item_type:
             continue
         text = _item_text(item)
         if text:
             return text
     return ""
+
+
+def _turn_agent_text(turn: dict) -> str:
+    final_text = ""
+    for item in _turn_items(turn):
+        item_type = str(item.get("type") or item.get("kind") or "").lower()
+        if "agent" not in item_type and "assistant" not in item_type:
+            continue
+        text = _item_text(item)
+        if not text:
+            continue
+        phase = str(item.get("phase") or "").strip().lower()
+        if phase == "final_answer" or ("assistant" in item_type and not phase):
+            final_text = text
+    return final_text
 
 
 def _turn_items(turn: dict) -> list[dict]:

@@ -84,6 +84,8 @@ as:
   before projecting later native output
 - IM-only visibility preferences
 - minimal request routing needed to complete native flows
+- bounded, short-lived output gates used only to preserve IM ordering while a
+  native thread binding or idle-history response is being presented
 - platform transport cursors and reply tokens required to resume an IM
   protocol, such as Telegram update offsets and Weixin context tokens
 - short-lived, privately staged inbound attachments needed to translate a
@@ -91,6 +93,33 @@ as:
 
 If a change introduces a new local source of truth for something native Codex
 already owns, that is a design smell and should be challenged.
+
+Thread-switch output gates hold only native messages that arrive between a
+user's switch/history request and delivery of its immediate IM response. They
+are never persisted, never used as thread history, and are removed before
+normal live projection resumes. Historical content is always read from native
+Codex. Gate capacity is bounded; when it is full, the decoupled native event
+dispatcher waits for delivery to release capacity instead of dropping final
+output or leaving native approval/input requests unresolved. A transient
+receive sequence preserves wire order across the independent notification and
+server-request dispatch lanes; it is not persisted as thread state. A failed
+immediate response keeps its gate bound to that inbound IM message so a durable
+cached-response retry still precedes buffered native output; unrelated inbound
+messages cannot release it. The gate also retains a transient copy of that
+immediate response until delivery succeeds, so bounded response-cache eviction
+cannot turn an expired-replay notice into an ordering acknowledgement. Once the
+immediate response is delivered, a failed buffered-output send is retried with
+bounded backoff using the already projected IM message rather than projecting
+the native event twice.
+
+The generic webhook returns ordinary immediate responses in its HTTP response.
+Live thread handoff additionally requires its outbound callback because native
+messages can arrive after that HTTP exchange has ended. Without a configured
+default outbound sink, switch/history commands fail explicitly instead of
+creating an output gate that can never drain. Buffered native approval and
+question requests retry the same projected message within their native
+delivery timeout, rechecking that the native request is still pending before
+each attempt; only an exhausted timeout is rejected back to Codex.
 
 Transport credentials and cursors are not native Codex state. A channel may
 persist them only when its platform protocol requires them, using private files

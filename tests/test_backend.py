@@ -429,6 +429,27 @@ async def test_attach_thread_resumes_selected_thread() -> None:
 
 
 @pytest.mark.asyncio
+async def test_attach_thread_reconciles_native_active_turn() -> None:
+    class ActiveAttachClient:
+        async def resume_thread(self, **_params):
+            return {
+                "thread": {
+                    "id": "thr_running",
+                    "cwd": r"D:\desktop\attached",
+                    "preview": "Running thread",
+                    "turns": [{"id": "turn_native", "status": "inProgress"}],
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = CodexBackend(client=ActiveAttachClient(), store=store, service_name="imcodex-test")
+
+    await backend.attach_thread("qq", "conv-1", "thr_running")
+
+    assert store.get_active_turn("thr_running") == ("turn_native", "inProgress")
+
+
+@pytest.mark.asyncio
 async def test_thread_operations_use_active_native_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\attached")

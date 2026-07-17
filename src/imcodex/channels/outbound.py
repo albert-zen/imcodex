@@ -111,6 +111,13 @@ class MultiplexOutboundSink:
         self.channel_sinks = channel_sinks or {}
         self.default_sink = default_sink
 
+    def can_deliver(self, channel_id: str) -> bool:
+        if channel_id in self.channel_sinks:
+            return True
+        if channel_id in BUILTIN_CHANNEL_IDS:
+            return False
+        return self.default_sink is not None
+
     async def send_message(self, message) -> None:
         sink = self.channel_sinks.get(message.channel_id)
         if sink is None and message.channel_id in BUILTIN_CHANNEL_IDS:

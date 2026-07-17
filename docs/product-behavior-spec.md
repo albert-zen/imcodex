@@ -185,7 +185,7 @@ Start:
 Threads:
 
 - `/threads`
-- `/thread history`
+- `/history [turns]`
 - `/fork`
 - `/rename <name>`
 - `/compact`
@@ -291,7 +291,7 @@ that Codex returned for the thread, including last-known native metadata retaine
 across partial native updates. The bridge must not infer a separate project model
 from unconfirmed or app-private fields.
 
-### `/next`, `/prev`, `/pick <n>`, `/exit`
+### `/next`, `/prev`, `/pick <n> [--history [N]]`, `/exit`
 
 These commands operate on the active thread browser opened by `/threads`.
 
@@ -300,6 +300,8 @@ Behavior:
 - `/next` moves to the next page
 - `/prev` moves to the previous page
 - `/pick <n>` switches to the selected thread from the current page
+- `/pick <n> --history` requests one recent turn after switching
+- `/pick <n> --history N` requests between one and five recent turns
 - `/exit` closes the active thread browser
 
 When `/pick <n>` succeeds:
@@ -307,19 +309,69 @@ When `/pick <n>` succeeds:
 - the system must clearly tell the user that the thread has been switched
 - the success message must identify the selected thread in a user-friendly way
 - because thread switching also updates the effective working directory, the success message must show the new `CWD`
+- the success message must show whether native Codex reports the selected thread as working or idle
+
+If the selected thread is already running:
+
+- the switch still succeeds
+- a supplied `--history` option is ignored with an explicit explanation
+- history that predates the switch is not replayed
+- native messages produced while the switch is being established are buffered only until the switch notice is delivered, then projected in their original order
+- later visible native messages continue to the newly bound IM conversation without waiting for another inbound IM message
+
+If the selected thread is idle and history was requested:
+
+- the switch notice is delivered first
+- the requested completed-turn history is delivered next
+- if a new native turn starts while history is being read or delivered, its events wait behind that history and are then projected in order
+
+The ordering buffer is bounded, transient presentation state. It must not
+become a persisted copy of native thread or turn history, and it must not block
+the App Server socket read path. Capacity pressure must preserve native final
+output and approval/input requests rather than silently dropping them. When
+notifications and native approval/input requests use separate dispatch lanes,
+their handoff projection still follows App Server receive order. If delivery
+of the switch notice or requested history fails, buffered native output remains
+behind the durable cached response and is released only after that same inbound
+IM message is retried successfully. While that ordering gate exists, it keeps a
+transient replay copy of the immediate response even if the normal bounded
+response cache is evicted; an expired-cache notice must never release live
+output. After the immediate response succeeds, a failed buffered-output send is
+retried with bounded backoff using the same projected message and delivery ID.
+The backoff interval is capped but retries continue until delivery succeeds or
+the service closes, so a transient outage cannot strand a gate after a fixed
+attempt count. Native approval and question requests use the same projected
+message for retries within their bounded native delivery timeout, then reject
+explicitly if delivery never recovers. Each retry first verifies that the
+native request is still pending, so an approval or answer completed after an
+ambiguous platform send is not presented again as a stale request. The final
+timeout path performs the same pending check before returning a delivery error
+to Codex.
+
+For the generic webhook, the immediate command response is always available in
+the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later
+native messages occur after the inbound HTTP exchange. If no outbound callback
+can route that generic channel, `/pick` and `/history` fail explicitly rather
+than switching into an undeliverable live stream.
 
 If no thread browser is active, `/next`, `/prev`, and `/pick` should return a user-facing error telling the user to run `/threads` first.
 
-### `/thread history`
+### `/history [N]`
 
-`/thread history` shows a compact recent history summary for the active native thread.
+`/history` shows one recent completed turn for the active native thread.
+`/history N` shows between one and five recent completed turns. The older
+`/thread history [N]` spelling remains a compatibility alias but is not the
+primary documented command.
 
 Behavior:
 
 - it requires an active thread
+- it is available only while native Codex reports the thread as idle
+- while the thread is running, it returns a status explaining that history can be requested after the current turn completes
 - it reads recent turns from native Codex using `thread/turns/list` or a native thread read that includes turns
-- it renders an IM-safe summary of recent user and Codex text without exposing raw protocol payloads
+- it renders the user message and final Codex message for each selected turn without replaying commentary, reasoning, tool calls, or raw protocol payloads
 - if native history cannot be read, the user gets a friendly status instead of protocol noise
+- if a new turn starts after an idle history read begins, live projection waits until the history response has been delivered so old and new output cannot interleave
 
 ### `/fork`, `/rename <name>`, `/compact`
 
@@ -618,9 +670,10 @@ A rewrite is acceptable only if a user can do the following end to end:
 3. Start a new thread with `/new`.
 4. Browse threads with `/threads`.
 5. Switch threads with `/pick`.
-6. Inspect current state with `/status`.
-7. Change the native model with `/model`.
-8. Change the native permission preset with `/permission`.
-9. Stop an active run with `/stop`.
+6. Inspect an idle thread's recent context with `/history`.
+7. Inspect current state with `/status`.
+8. Change the native model with `/model`.
+9. Change the native permission preset with `/permission`.
+10. Stop an active run with `/stop`.
 
 If a new implementation satisfies these behaviors cleanly and predictably, it matches the current product intent even if the internal architecture is completely different.

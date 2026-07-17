@@ -39,6 +39,145 @@ class CapturingAdapter:
 
 
 @pytest.mark.asyncio
+async def test_channel_middleware_acknowledges_service_after_response_delivery() -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    events: list[str] = []
+
+    class AcknowledgingService(StubService):
+        async def after_inbound_delivery(
+            self,
+            inbound: InboundMessage,
+            *,
+            succeeded: bool,
+        ) -> None:
+            events.append(f"ack:{succeeded}:{inbound.message_id}")
+
+    class OrderedAdapter(CapturingAdapter):
+        async def send_message(self, message: OutboundMessage) -> None:
+            events.append(f"send:{message.text}")
+            await super().send_message(message)
+
+        async def after_inbound_committed(self) -> None:
+            events.append("commit")
+
+    service = AcknowledgingService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="status",
+                text="Switched",
+            )
+        ]
+    )
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        OrderedAdapter(),
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="c2c:user-1",
+            user_id="user-1",
+            message_id="msg-1",
+            text="/pick 1",
+        ),
+    )
+
+    assert events == ["send:Switched", "commit", "ack:True:msg-1"]
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_reports_failed_response_delivery_to_service() -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    acknowledgements: list[bool] = []
+
+    class AcknowledgingService(StubService):
+        async def after_inbound_delivery(
+            self,
+            inbound: InboundMessage,
+            *,
+            succeeded: bool,
+        ) -> None:
+            acknowledgements.append(succeeded)
+
+    class FailingAdapter(CapturingAdapter):
+        async def send_message(self, message: OutboundMessage) -> None:
+            raise OSError("platform unavailable")
+
+    service = AcknowledgingService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="status",
+                text="Switched",
+            )
+        ]
+    )
+    with pytest.raises(OSError, match="platform unavailable"):
+        await UnifiedChannelMiddleware(service=service).handle_inbound(
+            FailingAdapter(),
+            InboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                user_id="user-1",
+                message_id="msg-1",
+                text="/pick 1",
+            ),
+        )
+
+    assert acknowledgements == [False]
+
+
+@pytest.mark.asyncio
+async def test_channel_middleware_reports_failed_durable_commit_to_service(tmp_path) -> None:
+    from imcodex.channels.middleware import UnifiedChannelMiddleware
+
+    acknowledgements: list[bool] = []
+
+    class AcknowledgingService(StubService):
+        async def after_inbound_delivery(
+            self,
+            inbound: InboundMessage,
+            *,
+            succeeded: bool,
+        ) -> None:
+            acknowledgements.append(succeeded)
+
+    store = ConversationStore(state_path=tmp_path / "state.json", clock=lambda: 1.0)
+
+    def fail_write(_serialized: str, _revision: int) -> None:
+        raise OSError("disk unavailable")
+
+    store._write_serialized_state = fail_write  # type: ignore[method-assign]
+    service = AcknowledgingService(
+        outbound=[
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="status",
+                text="Switched",
+            )
+        ]
+    )
+    service.store = store
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        await UnifiedChannelMiddleware(service=service).handle_inbound(
+            CapturingAdapter(),
+            InboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                user_id="user-1",
+                message_id="msg-1",
+                text="/pick 1",
+            ),
+        )
+
+    assert acknowledgements == [False]
+
+
+@pytest.mark.asyncio
 async def test_channel_middleware_dispatches_to_service_and_sets_reply_metadata() -> None:
     from imcodex.channels.middleware import (
         GENERIC_USER_ERROR_TEXT,

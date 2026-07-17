@@ -12,6 +12,8 @@ from ..store import ConversationStore
 _PERMISSION_MODES = {"default", "read-only", "full-access"}
 _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
+_DEFAULT_HISTORY_TURNS = 1
+_MAX_HISTORY_TURNS = 5
 
 
 @dataclass(slots=True)
@@ -151,15 +153,27 @@ class CommandRouter:
         context = self.store.get_thread_browser_context(channel_id, conversation_id)
         if context is None:
             return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
-        if len(command.args) != 1:
-            return CommandResponse(action="thread.pick.invalid", text="Usage: /pick <n>")
+        if not command.args:
+            return CommandResponse(
+                action="thread.pick.invalid",
+                text="Usage: /pick <n> [--history [N]]",
+            )
         try:
             index = int(command.args[0])
         except ValueError:
-            return CommandResponse(action="thread.pick.invalid", text="Usage: /pick <n>")
+            return CommandResponse(
+                action="thread.pick.invalid",
+                text="Usage: /pick <n> [--history [N]]",
+            )
         if index < 1 or index > len(context.thread_ids):
             return CommandResponse(action="thread.pick.invalid", text="Pick a number from the current page.")
-        return CommandResponse(action="thread.pick", text="", payload={"index": index - 1})
+        history_limit = self._parse_pick_history(command.args[1:])
+        if isinstance(history_limit, CommandResponse):
+            return history_limit
+        payload: dict[str, object] = {"index": index - 1}
+        if history_limit is not None:
+            payload["history_limit"] = history_limit
+        return CommandResponse(action="thread.pick", text="", payload=payload)
 
     def _handle_exit(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del command
@@ -174,16 +188,18 @@ class CommandRouter:
             if binding.thread_id is None:
                 return CommandResponse(action="thread.read.none", text="No active thread.")
             return CommandResponse(action="thread.read.query", text="", thread_id=binding.thread_id)
-        if len(command.args) == 1 and command.args[0] == "history":
-            if binding.thread_id is None:
-                return CommandResponse(action="thread.history.missing", text="No active thread.")
-            return CommandResponse(action="thread.history.query", text="", thread_id=binding.thread_id)
+        if command.args and command.args[0] == "history":
+            return self._history_response(
+                binding.thread_id,
+                command.args[1:],
+                usage="Usage: /thread history [N]",
+            )
         if command.args and command.args[0] == "attach":
             selector = command.raw_args_text[len("attach") :].strip()
             if not selector:
                 return CommandResponse(
                     action="thread.invalid",
-                    text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history",
+                    text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history [N]",
                 )
             return CommandResponse(
                 action="thread.attach",
@@ -192,8 +208,80 @@ class CommandRouter:
             )
         return CommandResponse(
             action="thread.invalid",
-            text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history",
+            text="Usage: /thread attach <thread-id-or-name> | /thread read | /thread history [N]",
         )
+
+    def _handle_history(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        return self._history_response(
+            binding.thread_id,
+            command.args,
+            usage="Usage: /history [N]",
+        )
+
+    def _history_response(
+        self,
+        thread_id: str | None,
+        args: list[str],
+        *,
+        usage: str,
+    ) -> CommandResponse:
+        if thread_id is None:
+            return CommandResponse(action="thread.history.missing", text="No active thread.")
+        limit = self._parse_history_limit(args, usage=usage)
+        if isinstance(limit, CommandResponse):
+            return limit
+        return CommandResponse(
+            action="thread.history.query",
+            text="",
+            thread_id=thread_id,
+            payload={"limit": limit},
+        )
+
+    def _parse_pick_history(self, args: list[str]) -> int | None | CommandResponse:
+        if not args:
+            return None
+        if len(args) == 1 and args[0] == "--history":
+            return _DEFAULT_HISTORY_TURNS
+        if len(args) == 1 and args[0].startswith("--history="):
+            value = args[0].partition("=")[2]
+            return self._parse_history_limit(
+                [value],
+                usage="Usage: /pick <n> [--history [N]]",
+                action="thread.pick.invalid",
+            )
+        if len(args) == 2 and args[0] == "--history":
+            return self._parse_history_limit(
+                [args[1]],
+                usage="Usage: /pick <n> [--history [N]]",
+                action="thread.pick.invalid",
+            )
+        return CommandResponse(
+            action="thread.pick.invalid",
+            text="Usage: /pick <n> [--history [N]]",
+        )
+
+    def _parse_history_limit(
+        self,
+        args: list[str],
+        *,
+        usage: str,
+        action: str = "thread.history.invalid",
+    ) -> int | CommandResponse:
+        if not args:
+            return _DEFAULT_HISTORY_TURNS
+        if len(args) != 1:
+            return CommandResponse(action=action, text=usage)
+        try:
+            limit = int(args[0])
+        except ValueError:
+            return CommandResponse(action=action, text=usage)
+        if limit < 1 or limit > _MAX_HISTORY_TURNS:
+            return CommandResponse(
+                action=action,
+                text=f"History turns must be between 1 and {_MAX_HISTORY_TURNS}.",
+            )
+        return limit
 
     def _handle_fork(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         if command.args:
@@ -622,7 +710,7 @@ class CommandRouter:
                     "Threads",
                     "/threads [query]",
                     "Browse and switch threads.",
-                    "/thread history",
+                    "/history [turns]",
                     "Show recent turns.",
                     "/fork",
                     "Continue from a copy.",
