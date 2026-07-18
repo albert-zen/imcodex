@@ -480,6 +480,8 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("IMCODEX_HTTP_HOST", raising=False)
+    monkeypatch.delenv("IMCODEX_HTTP_PORT", raising=False)
     monkeypatch.setenv("IMCODEX_QQ_ENABLED", "0")
     monkeypatch.setenv("IMCODEX_QQ_CLIENT_SECRET", "do-not-persist")
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner-42")

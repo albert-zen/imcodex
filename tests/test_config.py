@@ -124,6 +124,7 @@ def test_settings_reads_optional_qq_markdown_flag_from_env(monkeypatch, tmp_path
 
 def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("IMCODEX_DATA_DIR", raising=False)
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_USER_IDS", "owner,backup")
     monkeypatch.setenv("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "c2c:owner")
     monkeypatch.setenv("IMCODEX_QQ_ACCESS_MATCH", "all")
@@ -140,6 +141,7 @@ def test_settings_reads_qq_access_allowlists(monkeypatch, tmp_path) -> None:
 
 def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("IMCODEX_DATA_DIR", raising=False)
     monkeypatch.setenv("IMCODEX_TELEGRAM_ENABLED", "1")
     monkeypatch.setenv("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "telegram-token.txt")
     monkeypatch.setenv("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "42")
@@ -162,6 +164,7 @@ def test_settings_reads_telegram_channel_config(monkeypatch, tmp_path) -> None:
 
 def test_settings_reads_feishu_channel_config_and_lark_aliases(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("IMCODEX_DATA_DIR", raising=False)
     monkeypatch.setenv("IMCODEX_FEISHU_ENABLED", "1")
     monkeypatch.setenv("IMCODEX_LARK_APP_ID", "cli_lark")
     monkeypatch.setenv("IMCODEX_LARK_APP_SECRET", "secret")

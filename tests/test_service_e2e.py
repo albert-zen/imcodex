@@ -121,6 +121,18 @@ class CapturingSink:
         self.messages.append(message)
 
 
+async def _wait_for_condition(predicate, *, timeout_s: float = 1.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while not predicate():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError("condition was not satisfied before the test deadline")
+        # Give worker threads real scheduling time on Windows. Repeated
+        # sleep(0) calls can exhaust a fixed iteration count before an fsync
+        # running through asyncio.to_thread has a chance to finish.
+        await asyncio.sleep(min(0.01, remaining))
+
+
 def _build_service(store: ConversationStore, process: ScriptedProcess, sink: CapturingSink):
     supervisor = AppServerSupervisor(
         codex_bin="codex",
@@ -2069,10 +2081,7 @@ async def test_terminal_delivery_recovers_after_transient_persistence_failure(
             },
         }
     )
-    for _ in range(100):
-        if sink.messages:
-            break
-        await asyncio.sleep(0)
+    await _wait_for_condition(lambda: bool(sink.messages))
 
     assert write_attempts >= 2
     assert [message.text for message in sink.messages] == ["Durable after retry"]
@@ -2131,10 +2140,9 @@ async def test_terminal_delivery_retries_ack_persistence_without_resending(
             },
         }
     )
-    for _ in range(100):
-        if not service._terminal_delivery_ack_persistence_pending:
-            break
-        await asyncio.sleep(0)
+    await _wait_for_condition(
+        lambda: not service._terminal_delivery_ack_persistence_pending
+    )
 
     assert failed_ack_write is True
     assert [message.text for message in sink.messages] == ["Send exactly once"]

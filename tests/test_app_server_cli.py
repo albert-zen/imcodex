@@ -104,6 +104,7 @@ def test_app_server_cli_reads_codex_bin_without_loading_unrelated_settings(
     tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("IMCODEX_CODEX_BIN", raising=False)
     (tmp_path / ".env").write_text(
         "IMCODEX_CODEX_BIN=dotenv-codex\nIMCODEX_HTTP_PORT=not-an-integer\n",
         encoding="utf-8",
