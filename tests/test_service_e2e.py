@@ -3833,13 +3833,9 @@ async def test_threads_command_lets_native_codex_choose_sources_and_prefers_boun
     assert messages[0].message_type == "command_result"
     lines = messages[0].text.splitlines()
     assert lines[0] == "Threads (Page 1/1)"
-    assert lines[1].startswith("1. Bound thread")
-    assert "· 【Workspace: gamma】 ·" in lines[1]
-    assert "idle" in lines[1]
-    assert lines[2].startswith("2. Matching cwd thread")
-    assert "· 【Workspace: alpha】 ·" in lines[2]
-    assert lines[3].startswith("3. Other thread")
-    assert "· 【Workspace: beta】 ·" in lines[3]
+    assert lines[1] == "1. Bound thread 【gamma】 ✓"
+    assert lines[2] == "2. Matching cwd thread 【alpha】"
+    assert lines[3] == "3. Other thread 【beta】"
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
@@ -3893,7 +3889,8 @@ async def test_threads_command_uses_native_path_for_workspace_when_cwd_is_empty(
     )
 
     assert messages[0].message_type == "command_result"
-    assert "Standalone thread · 【Workspace: standalone-thread】 · (idle)" in messages[0].text
+    assert "Standalone thread 【standalone-thread】" in messages[0].text
+    assert "notLoaded" not in messages[0].text
     await client.close()
 
 

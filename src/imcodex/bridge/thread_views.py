@@ -62,13 +62,14 @@ class ThreadViewMixin:
         )
         lines = [self._thread_page_heading(safe_page, page_count, has_more=next_cursor is not None)]
         for index, snapshot in enumerate(visible, start=1):
-            details = [snapshot.status]
-            if snapshot.thread_id == self.store.get_binding(message.channel_id, message.conversation_id).thread_id:
-                details.append("current")
+            is_current = (
+                snapshot.thread_id
+                == self.store.get_binding(message.channel_id, message.conversation_id).thread_id
+            )
+            current_marker = " ✓" if is_current else ""
             lines.append(
-                f"{index}. {self._thread_label(snapshot)} · "
-                f"【Workspace: {self._thread_workspace_label(snapshot)}】 · "
-                f"({', '.join(details)})"
+                f"{index}. {self._thread_label(snapshot)} "
+                f"【{self._thread_workspace_label(snapshot)}】{current_marker}"
             )
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
         if safe_page < page_count:

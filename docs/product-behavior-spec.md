@@ -273,11 +273,14 @@ or matching `CWD` first.
 
 The list should clearly indicate:
 
-- which thread is current
+- which thread is current, using one compact visual marker on that row
 - each visible thread's label
 - each visible thread's working-directory label, when known, rendered as a
-  visually distinct labeled badge rather than concatenated with the thread label
-- enough state to help the user choose
+  visually distinct bracketed badge rather than concatenated with the thread label
+
+The compact browser should not repeat a field name on every row or expose native
+load-state labels such as `notLoaded`; those details add noise without helping the
+user choose a thread.
 
 The rendered list should tell the user what to do next:
 
