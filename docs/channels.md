@@ -156,9 +156,11 @@ queue or second dedup authority.
 bridge and Codex App Server to see the same absolute spool path. imcodex submits
 images over bridge-child stdio, the normal local Unix-socket target, or the
 project-managed Windows TCP App Server after the launcher verifies its process
-identity and health. Other TCP targets, including an explicitly configured
-loopback URL, are rejected for image input because reachability alone cannot
-prove a shared filesystem; text remains usable.
+identity and health. An explicitly configured `ws://127.0.0.1:<port>` is also
+accepted when the same project core manifest, exact listener owner, live Codex
+command, and readiness probe verify it on every connection. Other TCP targets
+are rejected because reachability alone cannot prove a shared filesystem; text
+remains usable.
 A containerized Unix-socket deployment must mount the spool at the same
 absolute path.
 
@@ -543,10 +545,10 @@ unhealthy.
   extras expression intact.
 - Run `python -m imcodex channels doctor` from the same environment used by
   `scripts\start.cmd`.
-- The normal launcher-managed Windows App Server supports image input. The
-  launcher enables local paths only after verifying the managed process;
-  explicitly configured TCP targets remain text-only even when they use
-  `localhost`.
+- The normal launcher-managed Windows App Server supports image input. An
+  explicit canonical `ws://127.0.0.1:<port>` also supports it when IMCodex can
+  verify the matching project-managed core process; `localhost`, remote, TLS,
+  and unrecorded loopback targets remain text-only.
 - Put token files and `IMCODEX_DATA_DIR` under the intended Windows user's
   profile and verify their NTFS ACLs on a shared machine.
 

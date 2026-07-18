@@ -3140,7 +3140,7 @@ async def test_credits_reset_consumes_native_credit_and_refreshes_limits() -> No
     assert messages[0].message_type == "command_result"
     assert "Reset applied successfully." in messages[0].text
     assert "5h limit: 100% remaining" in messages[0].text
-    assert "Rate-limit resets: 0 available" in messages[0].text
+    assert "Rate-limit resets: none available" in messages[0].text
     consume = next(
         payload
         for payload in process.inputs
@@ -3897,8 +3897,8 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
 
     assert messages[0].message_type == "command_result"
     assert "Thread History" in messages[0].text
-    assert "User: Please inspect the repo" in messages[0].text
-    assert "Codex: I checked the relevant files" in messages[0].text
+    assert "**You**\n> Please inspect the repo" in messages[0].text
+    assert "**Codex**\n\nI checked the relevant files" in messages[0].text
     assert "checking the relevant files now" not in messages[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
     assert payloads == [{"threadId": "thr_1", "limit": 1}]
@@ -3960,8 +3960,8 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
     )
 
     assert messages[0].message_type == "command_result"
-    assert "User: Use the stable API" in messages[0].text
-    assert "Codex: Stable history loaded." in messages[0].text
+    assert "**You**\n> Use the stable API" in messages[0].text
+    assert "**Codex**\n\nStable history loaded." in messages[0].text
     turns_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
     read_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/read"]
     assert turns_payloads == [{"threadId": "thr_1", "limit": 1}]
@@ -4027,9 +4027,9 @@ async def test_thread_history_omits_commentary_when_no_final_agent_message_exist
         )
     )
 
-    assert "User: What happened?" in messages[0].text
+    assert "**You**\n> What happened?" in messages[0].text
     assert "Still investigating" not in messages[0].text
-    assert "Codex:" not in messages[0].text
+    assert "**Codex**" not in messages[0].text
     await client.close()
 
 
@@ -4849,8 +4849,8 @@ async def test_pick_idle_thread_sends_history_before_messages_started_during_his
     )
 
     assert sink.messages[0].text.startswith("[System] Switched to Idle work.\nState: Idle")
-    assert "User: Previous question" in sink.messages[1].text
-    assert "Codex: Previous answer" in sink.messages[1].text
+    assert "**You**\n> Previous question" in sink.messages[1].text
+    assert "**Codex**\n\nPrevious answer" in sink.messages[1].text
     assert sink.messages[2].text == "New work started while history was loading."
     await client.close()
 
@@ -4972,8 +4972,8 @@ async def test_history_sends_idle_history_before_messages_started_during_read() 
         ),
     )
 
-    assert "User: Earlier request" in sink.messages[0].text
-    assert "Codex: Earlier result" in sink.messages[0].text
+    assert "**You**\n> Earlier request" in sink.messages[0].text
+    assert "**Codex**\n\nEarlier result" in sink.messages[0].text
     assert sink.messages[1].text == "New output after history started."
     await client.close()
 

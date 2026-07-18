@@ -55,7 +55,6 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_APP_SERVER_EXPERIMENTAL_API",
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT",
         MANAGED_APP_SERVER_TARGET_ENV,
-        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
         "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
         "IMCODEX_APP_SERVER_RECONNECT_JITTER",
@@ -274,7 +273,6 @@ class Settings:
     app_server_health_timeout_s: float = 1.0
     native_thread_tool_host: bool = False
     app_server_managed_target: str | None = None
-    app_server_verified_shared_filesystem_target: str | None = None
     app_server_reconnect_initial_delay_s: float = 0.5
     app_server_reconnect_max_delay_s: float = 30.0
     app_server_reconnect_jitter_fraction: float = 0.25
@@ -416,9 +414,6 @@ class Settings:
             app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
             native_thread_tool_host=_env_bool("IMCODEX_NATIVE_THREAD_TOOL_HOST", False, dotenv),
             app_server_managed_target=_process_env_optional(MANAGED_APP_SERVER_TARGET_ENV),
-            app_server_verified_shared_filesystem_target=_process_env_optional(
-                "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
-            ),
             app_server_reconnect_initial_delay_s=_env_float(
                 "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
                 0.5,

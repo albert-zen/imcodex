@@ -12,7 +12,6 @@ import pytest
 from imcodex.ops import BridgeRestartExecutor
 
 
-_SHARED_FILESYSTEM_TARGET_ENV = "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET"
 _MANAGED_TARGET_ENV = "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET"
 
 
@@ -169,38 +168,12 @@ def test_restart_executor_reads_launch_snapshot_and_restarts_bridge(
     )
 
 
-def test_restart_preserves_external_shared_filesystem_proof_and_ignores_dotenv_spoof(
+def test_restart_never_imports_launcher_owned_target_from_dotenv(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    trusted_target = "ws://127.0.0.1:8765"
-    monkeypatch.setenv(_SHARED_FILESYSTEM_TARGET_ENV, trusted_target)
-    (tmp_path / ".env").write_text(
-        f"{_SHARED_FILESYSTEM_TARGET_ENV}=wss://attacker.example.test/rpc\n",
-        encoding="utf-8",
-    )
-    snapshot = {
-        "requiredExternalEnvKeys": [_SHARED_FILESYSTEM_TARGET_ENV],
-        "dotenvImportedKeys": [],
-        "launcherReloadableKeys": ["IMCODEX_APP_SERVER_URL"],
-    }
-
-    reconstructed = BridgeRestartExecutor()._reconstructed_environment(
-        snapshot,
-        cwd=tmp_path,
-    )
-
-    assert reconstructed[_SHARED_FILESYSTEM_TARGET_ENV] == trusted_target
-
-
-def test_restart_never_imports_launcher_owned_capability_keys_from_dotenv(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    monkeypatch.delenv(_SHARED_FILESYSTEM_TARGET_ENV, raising=False)
     monkeypatch.delenv(_MANAGED_TARGET_ENV, raising=False)
     (tmp_path / ".env").write_text(
-        f"{_SHARED_FILESYSTEM_TARGET_ENV}=ws://127.0.0.1:8765\n"
         f"{_MANAGED_TARGET_ENV}=ws://127.0.0.1:8765\n",
         encoding="utf-8",
     )
@@ -214,7 +187,6 @@ def test_restart_never_imports_launcher_owned_capability_keys_from_dotenv(
         cwd=tmp_path,
     )
 
-    assert _SHARED_FILESYSTEM_TARGET_ENV not in reconstructed
     assert _MANAGED_TARGET_ENV not in reconstructed
 
 

@@ -446,16 +446,14 @@ The bridge and App Server adapter MUST therefore follow these rules:
 Channel image inputs MUST be translated at the App Server boundary into native
 `localImage` user-input items; the bridge MUST NOT add a second image model,
 OCR pipeline, or media-understanding authority. A local image path is valid only
-when the App Server shares the bridge's filesystem namespace. TCP locality alone
-MUST NOT establish that capability. Explicit TCP targets remain image-ineligible,
-including loopback. Native Windows is the narrow exception: after the platform
-launcher successfully verifies the project-managed detached App Server's
-manifest, PID, listener-owner live process command, listener, and health, it MAY
-assert a launcher-owned shared-filesystem capability for that bridge process.
-The launcher MUST select the target through a private managed-target channel;
-the assertion and managed target MUST NOT be accepted from `.env`, MUST be bound
-to the exact verified target, and MUST be cleared whenever a public or legacy
-explicit target is present. Each new TCP connection epoch MUST clear the
+when the App Server shares the bridge's filesystem namespace. TCP locality or
+successful connection alone MUST NOT establish that capability. Native Windows
+is the narrow TCP exception: a canonical `ws://127.0.0.1:<port>` target MAY be
+accepted even when explicitly configured, but only after the project core
+manifest, PID, exact listener owner, live Codex command, and health are verified.
+Remote targets, TLS targets, hostname aliases, and loopback listeners without a
+matching valid project core manifest remain image-ineligible. The capability
+MUST be bound to the exact configured target. Each new TCP connection epoch MUST clear the
 capability and repeat the managed-process verification before local paths are
 accepted, so another process reusing the same endpoint cannot inherit trust.
 The App Server request boundary MUST recheck the current epoch's capability

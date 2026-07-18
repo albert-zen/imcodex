@@ -139,13 +139,48 @@ def test_render_credits_shows_available_native_rate_limit_resets() -> None:
         }
     )
 
-    assert "Rate-limit resets: 2 available" in text
-    assert "1. Full reset (Weekly + 5 hr)" in text
-    assert "Granted: " in text
-    assert "Expires: " in text
-    assert "ID: RateLimitResetCredit_1" in text
-    assert "Details shown: 1 of 2" in text
-    assert "Use /credits reset <number>" in text
+    assert "Rate-limit resets\n\n" in text
+    assert "| # | Reset time | Expires | Scope |" in text
+    assert "| 1 | " in text
+    assert "Full reset (Weekly + 5 hr) |" in text
+    assert "RateLimitResetCredit_1" not in text
+    assert "Details shown" not in text
+    assert "Use /credits reset" not in text
+
+
+def test_render_credits_uses_native_reset_type_when_scope_title_is_missing() -> None:
+    text = render_credits(
+        {
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [
+                    {
+                        "id": "opaque-id",
+                        "resetType": "codexRateLimits",
+                        "grantedAt": 1775834562,
+                        "expiresAt": 1778436562,
+                    }
+                ],
+            }
+        }
+    )
+
+    assert "| 1 | " in text
+    assert "| codexRateLimits |" in text
+    assert "opaque-id" not in text
+
+
+def test_render_credits_does_not_report_none_when_native_details_are_omitted() -> None:
+    text = render_credits(
+        {
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+            }
+        }
+    )
+
+    assert "Rate-limit resets: available, but details are unavailable" in text
+    assert "none available" not in text
 
 
 def test_render_rate_limit_reset_result_includes_refreshed_usage() -> None:
@@ -159,7 +194,7 @@ def test_render_rate_limit_reset_result_includes_refreshed_usage() -> None:
 
     assert text.startswith("Rate-limit reset\n\nReset applied successfully.")
     assert "5h limit: 100% remaining" in text
-    assert "Rate-limit resets: 0 available" in text
+    assert "Rate-limit resets: none available" in text
 
 
 def test_render_credits_shows_partial_warning() -> None:

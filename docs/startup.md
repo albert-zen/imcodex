@@ -241,11 +241,13 @@ the core manifest, PID, command, listener, and App Server `/readyz` probe match.
 On native Windows the command check reads the actual listener owner's live argv
 rather than trusting only the manifest or another process in the same tree; an
 unrelated process occupying that port fails explicitly.
-Only after that verification does the launcher mark the App Server as sharing
-the bridge filesystem, which enables native `localImage` inputs on the default
-Windows topology. An explicit `IMCODEX_APP_SERVER_URL`, even a loopback URL,
-and every explicit legacy core target are connect-only and do not receive this
-capability. The client clears the capability on disconnect and repeats the
+Only after that verification does the bridge treat the App Server as sharing
+its filesystem, which enables native `localImage` inputs on the default Windows
+topology. An explicitly configured canonical `ws://127.0.0.1:<port>` receives
+the same capability only when it resolves to the same project-managed core and
+passes the full manifest, listener-owner, live-command, and readiness checks;
+mere connectivity is insufficient. Remote, TLS, aliased-host, and unrecorded
+loopback targets remain text-only. The client clears the capability on disconnect and repeats the
 manifest, process, listener, command, and health verification for each new
 connection epoch before accepting another local image path.
 Built-in bridge restart asks the running Windows process to shut down through a

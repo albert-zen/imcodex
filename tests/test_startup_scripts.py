@@ -148,7 +148,6 @@ def _run_start_ps1(
     launcher_provenance_capture_path = tmp_path / "powershell-launcher-provenance.txt"
     http_port_capture_path = tmp_path / "powershell-http-port.txt"
     data_dir_capture_path = tmp_path / "powershell-data-dir.txt"
-    shared_filesystem_capture_path = tmp_path / "powershell-shared-filesystem.txt"
     managed_target_capture_path = tmp_path / "powershell-managed-target.txt"
     if os.name == "nt":
         fake_python = tmp_path / "fake-python.cmd"
@@ -164,8 +163,6 @@ def _run_start_ps1(
             '  >"%IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE%" echo('
             "%IMCODEX_LAUNCHER_RELOADABLE_KEYS%\n"
             '  >"%IMCODEX_TEST_HTTP_PORT_CAPTURE%" echo %IMCODEX_HTTP_PORT%\n'
-            '  >"%IMCODEX_TEST_SHARED_FILESYSTEM_CAPTURE%" echo('
-            '%IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET%\n'
             '  >"%IMCODEX_TEST_MANAGED_TARGET_CAPTURE%" echo('
             '%IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET%\n'
             '  "%IMCODEX_TEST_POWERSHELL%" -NoLogo -NoProfile -Command '
@@ -191,8 +188,6 @@ def _run_start_ps1(
             '  printf "%s\\n" "${IMCODEX_LAUNCHER_RELOADABLE_KEYS:-}" > '
             '"$IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE"\n'
             '  printf "%s\\n" "${IMCODEX_HTTP_PORT:-}" > "$IMCODEX_TEST_HTTP_PORT_CAPTURE"\n'
-            '  printf "%s\\n" "${IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET:-}" > '
-            '"$IMCODEX_TEST_SHARED_FILESYSTEM_CAPTURE"\n'
             '  printf "%s\\n" "${IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET:-}" > '
             '"$IMCODEX_TEST_MANAGED_TARGET_CAPTURE"\n'
             '  printf "%s" "${IMCODEX_DATA_DIR:-}" > "$IMCODEX_TEST_DATA_DIR_CAPTURE"\n'
@@ -214,13 +209,11 @@ def _run_start_ps1(
         "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE",
         "IMCODEX_TEST_HTTP_PORT_CAPTURE",
         "IMCODEX_TEST_DATA_DIR_CAPTURE",
-        "IMCODEX_TEST_SHARED_FILESYSTEM_CAPTURE",
         "IMCODEX_TEST_MANAGED_TARGET_CAPTURE",
         "IMCODEX_TEST_POWERSHELL",
         "IMCODEX_DOTENV_IMPORTED_KEYS",
         "IMCODEX_LAUNCHER_RELOADABLE_KEYS",
         "IMCODEX_DATA_DIR",
-        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
         "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
         "CONDA_EXE",
     ):
@@ -234,7 +227,6 @@ def _run_start_ps1(
             "IMCODEX_TEST_LAUNCHER_PROVENANCE_CAPTURE": str(launcher_provenance_capture_path),
             "IMCODEX_TEST_HTTP_PORT_CAPTURE": str(http_port_capture_path),
             "IMCODEX_TEST_DATA_DIR_CAPTURE": str(data_dir_capture_path),
-            "IMCODEX_TEST_SHARED_FILESYSTEM_CAPTURE": str(shared_filesystem_capture_path),
             "IMCODEX_TEST_MANAGED_TARGET_CAPTURE": str(managed_target_capture_path),
             "IMCODEX_TEST_POWERSHELL": str(_POWERSHELL),
         }
@@ -562,10 +554,7 @@ def test_start_ps1_guards_legacy_core_start_when_canonical_target_is_set() -> No
         ("", {}, "|||"),
         (
             "",
-            {
-                "IMCODEX_APP_SERVER_URL": "unix://",
-                "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET": "ws://127.0.0.1:8765",
-            },
+            {"IMCODEX_APP_SERVER_URL": "unix://"},
             "unix://|||",
         ),
         ("", {"IMCODEX_CORE_MODE": "spawned-stdio"}, "||spawned-stdio|"),
@@ -596,14 +585,6 @@ def test_start_ps1_executes_target_precedence_matrix(
     )
     assert invocations == expected_invocations
     assert target_environment == expected_target
-    shared_filesystem = (tmp_path / "powershell-shared-filesystem.txt").read_text(
-        encoding="utf-8"
-    ).strip()
-    assert shared_filesystem == (
-        "ws://127.0.0.1:8765"
-        if os.name == "nt" and not dotenv and not environment_overrides
-        else ""
-    )
     managed_target = (tmp_path / "powershell-managed-target.txt").read_text(
         encoding="utf-8"
     ).strip()
@@ -636,7 +617,7 @@ def test_start_ps1_uses_last_duplicate_dotenv_value(tmp_path: Path) -> None:
     "core_url",
     ["ws://127.0.0.1:8765", "wss://core.example.test/rpc"],
 )
-def test_start_ps1_never_grants_shared_filesystem_to_explicit_legacy_core(
+def test_start_ps1_preserves_explicit_legacy_core_target(
     tmp_path: Path,
     core_url: str,
 ) -> None:
@@ -652,30 +633,6 @@ def test_start_ps1_never_grants_shared_filesystem_to_explicit_legacy_core(
     assert completed.returncode == 0, completed.stderr
     assert invocations == ["-m imcodex core verify --port 8765", "-m imcodex"]
     assert target_environment == f"|{core_url}|dedicated-ws|8765"
-    assert (tmp_path / "powershell-shared-filesystem.txt").read_text(
-        encoding="utf-8"
-    ).strip() == ""
-
-
-@pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")
-def test_start_ps1_does_not_accept_shared_filesystem_proof_from_dotenv(
-    tmp_path: Path,
-) -> None:
-    completed, _invocations, _target_environment = _run_start_ps1(
-        tmp_path,
-        dotenv=(
-            "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET="
-            "wss://attacker.example.test/rpc\n"
-        ),
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "powershell-shared-filesystem.txt").read_text(
-        encoding="utf-8"
-    ).strip() == ("ws://127.0.0.1:8765" if os.name == "nt" else "")
-    assert "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET" not in (
-        tmp_path / "powershell-dotenv-provenance.txt"
-    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(_POWERSHELL is None, reason="PowerShell is not available")

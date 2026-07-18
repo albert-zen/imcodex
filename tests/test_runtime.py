@@ -57,7 +57,6 @@ async def test_managed_core_shared_filesystem_verifier_rechecks_current_manifest
         (),
         {
             "app_server_managed_target": endpoint,
-            "app_server_verified_shared_filesystem_target": endpoint,
             "codex_bin": "codex",
         },
     )()
@@ -86,7 +85,6 @@ def test_managed_core_shared_filesystem_verifier_rejects_noncanonical_targets(
         (),
         {
             "app_server_managed_target": endpoint,
-            "app_server_verified_shared_filesystem_target": endpoint,
             "codex_bin": "codex",
         },
     )()
@@ -111,7 +109,6 @@ def test_managed_core_shared_filesystem_verifier_rejects_non_windows(
         (),
         {
             "app_server_managed_target": endpoint,
-            "app_server_verified_shared_filesystem_target": endpoint,
             "codex_bin": "codex",
         },
     )()
@@ -126,55 +123,106 @@ def test_managed_core_shared_filesystem_verifier_rejects_non_windows(
     )
 
 
-def test_managed_core_shared_filesystem_verifier_rejects_dotenv_explicit_target(
+@pytest.mark.asyncio
+async def test_managed_core_shared_filesystem_verifier_accepts_verified_dotenv_loopback_target(
     monkeypatch,
 ) -> None:
     endpoint = "ws://127.0.0.1:8765"
     monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_APP_SERVER_URL")
+    calls: list[int] = []
+
+    class Manager:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def verify(self, *, port: int):
+            calls.append(port)
+            return type("Manifest", (), {"url": endpoint})()
+
+    monkeypatch.setattr("imcodex.composition.DedicatedCoreManager", Manager)
     settings = type(
         "SettingsLike",
         (),
         {
             "app_server_managed_target": endpoint,
-            "app_server_verified_shared_filesystem_target": endpoint,
             "codex_bin": "codex",
         },
     )()
 
-    assert (
-        _managed_core_shared_filesystem_verifier(
-            settings=settings,
-            endpoint=endpoint,
-            os_name="nt",
-        )
-        is None
+    verifier = _managed_core_shared_filesystem_verifier(
+        settings=settings,
+        endpoint=endpoint,
+        os_name="nt",
     )
 
+    assert verifier is not None
+    assert await verifier() is True
+    assert calls == [8765]
 
-def test_managed_core_shared_filesystem_verifier_rejects_explicit_process_target(
+
+@pytest.mark.asyncio
+async def test_managed_core_shared_filesystem_verifier_accepts_verified_process_loopback_target(
     monkeypatch,
 ) -> None:
     endpoint = "ws://127.0.0.1:8765"
     monkeypatch.setenv("IMCODEX_APP_SERVER_URL", endpoint)
     monkeypatch.delenv("IMCODEX_DOTENV_IMPORTED_KEYS", raising=False)
+    calls: list[int] = []
+
+    class Manager:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def verify(self, *, port: int):
+            calls.append(port)
+            return type("Manifest", (), {"url": endpoint})()
+
+    monkeypatch.setattr("imcodex.composition.DedicatedCoreManager", Manager)
     settings = type(
         "SettingsLike",
         (),
         {
             "app_server_managed_target": endpoint,
-            "app_server_verified_shared_filesystem_target": endpoint,
             "codex_bin": "codex",
         },
     )()
 
-    assert (
-        _managed_core_shared_filesystem_verifier(
-            settings=settings,
-            endpoint=endpoint,
-            os_name="nt",
-        )
-        is None
+    verifier = _managed_core_shared_filesystem_verifier(
+        settings=settings,
+        endpoint=endpoint,
+        os_name="nt",
     )
+
+    assert verifier is not None
+    assert await verifier() is True
+    assert calls == [8765]
+
+
+@pytest.mark.asyncio
+async def test_managed_core_shared_filesystem_verifier_normalizes_trailing_slash(
+    monkeypatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:8765/"
+
+    class Manager:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def verify(self, *, port: int):
+            assert port == 8765
+            return type("Manifest", (), {"url": "ws://127.0.0.1:8765"})()
+
+    monkeypatch.setattr("imcodex.composition.DedicatedCoreManager", Manager)
+    settings = type("SettingsLike", (), {"codex_bin": "codex"})()
+
+    verifier = _managed_core_shared_filesystem_verifier(
+        settings=settings,
+        endpoint=endpoint,
+        os_name="nt",
+    )
+
+    assert verifier is not None
+    assert await verifier() is True
 
 
 class _FakeService:
@@ -404,7 +452,6 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_markdown_enabled=False,
         native_thread_tool_host=True,
         app_server_managed_target="ws://127.0.0.1:8765",
-        app_server_verified_shared_filesystem_target="ws://127.0.0.1:8765",
         app_server_reconnect_initial_delay_s=0.6,
         app_server_reconnect_max_delay_s=45.0,
         app_server_reconnect_jitter_fraction=0.15,
@@ -428,12 +475,6 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
     assert runtime.observability._pending_launch_snapshot["restartSupported"] is False
 
-    settings.app_server_verified_shared_filesystem_target = "ws://127.0.0.1:9999"
-    mismatched_runtime = build_runtime(settings)
-    assert mismatched_runtime.client.supports_local_image_paths() is False
-    assert mismatched_runtime.client._shared_filesystem_verifier is None
-
-
 @pytest.mark.asyncio
 async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     tmp_path: Path,
@@ -448,10 +489,6 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         "ws://127.0.0.1:8765",
     )
     monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "1")
-    monkeypatch.setenv(
-        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
-        "ws://127.0.0.1:8765",
-    )
     monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_QQ_ENABLED")
     monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "")
     settings = Settings(
@@ -476,7 +513,6 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         qq_markdown_enabled=True,
         native_thread_tool_host=True,
         app_server_managed_target="ws://127.0.0.1:8765",
-        app_server_verified_shared_filesystem_target="ws://127.0.0.1:8765",
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
         inbound_webhook_token="do-not-persist",
@@ -509,7 +545,6 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         "IMCODEX_QQ_CLIENT_SECRET",
         "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
-        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET",
         "PATH",
     } <= required_external
     assert "do-not-persist" not in json.dumps(launch)

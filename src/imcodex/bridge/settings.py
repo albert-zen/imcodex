@@ -497,31 +497,37 @@ def _rate_limit_reset_credits(payload: dict) -> dict | None:
 def _rate_limit_reset_credit_lines(reset_credits: dict | None) -> list[str]:
     if reset_credits is None:
         return []
-    try:
-        available = max(0, int(reset_credits.get("availableCount") or 0))
-    except (TypeError, ValueError):
-        available = 0
-    lines = [f"Rate-limit resets: {available} available"]
     credits = rate_limit_reset_credit_items({"rateLimitResetCredits": reset_credits})
+    if not credits:
+        try:
+            available = max(0, int(reset_credits.get("availableCount") or 0))
+        except (TypeError, ValueError):
+            available = 0
+        if available:
+            return ["Rate-limit resets: available, but details are unavailable"]
+        return ["Rate-limit resets: none available"]
+    lines = [
+        "Rate-limit resets",
+        "",
+        "| # | Reset time | Expires | Scope |",
+        "|---:|---|---|---|",
+    ]
     for index, credit in enumerate(credits, start=1):
-        title = str(credit.get("title") or "Rate-limit reset").strip()
-        lines.append(f"{index}. {title}")
         granted_at = credit.get("grantedAt")
-        if granted_at is not None:
-            lines.append(f"   Granted: {_format_reset_time(granted_at)}")
         expires_at = credit.get("expiresAt")
-        if expires_at is not None:
-            lines.append(f"   Expires: {_format_reset_time(expires_at)}")
-        credit_id = str(credit.get("id") or "").strip()
-        if credit_id:
-            lines.append(f"   ID: {credit_id}")
-    if available > len(credits):
-        lines.append(f"Details shown: {len(credits)} of {available}")
-    if available > 0:
-        if credits:
-            lines.append("Use /credits reset <number> to select one of the resets shown above.")
-        lines.append("Use /credits reset without a selector to let Codex choose the next reset.")
+        scope = str(credit.get("title") or credit.get("resetType") or "Codex rate limits").strip()
+        lines.append(
+            "| "
+            f"{index} | "
+            f"{_markdown_table_cell(_format_reset_time(granted_at) if granted_at is not None else 'Unknown')} | "
+            f"{_markdown_table_cell(_format_reset_time(expires_at) if expires_at is not None else 'Unknown')} | "
+            f"{_markdown_table_cell(scope)} |"
+        )
     return lines
+
+
+def _markdown_table_cell(value: object) -> str:
+    return " ".join(str(value).split()).replace("|", "\\|")
 
 
 def _rate_limit_window_label(label: str, window: dict, *, tz=None) -> str:

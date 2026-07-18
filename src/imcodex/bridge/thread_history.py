@@ -7,24 +7,41 @@ _HISTORY_TEXT_LIMIT = 1200
 def render_thread_history(payload: dict, *, limit: int = 1) -> str:
     turns = _thread_history_items(payload)
     if not turns:
-        return "\n".join(["Thread History", "(none)"])
+        return "## Thread History\n\n_No completed turns._"
     selected = turns[-limit:]
-    lines = [f"Thread History ({len(selected)} turn{'s' if len(selected) != 1 else ''})"]
+    count_label = f"{len(selected)} recent completed turn{'s' if len(selected) != 1 else ''}"
+    lines = ["## Thread History", "", f"_{count_label}_"]
     for index, turn in enumerate(selected, start=1):
         turn_id = str(turn.get("id") or turn.get("turnId") or "").strip()
         status = str(turn.get("status") or "").strip()
-        prefix = _compact_turn_id(turn_id)
+        details = []
         if status:
-            prefix = f"{prefix} {_human_state(status)}".strip()
+            details.append(_human_state(status))
+        details.append(f"`{_compact_turn_id(turn_id).replace('`', '')}`")
         user_text = _turn_user_text(turn)
         agent_text = _turn_agent_text(turn)
-        lines.append(f"\n{index}. {prefix}")
+        if index > 1:
+            lines.extend(["", "---"])
+        lines.extend(["", f"### {index}. {' · '.join(details)}"])
         if user_text:
-            lines.append(f"User: {_compact_history_text(user_text, _HISTORY_TEXT_LIMIT)}")
+            lines.extend(
+                [
+                    "",
+                    "**You**",
+                    _blockquote(_compact_history_text(user_text, _HISTORY_TEXT_LIMIT)),
+                ]
+            )
         if agent_text:
-            lines.append(f"Codex: {_compact_history_text(agent_text, _HISTORY_TEXT_LIMIT)}")
+            lines.extend(
+                [
+                    "",
+                    "**Codex**",
+                    "",
+                    _compact_history_text(agent_text, _HISTORY_TEXT_LIMIT),
+                ]
+            )
         if not user_text and not agent_text:
-            lines.append("(no user or final agent text)")
+            lines.extend(["", "_No user or final Codex message._"])
     return "\n".join(lines)
 
 
@@ -96,10 +113,42 @@ def _item_text(item: dict) -> str:
 
 
 def _compact_history_text(value: str, limit: int) -> str:
-    text = " ".join(value.split())
+    text = value.strip()
     if len(text) <= limit:
         return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+    truncated = text[: max(0, limit - 2)].rstrip()
+    open_fence = _open_markdown_fence(truncated)
+    if open_fence:
+        truncated = f"{truncated}\n{open_fence}"
+    return f"{truncated}\n…"
+
+
+def _open_markdown_fence(value: str) -> str | None:
+    open_fence: str | None = None
+    for line in value.splitlines():
+        candidate = line.lstrip()
+        if len(line) - len(candidate) > 3 or not candidate:
+            continue
+        fence_character = candidate[0]
+        if fence_character not in {"`", "~"}:
+            continue
+        fence_length = len(candidate) - len(candidate.lstrip(fence_character))
+        if fence_length < 3:
+            continue
+        remainder = candidate[fence_length:]
+        if open_fence is None:
+            open_fence = fence_character * fence_length
+        elif (
+            fence_character == open_fence[0]
+            and fence_length >= len(open_fence)
+            and not remainder.strip()
+        ):
+            open_fence = None
+    return open_fence
+
+
+def _blockquote(value: str) -> str:
+    return "\n".join(f"> {line}" if line else ">" for line in value.splitlines())
 
 
 def _human_state(status: str) -> str:

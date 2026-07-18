@@ -244,8 +244,10 @@ decryption) feeds one shared validation and private-spool layer, which submits
 native Codex `localImage` inputs. The App Server and bridge must therefore see
 the same local filesystem. imcodex enables this path for bridge-child stdio,
 the normal local Unix-socket target, and the launcher-verified managed Windows
-App Server. Explicit TCP targets, including loopback, remain text-only because
-an address alone cannot prove filesystem sharing. See
+App Server. A canonical explicit Windows `ws://127.0.0.1:<port>` is also allowed
+when it passes the same project core manifest, listener-owner, live-command, and
+readiness verification; an address or successful connection alone is not enough.
+Other explicit TCP targets remain text-only. See
 [Channel setup and security](docs/channels.md) for failure behavior, spool
 bounds, and remote App Server limitations.
 

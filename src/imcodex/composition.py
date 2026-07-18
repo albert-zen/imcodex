@@ -153,9 +153,6 @@ def build_runtime(
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
         "IMCODEX_NATIVE_THREAD_TOOL_HOST": "1" if settings.native_thread_tool_host else "0",
         MANAGED_APP_SERVER_TARGET_ENV: settings.app_server_managed_target or "",
-        "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET": (
-            settings.app_server_verified_shared_filesystem_target or ""
-        ),
         "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(settings.app_server_reconnect_initial_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(settings.app_server_reconnect_max_delay_s),
         "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(settings.app_server_reconnect_jitter_fraction),
@@ -279,23 +276,7 @@ def _managed_core_shared_filesystem_verifier(
     endpoint: str,
     os_name: str = os.name,
 ):
-    verified_target = settings.app_server_verified_shared_filesystem_target
-    managed_target = settings.app_server_managed_target
-    explicit_process_target = any(
-        str(os.environ.get(key, "")).strip() for key in TARGET_ENVIRONMENT_KEYS
-    )
-    dotenv_imported = set(_environment_key_list(DOTENV_IMPORTED_KEYS_ENV))
-    if (
-        os_name != "nt"
-        or not verified_target
-        or not managed_target
-        or managed_target != endpoint
-        or verified_target != endpoint
-        or explicit_process_target
-        or "IMCODEX_APP_SERVER_URL" in dotenv_imported
-        or MANAGED_APP_SERVER_TARGET_ENV in dotenv_imported
-        or "IMCODEX_APP_SERVER_VERIFIED_SHARED_FILESYSTEM_TARGET" in dotenv_imported
-    ):
+    if os_name != "nt":
         return None
     try:
         parsed = urlsplit(endpoint)
@@ -316,10 +297,11 @@ def _managed_core_shared_filesystem_verifier(
         repo_root=Path.cwd(),
         codex_bin=settings.codex_bin,
     )
+    verified_endpoint = f"ws://127.0.0.1:{port}"
 
     async def verify() -> bool:
         manifest = await asyncio.to_thread(manager.verify, port=port)
-        return manifest.url == endpoint
+        return manifest.url == verified_endpoint
 
     return verify
 

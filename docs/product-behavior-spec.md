@@ -161,12 +161,13 @@ native Codex model remains the authority for whether it can interpret the
 image; imcodex does not select a second vision model or run a fallback OCR
 pipeline. The bridge and App Server must share the staged-file namespace for
 image input. Bridge-child stdio and the normal Unix-socket daemon are the only
-accepted image topologies by transport alone. The default native Windows
-launcher-managed TCP App Server is also accepted after its process identity is
-verified for the current connection epoch. Every explicitly configured TCP
-target, including loopback, returns an explicit image-input limitation while
-text use remains available; imcodex does not infer filesystem sharing from
-`localhost`.
+accepted image topologies by transport alone. A native Windows
+`ws://127.0.0.1:<port>` App Server is also accepted, whether launcher-selected
+or explicitly configured, only after the project core manifest, listener owner,
+live Codex command, and readiness probe are verified for the current connection
+epoch. Other explicit TCP targets remain image-ineligible while text use stays
+available; imcodex does not infer filesystem sharing from reachability or the
+`localhost` spelling alone.
 
 ## Command Surface
 
@@ -369,7 +370,7 @@ Behavior:
 - it is available only while native Codex reports the thread as idle
 - while the thread is running, it returns a status explaining that history can be requested after the current turn completes
 - it reads recent turns from native Codex using `thread/turns/list` or a native thread read that includes turns
-- it renders the user message and final Codex message for each selected turn without replaying commentary, reasoning, tool calls, or raw protocol payloads
+- it renders each selected turn as ordinary Markdown text with a distinct turn heading, quoted user input, and structurally preserved final Codex output; it does not introduce a second message type or replay commentary, reasoning, tool calls, or raw protocol payloads
 - if native history cannot be read, the user gets a friendly status instead of protocol noise
 - if a new turn starts after an idle history read begins, live projection waits until the history response has been delivered so old and new output cannot interleave
 
@@ -434,7 +435,7 @@ Behavior:
 - credits and rate-limit state are read from Codex with `account/rateLimits/read`
 - usage summary is read from Codex with `account/usage/read`
 - available earned resets are read from the native `rateLimitResetCredits` snapshot; the authoritative count may be greater than the returned detail rows
-- reset details preserve native response order and display a one-based number, opaque native ID, grant time, and expiry time; the bridge does not infer a preferred ordering
+- reset details preserve native response order and display only a one-based number, reset/grant time, expiry time, and native scope title (falling back to `resetType`); opaque native IDs remain internal to selection and are not rendered
 - numeric selection refetches the current native snapshot and resolves that number without persisting a local reset list; selection is limited to detail rows actually returned by Codex
 - an opaque ID selector is passed directly as native `creditId`
 - `/credits reset` calls native `account/rateLimitResetCredit/consume` with an idempotency key derived from the stable inbound IM request identity
