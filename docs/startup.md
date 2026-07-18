@@ -265,7 +265,8 @@ connection epoch before accepting another local image path.
 Built-in bridge restart asks the running Windows process to shut down through a
 loopback-only, instance-bound control request. Uvicorn then runs the normal
 lifespan shutdown, flushing bridge state and closing channel/native resources;
-the restart path never falls back to force-terminating the process. Wildcard
+the caller's restart timeout applies to graceful shutdown as well as replacement
+health readiness, and the restart path never falls back to force-terminating the process. Wildcard
 binds are reachable through loopback. If the bridge is bound only to a
 non-loopback interface or is hosted by a third-party ASGI runner without the
 built-in shutdown callback, restart fails closed and the operator must stop it

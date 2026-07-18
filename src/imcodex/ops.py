@@ -106,6 +106,7 @@ class BridgeRestartExecutor:
                 host=current_host,
                 port=current_port,
                 instance_id=current_instance_id,
+                timeout_s=timeout_s,
             )
         process = self.launcher(command=command, cwd=cwd, env=env)
         health = self.health_waiter(host, port, process, timeout_s)
@@ -345,6 +346,7 @@ class BridgeRestartExecutor:
         host: str,
         port: int,
         instance_id: str,
+        timeout_s: float = 30.0,
     ) -> None:
         if os.name == "nt":
             self._request_windows_graceful_shutdown(
@@ -352,6 +354,7 @@ class BridgeRestartExecutor:
                 host=host,
                 port=port,
                 instance_id=instance_id,
+                timeout_s=timeout_s,
             )
             return
         try:
@@ -360,12 +363,14 @@ class BridgeRestartExecutor:
             return
         except OSError as exc:
             raise RuntimeError("Could not request graceful bridge shutdown.") from exc
-        deadline = time.time() + 10
+        deadline = time.time() + timeout_s
         while time.time() < deadline:
             if not self._posix_process_is_running(pid):
                 return
             time.sleep(0.1)
-        raise RuntimeError("The running bridge did not finish graceful shutdown within 10 seconds.")
+        raise RuntimeError(
+            f"The running bridge did not finish graceful shutdown within {timeout_s:.1f} seconds."
+        )
 
     def _request_windows_graceful_shutdown(
         self,
@@ -374,6 +379,7 @@ class BridgeRestartExecutor:
         host: str,
         port: int,
         instance_id: str,
+        timeout_s: float = 30.0,
     ) -> None:
         probe_host = self._probe_host(host)
         if not self._is_loopback_host(probe_host):
@@ -403,13 +409,14 @@ class BridgeRestartExecutor:
             raise RuntimeError(
                 "The running bridge did not accept a graceful Windows shutdown request."
             )
-        deadline = time.time() + 10
+        deadline = time.time() + timeout_s
         while time.time() < deadline:
             if not self._windows_process_is_running(pid):
                 return
             time.sleep(0.1)
         raise RuntimeError(
-            "The running bridge did not finish graceful Windows shutdown within 10 seconds."
+            "The running bridge did not finish graceful Windows shutdown within "
+            f"{timeout_s:.1f} seconds."
         )
 
     @staticmethod

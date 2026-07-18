@@ -771,6 +771,7 @@ def test_windows_stopper_requests_loopback_graceful_shutdown(monkeypatch) -> Non
         host="0.0.0.0",
         port=8000,
         instance_id="instance-44584",
+        timeout_s=15.0,
     )
 
     assert requests == [
@@ -810,6 +811,7 @@ def test_default_windows_stopper_never_force_terminates(monkeypatch) -> None:
         host="0.0.0.0",
         port=8000,
         instance_id="instance-44584",
+        timeout_s=15.0,
     )
 
     assert calls == [
@@ -819,6 +821,7 @@ def test_default_windows_stopper_never_force_terminates(monkeypatch) -> None:
                 "host": "0.0.0.0",
                 "port": 8000,
                 "instance_id": "instance-44584",
+                "timeout_s": 15.0,
             },
         )
     ]
