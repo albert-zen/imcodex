@@ -66,8 +66,8 @@ class ThreadViewMixin:
             if snapshot.thread_id == self.store.get_binding(message.channel_id, message.conversation_id).thread_id:
                 details.append("current")
             lines.append(
-                f"{index}. {self._thread_label(snapshot)} "
-                f"[{self._thread_workspace_label(snapshot)}] "
+                f"{index}. {self._thread_label(snapshot)} · "
+                f"【Workspace: {self._thread_workspace_label(snapshot)}】 · "
                 f"({', '.join(details)})"
             )
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]

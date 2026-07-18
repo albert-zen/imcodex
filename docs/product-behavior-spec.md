@@ -275,7 +275,8 @@ The list should clearly indicate:
 
 - which thread is current
 - each visible thread's label
-- each visible thread's working-directory label, when known
+- each visible thread's working-directory label, when known, rendered as a
+  visually distinct labeled badge rather than concatenated with the thread label
 - enough state to help the user choose
 
 The rendered list should tell the user what to do next:
