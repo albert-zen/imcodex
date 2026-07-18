@@ -196,6 +196,19 @@ QQ attachment URLs remain transport data, never Codex input. The adapter
 accepts only HTTPS URLs on the documented Tencent media host families, refuses
 redirects, and never records signed URLs in normal diagnostics.
 
+QQ group passive replies have a short platform window. Immediate replies reuse
+the inbound `msg_id`; asynchronous output uses it only while that context is
+still fresh. A long-running or restart-recovered result automatically falls
+back to proactive delivery after the passive window expires, so an old reply
+identifier cannot silently strand the final answer.
+The original receive time is carried with cached reply metadata, so replaying a
+cached response cannot bypass that expiry check. Before a durable terminal
+message enters the outbox, QQ pins whether it is proactive or which `msg_id` it
+replies to, then derives a stable `msg_seq` from the bridge delivery ID. If the
+first HTTP acknowledgement is lost, later inbound traffic or passive-window
+expiry cannot change that retry identity, and QQ can deduplicate the repeated
+`msg_id + msg_seq` instead of presenting a second final answer.
+
 The production API base is shown above. Use the sandbox base only for an app
 that is actually configured in the QQ sandbox:
 

@@ -204,7 +204,11 @@ bounded dispatch overflow resets the connection so recovery can reconcile
 native state explicitly. Approvals that cannot be delivered to the IM channel
 within a bounded interval are explicitly rejected rather than leaving Codex
 stuck, and a terminal result produced during a disconnect is recovered from the
-native resume payload. `stdio://` lives and dies with the bridge and never
+native resume payload. A small persistent delivery checkpoint records that a
+bound native turn still owes its IM conversation a terminal result; it is not
+used as active-turn authority. Projected terminal messages enter a durable
+outbox before channel delivery and retry across bridge restarts until the sink
+accepts them. `stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
 rejected because it silently changed which App Server owned a request. Native

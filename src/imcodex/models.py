@@ -33,6 +33,21 @@ class PendingNativeRequestRoute:
 
 
 @dataclass(slots=True)
+class PendingTerminalDelivery:
+    """Minimal IM delivery state for one native turn's terminal result.
+
+    Native Codex remains authoritative for the turn itself.  An empty
+    ``message`` means the bridge is only watching the turn so it can recover a
+    result that completes while the bridge is offline.
+    """
+
+    thread_id: str
+    turn_id: str
+    message: dict[str, Any] | None = None
+    created_at: float = 0.0
+
+
+@dataclass(slots=True)
 class NativeThreadSnapshot:
     thread_id: str
     cwd: str

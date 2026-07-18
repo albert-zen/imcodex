@@ -184,6 +184,8 @@ The persisted bridge state should contain only:
 - IM-only visibility preferences
 - channel-specific reply context if the platform requires it
 - minimal native request routing data
+- minimal terminal-delivery checkpoints and projected outbox payloads needed
+  to finish IM delivery across a bridge restart
 
 ### Runtime-only state
 

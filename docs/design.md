@@ -180,6 +180,17 @@ transport facts, not different ownership modes, and the bridge cannot observe a
 meaningful difference between the old `dedicated-ws` and `shared-ws` labels.
 The target URL is therefore the canonical configuration.
 
+Terminal IM delivery is the one restart boundary that needs a durable bridge
+checkpoint. While a bound native turn is running, the checkpoint stores only
+its thread/turn identity and means “this IM route is still owed a terminal
+result”; it does not say whether the turn is active. Rehydration asks native
+Codex for that status. Once projected, the checkpoint also carries the exact
+outbound message and stable delivery ID until the channel sink accepts it.
+This outbox is delivery state, not a copy of native turn history, and ownership
+moves with the conversation-to-thread binding until projection. Once staged,
+the message keeps its exact IM route and survives native binding cleanup until
+the sink accepts it.
+
 `stdio://` remains an explicit bridge-child compatibility target for tests and
 older installations. It MUST NOT be selected as a fallback after an external
 target fails. Native Windows keeps an external two-process shape through the

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from imcodex.appserver import normalize_appserver_message
 from imcodex.bridge import MessageProjector
+from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
 from imcodex.models import NativeThreadSnapshot
 from imcodex.store import ConversationStore
 
@@ -212,6 +213,44 @@ def test_projector_uses_buffered_deltas_as_terminal_fallback() -> None:
     assert final is not None
     assert final.message_type == "turn_result"
     assert final.text == "hello world"
+
+
+def test_projector_emits_explicit_fallback_for_blank_completed_turn() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector()
+
+    blank_item = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "item_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "   ",
+                },
+            },
+        },
+        store,
+    )
+    terminal = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        },
+        store,
+    )
+
+    assert blank_item is None
+    assert terminal is not None
+    assert terminal.text == EMPTY_COMPLETED_TURN_TEXT
 
 
 def test_protocol_mapping_prefers_native_request_id() -> None:

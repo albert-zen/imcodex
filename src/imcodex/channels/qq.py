@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -45,6 +46,8 @@ MENTION_PREFIX_PATTERN = re.compile(r"^(?:<@!?\w+>\s*)+")
 RECONNECT_INITIAL_DELAY_S = 1.0
 RECONNECT_MAX_DELAY_S = 60.0
 INBOUND_QUEUE_LIMIT = 64
+GROUP_PASSIVE_REPLY_MAX_AGE_S = 270.0
+C2C_PASSIVE_REPLY_MAX_AGE_S = 3300.0
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -242,16 +245,18 @@ class QQChannelAdapter(BaseChannelAdapter):
         self.ensure_outbound_allowed(message)
         token = await self._get_access_token()
         path = self._conversation_path(message.conversation_id)
-        reply_to = (
-            message.metadata.get("reply_to_message_id")
-            or message.metadata.get("message_id")
-            or self._reply_to_message_id(message.conversation_id)
-        )
+        reply_to = self._reply_to_message_id(message)
         sequence_key = reply_to or message.conversation_id
-        body = self._message_body(message.text, msg_seq=self._next_msg_seq(sequence_key), reply_to=reply_to)
+        body = self._message_body(
+            message.text,
+            msg_seq=self._message_sequence(message, sequence_key),
+            reply_to=reply_to,
+        )
         try:
             await self._post_message(path=path, token=token, body=body)
         except httpx.HTTPStatusError as exc:
+            if self._acknowledge_duplicate_delivery(message, exc):
+                return
             if not self._should_retry_plain_text(exc):
                 raise
             logger.warning("QQ markdown message failed; retrying as plain text", exc_info=True)
@@ -261,7 +266,19 @@ class QQChannelAdapter(BaseChannelAdapter):
                 reply_to=reply_to,
                 markdown_enabled=False,
             )
-            await self._post_message(path=path, token=token, body=fallback_body)
+            try:
+                await self._post_message(path=path, token=token, body=fallback_body)
+            except httpx.HTTPStatusError as fallback_exc:
+                if self._acknowledge_duplicate_delivery(message, fallback_exc):
+                    return
+                raise
+
+    def prepare_durable_message(self, message: OutboundMessage) -> None:
+        if message.channel_id != "qq" or message.metadata.get("qq_reply_identity_pinned"):
+            return
+        reply_to = self._reply_to_message_id(message)
+        message.metadata["qq_reply_identity_pinned"] = True
+        message.metadata["qq_reply_to_message_id"] = reply_to
 
     async def _run_forever(self) -> None:
         failures = 0
@@ -641,6 +658,15 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._msg_seq[conversation_id] += 1
         return self._msg_seq[conversation_id]
 
+    def _message_sequence(self, message: OutboundMessage, sequence_key: str) -> int:
+        delivery_id = str(message.metadata.get("delivery_id") or "").strip()
+        if not delivery_id:
+            return self._next_msg_seq(sequence_key)
+        digest = hashlib.sha256(delivery_id.encode("utf-8")).digest()
+        # QQ uses msg_id + msg_seq as its retry identity. Keep the sequence
+        # stable across bridge processes while remaining a positive signed int.
+        return int.from_bytes(digest[:4], "big") % 2_147_483_647 + 1
+
     def _message_body(
         self,
         text: str,
@@ -680,14 +706,79 @@ class QQChannelAdapter(BaseChannelAdapter):
     def _should_retry_plain_text(self, exc: httpx.HTTPStatusError) -> bool:
         return self.markdown_enabled and exc.response.status_code in {400, 403}
 
-    def _reply_to_message_id(self, conversation_id: str) -> str | None:
-        store = getattr(self.middleware, "service", None)
-        store = getattr(store, "store", None)
-        if store is None:
+    @staticmethod
+    def _is_duplicate_message_error(exc: httpx.HTTPStatusError) -> bool:
+        try:
+            payload = exc.response.json()
+        except (TypeError, ValueError):
+            payload = {}
+        message = str(payload.get("message") or payload.get("msg") or "")
+        return "消息被去重" in message or "duplicate" in message.lower()
+
+    def _acknowledge_duplicate_delivery(
+        self,
+        message: OutboundMessage,
+        exc: httpx.HTTPStatusError,
+    ) -> bool:
+        if not message.metadata.get("delivery_id") or not self._is_duplicate_message_error(
+            exc
+        ):
+            return False
+        emit_event(
+            component="channels.qq",
+            event="qq.delivery.duplicate_acknowledged",
+            message="QQ confirmed that this stable delivery was already accepted",
+            channel_id="qq",
+            conversation_id=message.conversation_id,
+            data={"delivery_id": message.metadata.get("delivery_id")},
+        )
+        return True
+
+    def _reply_to_message_id(self, message: OutboundMessage) -> str | None:
+        conversation_id = message.conversation_id
+        if message.metadata.get("qq_reply_identity_pinned"):
+            pinned = str(message.metadata.get("qq_reply_to_message_id") or "").strip()
+            return pinned or None
+        message_id = message.metadata.get("reply_to_message_id") or message.metadata.get(
+            "message_id"
+        )
+        seen_at = message.metadata.get("reply_to_seen_at")
+        if not message_id:
+            context = self._route_context(message)
+            if context is not None:
+                message_id = context.last_inbound_message_id
+                seen_at = context.last_inbound_seen_at
+        elif seen_at is None:
+            context = self._route_context(message)
+            if context is not None and context.last_inbound_message_id == str(message_id):
+                seen_at = context.last_inbound_seen_at
+        if not message_id:
             return None
-        get_binding = getattr(store, "get_binding", None)
-        if not callable(get_binding):
+        try:
+            seen_at = float(seen_at)
+        except (TypeError, ValueError):
+            emit_event(
+                component="channels.qq",
+                event="qq.passive_reply.unverified",
+                message="QQ passive reply age is unknown; using proactive delivery",
+                channel_id="qq",
+                conversation_id=conversation_id,
+            )
             return None
-        binding = get_binding("qq", conversation_id)
-        reply_context = getattr(binding, "reply_context", None) or {}
-        return reply_context.get("last_inbound_message_id") or getattr(binding, "last_inbound_message_id", None)
+        max_age_s = (
+            GROUP_PASSIVE_REPLY_MAX_AGE_S
+            if conversation_id.startswith("group:")
+            else C2C_PASSIVE_REPLY_MAX_AGE_S
+        )
+        age_s = max(0.0, self.clock() - seen_at)
+        if age_s > max_age_s:
+            emit_event(
+                component="channels.qq",
+                event="qq.passive_reply.expired",
+                message="QQ passive reply window expired; using proactive delivery",
+                channel_id="qq",
+                conversation_id=conversation_id,
+                data={"age_s": round(age_s, 3), "max_age_s": max_age_s},
+            )
+            return None
+        return str(message_id)

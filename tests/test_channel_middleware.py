@@ -371,14 +371,16 @@ async def test_channel_middleware_replays_cached_reply_without_reexecuting_servi
     )
 
     with pytest.raises(OSError, match="platform unavailable"):
-        await middleware.handle_inbound(adapter, inbound)
+        await middleware.handle_inbound(adapter, inbound, reply_to_message_id="msg-1")
 
     adapter.fail = False
-    await middleware.handle_inbound(adapter, inbound)
+    await middleware.handle_inbound(adapter, inbound, reply_to_message_id="msg-1")
 
     assert len(service.seen) == 1
     assert [message.message_type for message in adapter.sent] == ["error"]
     assert adapter.sent[0].metadata["delivery_id"].startswith("imcodex:")
+    assert adapter.sent[0].metadata["reply_to_message_id"] == "msg-1"
+    assert adapter.sent[0].metadata["reply_to_seen_at"] == 1.0
     binding = service.store.get_binding("qq", "c2c:user-1")
     assert binding.reply_context["last_inbound_user_id"] == "user-1"
 

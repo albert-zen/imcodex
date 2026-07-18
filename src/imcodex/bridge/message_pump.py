@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from ..models import OutboundMessage
 
 
+EMPTY_COMPLETED_TURN_TEXT = "Codex completed the turn without returning a final message."
+
+
 @dataclass(slots=True)
 class TurnBuffer:
     deltas: list[str] = field(default_factory=list)
@@ -45,6 +48,11 @@ class MessagePump:
     ) -> OutboundMessage | None:
         buffer = self._buffer(thread_id, turn_id)
         if phase == "final_answer":
+            if not text.strip():
+                # Do not mark a blank item as visibly delivered. A later
+                # turn/completed event can still fall back to accumulated
+                # deltas or native recovery.
+                return None
             buffer.final_text = text
             buffer.final_visible = True
             return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
@@ -93,7 +101,12 @@ class MessagePump:
         buffer = self._turns.pop((thread_id, turn_id), None)
         if buffer is None:
             if status == "completed":
-                return None
+                return OutboundMessage(
+                    channel_id="",
+                    conversation_id="",
+                    message_type="turn_result",
+                    text=EMPTY_COMPLETED_TURN_TEXT,
+                )
             text = "Turn interrupted." if status == "interrupted" else "Turn failed."
             return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
         if status == "completed" and buffer.final_visible:
@@ -112,6 +125,8 @@ class MessagePump:
             text = "\n".join(part for part in ("Turn failed.", final_text, changed_files_text) if part)
         if not text and buffer.command_summaries:
             text = "\n".join(buffer.command_summaries)
+        if status == "completed" and not text.strip():
+            text = EMPTY_COMPLETED_TURN_TEXT
         return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
 
     def discard_turn(self, *, thread_id: str, turn_id: str) -> None:
@@ -146,7 +161,7 @@ class MessagePump:
                 final_text = "\n".join(buffer.command_summaries)
         normalized_status = status.strip().lower()
         if normalized_status == "completed":
-            text = final_text
+            text = final_text or EMPTY_COMPLETED_TURN_TEXT
         elif normalized_status == "interrupted":
             text = "\n".join(part for part in ("Turn interrupted.", final_text) if part)
         else:
@@ -156,8 +171,6 @@ class MessagePump:
                 ["Changed files:", *(f"- {path}" for path in dict.fromkeys(changed_files))]
             )
             text = "\n".join(part for part in (text, changes) if part)
-        if not text:
-            return None
         return OutboundMessage(
             channel_id="",
             conversation_id="",

@@ -30,6 +30,126 @@ def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert payload["bindings"][0]["thread_id"] == "thr_1"
     assert "active_turn_id" not in payload["bindings"][0]
     assert payload["pending_requests"] == []
+    assert payload["pending_terminal_deliveries"] == []
+
+
+def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_turn(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+
+    reloaded = ConversationStore(clock=lambda: 8.0, state_path=state_path)
+
+    assert reloaded.get_active_turn("thr_1") is None
+    pending = reloaded.list_pending_terminal_deliveries("thr_1")
+    assert [(item.thread_id, item.turn_id, item.message) for item in pending] == [
+        ("thr_1", "turn_1", None)
+    ]
+
+
+def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.stage_terminal_delivery(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "turn_result",
+            "text": "Recovered result",
+            "request_id": None,
+            "metadata": {"delivery_id": "stable-1"},
+        },
+    )
+
+    reloaded = ConversationStore(clock=lambda: 8.0, state_path=state_path)
+    pending = reloaded.list_pending_terminal_deliveries()
+    assert pending[0].message is not None
+    assert pending[0].message["metadata"]["delivery_id"] == "stable-1"
+
+    reloaded.stage_terminal_delivery(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "different-route",
+            "message_type": "turn_result",
+            "text": "Replayed fallback",
+            "request_id": None,
+            "metadata": {"delivery_id": "different"},
+        },
+    )
+    unchanged = reloaded.list_pending_terminal_deliveries()[0]
+    assert unchanged.message is not None
+    assert unchanged.message["text"] == "Recovered result"
+    assert unchanged.message["conversation_id"] == "conv-1"
+
+    reloaded.complete_terminal_delivery("thr_1", "turn_1")
+    assert ConversationStore(clock=lambda: 9.0, state_path=state_path).list_pending_terminal_deliveries() == []
+
+
+def test_suppressing_projection_does_not_consume_terminal_delivery_checkpoint() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+
+    store.suppress_turn("thr_1", "turn_1")
+
+    assert store.is_turn_suppressed("thr_1", "turn_1") is True
+    assert [item.turn_id for item in store.list_pending_terminal_deliveries()] == ["turn_1"]
+
+
+def test_clearing_stale_binding_preserves_staged_delivery_but_drops_unprojected_watch() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.stage_terminal_delivery(
+        thread_id="thr_1",
+        turn_id="turn_staged",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "turn_result",
+            "text": "Already projected",
+            "request_id": None,
+            "metadata": {},
+        },
+    )
+    store.watch_terminal_delivery("thr_1", "turn_watched")
+
+    store.clear_thread_binding("qq", "conv-1")
+
+    pending = store.list_pending_terminal_deliveries()
+    assert [(item.turn_id, item.message is not None) for item in pending] == [
+        ("turn_staged", True)
+    ]
+
+
+def test_discard_terminal_watch_never_removes_staged_message() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.watch_terminal_delivery("thr_1", "turn_watch")
+    store.stage_terminal_delivery(
+        thread_id="thr_1",
+        turn_id="turn_staged",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "turn_result",
+            "text": "Owed",
+            "request_id": None,
+            "metadata": {},
+        },
+    )
+
+    store.discard_terminal_watch("thr_1", "turn_watch")
+    store.discard_terminal_watch("thr_1", "turn_staged")
+
+    assert [item.turn_id for item in store.list_pending_terminal_deliveries()] == [
+        "turn_staged"
+    ]
 
 
 def test_store_fails_explicitly_on_legacy_or_corrupt_state(tmp_path) -> None:

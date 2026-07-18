@@ -142,6 +142,19 @@ async def test_multiplex_outbound_sink_prefers_exact_channel_adapter() -> None:
     assert fallback.messages == [gateway_message]
 
 
+def test_multiplex_delegates_durable_message_preparation_to_channel() -> None:
+    class Sink:
+        def prepare_durable_message(self, message: OutboundMessage) -> None:
+            message.metadata["platform_identity"] = "pinned"
+
+    sink = MultiplexOutboundSink(channel_sinks={"qq": Sink()})
+    message = OutboundMessage("qq", "group:1", "turn_result", "Done")
+
+    sink.prepare_durable_message(message)
+
+    assert message.metadata["platform_identity"] == "pinned"
+
+
 @pytest.mark.asyncio
 async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> None:
     class Sink:

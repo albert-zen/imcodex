@@ -16,6 +16,7 @@ from .models import (
     NativeAppServerJournalEntry,
     NativeThreadSnapshot,
     PendingNativeRequestRoute,
+    PendingTerminalDelivery,
     ThreadBrowserContext,
 )
 from .store_native_events import (
@@ -23,13 +24,18 @@ from .store_native_events import (
     NativeEventJournalMixin,
 )
 from .store_pending_requests import PendingRequestStoreMixin
+from .store_terminal_deliveries import TerminalDeliveryStoreMixin
 
 
 Clock = Callable[[], float]
 logger = logging.getLogger(__name__)
 
 
-class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
+class ConversationStore(
+    NativeEventJournalMixin,
+    PendingRequestStoreMixin,
+    TerminalDeliveryStoreMixin,
+):
     INBOUND_DEDUP_WINDOW_S = 2.0
     RECENT_INBOUND_MESSAGE_ID_LIMIT = 1024
     RECENT_INBOUND_RESPONSE_LIMIT = 32
@@ -46,6 +52,7 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
         journal_limit = max(1, int(native_event_journal_limit))
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
+        self._pending_terminal_deliveries: dict[tuple[str, str], PendingTerminalDelivery] = {}
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
@@ -101,7 +108,13 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
                 route.channel_id = channel_id
                 route.conversation_id = conversation_id
         binding = self.get_binding(channel_id, conversation_id)
+        previous_thread_id = binding.thread_id
         binding.thread_id = thread_id
+        if previous_thread_id and previous_thread_id != thread_id:
+            self._remove_terminal_deliveries_for_thread(
+                previous_thread_id,
+                preserve_staged=True,
+            )
         self._save()
         return binding
 
@@ -121,6 +134,10 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
     def clear_thread_binding(self, channel_id: str, conversation_id: str) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
+            self._remove_terminal_deliveries_for_thread(
+                binding.thread_id,
+                preserve_staged=True,
+            )
             self._active_turns.pop(binding.thread_id, None)
             self._suppressed_turns = {key for key in self._suppressed_turns if key[0] != binding.thread_id}
         binding.thread_id = None
@@ -213,6 +230,7 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
     def note_active_turn(self, thread_id: str, turn_id: str, status: str) -> None:
         self._active_turns[thread_id] = (turn_id, status)
         self._suppressed_turns.discard((thread_id, turn_id))
+        self.watch_terminal_delivery(thread_id, turn_id)
 
     def complete_turn(self, thread_id: str, turn_id: str, status: str) -> None:
         active = self._active_turns.get(thread_id)
@@ -301,6 +319,7 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
 
         binding = self.get_binding(channel_id, conversation_id)
         binding.reply_context["last_inbound_message_id"] = message_id
+        binding.reply_context["last_inbound_seen_at"] = self.clock()
         if user_id:
             binding.reply_context["last_inbound_user_id"] = user_id
 
@@ -564,6 +583,15 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
                 or binding.reply_context
             ],
             "pending_requests": [],
+            "pending_terminal_deliveries": [
+                {
+                    "thread_id": pending.thread_id,
+                    "turn_id": pending.turn_id,
+                    "message": pending.message,
+                    "created_at": pending.created_at,
+                }
+                for pending in self._pending_terminal_deliveries.values()
+            ],
         }
         with self._revision_lock:
             self._next_state_revision += 1
@@ -638,3 +666,20 @@ class ConversationStore(NativeEventJournalMixin, PendingRequestStoreMixin):
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
+        pending_terminal_deliveries = payload.get("pending_terminal_deliveries", [])
+        if not isinstance(pending_terminal_deliveries, list):
+            raise RuntimeError(f"Invalid pending terminal delivery state: {self.state_path}")
+        for item in pending_terminal_deliveries:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
+            thread_id = str(item.get("thread_id") or "")
+            turn_id = str(item.get("turn_id") or "")
+            message = item.get("message")
+            if not thread_id or not turn_id or (message is not None and not isinstance(message, dict)):
+                raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
+            self._pending_terminal_deliveries[(thread_id, turn_id)] = PendingTerminalDelivery(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                message=copy.deepcopy(message),
+                created_at=float(item.get("created_at") or 0.0),
+            )

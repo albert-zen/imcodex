@@ -319,6 +319,9 @@ If the selected thread is already running:
 - history that predates the switch is not replayed
 - native messages produced while the switch is being established are buffered only until the switch notice is delivered, then projected in their original order
 - later visible native messages continue to the newly bound IM conversation without waiting for another inbound IM message
+- if the selected thread was started in Codex Desktop and is still running,
+  its later commentary, requests, and terminal result follow the same live
+  projection path after the switch
 
 If the selected thread is idle and history was requested:
 
@@ -348,6 +351,21 @@ native request is still pending, so an approval or answer completed after an
 ambiguous platform send is not presented again as a stale request. The final
 timeout path performs the same pending check before returning a delivery error
 to Codex.
+
+Terminal results use a separate durable delivery checkpoint. The checkpoint
+records only that a bound native thread/turn still owes the current IM route a
+terminal result; it is never consulted as native active-turn truth. Once the
+result is projected, the exact outbound message and stable delivery ID remain
+in an outbox until a channel sink accepts delivery. Rehydration recovers a
+watched turn that completed while the bridge process was stopped, and a staged
+message survives another restart without re-running the native turn.
+After staging, native thread cleanup or conversation rebinding does not discard
+or reroute that exact message; it remains owed to the IM route captured at
+projection time.
+Recovery remains degraded while any staged terminal message is still pending.
+If a completed native turn contains no final text or usable buffered output,
+the bridge sends an explicit empty-result notice instead of acknowledging a
+blank channel no-op as successful delivery.
 
 For the generic webhook, the immediate command response is always available in
 the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later

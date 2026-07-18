@@ -438,8 +438,13 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
 - cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
-- when a cached active turn completed during a disconnect, recovery SHOULD project its terminal native result, MUST use a stable thread/turn delivery identity to deduplicate queued native notifications, and MUST discard any orphaned message-pump buffer
-- a recovered terminal result MUST remain retryable until its IM sink confirms delivery; a transient sink failure MUST NOT consume the only recovery marker
+- for every bound native turn, the bridge MAY persist a minimal terminal-delivery checkpoint, but MUST NOT use that checkpoint as active-turn authority; native resume remains the source of truth for whether the turn is active or terminal
+- when a watched turn completes during a disconnect or bridge process restart, recovery SHOULD project its terminal native result, MUST use a stable thread/turn delivery identity to deduplicate queued native notifications, and MUST discard any orphaned message-pump buffer
+- every projected terminal result MUST enter a durable delivery outbox before channel delivery and MUST remain retryable until its IM sink confirms delivery; a transient sink failure or bridge restart MUST NOT consume the only recovery marker
+- once a terminal message is staged, replayed native notifications, interruption cleanup, stale native binding cleanup, and conversation rebinding MUST NOT overwrite, remove, or reroute it before sink acceptance
+- delivery-outbox draining MUST run for every App Server connection mode, including `stdio://`; native thread rehydration may remain mode-dependent
+- recovery health MUST remain degraded while a staged terminal delivery is pending, even if the native App Server connection is healthy
+- one `IMCODEX_DATA_DIR` MUST have one bridge-process owner; overlapping bridge processes sharing it are unsupported, and managed restart MUST remain stop-then-start
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
 

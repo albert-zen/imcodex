@@ -34,6 +34,7 @@ from .settings import (
     render_rate_limit_reset_result,
     render_reasoning_effort,
 )
+from .terminal_delivery import TerminalDeliveryMixin
 from .thread_handoff import ThreadHandoffMixin
 from .thread_views import ThreadViewMixin
 
@@ -62,7 +63,12 @@ _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT = (
 )
 
 
-class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
+class BridgeService(
+    TerminalDeliveryMixin,
+    ThreadHandoffMixin,
+    ThreadViewMixin,
+    BridgeRenderingMixin,
+):
     def __init__(
         self,
         *,
@@ -92,6 +98,7 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
         # queued terminal notifications and a concurrent resume response.
         self._pending_recovered_turns: dict[tuple[str, str], dict] = {}
         self._recent_terminal_deliveries: dict[tuple[str, str], None] = {}
+        self._init_terminal_delivery()
         self.native_requests = NativeRequestPolicy(
             store=store,
             backend=backend,
@@ -99,6 +106,7 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
         )
 
     async def close(self) -> None:
+        await self._close_terminal_delivery()
         await self._close_thread_handoff()
         await self.native_requests.close()
 
@@ -672,17 +680,24 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
         event = normalize_appserver_message(notification)
         if event.kind in _TERMINAL_PROJECTION_EVENT_KINDS:
             async with self._terminal_projection_lock:
-                message = (
-                    replay_message
-                    if replay_prepared
-                    else self.projector.project_notification(notification, self.store)
-                )
+                event_terminal_key = self._event_terminal_key(event)
+                staged_terminal = self._terminal_delivery_is_staged(event_terminal_key)
+                if staged_terminal and event_terminal_key is not None:
+                    if not replay_prepared:
+                        self.projector.project_notification(notification, self.store)
+                    self.projector.discard_recovered_turn(
+                        thread_id=event_terminal_key[0],
+                        turn_id=event_terminal_key[1],
+                    )
+                    message = None
+                else:
+                    message = (
+                        replay_message
+                        if replay_prepared
+                        else self.projector.project_notification(notification, self.store)
+                    )
                 terminal_key = self._terminal_delivery_key(event, message)
-                if (
-                    not replay_prepared
-                    and terminal_key is not None
-                    and terminal_key in self._recent_terminal_deliveries
-                ):
+                if terminal_key is not None and terminal_key in self._recent_terminal_deliveries:
                     self.projector.discard_recovered_turn(
                         thread_id=terminal_key[0],
                         turn_id=terminal_key[1],
@@ -698,10 +713,14 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                     if callable(capture_projection):
                         capture_projection(message)
                 if terminal_key is not None and message is not None:
-                    outbound = await self._emit_required(message)
+                    outbound, delivered = await self._deliver_terminal_message(
+                        terminal_key,
+                        message,
+                    )
                 else:
                     outbound = await self._emit(message)
-                if terminal_key is not None and message is not None:
+                    delivered = False
+                if terminal_key is not None and message is not None and delivered:
                     self._remember_terminal_delivery(terminal_key)
         else:
             message = (
@@ -898,6 +917,17 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
             data={"connection_epoch": connection_epoch},
         )
         if not self.backend.prefers_native_recovery():
+            await self._deliver_pending_terminal_once()
+            delivery_pending = sum(
+                pending.message is not None
+                for pending in self.store.list_pending_terminal_deliveries()
+            )
+            if delivery_pending:
+                self._schedule_terminal_delivery_retry()
+                return {
+                    "status": "degraded",
+                    "rehydration": {"deliveryPending": delivery_pending},
+                }
             return None
         async with self._rehydration_lock:
             result = await self.backend.rehydrate_bound_threads()
@@ -940,8 +970,14 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                         store=self.store,
                     )
                     if message is None:
-                        self._pending_recovered_turns.pop(terminal_key, None)
-                        self._remember_terminal_delivery(terminal_key)
+                        delivery_failed += 1
+                        emit_event(
+                            component="bridge",
+                            event="bridge.thread_rehydrate.empty_terminal",
+                            level="ERROR",
+                            message="Recovered terminal turn did not produce a deliverable message",
+                            data={"thread_id": thread_id, "turn_id": turn_id},
+                        )
                         continue
                     self._attach_delivery_id(
                         message,
@@ -952,12 +988,13 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                         namespace="terminal",
                         terminal_key=terminal_key,
                     )
-                    await asyncio.wait_for(
-                        self._emit_required(message),
+                    _, delivered = await asyncio.wait_for(
+                        self._deliver_terminal_message(terminal_key, message),
                         timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
                     )
                     self._pending_recovered_turns.pop(terminal_key, None)
-                    self._remember_terminal_delivery(terminal_key)
+                    if delivered:
+                        self._remember_terminal_delivery(terminal_key)
             except Exception as exc:
                 delivery_failed += 1
                 emit_event(
@@ -973,10 +1010,19 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
                 )
         if delivery_failed:
             summary["deliveryFailed"] = delivery_failed
+        await self._deliver_pending_terminal_once()
+        delivery_pending = sum(
+            pending.message is not None
+            for pending in self.store.list_pending_terminal_deliveries()
+        )
+        if delivery_pending:
+            summary["deliveryPending"] = delivery_pending
+            self._schedule_terminal_delivery_retry()
         degraded = (
             summary.get("failed", 0)
             + summary.get("unverified", 0)
             + summary.get("deliveryFailed", 0)
+            + summary.get("deliveryPending", 0)
         )
         return {
             "status": "degraded" if degraded else "connected",
@@ -1024,12 +1070,24 @@ class BridgeService(ThreadHandoffMixin, ThreadViewMixin, BridgeRenderingMixin):
     def _terminal_delivery_key(self, event, message: OutboundMessage | None) -> tuple[str, str] | None:
         if message is None or message.message_type != "turn_result":
             return None
+        return self._event_terminal_key(event)
+
+    @staticmethod
+    def _event_terminal_key(event) -> tuple[str, str] | None:
         turn_id = event.turn_id
         if not turn_id and isinstance(event.payload.get("turn"), dict):
             turn_id = str(event.payload["turn"].get("id") or event.payload["turn"].get("turnId") or "")
         if not event.thread_id or not turn_id:
             return None
         return event.thread_id, turn_id
+
+    def _terminal_delivery_is_staged(self, terminal_key: tuple[str, str] | None) -> bool:
+        if terminal_key is None:
+            return False
+        return any(
+            pending.turn_id == terminal_key[1] and pending.message is not None
+            for pending in self.store.list_pending_terminal_deliveries(terminal_key[0])
+        )
 
     def _attach_delivery_id(
         self,

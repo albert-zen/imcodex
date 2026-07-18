@@ -101,6 +101,12 @@ by `start.sh`; native Windows checks only the `app-server` command used by its
 detached TCP launcher. The HTTP port check uses the configured
 `IMCODEX_HTTP_HOST` bind address rather than assuming loopback.
 
+Run only one bridge process for a given `IMCODEX_DATA_DIR`. A normal managed
+restart stops the old bridge before starting its replacement. Sharing one data
+directory between overlapping bridge processes, even on different HTTP ports,
+is unsupported because channel bindings and the terminal-delivery outbox have
+one bridge owner.
+
 ### Configuration console
 
 Once IMCodex is running on the default port, open:
@@ -228,7 +234,13 @@ size is not capped by the bridge because native `thread/resume` may return a
 legitimate full thread in one response. Rehydration clears cached active-turn
 authority before resume, reports an active thread without an active turn as
 unverified, and projects a terminal turn result that completed while the
-transport was disconnected.
+transport or bridge process was offline. Active-turn state remains runtime-only;
+the persisted state contains only a terminal-delivery checkpoint and, after
+projection, the pending outbound message. Terminal delivery uses a stable
+thread/turn identity and retries from that outbox until the channel sink accepts
+it or the service is intentionally closed. Outbox draining runs after every
+connection becomes ready, including `stdio://`; only native thread rehydration
+depends on using a persistent external App Server.
 
 ### Native Windows: independent TCP App Server + bridge
 

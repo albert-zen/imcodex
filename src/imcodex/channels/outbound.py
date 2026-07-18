@@ -118,11 +118,28 @@ class MultiplexOutboundSink:
             return False
         return self.default_sink is not None
 
-    async def send_message(self, message) -> None:
+    def prepare_durable_message(self, message) -> None:
         sink = self.channel_sinks.get(message.channel_id)
         if sink is None and message.channel_id in BUILTIN_CHANNEL_IDS:
-            raise RuntimeError(f"Built-in channel {message.channel_id!r} is not enabled; refusing fallback delivery.")
+            return
         sink = sink or self.default_sink
         if sink is None:
-            raise RuntimeError(f"No outbound sink is configured for channel {message.channel_id!r}.")
+            return
+        prepare = getattr(sink, "prepare_durable_message", None)
+        if callable(prepare):
+            prepare(message)
+
+    async def send_message(self, message) -> None:
+        sink = self._sink_for(message.channel_id)
         await sink.send_message(message)
+
+    def _sink_for(self, channel_id: str):
+        sink = self.channel_sinks.get(channel_id)
+        if sink is None and channel_id in BUILTIN_CHANNEL_IDS:
+            raise RuntimeError(
+                f"Built-in channel {channel_id!r} is not enabled; refusing fallback delivery."
+            )
+        sink = sink or self.default_sink
+        if sink is None:
+            raise RuntimeError(f"No outbound sink is configured for channel {channel_id!r}.")
+        return sink

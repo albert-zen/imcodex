@@ -745,7 +745,36 @@ async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(
 
     assert interrupted is False
     assert store.get_active_turn("thr_old") is None
+    assert store.list_pending_terminal_deliveries() == []
     assert client.interrupt_calls == [{"thread_id": "thr_old", "turn_id": "turn_1"}]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_never_consumes_already_staged_terminal_delivery() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_old")
+    store.note_active_turn("thr_old", "turn_1", "inProgress")
+    store.stage_terminal_delivery(
+        thread_id="thr_old",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "turn_result",
+            "text": "Final result already projected",
+            "request_id": None,
+            "metadata": {"delivery_id": "stable-1"},
+        },
+    )
+    client = InterruptStaleClient("no active turn")
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    await backend.interrupt_turn("thr_old", "turn_1")
+
+    pending = store.list_pending_terminal_deliveries()
+    assert len(pending) == 1
+    assert pending[0].message is not None
+    assert pending[0].message["text"] == "Final result already projected"
 
 
 @pytest.mark.asyncio
@@ -814,6 +843,32 @@ async def test_rehydrate_bound_threads_returns_terminal_turn_completed_during_di
 
 
 @pytest.mark.asyncio
+async def test_rehydrate_recovers_watched_turn_after_full_process_restart(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    before_restart = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    before_restart.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
+    before_restart.note_active_turn("thr_1", "turn_1", "inProgress")
+    await before_restart.flush_pending_writes()
+
+    store = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    terminal_turn = {
+        "id": "turn_1",
+        "status": "completed",
+        "items": [{"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}],
+    }
+    client = RehydrateClient(status="idle", turns=[terminal_turn])
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert store.get_active_turn("thr_1") is None
+    assert [item.turn_id for item in store.list_pending_terminal_deliveries("thr_1")] == [
+        "turn_1"
+    ]
+    assert result["recoveredTurns"] == [{"threadId": "thr_1", "turn": terminal_turn}]
+
+
+@pytest.mark.asyncio
 async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_binding() -> None:
     class FailingRehydrateClient:
         async def resume_thread(self, **_params):
@@ -837,6 +892,38 @@ async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_bindi
         "recoveredTurns": [],
         "discardedTurns": [{"threadId": "thr_1", "turnId": "turn_1"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_stale_native_thread_keeps_already_staged_terminal_delivery() -> None:
+    class StaleThreadClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError("unknown thread")
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_stale")
+    store.stage_terminal_delivery(
+        thread_id="thr_stale",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "turn_result",
+            "text": "Still deliver this",
+            "request_id": None,
+            "metadata": {"delivery_id": "stable-1"},
+        },
+    )
+    backend = CodexBackend(
+        client=StaleThreadClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    await backend.rehydrate_bound_threads()
+
+    assert store.get_binding("qq", "conv-1").thread_id is None
+    assert [item.turn_id for item in store.list_pending_terminal_deliveries()] == ["turn_1"]
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ ACCESS_DENIAL_REPORT_WINDOW_S = 60.0
 class ChannelRouteContext:
     admitted_user_id: str = ""
     last_inbound_message_id: str = ""
+    last_inbound_seen_at: float | None = None
 
 
 class _AccessDenialLimiter:

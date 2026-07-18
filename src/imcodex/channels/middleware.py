@@ -161,8 +161,12 @@ class UnifiedChannelMiddleware:
                     "delivery_id": self._delivery_id(inbound, 0, namespace="expired-response"),
                     "cached_response_expired": True,
                 }
-                if reply_to_message_id:
-                    metadata["reply_to_message_id"] = reply_to_message_id
+                self._attach_reply_metadata(
+                    metadata,
+                    channel_id=inbound.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    reply_to_message_id=reply_to_message_id,
+                )
                 replay = [
                     OutboundMessage(
                         channel_id=adapter.channel_id,
@@ -195,8 +199,12 @@ class UnifiedChannelMiddleware:
                     type(exc).__name__,
                 )
                 metadata = {}
-                if reply_to_message_id:
-                    metadata["reply_to_message_id"] = reply_to_message_id
+                self._attach_reply_metadata(
+                    metadata,
+                    channel_id=inbound.channel_id,
+                    conversation_id=inbound.conversation_id,
+                    reply_to_message_id=reply_to_message_id,
+                )
                 metadata["trace_id"] = trace_id
                 error_message = OutboundMessage(
                     channel_id=adapter.channel_id,
@@ -214,8 +222,12 @@ class UnifiedChannelMiddleware:
                 continue
             message.metadata = self._json_safe_mapping(message.metadata)
             message.metadata.setdefault("trace_id", trace_id)
-            if reply_to_message_id:
-                message.metadata.setdefault("reply_to_message_id", reply_to_message_id)
+            self._attach_reply_metadata(
+                message.metadata,
+                channel_id=inbound.channel_id,
+                conversation_id=inbound.conversation_id,
+                reply_to_message_id=reply_to_message_id,
+            )
             prepared.append(message)
         for index, message in enumerate(prepared):
             if inbound.message_id:
@@ -266,7 +278,34 @@ class UnifiedChannelMiddleware:
         return ChannelRouteContext(
             admitted_user_id=str(reply_context.get("last_inbound_user_id") or ""),
             last_inbound_message_id=str(reply_context.get("last_inbound_message_id") or ""),
+            last_inbound_seen_at=self._finite_float(reply_context.get("last_inbound_seen_at")),
         )
+
+    def _attach_reply_metadata(
+        self,
+        metadata: dict[str, object],
+        *,
+        channel_id: str,
+        conversation_id: str,
+        reply_to_message_id: str | None,
+    ) -> None:
+        if not reply_to_message_id:
+            return
+        metadata.setdefault("reply_to_message_id", reply_to_message_id)
+        context = self.get_route_context(channel_id, conversation_id)
+        if (
+            context.last_inbound_message_id == reply_to_message_id
+            and context.last_inbound_seen_at is not None
+        ):
+            metadata.setdefault("reply_to_seen_at", context.last_inbound_seen_at)
+
+    @staticmethod
+    def _finite_float(value: object) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
 
     def _note_inbound_message(self, inbound: InboundMessage) -> None:
         store = getattr(self.service, "store", None)

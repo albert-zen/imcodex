@@ -397,10 +397,12 @@ class CodexThreadBackendMixin:
             if not self._is_stale_turn_error(exc):
                 raise
             self.store.suppress_turn(thread_id, turn_id)
+            self.store.discard_terminal_watch(thread_id, turn_id)
             self.store.clear_active_turn(thread_id)
             self.store.remove_pending_requests_for_turn(thread_id, turn_id)
             return False
         self.store.suppress_turn(thread_id, turn_id)
+        self.store.discard_terminal_watch(thread_id, turn_id)
         self.store.clear_active_turn(thread_id)
         self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
@@ -413,6 +415,10 @@ class CodexThreadBackendMixin:
             if not binding.thread_id:
                 continue
             summary["total"] += 1
+            watched_deliveries = {
+                pending.turn_id: pending
+                for pending in self.store.list_pending_terminal_deliveries(binding.thread_id)
+            }
             cached_active = self.store.get_active_turn(binding.thread_id)
             if cached_active is not None:
                 # Cached turn state is not authoritative across a transport
@@ -545,30 +551,44 @@ class CodexThreadBackendMixin:
                         {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
                     )
                 self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
-            elif cached_active is not None:
-                terminal_turn = self._turn_by_id(payload, cached_active[0])
+            recovery_turn_ids = set(watched_deliveries)
+            if cached_active is not None:
+                recovery_turn_ids.add(cached_active[0])
+            if native_active is not None:
+                recovery_turn_ids.discard(native_active[0])
+            recovery_unverified = False
+            for recovery_turn_id in recovery_turn_ids:
+                pending_delivery = watched_deliveries.get(recovery_turn_id)
+                if pending_delivery is not None and pending_delivery.message is not None:
+                    # The native result was already projected before the
+                    # process stopped. The delivery outbox owns its retry.
+                    continue
+                terminal_turn = self._turn_by_id(payload, recovery_turn_id)
                 if terminal_turn is None or not self._turn_is_terminal(terminal_turn):
                     summary["unverified"] += 1
+                    recovery_unverified = True
                     discarded_turns.append(
-                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
+                        {"threadId": snapshot.thread_id, "turnId": recovery_turn_id}
                     )
                     emit_event(
                         component="appserver.backend",
-                        event="bridge.thread_rehydrate.cached_turn_unverified",
+                        event="bridge.thread_rehydrate.delivery_turn_unverified",
                         level="WARNING",
-                        message="Native resume did not verify the cached active turn",
+                        message="Native resume did not verify a pending terminal delivery turn",
                         data={
                             "channel_id": binding.channel_id,
                             "conversation_id": binding.conversation_id,
                             "thread_id": snapshot.thread_id,
-                            "turn_id": cached_active[0],
+                            "turn_id": recovery_turn_id,
                         },
                     )
                     continue
-                self.store.suppress_turn(snapshot.thread_id, cached_active[0])
+                self.store.suppress_turn(snapshot.thread_id, recovery_turn_id)
                 recovered_turns.append(
                     {"threadId": snapshot.thread_id, "turn": terminal_turn}
                 )
+            if recovery_unverified:
+                continue
             emit_event(
                 component="appserver.backend",
                 event="bridge.thread_rehydrate.succeeded",
