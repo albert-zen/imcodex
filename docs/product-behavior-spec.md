@@ -169,6 +169,31 @@ epoch. Other explicit TCP targets remain image-ineligible while text use stays
 available; imcodex does not infer filesystem sharing from reachability or the
 `localhost` spelling alone.
 
+## Quoted Messages
+
+When an IM platform includes a native quoted-message snapshot in an inbound
+event, imcodex preserves that context in the same Codex user turn. The user
+does not need to copy the original message or use a bridge command.
+
+Product behavior:
+
+- the native quote is presented to Codex as a clearly bounded quoted-message
+  block followed by the user's current message
+- quoted text is preserved, while quoted image, voice, video, and file items
+  are represented by concise media labels and available platform transcripts
+- when the platform reports a quote but omits its original snapshot, Codex is
+  still told that the quoted content is unavailable rather than silently
+  receiving only the new text
+- QQ supports this behavior for native C2C and group quote events using the
+  snapshot already delivered by QQ
+- quote handling does not create a bridge-owned conversation history or fetch
+  an unrelated platform history API; native Codex remains the conversation
+  authority
+
+Native Codex currently has no structured quote input type. The quoted block is
+therefore a thin text translation inside the ordinary native user input, not a
+second message or thread model.
+
 ## Command Surface
 
 ### `/help`

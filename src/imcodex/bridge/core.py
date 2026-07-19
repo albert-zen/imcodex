@@ -14,6 +14,7 @@ from ..appserver import (
 from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
+from .inbound import render_inbound_input
 from .native_events import (
     clamp_native_events_limit,
     record_native_appserver_journal,
@@ -149,6 +150,10 @@ class BridgeService(
                 "text_sha256": text_sha256(message.text),
                 "attachment_count": len(message.attachments),
                 "attachment_kinds": [attachment.kind for attachment in message.attachments],
+                "has_quote": message.quote is not None,
+                "quoted_attachment_count": (
+                    len(message.quote.attachments) if message.quote is not None else 0
+                ),
             },
         )
         try:
@@ -218,7 +223,7 @@ class BridgeService(
             submission = await self.backend.submit_input(
                 message.channel_id,
                 message.conversation_id,
-                message.text,
+                render_inbound_input(message),
                 message.attachments,
             )
         except StaleThreadBindingError as exc:

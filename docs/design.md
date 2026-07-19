@@ -40,6 +40,14 @@ static JPEG, PNG, and WebP attachments into the same inbound contract and hand t
 native Codex as `localImage` inputs; no transport adapter owns image
 understanding.
 
+Platform-native replies use the same boundary. An adapter may normalize the
+quoted snapshot delivered with the current event into a shared inbound quote
+shape, but it does not own conversation history. Because native Codex exposes
+no structured quote user-input item, the bridge renders that snapshot as one
+bounded quoted-message text block before the current message. Platform media
+URLs are reduced to non-secret type/name/transcript summaries and are never
+retained as quote state.
+
 Remote adapters share one optional access-restriction model. Platform delivery
 is the default scope; stable user and conversation IDs can narrow that scope,
 and `any`/`all` selects how multiple active dimensions combine. This is an IM

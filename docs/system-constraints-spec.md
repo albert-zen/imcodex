@@ -66,6 +66,12 @@ It MUST:
 - stage accepted media with private permissions in a bounded spool and return a
   terminal, user-visible failure for unsupported or permanently invalid media
   instead of retrying it forever or silently dropping it
+- normalize a platform-native quoted-message snapshot from the current inbound
+  event into the shared quote shape, preserving the fact that a quote existed
+  even when its original content is unavailable
+- keep signed quoted-media URLs out of bridge state and diagnostics; quoted
+  media that is not admitted as native input may be represented only by a
+  bounded type, filename, or platform transcript summary
 
 It MUST NOT:
 
@@ -74,6 +80,7 @@ It MUST NOT:
 - own permission truth
 - interpret Codex protocol details
 - implement approval logic
+- create a second conversation-history store merely to resolve quoted messages
 
 ### 2. Bridge
 
@@ -86,6 +93,8 @@ It MUST:
 - translate IM commands into native Codex operations
 - receive normalized Codex-side events and classify them for display
 - apply visibility rules before rendering outbound IM messages
+- translate a normalized quoted-message snapshot into a clearly bounded part
+  of the current native user input while native Codex has no quote input type
 
 It MUST NOT:
 

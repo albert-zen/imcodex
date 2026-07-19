@@ -1268,6 +1268,121 @@ def test_qq_adapter_normalizes_group_mention_message() -> None:
     assert inbound.text == "inspect repo"
 
 
+def test_qq_adapter_normalizes_native_quoted_message_context() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+    )
+
+    inbound = adapter.parse_inbound_event(
+        "C2C_MESSAGE_CREATE",
+        {
+            "id": "msg-2",
+            "content": "那这个结论呢？",
+            "author": {"user_openid": "user-1"},
+            "message_type": 103,
+            "message_scene": {"ext": ["ref_msg_idx=stale-ref", "msg_idx=current-ref"]},
+            "msg_elements": [
+                {
+                    "msg_idx": "quoted-ref",
+                    "content": "先按方案 A 上线",
+                    "attachments": [
+                        {
+                            "content_type": "image/png",
+                            "url": "https://signed.example.invalid/secret",
+                            "filename": "plan.png",
+                        },
+                        {
+                            "content_type": "audio/amr",
+                            "url": "https://signed.example.invalid/voice",
+                            "asr_refer_text": "这是语音里的结论",
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert inbound is not None
+    assert inbound.text == "那这个结论呢？"
+    assert inbound.quote is not None
+    assert inbound.quote.reference_id == "quoted-ref"
+    assert inbound.quote.text == "先按方案 A 上线"
+    assert [(item.kind, item.filename, item.transcript) for item in inbound.quote.attachments] == [
+        ("image", "plan.png", None),
+        ("voice", None, "这是语音里的结论"),
+    ]
+    assert "signed.example" not in repr(inbound.quote)
+
+
+def test_qq_adapter_preserves_quote_signal_when_original_content_is_unavailable() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+    )
+
+    inbound = adapter.parse_inbound_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        {
+            "id": "msg-3",
+            "content": "<@123> 继续",
+            "group_openid": "group-1",
+            "author": {"member_openid": "user-1"},
+            "message_type": "103",
+            "message_scene": {"ext": ["ref_msg_idx=quoted-ref"]},
+        },
+    )
+
+    assert inbound is not None
+    assert inbound.quote is not None
+    assert inbound.quote.reference_id == "quoted-ref"
+    assert inbound.quote.text == ""
+
+
+def test_qq_adapter_does_not_stringify_untrusted_quote_metadata() -> None:
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+    )
+
+    inbound = adapter.parse_inbound_event(
+        "C2C_MESSAGE_CREATE",
+        {
+            "id": "msg-4",
+            "content": "继续",
+            "author": {"user_openid": "user-1"},
+            "message_type": 103,
+            "msg_elements": [
+                {
+                    "msg_idx": {"url": "https://signed.example.invalid/reference"},
+                    "content": {"url": "https://signed.example.invalid/content"},
+                    "attachments": [
+                        {
+                            "content_type": "image/png",
+                            "filename": {"url": "https://signed.example.invalid/file"},
+                            "asr_refer_text": {"url": "https://signed.example.invalid/asr"},
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert inbound is not None
+    assert inbound.quote is not None
+    assert inbound.quote.reference_id is None
+    assert inbound.quote.text == ""
+    assert inbound.quote.attachments[0].filename is None
+    assert inbound.quote.attachments[0].transcript is None
+    assert "signed.example" not in repr(inbound.quote)
+
+
 @pytest.mark.asyncio
 async def test_qq_adapter_sends_markdown_messages_by_default() -> None:
     requests: list[httpx.Request] = []

@@ -8,13 +8,13 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import websockets
 
 from ..config import validate_http_endpoint
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, InboundQuote, InboundQuoteAttachment, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .base import BaseChannelAdapter
@@ -48,6 +48,12 @@ RECONNECT_MAX_DELAY_S = 60.0
 INBOUND_QUEUE_LIMIT = 64
 GROUP_PASSIVE_REPLY_MAX_AGE_S = 270.0
 C2C_PASSIVE_REPLY_MAX_AGE_S = 3300.0
+QQ_QUOTE_MESSAGE_TYPE = 103
+QQ_QUOTE_CONTENT_LIMIT = 20_000
+QQ_QUOTE_ATTACHMENT_LIMIT = 8
+QQ_QUOTE_FILENAME_LIMIT = 256
+QQ_QUOTE_TRANSCRIPT_LIMIT = 4_000
+QQ_QUOTE_REFERENCE_LIMIT = 512
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -56,6 +62,99 @@ def _config_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_qq_quote(payload: dict[str, Any]) -> InboundQuote | None:
+    """Normalize QQ's native quote payload without retaining signed media URLs."""
+
+    message_type = payload.get("message_type")
+    is_quote_message = str(message_type).strip() == str(QQ_QUOTE_MESSAGE_TYPE)
+    reference_id = _qq_reference_id(payload, is_quote_message=is_quote_message)
+    if not is_quote_message and reference_id is None:
+        return None
+
+    elements = payload.get("msg_elements")
+    element = elements[0] if isinstance(elements, list) and elements else None
+    if not isinstance(element, dict):
+        return InboundQuote(reference_id=reference_id)
+
+    attachments: list[InboundQuoteAttachment] = []
+    raw_attachments = element.get("attachments")
+    if isinstance(raw_attachments, list):
+        for item in raw_attachments[:QQ_QUOTE_ATTACHMENT_LIMIT]:
+            if not isinstance(item, dict):
+                continue
+            content_type = str(item.get("content_type") or "").strip().casefold()
+            filename = _bounded_qq_text(item.get("filename"), QQ_QUOTE_FILENAME_LIMIT) or None
+            transcript = (
+                _bounded_qq_text(item.get("asr_refer_text"), QQ_QUOTE_TRANSCRIPT_LIMIT) or None
+            )
+            attachments.append(
+                InboundQuoteAttachment(
+                    kind=_qq_quote_attachment_kind(content_type),
+                    filename=filename,
+                    transcript=transcript,
+                )
+            )
+
+    return InboundQuote(
+        reference_id=reference_id,
+        text=_bounded_qq_text(element.get("content"), QQ_QUOTE_CONTENT_LIMIT),
+        attachments=tuple(attachments),
+    )
+
+
+def _qq_reference_id(payload: dict[str, Any], *, is_quote_message: bool) -> str | None:
+    reference_id: str | None = None
+    scene = payload.get("message_scene")
+    ext = scene.get("ext") if isinstance(scene, dict) else None
+    if isinstance(ext, list):
+        for entry in ext:
+            if not isinstance(entry, str):
+                continue
+            key, separator, value = entry.partition("=")
+            if separator and key.strip() == "ref_msg_idx" and value.strip():
+                reference_id = _bounded_qq_text(value, QQ_QUOTE_REFERENCE_LIMIT)
+
+    if is_quote_message:
+        elements = payload.get("msg_elements")
+        first = elements[0] if isinstance(elements, list) and elements else None
+        element_reference = (
+            _bounded_qq_text(first.get("msg_idx"), QQ_QUOTE_REFERENCE_LIMIT)
+            if isinstance(first, dict)
+            else ""
+        )
+        if element_reference:
+            reference_id = element_reference
+    return reference_id
+
+
+def _bounded_qq_text(value: object, limit: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1]}…"
+
+
+def _qq_quote_attachment_kind(
+    content_type: str,
+) -> Literal["image", "voice", "video", "file", "attachment"]:
+    if content_type.startswith("image/"):
+        return "image"
+    if (
+        content_type == "voice"
+        or content_type.startswith("audio/")
+        or "silk" in content_type
+        or "amr" in content_type
+    ):
+        return "voice"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type.startswith(("application/", "text/")):
+        return "file"
+    return "attachment"
 
 
 class QQChannelAdapter(BaseChannelAdapter):
@@ -193,7 +292,8 @@ class QQChannelAdapter(BaseChannelAdapter):
         if event_type == "GROUP_AT_MESSAGE_CREATE":
             text = MENTION_PREFIX_PATTERN.sub("", text).strip()
         image_references = parse_qq_image_references(payload.get("attachments"))
-        if not text and not image_references:
+        quote = _parse_qq_quote(payload)
+        if not text and not image_references and quote is None:
             return None
         if event_type == "C2C_MESSAGE_CREATE":
             sender = author.get("user_openid") or author.get("id")
@@ -212,6 +312,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                 user_id=str(sender),
                 message_id=message_id,
                 text=text,
+                quote=quote,
             ),
             image_references,
         )
