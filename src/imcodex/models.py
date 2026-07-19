@@ -66,8 +66,9 @@ class ThreadBrowserContext:
     page: int
     total: int
     query: str | None = None
-    next_cursor: str | None = None
-    page_cursors: list[str | None] = field(default_factory=lambda: [None])
+    all_thread_ids: list[str] = field(default_factory=list)
+    project_paths: list[str] = field(default_factory=list)
+    project_path: str | None = None
     expires_at: float = 0.0
 
 

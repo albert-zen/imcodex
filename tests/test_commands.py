@@ -154,7 +154,79 @@ def test_threads_command_accepts_query_and_page_flags() -> None:
     response = router.handle("qq", "conv-1", "/threads polish --page 2")
 
     assert response.action == "threads.query"
-    assert response.payload == {"page": 2, "query": "polish"}
+    assert response.payload == {
+        "page": 2,
+        "query": "polish",
+        "project": None,
+        "refresh": True,
+    }
+
+
+def test_threads_command_accepts_project_name_or_number() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    by_number = router.handle("qq", "conv-1", "/threads --project 2")
+    by_name = router.handle("qq", "conv-1", "/threads polish --project=imcodex")
+
+    assert by_number.payload == {
+        "page": 1,
+        "query": None,
+        "project": "2",
+        "refresh": True,
+    }
+    assert by_name.payload == {
+        "page": 1,
+        "query": "polish",
+        "project": "imcodex",
+        "refresh": True,
+    }
+
+
+def test_threads_command_resolves_project_number_from_active_browser() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1", "thr_2"],
+        page=1,
+        total=1,
+        query=None,
+        project_paths=[r"D:\work\alpha", r"D:\work\beta"],
+    )
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/threads --project 2")
+
+    assert response.payload == {
+        "page": 1,
+        "query": None,
+        "project": r"D:\work\beta",
+        "refresh": True,
+    }
+
+
+def test_threads_project_number_inherits_active_search_query() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1"],
+        page=1,
+        total=1,
+        query="release",
+        project_paths=[r"D:\work\alpha", r"D:\work\beta"],
+    )
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/threads --project 2")
+
+    assert response.payload == {
+        "page": 1,
+        "query": "release",
+        "project": r"D:\work\beta",
+        "refresh": True,
+    }
 
 
 def test_threads_command_rejects_unknown_flags() -> None:
@@ -164,7 +236,7 @@ def test_threads_command_rejects_unknown_flags() -> None:
     response = router.handle("qq", "conv-1", "/threads --all")
 
     assert response.action == "threads.invalid"
-    assert response.text == "Usage: /threads [query] [--page N]"
+    assert response.text == "Usage: /threads [query] [--project <name-or-number>] [--page N]"
 
 
 def test_next_requires_active_thread_browser_context() -> None:

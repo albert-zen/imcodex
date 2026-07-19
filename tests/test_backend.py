@@ -342,6 +342,82 @@ async def test_query_threads_sends_native_search_and_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_all_threads_exhausts_native_cursors_in_desktop_sized_batches() -> None:
+    class PagedClient(FakeClient):
+        async def list_threads(self, **params):
+            self.list_calls.append(params)
+            if params.get("cursor") == "cursor-2":
+                return {
+                    "data": [
+                        {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "Alpha refreshed",
+                            "status": "idle",
+                        },
+                        {
+                            "id": "thr_2",
+                            "cwd": r"D:\work\beta",
+                            "preview": "Beta",
+                            "status": "idle",
+                        }
+                    ],
+                    "nextCursor": None,
+                }
+            return {
+                "data": [
+                    {
+                        "id": "thr_1",
+                        "cwd": r"D:\work\alpha",
+                        "preview": "Alpha",
+                        "status": "idle",
+                    }
+                ],
+                "nextCursor": "cursor-2",
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    client = PagedClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.query_all_threads("qq", "conv-1", search_term="release")
+
+    assert [thread.thread_id for thread in result.threads] == ["thr_1", "thr_2"]
+    assert result.threads[0].preview == "Alpha refreshed"
+    assert result.next_cursor is None
+    assert client.list_calls == [
+        {
+            "sortKey": "updated_at",
+            "limit": 100,
+            "searchTerm": "release",
+        },
+        {
+            "sortKey": "updated_at",
+            "limit": 100,
+            "searchTerm": "release",
+            "cursor": "cursor-2",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_query_all_threads_rejects_repeated_native_cursor() -> None:
+    class RepeatingCursorClient(FakeClient):
+        async def list_threads(self, **params):
+            self.list_calls.append(params)
+            return {"data": [], "nextCursor": "same-cursor"}
+
+    backend = CodexBackend(
+        client=RepeatingCursorClient(),
+        store=ConversationStore(clock=lambda: 1.0),
+        service_name="imcodex-test",
+    )
+
+    with pytest.raises(AppServerError, match="repeated pagination cursor"):
+        await backend.query_all_threads("qq", "conv-1")
+
+
+@pytest.mark.asyncio
 async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_page() -> None:
     class CursoredClient(NamedClient):
         async def list_threads(self, **params):

@@ -256,6 +256,8 @@ class BridgeService(
                     message,
                     page=int(payload.get("page") or 1),
                     query=str(payload.get("query") or "").strip() or None,
+                    project=str(payload.get("project") or "").strip() or None,
+                    refresh=bool(payload.get("refresh", True)),
                 )
             except AppServerError:
                 text = (

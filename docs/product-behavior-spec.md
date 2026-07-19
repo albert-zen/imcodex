@@ -261,9 +261,20 @@ If no working directory is set, the user gets an immediate error telling them to
 Behavior:
 
 - it queries Codex for available threads
-- it renders a paged list
+- it follows native `thread/list` cursors to completion in batches and renders an
+  exact local page count from that native result
 - it may filter by a search term
+- it may filter the current native result by an exact native `cwd` or `path`
+  selected through `--project <name-or-number>`
 - it may support `--page N`
+
+The complete result is only short-lived thread-browser state. It must be
+refreshed from native Codex when `/threads` is opened again and must not become a
+durable thread or project index. Project choices are presentation labels derived
+from exact native `cwd` or `path` values; they do not create a separate project
+model. Numbered project choices remain bound to the active browser result, and
+the inline project legend stays bounded so it cannot grow with the entire native
+catalog.
 
 The bridge should not maintain its own thread source allowlist. Native Codex
 owns which thread sources are visible, including standalone app conversations

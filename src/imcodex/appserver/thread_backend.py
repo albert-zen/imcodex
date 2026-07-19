@@ -18,6 +18,7 @@ from .client import AppServerError
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
 _MAX_THREAD_HISTORY_PAGES = 20
+_THREAD_LIST_BATCH_SIZE = 100
 
 
 class CodexThreadBackendMixin:
@@ -154,6 +155,59 @@ class CodexThreadBackendMixin:
                 preferred_cwd=preferred_cwd,
             ),
             next_cursor=next_cursor,
+        )
+
+    async def query_all_threads(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        *,
+        search_term: str | None = None,
+    ) -> ThreadListResult:
+        """Read the complete native thread catalog for a short-lived browser view."""
+        preferred_cwd = self.store.current_cwd(channel_id, conversation_id)
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        thread_order: list[str] = []
+        threads_by_id: dict[str, NativeThreadSnapshot] = {}
+        while True:
+            params: dict[str, object] = {
+                "sortKey": "updated_at",
+                "limit": _THREAD_LIST_BATCH_SIZE,
+            }
+            if search_term:
+                params["searchTerm"] = search_term
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = await self.client.list_threads(**params)
+            for item in self._thread_list_items(result):
+                snapshot = self._remember_snapshot(item)
+                if snapshot.thread_id not in threads_by_id:
+                    thread_order.append(snapshot.thread_id)
+                threads_by_id[snapshot.thread_id] = snapshot
+            next_cursor = self._next_thread_cursor(result)
+            if next_cursor is None:
+                break
+            if next_cursor in seen_cursors:
+                raise AppServerError("thread list returned a repeated pagination cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        threads = [threads_by_id[thread_id] for thread_id in thread_order]
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if not search_term and binding.thread_id:
+            seen_thread_ids = {snapshot.thread_id for snapshot in threads}
+            if binding.thread_id not in seen_thread_ids:
+                snapshot = await self.read_thread(channel_id, conversation_id, binding.thread_id)
+                if snapshot is not None:
+                    threads.append(snapshot)
+        return ThreadListResult(
+            threads=self._prioritize_threads(
+                threads,
+                bound_thread_id=binding.thread_id,
+                preferred_cwd=preferred_cwd,
+            ),
+            next_cursor=None,
         )
 
     async def read_thread(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import ntpath
+import posixpath
 
 from ..appserver import AppServerError
 from ..models import InboundMessage, NativeThreadSnapshot
@@ -14,6 +16,7 @@ from .settings import (
 
 
 _THREADS_PAGE_SIZE = 5
+_INLINE_PROJECT_LIMIT = 8
 _STATUS_QUERY_TIMEOUT_S = 2.5
 
 
@@ -24,15 +27,13 @@ class ThreadViewMixin:
         *,
         page: int = 1,
         query: str | None = None,
+        project: str | None = None,
+        refresh: bool = True,
     ) -> str:
-        requested_page = max(page, 1)
-        threads, safe_page, page_count, next_cursor, page_cursors = await self._load_thread_page(
-            message,
-            requested_page=requested_page,
-            query=query,
-        )
-        visible = threads[:_THREADS_PAGE_SIZE]
-        if not visible:
+        threads = await self._load_thread_catalog(message, query=query, refresh=refresh)
+        project_options = self._thread_project_options(threads)
+        project_path, project_error = self._resolve_thread_project(project, project_options)
+        if project_error is not None:
             self.store.set_thread_browser_context(
                 message.channel_id,
                 message.conversation_id,
@@ -40,16 +41,23 @@ class ThreadViewMixin:
                 page=1,
                 total=1,
                 query=query,
-                next_cursor=None,
-                page_cursors=[None],
+                all_thread_ids=[snapshot.thread_id for snapshot in threads],
+                project_paths=[path for path, _label in project_options],
+                project_path=None,
             )
             return "\n".join(
                 [
-                    "Threads (Page 1/1)",
-                    "(none)",
-                    "Use /threads <keyword> to filter, or /new to start a fresh thread.",
+                    project_error,
+                    self._thread_project_choices(project_options),
+                    "Use /threads --project <name-or-number> to choose a project.",
                 ]
             )
+
+        filtered = self._filter_threads_by_project(threads, project_path)
+        page_count = max(1, (len(filtered) + _THREADS_PAGE_SIZE - 1) // _THREADS_PAGE_SIZE)
+        safe_page = min(max(page, 1), page_count)
+        page_start = (safe_page - 1) * _THREADS_PAGE_SIZE
+        visible = filtered[page_start : page_start + _THREADS_PAGE_SIZE]
         self.store.set_thread_browser_context(
             message.channel_id,
             message.conversation_id,
@@ -57,10 +65,14 @@ class ThreadViewMixin:
             page=safe_page,
             total=page_count,
             query=query,
-            next_cursor=next_cursor,
-            page_cursors=page_cursors,
+            all_thread_ids=[snapshot.thread_id for snapshot in threads],
+            project_paths=[path for path, _label in project_options],
+            project_path=project_path,
         )
-        lines = [self._thread_page_heading(safe_page, page_count, has_more=next_cursor is not None)]
+        project_label = self._selected_project_label(project_path, project_options)
+        lines = [self._thread_page_heading(safe_page, page_count, project_label=project_label)]
+        if not visible:
+            lines.append("(none)")
         for index, snapshot in enumerate(visible, start=1):
             is_current = (
                 snapshot.thread_id
@@ -69,8 +81,10 @@ class ThreadViewMixin:
             current_marker = " ✓" if is_current else ""
             lines.append(
                 f"{index}. {self._thread_label(snapshot)} "
-                f"【{self._thread_workspace_label(snapshot)}】{current_marker}"
+                f"[{self._thread_workspace_label(snapshot)}]{current_marker}"
             )
+        if project_options:
+            lines.append(self._thread_project_choices(project_options, selected_path=project_path))
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
         if safe_page < page_count:
             actions.insert(1, "/next for more")
@@ -78,63 +92,164 @@ class ThreadViewMixin:
             actions.insert(1, "/prev for previous")
         if query is None:
             actions.append("/threads <keyword> to filter")
+        if project_options:
+            actions.append("/threads --project <name-or-number> to filter by project")
         return "\n".join(lines + ["; ".join(actions) + "."])
 
-    async def _load_thread_page(
+    async def _load_thread_catalog(
         self,
         message: InboundMessage,
         *,
-        requested_page: int,
         query: str | None,
-    ) -> tuple[list[NativeThreadSnapshot], int, int, str | None, list[str | None]]:
+        refresh: bool,
+    ) -> list[NativeThreadSnapshot]:
         context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
-        page_cursors = (
-            list(context.page_cursors)
-            if context is not None and context.query == query and context.page_cursors
-            else [None]
+        if not refresh and context is not None and context.query == query:
+            cached = [
+                self.store.get_thread_snapshot(thread_id)
+                for thread_id in context.all_thread_ids
+            ]
+            if all(snapshot is not None for snapshot in cached):
+                return [snapshot for snapshot in cached if snapshot is not None]
+        result = await self.backend.query_all_threads(
+            message.channel_id,
+            message.conversation_id,
+            search_term=query,
         )
-        current_page = requested_page if requested_page <= len(page_cursors) else len(page_cursors)
-        current_page = max(1, current_page)
-        while True:
-            cursor = page_cursors[current_page - 1] if current_page - 1 < len(page_cursors) else None
-            query_result = await self.backend.query_threads(
-                message.channel_id,
-                message.conversation_id,
-                search_term=query,
-                limit=_THREADS_PAGE_SIZE,
-                cursor=cursor,
-            )
-            page_cursors = self._remember_thread_page_cursor(
-                page_cursors,
-                page=current_page,
-                next_cursor=query_result.next_cursor,
-            )
-            if current_page == requested_page or not query_result.next_cursor:
-                page_count = current_page + (1 if query_result.next_cursor else 0)
-                return (
-                    query_result.threads,
-                    current_page,
-                    page_count,
-                    query_result.next_cursor,
-                    page_cursors,
-                )
-            current_page += 1
+        return result.threads
 
-    def _remember_thread_page_cursor(
+    def _thread_project_options(
         self,
-        page_cursors: list[str | None],
-        *,
-        page: int,
-        next_cursor: str | None,
-    ) -> list[str | None]:
-        page_cursors = list(page_cursors[:page])
-        if next_cursor:
-            page_cursors.append(next_cursor)
-        return page_cursors or [None]
+        threads: list[NativeThreadSnapshot],
+    ) -> list[tuple[str, str]]:
+        paths: list[str] = []
+        seen: set[str] = set()
+        for snapshot in threads:
+            path = self._thread_project_path(snapshot)
+            if path is None:
+                continue
+            key = self._normalized_project_path(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+        base_labels = [self._path_leaf(path) for path in paths]
+        duplicate_labels = {
+            label.casefold() for label in base_labels if sum(item.casefold() == label.casefold() for item in base_labels) > 1
+        }
+        options: list[tuple[str, str]] = []
+        for path, base_label in zip(paths, base_labels, strict=True):
+            label = base_label
+            if base_label.casefold() in duplicate_labels:
+                parent = self._path_leaf(path.rstrip("/\\").rsplit("\\", 1)[0].rsplit("/", 1)[0])
+                label = f"{parent}/{base_label}" if parent else path
+            options.append((path, label))
+        return options
 
-    def _thread_page_heading(self, page: int, page_count: int, *, has_more: bool) -> str:
-        page_count_label = f"{page_count}+" if has_more else str(page_count)
-        return f"Threads (Page {page}/{page_count_label})"
+    def _resolve_thread_project(
+        self,
+        selector: str | None,
+        options: list[tuple[str, str]],
+    ) -> tuple[str | None, str | None]:
+        if selector is None or selector.casefold() in {"0", "all"}:
+            return None, None
+        if selector.isdigit():
+            index = int(selector) - 1
+            if 0 <= index < len(options):
+                return options[index][0], None
+            return None, f"Unknown project number: {selector}."
+        normalized = self._normalized_project_path(selector)
+        path_matches = [path for path, _label in options if self._normalized_project_path(path) == normalized]
+        if len(path_matches) == 1:
+            return path_matches[0], None
+        label_matches = [path for path, label in options if label.casefold() == selector.casefold()]
+        if len(label_matches) == 1:
+            return label_matches[0], None
+        if len(label_matches) > 1:
+            return None, f"Project name '{selector}' is ambiguous; choose its number instead."
+        return None, f"Unknown project: {selector}."
+
+    def _filter_threads_by_project(
+        self,
+        threads: list[NativeThreadSnapshot],
+        project_path: str | None,
+    ) -> list[NativeThreadSnapshot]:
+        if project_path is None:
+            return threads
+        selected = self._normalized_project_path(project_path)
+        return [
+            snapshot
+            for snapshot in threads
+            if (path := self._thread_project_path(snapshot)) is not None
+            and self._normalized_project_path(path) == selected
+        ]
+
+    def _thread_project_path(self, snapshot: NativeThreadSnapshot) -> str | None:
+        for candidate in (snapshot.cwd, snapshot.path):
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return None
+
+    def _normalized_project_path(self, path: str) -> str:
+        normalized = path.strip()
+        if normalized.casefold().startswith("\\\\?\\unc\\"):
+            normalized = "\\\\" + normalized[8:]
+        elif normalized.startswith("\\\\?\\"):
+            normalized = normalized[4:]
+        if ntpath.splitdrive(normalized)[0] or "\\" in normalized:
+            windows_path = normalized.replace("/", "\\")
+            return "windows:" + ntpath.normcase(ntpath.normpath(windows_path))
+        return "posix:" + posixpath.normpath(normalized)
+
+    def _path_leaf(self, path: str) -> str:
+        text = path.rstrip("/\\")
+        return text.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] or path
+
+    def _selected_project_label(
+        self,
+        project_path: str | None,
+        options: list[tuple[str, str]],
+    ) -> str:
+        if project_path is None:
+            return "All projects"
+        selected = self._normalized_project_path(project_path)
+        return next(
+            (label for path, label in options if self._normalized_project_path(path) == selected),
+            self._path_leaf(project_path),
+        )
+
+    def _thread_project_choices(
+        self,
+        options: list[tuple[str, str]],
+        *,
+        selected_path: str | None = None,
+    ) -> str:
+        choices = ["[0] All"]
+        visible_indices = list(range(min(len(options), _INLINE_PROJECT_LIMIT)))
+        if selected_path is not None:
+            selected = self._normalized_project_path(selected_path)
+            selected_index = next(
+                (
+                    index
+                    for index, (path, _label) in enumerate(options)
+                    if self._normalized_project_path(path) == selected
+                ),
+                None,
+            )
+            if selected_index is not None and selected_index not in visible_indices:
+                visible_indices[-1:] = [selected_index]
+        choices.extend(
+            f"[{index + 1}] {options[index][1]}"
+            for index in visible_indices
+        )
+        hidden_count = len(options) - len(visible_indices)
+        if hidden_count > 0:
+            choices.append(f"… +{hidden_count} more")
+        return "Projects: " + " · ".join(choices)
+
+    def _thread_page_heading(self, page: int, page_count: int, *, project_label: str) -> str:
+        return f"Threads · [{project_label}] · Page {page}/{page_count}"
 
     async def _render_status(self, message: InboundMessage) -> str:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)

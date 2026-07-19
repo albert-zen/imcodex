@@ -192,8 +192,9 @@ class ConversationStore(
         page: int,
         total: int,
         query: str | None,
-        next_cursor: str | None = None,
-        page_cursors: list[str | None] | None = None,
+        all_thread_ids: list[str] | None = None,
+        project_paths: list[str] | None = None,
+        project_path: str | None = None,
         ttl_s: float = 900.0,
     ) -> ThreadBrowserContext:
         context = ThreadBrowserContext(
@@ -203,8 +204,9 @@ class ConversationStore(
             page=page,
             total=total,
             query=query,
-            next_cursor=next_cursor,
-            page_cursors=list(page_cursors or [None]),
+            all_thread_ids=list(all_thread_ids or thread_ids),
+            project_paths=list(project_paths or []),
+            project_path=project_path,
             expires_at=self.clock() + ttl_s,
         )
         self._thread_browser_contexts[(channel_id, conversation_id)] = context

@@ -14,6 +14,7 @@ _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
 _DEFAULT_HISTORY_TURNS = 1
 _MAX_HISTORY_TURNS = 5
+_THREADS_USAGE = "Usage: /threads [query] [--project <name-or-number>] [--page N]"
 
 
 @dataclass(slots=True)
@@ -82,6 +83,7 @@ class CommandRouter:
 
     def _handle_threads(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         page = 1
+        project: str | None = None
         query_parts: list[str] = []
         index = 0
         while index < len(command.args):
@@ -90,14 +92,14 @@ class CommandRouter:
                 if index + 1 >= len(command.args):
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N]",
+                        text=_THREADS_USAGE,
                     )
                 try:
                     page = int(command.args[index + 1])
                 except ValueError:
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N]",
+                        text=_THREADS_USAGE,
                     )
                 index += 2
                 continue
@@ -107,24 +109,43 @@ class CommandRouter:
                 except ValueError:
                     return CommandResponse(
                         action="threads.invalid",
-                        text="Usage: /threads [query] [--page N]",
+                        text=_THREADS_USAGE,
                     )
+                index += 1
+                continue
+            if arg == "--project":
+                if index + 1 >= len(command.args):
+                    return CommandResponse(action="threads.invalid", text=_THREADS_USAGE)
+                project = command.args[index + 1].strip() or None
+                index += 2
+                continue
+            if arg.startswith("--project="):
+                project = arg.partition("=")[2].strip() or None
+                if project is None:
+                    return CommandResponse(action="threads.invalid", text=_THREADS_USAGE)
                 index += 1
                 continue
             if arg.startswith("--"):
                 return CommandResponse(
                     action="threads.invalid",
-                    text="Usage: /threads [query] [--page N]",
+                    text=_THREADS_USAGE,
                 )
             query_parts.append(arg)
             index += 1
         if page < 1:
             return CommandResponse(action="threads.invalid", text="Page number must be 1 or greater.")
         query = " ".join(part for part in query_parts if part).strip() or None
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if project is not None and project.isdigit() and context is not None:
+            if query is None:
+                query = context.query
+            project_index = int(project)
+            if context.query == query and 1 <= project_index <= len(context.project_paths):
+                project = context.project_paths[project_index - 1]
         return CommandResponse(
             action="threads.query",
             text="",
-            payload={"page": page, "query": query},
+            payload={"page": page, "query": query, "project": project, "refresh": True},
         )
 
     def _handle_next(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -135,7 +156,12 @@ class CommandRouter:
         return CommandResponse(
             action="threads.query",
             text="",
-            payload={"page": context.page + 1, "query": context.query},
+            payload={
+                "page": min(context.page + 1, context.total),
+                "query": context.query,
+                "project": context.project_path,
+                "refresh": False,
+            },
         )
 
     def _handle_prev(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
@@ -146,7 +172,12 @@ class CommandRouter:
         return CommandResponse(
             action="threads.query",
             text="",
-            payload={"page": max(1, context.page - 1), "query": context.query},
+            payload={
+                "page": max(1, context.page - 1),
+                "query": context.query,
+                "project": context.project_path,
+                "refresh": False,
+            },
         )
 
     def _handle_pick(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:

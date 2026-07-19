@@ -10,10 +10,44 @@ import pytest
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, CodexBackend
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
+from imcodex.bridge.thread_views import ThreadViewMixin
 from imcodex.channels import MultiplexOutboundSink
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.models import InboundAttachment, InboundMessage, OutboundMessage
 from imcodex.store import ConversationStore
+
+
+def test_thread_project_path_normalization_respects_native_path_syntax() -> None:
+    view = ThreadViewMixin()
+
+    assert view._normalized_project_path("/home/User/repo") != view._normalized_project_path(
+        "/home/user/repo"
+    )
+    assert view._normalized_project_path(r"D:\Work\Repo") == view._normalized_project_path(
+        r"d:/work/repo"
+    )
+    assert view._normalized_project_path(
+        r"\\?\UNC\Server\Share\Repo"
+    ) == view._normalized_project_path(r"\\server\share\repo")
+
+
+def test_thread_project_legend_is_bounded_and_keeps_selected_project_visible() -> None:
+    view = ThreadViewMixin()
+    options = [
+        (rf"D:\work\project-{index}", f"project-{index}")
+        for index in range(1, 21)
+    ]
+
+    legend = view._thread_project_choices(
+        options,
+        selected_path=r"D:\work\project-20",
+    )
+
+    assert "[1] project-1" in legend
+    assert "[20] project-20" in legend
+    assert "[8] project-8" not in legend
+    assert "… +12 more" in legend
+    assert len(legend) < 250
 
 
 class FakeStdout:
@@ -79,6 +113,22 @@ class ScriptedProcess:
         if "id" in request:
             response["id"] = request["id"]
         return response
+
+
+class SequentialScriptedProcess(ScriptedProcess):
+    def on_input(self, raw: str) -> None:
+        payload = json.loads(raw)
+        self.inputs.append(payload)
+        method = payload.get("method")
+        if method == "initialized" or method is None:
+            return
+        messages = self.scripts.get(method, [])
+        if not messages:
+            return
+        message = messages.pop(0)
+        self.stdout.lines.put_nowait(
+            (json.dumps(self._prepare_scripted_message(payload, message)) + "\n").encode("utf-8")
+        )
 
 
 class ScriptedWebSocket:
@@ -3832,21 +3882,22 @@ async def test_threads_command_lets_native_codex_choose_sources_and_prefers_boun
 
     assert messages[0].message_type == "command_result"
     lines = messages[0].text.splitlines()
-    assert lines[0] == "Threads (Page 1/1)"
-    assert lines[1] == "1. Bound thread 【gamma】 ✓"
-    assert lines[2] == "2. Matching cwd thread 【alpha】"
-    assert lines[3] == "3. Other thread 【beta】"
+    assert lines[0] == "Threads · [All projects] · Page 1/1"
+    assert lines[1] == "1. Bound thread [gamma] ✓"
+    assert lines[2] == "2. Matching cwd thread [alpha]"
+    assert lines[3] == "3. Other thread [beta]"
+    assert lines[4] == "Projects: [0] All · [1] gamma · [2] alpha · [3] beta"
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
         if payload.get("method") == "thread/list"
     ]
     assert thread_list_payloads == [
-            {
-                "sortKey": "updated_at",
-                "limit": 5,
-            }
-        ]
+        {
+            "sortKey": "updated_at",
+            "limit": 100,
+        }
+    ]
     await client.close()
 
 
@@ -3889,8 +3940,122 @@ async def test_threads_command_uses_native_path_for_workspace_when_cwd_is_empty(
     )
 
     assert messages[0].message_type == "command_result"
-    assert "Standalone thread 【standalone-thread】" in messages[0].text
+    assert "Standalone thread [standalone-thread]" in messages[0].text
     assert "notLoaded" not in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_filters_complete_native_result_by_project_number() -> None:
+    process = SequentialScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_alpha_1",
+                                "cwd": r"D:\work\alpha",
+                                "preview": "Alpha one",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_alpha_2",
+                                "cwd": r"D:\work\alpha",
+                                "preview": "Alpha two",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_beta_1",
+                                "cwd": r"D:\work\beta",
+                                "preview": "Beta one",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_beta_2",
+                                "cwd": r"D:\work\beta",
+                                "preview": "Beta two",
+                                "status": "idle",
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+                {
+                    "id": 3,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_beta_1",
+                                "cwd": r"D:\work\beta",
+                                "preview": "Beta one",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_beta_2",
+                                "cwd": r"D:\work\beta",
+                                "preview": "Beta two",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_alpha_1",
+                                "cwd": r"D:\work\alpha",
+                                "preview": "Alpha one",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_alpha_2",
+                                "cwd": r"D:\work\alpha",
+                                "preview": "Alpha two",
+                                "status": "idle",
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/threads --project 2",
+        )
+    )
+
+    lines = messages[0].text.splitlines()
+    assert lines[0] == "Threads · [beta] · Page 1/1"
+    assert lines[1] == "1. Beta one [beta]"
+    assert lines[2] == "2. Beta two [beta]"
+    assert "Alpha one" not in messages[0].text
+    assert "Projects: [0] All · [1] beta · [2] alpha" in messages[0].text
+    context = store.get_thread_browser_context("qq", "conv-1")
+    assert context is not None
+    assert context.thread_ids == ["thr_beta_1", "thr_beta_2"]
+    assert context.all_thread_ids == ["thr_beta_1", "thr_beta_2", "thr_alpha_1", "thr_alpha_2"]
+    assert context.project_path == r"D:\work\beta"
+    thread_list_payloads = [
+        payload for payload in process.inputs if payload.get("method") == "thread/list"
+    ]
+    assert len(thread_list_payloads) == 2
     await client.close()
 
 
@@ -5541,9 +5706,9 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
         )
     )
 
-    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2+)"
+    assert first_messages[0].text.splitlines()[0] == "Threads · [All projects] · Page 1/2"
     lines = next_messages[0].text.splitlines()
-    assert lines[0] == "Threads (Page 2/2)"
+    assert lines[0] == "Threads · [All projects] · Page 2/2"
     assert lines[1].startswith("1. Alpha release")
     assert "/prev" in lines[-1]
     thread_list_payloads = [
@@ -5552,8 +5717,17 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
         if payload.get("method") == "thread/list"
     ]
     assert thread_list_payloads == [
-        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5},
-        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-2"},
+        {
+            "sortKey": "updated_at",
+            "searchTerm": "alpha",
+            "limit": 100,
+        },
+        {
+            "sortKey": "updated_at",
+            "searchTerm": "alpha",
+            "limit": 100,
+            "cursor": "cursor-2",
+        },
     ]
     await client.close()
 
@@ -5654,12 +5828,12 @@ async def test_threads_command_keeps_paging_beyond_second_native_cursor_page() -
         )
     )
 
-    assert first_messages[0].text.splitlines()[0] == "Threads (Page 1/2+)"
+    assert first_messages[0].text.splitlines()[0] == "Threads · [All projects] · Page 1/3"
     second_lines = second_messages[0].text.splitlines()
-    assert second_lines[0] == "Threads (Page 2/3+)"
+    assert second_lines[0] == "Threads · [All projects] · Page 2/3"
     assert second_lines[1].startswith("1. Alpha thread 6")
     third_lines = third_messages[0].text.splitlines()
-    assert third_lines[0] == "Threads (Page 3/3)"
+    assert third_lines[0] == "Threads · [All projects] · Page 3/3"
     assert third_lines[1].startswith("1. Alpha thread 11")
     assert "/prev" in third_lines[-1]
     assert "/next" not in third_lines[-1]
@@ -5669,9 +5843,23 @@ async def test_threads_command_keeps_paging_beyond_second_native_cursor_page() -
         if payload.get("method") == "thread/list"
     ]
     assert thread_list_payloads == [
-        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5},
-        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-2"},
-        {"sortKey": "updated_at", "searchTerm": "alpha", "limit": 5, "cursor": "cursor-3"},
+        {
+            "sortKey": "updated_at",
+            "searchTerm": "alpha",
+            "limit": 100,
+        },
+        {
+            "sortKey": "updated_at",
+            "searchTerm": "alpha",
+            "limit": 100,
+            "cursor": "cursor-2",
+        },
+        {
+            "sortKey": "updated_at",
+            "searchTerm": "alpha",
+            "limit": 100,
+            "cursor": "cursor-3",
+        },
     ]
     await client.close()
 

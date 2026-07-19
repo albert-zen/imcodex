@@ -293,12 +293,18 @@ def test_thread_browser_context_is_runtime_only_and_expires(tmp_path) -> None:
         page=1,
         total=2,
         query="alpha",
+        all_thread_ids=["thr_1", "thr_2", "thr_3"],
+        project_paths=[r"D:\work\alpha", r"D:\work\beta"],
+        project_path=r"D:\work\alpha",
         ttl_s=30.0,
     )
 
     context = store.get_thread_browser_context("qq", "conv-1")
     assert context is not None
     assert context.thread_ids == ["thr_1", "thr_2"]
+    assert context.all_thread_ids == ["thr_1", "thr_2", "thr_3"]
+    assert context.project_paths == [r"D:\work\alpha", r"D:\work\beta"]
+    assert context.project_path == r"D:\work\alpha"
 
     reloaded = ConversationStore(clock=lambda: now["value"], state_path=state_path)
     assert reloaded.get_thread_browser_context("qq", "conv-1") is None
