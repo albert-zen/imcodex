@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 from ..store import ConversationStore
 from .backend_errors import CodexBackendErrorMixin
 from .backend_types import (
@@ -18,10 +20,18 @@ from .thread_backend import CodexThreadBackendMixin
 
 
 class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBackendErrorMixin):
-    def __init__(self, *, client, store: ConversationStore, service_name: str) -> None:
+    def __init__(
+        self,
+        *,
+        client,
+        store: ConversationStore,
+        service_name: str,
+        thread_dynamic_tools: list[dict] | None = None,
+    ) -> None:
         self.client = client
         self.store = store
         self.service_name = service_name
+        self.thread_dynamic_tools = copy.deepcopy(thread_dynamic_tools)
 
     def prefers_native_recovery(self) -> bool:
         preserves_server_state = getattr(self.client, "preserves_server_state", None)

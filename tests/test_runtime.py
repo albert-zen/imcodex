@@ -469,6 +469,12 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client.supports_local_image_paths() is False
     assert (runtime.client._shared_filesystem_verifier is not None) is (os.name == "nt")
     assert runtime.service.native_requests.native_thread_tool_host is True
+    assert {tool["name"] for tool in runtime.service.backend.thread_dynamic_tools} == {
+        "create_thread",
+        "list_threads",
+        "read_thread",
+        "send_message_to_thread",
+    }
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
     assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15

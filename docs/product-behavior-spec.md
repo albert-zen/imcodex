@@ -444,6 +444,36 @@ Behavior:
 - native failures are summarized in product language rather than raw protocol output
 - `/archive` and `/unarchive` remain out of scope until archived thread browsing has a product design
 
+### Agent thread tools
+
+When IMCodex is the declared dynamic-tool host, every fresh native thread that
+IMCodex starts through `thread/start` MUST receive model-callable tools for
+listing and reading native threads, sending a message to a native thread, and
+creating another thread. These tools are not retrofitted into threads created
+by another App Server client.
+
+`create_thread` starts the child in the calling thread's native working
+directory, starts its initial turn, and gives the child the same thread-tool
+set. This recursive registration is required so an IMCodex-created child has
+the same capabilities as its parent. The bridge does not create a project
+catalog, worktree manager, pin model, handoff model, or remote-host registry to
+support these tools.
+
+IMCodex persists only the IDs of threads for which it registered this tool set.
+That minimal routing fact prevents both an external host and a private
+bridge-child from claiming a same-named tool call belonging to a thread created
+by another client. The fact is committed durably before the child's first turn
+starts. If native child creation succeeds but registration or initial-turn
+startup cannot be confirmed, the failed tool result still includes the created
+thread ID and tells the agent to inspect or message it instead of blindly
+creating another child.
+
+Native `thread/fork` does not currently accept a dynamic-tool registration.
+Therefore agent-facing `fork_thread`, rename, and archive tools are not included
+in the IMCodex-created thread tool set. The user-facing `/fork` command retains
+native fork semantics, but its result is not covered by this tool-injection
+guarantee until the upstream protocol can register tools on a fork.
+
 ### `/status`
 
 `/status` returns a compact overview of the current conversation state.

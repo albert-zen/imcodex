@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..appserver.client import AppServerError
+from ..appserver.thread_dynamic_tools import NATIVE_THREAD_DYNAMIC_TOOL_NAMES
 
 
 LOCAL_HOST_ID = "local"
@@ -17,12 +18,9 @@ MAX_COLLECTION_ITEMS = 100
 MAX_DYNAMIC_TOOL_RESPONSE_CHARS = 128_000
 MAX_FAILURE_MESSAGE_CHARS = 2_000
 
-NATIVE_THREAD_DYNAMIC_TOOLS = frozenset(
+NATIVE_THREAD_DYNAMIC_TOOLS = NATIVE_THREAD_DYNAMIC_TOOL_NAMES | frozenset(
     {
         "fork_thread",
-        "list_threads",
-        "read_thread",
-        "send_message_to_thread",
         "set_thread_archived",
         "set_thread_title",
     }
@@ -33,7 +31,6 @@ NATIVE_THREAD_DYNAMIC_TOOLS = frozenset(
 # therefore must not be emulated by the bridge.
 DESKTOP_ONLY_THREAD_DYNAMIC_TOOLS = frozenset(
     {
-        "create_thread",
         "get_handoff_status",
         "handoff_thread",
         "list_projects",
@@ -42,6 +39,21 @@ DESKTOP_ONLY_THREAD_DYNAMIC_TOOLS = frozenset(
 )
 
 KNOWN_THREAD_DYNAMIC_TOOLS = NATIVE_THREAD_DYNAMIC_TOOLS | DESKTOP_ONLY_THREAD_DYNAMIC_TOOLS
+
+
+class _CreatedThreadPostStartError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        thread_id: str,
+        phase: str,
+        initial_turn_status: str,
+        cause: Exception,
+    ) -> None:
+        super().__init__(str(cause))
+        self.thread_id = thread_id
+        self.phase = phase
+        self.initial_turn_status = initial_turn_status
 
 
 class NativeThreadToolAdapter:
@@ -65,6 +77,22 @@ class NativeThreadToolAdapter:
             return self.failure(f"{tool} received invalid arguments.")
         try:
             result = await getattr(self, f"_{tool}")(arguments, source_thread_id=source_thread_id)
+        except _CreatedThreadPostStartError as exc:
+            return self.failure(
+                json.dumps(
+                    {
+                        "threadId": exc.thread_id,
+                        "phase": exc.phase,
+                        "initialTurnStatus": exc.initial_turn_status,
+                        "error": (str(exc) or "The initial turn could not be confirmed.")[:1000],
+                        "recovery": (
+                            "The thread was created. Inspect or message this thread instead of "
+                            "retrying create_thread blindly."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            )
         except (AppServerError, ValueError) as exc:
             return self.failure(str(exc) or f"{tool} failed.")
         return self.success(result)
@@ -186,6 +214,72 @@ class NativeThreadToolAdapter:
                 params["effort"] = effort
             await self.backend.call_native("turn/start", params)
         return {"threadId": thread_id}
+
+    async def _create_thread(self, arguments: dict, *, source_thread_id: str) -> dict:
+        self._reject_unknown(arguments, {"prompt", "model", "thinking"})
+        if not source_thread_id:
+            raise ValueError("create_thread missing calling thread id.")
+        prompt = self._required_string(arguments, "prompt")
+        model = self._optional_string(arguments, "model")
+        effort = self._optional_string(arguments, "thinking")
+        source_result = await self.backend.call_native(
+            "thread/read",
+            {"threadId": source_thread_id},
+        )
+        source = source_result.get("thread")
+        if not isinstance(source, dict):
+            raise ValueError(f"Thread {source_thread_id} is not available in Codex.")
+        cwd = str(source.get("cwd") or "").strip()
+        if not cwd:
+            raise ValueError("The calling thread has no working directory for a child thread.")
+        start_result = await self.backend.call_native(
+            "thread/start",
+            {
+                "cwd": cwd,
+                "serviceName": str(getattr(self.backend, "service_name", "imcodex")),
+                "dynamicTools": self._configured_dynamic_tools(),
+            },
+        )
+        created = start_result.get("thread")
+        if not isinstance(created, dict) or not str(created.get("id") or ""):
+            raise ValueError("Codex did not return a newly created thread.")
+        thread_id = str(created["id"])
+        store = getattr(self.backend, "store", None)
+        try:
+            if store is not None:
+                await store.claim_native_thread_tool_thread(thread_id)
+        except Exception as exc:
+            raise _CreatedThreadPostStartError(
+                thread_id=thread_id,
+                phase="toolHostRegistration",
+                initial_turn_status="notStarted",
+                cause=exc,
+            ) from exc
+        turn_params: dict[str, Any] = {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": prompt}],
+            "summary": "concise",
+        }
+        if model:
+            turn_params["model"] = model
+        if effort:
+            turn_params["effort"] = effort
+        try:
+            await self.backend.call_native("turn/start", turn_params)
+        except Exception as exc:
+            raise _CreatedThreadPostStartError(
+                thread_id=thread_id,
+                phase="initialTurnStart",
+                initial_turn_status="unknown",
+                cause=exc,
+            ) from exc
+        return {"threadId": thread_id}
+
+    def _configured_dynamic_tools(self) -> list[dict]:
+        dynamic_tools = getattr(self.backend, "thread_dynamic_tools", None)
+        if not isinstance(dynamic_tools, list) or not dynamic_tools:
+            raise ValueError("The native thread-tool host has no configured child tool set.")
+        return copy.deepcopy(dynamic_tools)
 
     async def _fork_thread(self, arguments: dict, *, source_thread_id: str) -> dict:
         self._reject_unknown(arguments, {"threadId", "environment"})

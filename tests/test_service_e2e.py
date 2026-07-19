@@ -8,6 +8,10 @@ import uuid
 import pytest
 
 from imcodex.appserver import AppServerClient, AppServerError, AppServerSupervisor, CodexBackend
+from imcodex.appserver.thread_dynamic_tools import (
+    NATIVE_THREAD_DYNAMIC_TOOL_NAMES,
+    native_thread_dynamic_tool_specs,
+)
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.bridge.inbound import render_inbound_input
 from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
@@ -190,7 +194,14 @@ async def _wait_for_condition(predicate, *, timeout_s: float = 1.0) -> None:
         await asyncio.sleep(min(0.01, remaining))
 
 
-def _build_service(store: ConversationStore, process: ScriptedProcess, sink: CapturingSink):
+def _build_service(
+    store: ConversationStore,
+    process: ScriptedProcess,
+    sink: CapturingSink,
+    *,
+    thread_dynamic_tools: list[dict] | None = None,
+    experimental_api_enabled: bool = False,
+):
     supervisor = AppServerSupervisor(
         codex_bin="codex",
         core_mode="spawned-stdio",
@@ -199,10 +210,16 @@ def _build_service(store: ConversationStore, process: ScriptedProcess, sink: Cap
     client = AppServerClient(
         supervisor=supervisor,
         client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+        experimental_api_enabled=experimental_api_enabled,
     )
     service = BridgeService(
         store=store,
-        backend=CodexBackend(client=client, store=store, service_name="imcodex-test"),
+        backend=CodexBackend(
+            client=client,
+            store=store,
+            service_name="imcodex-test",
+            thread_dynamic_tools=thread_dynamic_tools,
+        ),
         command_router=CommandRouter(store),
         projector=MessageProjector(),
         outbound_sink=sink,
@@ -212,6 +229,59 @@ def _build_service(store: ConversationStore, process: ScriptedProcess, sink: Cap
     client.add_connection_reset_handler(service.handle_connection_reset)
     client.add_connection_ready_handler(service.handle_connection_ready)
     return client, service
+
+
+@pytest.mark.asyncio
+async def test_imcodex_created_thread_receives_native_thread_tools() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_tools",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "turn/start": [
+                {"id": 3, "result": {"turn": {"id": "turn_1", "status": "inProgress"}}}
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    client, service = _build_service(
+        store,
+        process,
+        CapturingSink(),
+        thread_dynamic_tools=native_thread_dynamic_tool_specs(),
+        experimental_api_enabled=True,
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m-tools",
+            text="inspect the repo",
+        )
+    )
+
+    assert messages == []
+    initialize = next(payload for payload in process.inputs if payload.get("method") == "initialize")
+    assert initialize["params"]["capabilities"]["experimentalApi"] is True
+    thread_start = next(payload for payload in process.inputs if payload.get("method") == "thread/start")
+    assert {tool["name"] for tool in thread_start["params"]["dynamicTools"]} == (
+        NATIVE_THREAD_DYNAMIC_TOOL_NAMES
+    )
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -1976,6 +2046,7 @@ async def test_private_bridge_child_resolves_native_thread_tool() -> None:
     )
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
+    await store.claim_native_thread_tool_thread("thr_1")
     sink = CapturingSink()
     _client, service = _build_service(store, process, sink)
 
@@ -2026,6 +2097,7 @@ async def test_declared_external_thread_tool_host_resolves_native_fallback() -> 
         "ownership": "external"
     }
     service.native_requests.native_thread_tool_host = True
+    await store.claim_native_thread_tool_thread("thr_1")
 
     await service.handle_server_request(
         {
@@ -2049,9 +2121,67 @@ async def test_declared_external_thread_tool_host_resolves_native_fallback() -> 
 
 
 @pytest.mark.asyncio
+async def test_declared_external_host_does_not_claim_foreign_thread_tool() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    _client, service = _build_service(store, process, CapturingSink())
+    service.backend.app_server_connection_facts = lambda: {  # type: ignore[method-assign]
+        "ownership": "external"
+    }
+    service.native_requests.native_thread_tool_host = True
+
+    projected = await service.handle_server_request(
+        {
+            "id": 87,
+            "method": "item/tool/call",
+            "params": {
+                "_transport_request_id": 87,
+                "threadId": "thr_foreign",
+                "turnId": "turn_foreign",
+                "callId": "call_threads",
+                "tool": "create_thread",
+                "arguments": {"prompt": "foreign request"},
+            },
+        }
+    )
+
+    assert projected == []
+    assert not any(payload.get("id") == 87 for payload in process.inputs)
+    assert not any(payload.get("method") == "thread/start" for payload in process.inputs)
+
+
+@pytest.mark.asyncio
+async def test_private_bridge_child_does_not_claim_foreign_thread_tool() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    _client, service = _build_service(store, process, CapturingSink())
+
+    projected = await service.handle_server_request(
+        {
+            "id": 88,
+            "method": "item/tool/call",
+            "params": {
+                "_transport_request_id": 88,
+                "threadId": "thr_foreign",
+                "turnId": "turn_foreign",
+                "callId": "call_threads",
+                "tool": "create_thread",
+                "arguments": {"prompt": "foreign request"},
+            },
+        }
+    )
+
+    assert projected == []
+    errors = [payload for payload in process.inputs if payload.get("id") == 88]
+    assert errors[0]["error"]["code"] == -32601
+    assert not any(payload.get("method") == "thread/start" for payload in process.inputs)
+
+
+@pytest.mark.asyncio
 async def test_native_thread_tool_failure_returns_failed_tool_result() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     store = ConversationStore(clock=lambda: 1.0)
+    await store.claim_native_thread_tool_thread("thr_1")
     sink = CapturingSink()
     _client, service = _build_service(store, process, sink)
 
@@ -2091,6 +2221,7 @@ async def test_native_thread_tool_reply_failure_marks_journal_rejected() -> None
         }
     )
     store = ConversationStore(clock=lambda: 1.0)
+    await store.claim_native_thread_tool_thread("thr_1")
     sink = CapturingSink()
     _client, service = _build_service(store, process, sink)
 

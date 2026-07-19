@@ -622,6 +622,44 @@ async def test_submit_text_reuses_fresh_thread_without_resume() -> None:
             "summary": "concise",
         }
     ]
+@pytest.mark.asyncio
+async def test_new_thread_receives_configured_dynamic_tools() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
+    client = NewThreadClient()
+    tool_specs = [
+        {
+            "type": "function",
+            "name": "list_threads",
+            "description": "List threads",
+            "inputSchema": {"type": "object"},
+        }
+    ]
+    backend = CodexBackend(
+        client=client,
+        store=store,
+        service_name="imcodex-test",
+        thread_dynamic_tools=tool_specs,
+    )
+
+    await backend.create_new_thread("qq", "conv-1")
+    tool_specs[0]["name"] = "mutated"
+
+    assert client.start_thread_calls == [
+        {
+            "cwd": r"D:\desktop\imcodex",
+            "service_name": "imcodex-test",
+            "dynamicTools": [
+                {
+                    "type": "function",
+                    "name": "list_threads",
+                    "description": "List threads",
+                    "inputSchema": {"type": "object"},
+                }
+            ],
+        }
+    ]
+    assert backend.store.is_native_thread_tool_thread("thr_new") is True
 
 
 @pytest.mark.asyncio

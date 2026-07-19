@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import re
 
@@ -60,10 +61,19 @@ class CodexThreadBackendMixin:
         result = await self.client.start_thread(
             cwd=binding.bootstrap_cwd,
             service_name=self.service_name,
+            **self._new_thread_dynamic_tool_params(),
         )
         snapshot = self._remember_snapshot(result.get("thread") or {})
+        if self.thread_dynamic_tools:
+            await self.store.claim_native_thread_tool_thread(snapshot.thread_id)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         return snapshot.thread_id
+
+    def _new_thread_dynamic_tool_params(self) -> dict[str, object]:
+        dynamic_tools = getattr(self, "thread_dynamic_tools", None)
+        if not dynamic_tools:
+            return {}
+        return {"dynamicTools": copy.deepcopy(dynamic_tools)}
 
     async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
         result = await self.client.resume_thread(

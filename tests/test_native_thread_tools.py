@@ -4,7 +4,13 @@ import json
 
 import pytest
 
+from imcodex.appserver.client import AppServerError
+from imcodex.appserver.thread_dynamic_tools import (
+    NATIVE_THREAD_DYNAMIC_TOOL_NAMES,
+    native_thread_dynamic_tool_specs,
+)
 from imcodex.bridge.native_thread_tools import NativeThreadToolAdapter
+from imcodex.store import ConversationStore
 
 
 class RecordingBackend:
@@ -14,11 +20,26 @@ class RecordingBackend:
 
     async def call_native(self, method: str, params: dict | None = None) -> dict:
         self.calls.append((method, dict(params or {})))
-        return self.responses[method].pop(0)
+        result = self.responses[method].pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 def content(response: dict) -> dict:
     return json.loads(response["contentItems"][0]["text"])
+
+
+def test_native_thread_dynamic_tool_specs_cover_every_native_adapter() -> None:
+    specs = native_thread_dynamic_tool_specs()
+
+    assert {spec["name"] for spec in specs} == NATIVE_THREAD_DYNAMIC_TOOL_NAMES
+    assert all(spec["type"] == "function" for spec in specs)
+    assert all(spec["inputSchema"]["type"] == "object" for spec in specs)
+    specs[0]["name"] = "mutated"
+    assert {spec["name"] for spec in native_thread_dynamic_tool_specs()} == (
+        NATIVE_THREAD_DYNAMIC_TOOL_NAMES
+    )
 
 
 @pytest.mark.asyncio
@@ -322,6 +343,113 @@ async def test_send_message_rejects_overrides_for_an_active_target_turn() -> Non
     assert response["success"] is False
     assert "cannot apply model or thinking overrides" in response["contentItems"][0]["text"]
     assert backend.calls == [("thread/resume", {"threadId": "thr_target"})]
+
+
+@pytest.mark.asyncio
+async def test_create_thread_uses_source_cwd_and_recursively_registers_tools() -> None:
+    backend = RecordingBackend(
+        {
+            "thread/read": [
+                {"thread": {"id": "thr_source", "cwd": r"D:\work\imcodex"}}
+            ],
+            "thread/start": [{"thread": {"id": "thr_child", "cwd": r"D:\work\imcodex"}}],
+            "turn/start": [{"turn": {"id": "turn_child", "status": "inProgress"}}],
+        }
+    )
+    backend.service_name = "imcodex-test"
+    backend.thread_dynamic_tools = [
+        spec
+        for spec in native_thread_dynamic_tool_specs()
+        if spec["name"] in {"create_thread", "list_threads"}
+    ]
+    backend.store = ConversationStore(clock=lambda: 1.0)
+    adapter = NativeThreadToolAdapter(backend=backend)
+
+    response = await adapter.call(
+        "create_thread",
+        {"prompt": "检查 Windows 回归", "model": "gpt-5.4", "thinking": "high"},
+        source_thread_id="thr_source",
+    )
+
+    assert response["success"] is True
+    assert content(response) == {"threadId": "thr_child"}
+    assert backend.calls[0] == ("thread/read", {"threadId": "thr_source"})
+    start_method, start_params = backend.calls[1]
+    assert start_method == "thread/start"
+    assert start_params["cwd"] == r"D:\work\imcodex"
+    assert start_params["serviceName"] == "imcodex-test"
+    assert {spec["name"] for spec in start_params["dynamicTools"]} == {
+        "create_thread",
+        "list_threads",
+    }
+    assert backend.store.is_native_thread_tool_thread("thr_child") is True
+    assert backend.calls[2] == (
+        "turn/start",
+        {
+            "threadId": "thr_child",
+            "input": [{"type": "text", "text": "检查 Windows 回归"}],
+            "summary": "concise",
+            "model": "gpt-5.4",
+            "effort": "high",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_thread_reports_created_id_when_initial_turn_is_ambiguous() -> None:
+    backend = RecordingBackend(
+        {
+            "thread/read": [{"thread": {"id": "thr_source", "cwd": "/work/imcodex"}}],
+            "thread/start": [{"thread": {"id": "thr_child", "cwd": "/work/imcodex"}}],
+            "turn/start": [AppServerError("connection closed")],
+        }
+    )
+    backend.service_name = "imcodex-test"
+    backend.thread_dynamic_tools = native_thread_dynamic_tool_specs()
+    adapter = NativeThreadToolAdapter(backend=backend)
+
+    response = await adapter.call(
+        "create_thread",
+        {"prompt": "检查回归"},
+        source_thread_id="thr_source",
+    )
+
+    assert response["success"] is False
+    failure = content(response)
+    assert failure["threadId"] == "thr_child"
+    assert failure["initialTurnStatus"] == "unknown"
+    assert "instead of retrying" in failure["recovery"]
+
+
+@pytest.mark.asyncio
+async def test_create_thread_reports_created_id_when_provenance_commit_fails() -> None:
+    class FailingStore:
+        async def claim_native_thread_tool_thread(self, _thread_id: str) -> None:
+            raise OSError("disk full")
+
+    backend = RecordingBackend(
+        {
+            "thread/read": [{"thread": {"id": "thr_source", "cwd": "/work/imcodex"}}],
+            "thread/start": [{"thread": {"id": "thr_child", "cwd": "/work/imcodex"}}],
+        }
+    )
+    backend.service_name = "imcodex-test"
+    backend.thread_dynamic_tools = native_thread_dynamic_tool_specs()
+    backend.store = FailingStore()
+    adapter = NativeThreadToolAdapter(backend=backend)
+
+    response = await adapter.call(
+        "create_thread",
+        {"prompt": "检查回归"},
+        source_thread_id="thr_source",
+    )
+
+    assert response["success"] is False
+    failure = content(response)
+    assert failure["threadId"] == "thr_child"
+    assert failure["phase"] == "toolHostRegistration"
+    assert failure["initialTurnStatus"] == "notStarted"
+    assert not any(method == "turn/start" for method, _params in backend.calls)
 
 
 @pytest.mark.asyncio

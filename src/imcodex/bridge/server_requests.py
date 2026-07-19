@@ -62,8 +62,10 @@ class NativeRequestPolicy:
         tool = str(event.payload.get("tool") or "")
         facts = self.backend.app_server_connection_facts()
         external = facts.get("ownership") == "external"
-        native_fallback = tool in KNOWN_THREAD_DYNAMIC_TOOLS and (
-            not external or self.native_thread_tool_host
+        native_fallback = (
+            tool in KNOWN_THREAD_DYNAMIC_TOOLS
+            and self.store.is_native_thread_tool_thread(event.thread_id)
+            and (not external or self.native_thread_tool_host)
         )
         if not external and not native_fallback:
             return False

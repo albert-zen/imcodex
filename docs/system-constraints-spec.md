@@ -525,6 +525,19 @@ Internal failure handling MUST follow these rules:
   Other unresolved dynamic tools MUST fail explicitly rather than leave the
   turn pending. A private bridge-child connection MAY use the same native
   translations, but MUST reject unsupported requests immediately
+- when IMCodex owns the dynamic-tool host role, each `thread/start` issued by
+  IMCodex MUST register the declared thread tools through the App Server
+  `dynamicTools` field. A thread created through the model-facing
+  `create_thread` translation MUST register the same tools recursively. An
+  explicit connect-only endpoint for which IMCodex is not the declared tool
+  host MUST NOT receive this injection. In every App Server topology, IMCodex
+  MUST resolve a thread-tool request only when the request's thread ID is
+  durably recorded as one for which IMCodex registered the tools; topology
+  configuration and tool name alone are insufficient ownership evidence. Child
+  registration MUST commit before its initial turn starts
+- IMCodex MUST NOT advertise an agent-facing thread tool whose native creation
+  path cannot register the same tool set on the resulting thread. In the
+  current protocol this excludes `thread/fork` from the injected tool surface
 - protocol details should stay inside the App Server boundary
 - the bridge may log diagnostic detail, but must not expose raw protocol noise to end users
 

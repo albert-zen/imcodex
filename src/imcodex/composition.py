@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
 from .appserver.retry import RetryBackoff
 from .appserver.supervisor import resolve_unix_socket_path
+from .appserver.thread_dynamic_tools import native_thread_dynamic_tool_specs
 from .bridge import BridgeService, CommandRouter, MessageProjector
 from .channels import (
     MultiplexOutboundSink,
@@ -98,9 +99,17 @@ def build_runtime(
             jitter_fraction=settings.app_server_reconnect_jitter_fraction,
         ),
     )
+    hosts_native_thread_tools = settings.native_thread_tool_host or not app_server_target.is_external
     service = BridgeService(
         store=store,
-        backend=CodexBackend(client=client, store=store, service_name=settings.service_name),
+        backend=CodexBackend(
+            client=client,
+            store=store,
+            service_name=settings.service_name,
+            thread_dynamic_tools=(
+                native_thread_dynamic_tool_specs() if hosts_native_thread_tools else None
+            ),
+        ),
         command_router=CommandRouter(store),
         projector=MessageProjector(),
         outbound_sink=None,
