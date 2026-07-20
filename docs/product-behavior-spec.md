@@ -303,9 +303,11 @@ catalog.
 
 The bridge should not maintain its own thread source allowlist. Native Codex
 owns which thread sources are visible, including standalone app conversations
-that are not nested under a user-selected project folder. The bridge may only
-reorder the returned list for IM ergonomics, such as placing the current thread
-or matching `CWD` first.
+that are not nested under a user-selected project folder. The unfiltered
+browser may place the current thread first, but otherwise preserves native
+`updated_at` order. It must not group every thread matching the current `CWD`,
+because that makes a fresh `/threads` look as if the previous project filter is
+still active.
 
 The list should clearly indicate:
 

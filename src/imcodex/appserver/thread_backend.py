@@ -175,7 +175,6 @@ class CodexThreadBackendMixin:
         search_term: str | None = None,
     ) -> ThreadListResult:
         """Read the complete native thread catalog for a short-lived browser view."""
-        preferred_cwd = self.store.current_cwd(channel_id, conversation_id)
         cursor: str | None = None
         seen_cursors: set[str] = set()
         thread_order: list[str] = []
@@ -215,7 +214,7 @@ class CodexThreadBackendMixin:
             threads=self._prioritize_threads(
                 threads,
                 bound_thread_id=binding.thread_id,
-                preferred_cwd=preferred_cwd,
+                preferred_cwd=None,
             ),
             next_cursor=None,
         )

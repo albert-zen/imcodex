@@ -4089,7 +4089,7 @@ async def test_config_write_command_sends_native_json_value_write() -> None:
 
 
 @pytest.mark.asyncio
-async def test_threads_command_lets_native_codex_choose_sources_and_prefers_bound_and_matching_cwd() -> None:
+async def test_threads_command_lets_native_codex_choose_sources_and_only_prefers_bound_thread() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -4152,9 +4152,9 @@ async def test_threads_command_lets_native_codex_choose_sources_and_prefers_boun
     lines = messages[0].text.splitlines()
     assert lines[0] == "Threads · [All projects] · Page 1/1"
     assert lines[1] == "1. Bound thread [gamma] ✓"
-    assert lines[2] == "2. Matching cwd thread [alpha]"
-    assert lines[3] == "3. Other thread [beta]"
-    assert lines[4] == "Projects: [0] All · [1] gamma · [2] alpha · [3] beta"
+    assert lines[2] == "2. Other thread [beta]"
+    assert lines[3] == "3. Matching cwd thread [alpha]"
+    assert lines[4] == "Projects: [0] All · [1] gamma · [2] beta · [3] alpha"
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
@@ -4324,6 +4324,87 @@ async def test_threads_command_filters_complete_native_result_by_project_number(
         payload for payload in process.inputs if payload.get("method") == "thread/list"
     ]
     assert len(thread_list_payloads) == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_plain_threads_restores_native_order_after_project_filter() -> None:
+    def thread(thread_id: str, project: str, preview: str) -> dict[str, str]:
+        return {
+            "id": thread_id,
+            "cwd": rf"D:\work\{project}",
+            "preview": preview,
+            "status": "idle",
+        }
+
+    native_order = [
+        thread("thr_alpha_1", "alpha", "Alpha one"),
+        thread("thr_beta_1", "beta", "Beta one"),
+        thread("thr_alpha_2", "alpha", "Alpha two"),
+        thread("thr_beta_2", "beta", "Beta two"),
+    ]
+    process = SequentialScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {"id": 2, "result": {"threads": native_order, "nextCursor": None}},
+                {"id": 3, "result": {"threads": native_order, "nextCursor": None}},
+                {"id": 4, "result": {"threads": native_order, "nextCursor": None}},
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\beta")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/threads",
+        )
+    )
+    filtered = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m2",
+            text="/threads --project beta",
+        )
+    )
+    restored = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m3",
+            text="/threads",
+        )
+    )
+
+    assert "Threads · [beta]" in filtered[0].text
+    assert "Alpha one" not in filtered[0].text
+    restored_lines = restored[0].text.splitlines()
+    assert restored_lines[0] == "Threads · [All projects] · Page 1/1"
+    assert restored_lines[1:5] == [
+        "1. Alpha one [alpha]",
+        "2. Beta one [beta]",
+        "3. Alpha two [alpha]",
+        "4. Beta two [beta]",
+    ]
+    context = store.get_thread_browser_context("qq", "conv-1")
+    assert context is not None
+    assert context.project_path is None
+    assert context.all_thread_ids == [
+        "thr_alpha_1",
+        "thr_beta_1",
+        "thr_alpha_2",
+        "thr_beta_2",
+    ]
     await client.close()
 
 
