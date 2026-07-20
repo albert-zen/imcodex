@@ -54,7 +54,6 @@ class ConversationStore(
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
         self._pending_terminal_deliveries: dict[tuple[str, str], PendingTerminalDelivery] = {}
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
-        self._native_thread_tool_thread_ids: set[str] = set()
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
         self._suppressed_turns: set[tuple[str, str]] = set()
@@ -175,32 +174,6 @@ class ConversationStore(
 
     def get_thread_snapshot(self, thread_id: str) -> NativeThreadSnapshot | None:
         return self._thread_snapshots.get(thread_id)
-
-    async def claim_native_thread_tool_thread(self, thread_id: str) -> None:
-        normalized = str(thread_id or "").strip()
-        if not normalized or normalized in self._native_thread_tool_thread_ids:
-            return
-        if self.state_path is None:
-            self._native_thread_tool_thread_ids.add(normalized)
-            return
-        async with self._async_persistence_lock:
-            if normalized in self._native_thread_tool_thread_ids:
-                return
-            self._native_thread_tool_thread_ids.add(normalized)
-            try:
-                revision, serialized = self._snapshot_state()
-                await self._write_state_async(serialized, revision)
-            except asyncio.CancelledError:
-                # _write_state_async resolves its shielded write before
-                # propagating cancellation, so persisted and in-memory state
-                # still agree here.
-                raise
-            except BaseException:
-                self._native_thread_tool_thread_ids.discard(normalized)
-                raise
-
-    def is_native_thread_tool_thread(self, thread_id: str) -> bool:
-        return str(thread_id or "") in self._native_thread_tool_thread_ids
 
     def current_cwd(self, channel_id: str, conversation_id: str) -> str | None:
         binding = self.get_binding(channel_id, conversation_id)
@@ -612,7 +585,6 @@ class ConversationStore(
                 or binding.reply_context
             ],
             "pending_requests": [],
-            "native_thread_tool_thread_ids": sorted(self._native_thread_tool_thread_ids),
             "pending_terminal_deliveries": [
                 {
                     "thread_id": pending.thread_id,
@@ -696,12 +668,6 @@ class ConversationStore(
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
-        native_thread_tool_thread_ids = payload.get("native_thread_tool_thread_ids", [])
-        if not isinstance(native_thread_tool_thread_ids, list) or not all(
-            isinstance(thread_id, str) and thread_id for thread_id in native_thread_tool_thread_ids
-        ):
-            raise RuntimeError(f"Invalid native thread-tool ownership state: {self.state_path}")
-        self._native_thread_tool_thread_ids = set(native_thread_tool_thread_ids)
         pending_terminal_deliveries = payload.get("pending_terminal_deliveries", [])
         if not isinstance(pending_terminal_deliveries, list):
             raise RuntimeError(f"Invalid pending terminal delivery state: {self.state_path}")

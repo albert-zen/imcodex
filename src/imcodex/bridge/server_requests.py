@@ -64,7 +64,6 @@ class NativeRequestPolicy:
         external = facts.get("ownership") == "external"
         native_fallback = (
             tool in KNOWN_THREAD_DYNAMIC_TOOLS
-            and self.store.is_native_thread_tool_thread(event.thread_id)
             and (not external or self.native_thread_tool_host)
         )
         if not external and not native_fallback:
@@ -169,7 +168,11 @@ class NativeRequestPolicy:
         native_fallback: bool,
     ) -> None:
         event = normalize_appserver_message(request)
-        delay = 0.0 if native_fallback else self.peer_host_request_timeout_s
+        # A declared host has no peer to wait for. Resolve supported tools
+        # locally and reject unknown ones immediately. Only an explicit shared
+        # external App Server may have another client that can answer.
+        wait_for_peer = not native_fallback and not self.native_thread_tool_host
+        delay = self.peer_host_request_timeout_s if wait_for_peer else 0.0
         await asyncio.sleep(delay)
         if native_fallback:
             tool = str(event.payload.get("tool") or "")
@@ -256,17 +259,25 @@ class NativeRequestPolicy:
             },
             connection_epoch=connection_epoch,
         )
+        if wait_for_peer:
+            note = "peer host did not resolve delegated dynamic tool request before timeout"
+            event_name = "bridge.server_request.delegation_timeout"
+            message = "Peer host did not resolve delegated dynamic tool request before timeout"
+        else:
+            note = "declared host rejected unsupported dynamic tool without peer delegation"
+            event_name = "bridge.server_request.dynamic_tool_unavailable"
+            message = "Declared host cannot resolve unsupported dynamic tool"
         if journal_sequence is not None:
             self.store.update_native_appserver_event(
                 journal_sequence,
                 outcome="rejected",
-                note="peer host did not resolve delegated dynamic tool request before timeout",
+                note=note,
             )
         emit_event(
             component="bridge",
-            event="bridge.server_request.delegation_timeout",
+            event=event_name,
             level="WARNING",
-            message="Peer host did not resolve delegated dynamic tool request before timeout",
+            message=message,
             data={
                 "method": event.method,
                 "request_id": event.request_id,

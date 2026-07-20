@@ -13,7 +13,6 @@ async def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     store.bind_thread("qq", "conv-1", "thr_1")
-    await store.claim_native_thread_tool_thread("thr_1")
     store.set_commentary_visibility("qq", "conv-1", enabled=False)
     store.upsert_pending_request(
         request_id="native-request-abcdef",
@@ -25,6 +24,7 @@ async def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
         kind="approval",
         request_method="item/commandExecution/requestApproval",
     )
+    await store.flush_pending_writes()
 
     payload = json.loads(state_path.read_text(encoding="utf-8"))
 
@@ -32,30 +32,11 @@ async def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert payload["bindings"][0]["thread_id"] == "thr_1"
     assert "active_turn_id" not in payload["bindings"][0]
     assert payload["pending_requests"] == []
-    assert payload["native_thread_tool_thread_ids"] == ["thr_1"]
+    assert "native_thread_tool_thread_ids" not in payload
     assert payload["pending_terminal_deliveries"] == []
 
     reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
-    assert reloaded.is_native_thread_tool_thread("thr_1") is True
-    assert reloaded.is_native_thread_tool_thread("thr_foreign") is False
-
-
-@pytest.mark.asyncio
-async def test_native_thread_tool_claim_rolls_back_after_persistence_failure(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    state_path = tmp_path / "state.json"
-    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
-
-    async def fail_write(_serialized: str, _revision: int) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(store, "_write_state_async", fail_write)
-    with pytest.raises(OSError, match="disk full"):
-        await store.claim_native_thread_tool_thread("thr_child")
-
-    assert store.is_native_thread_tool_thread("thr_child") is False
+    assert reloaded.get_binding("qq", "conv-1").thread_id == "thr_1"
 
 
 def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_turn(tmp_path) -> None:

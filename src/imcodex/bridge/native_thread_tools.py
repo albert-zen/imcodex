@@ -244,17 +244,6 @@ class NativeThreadToolAdapter:
         if not isinstance(created, dict) or not str(created.get("id") or ""):
             raise ValueError("Codex did not return a newly created thread.")
         thread_id = str(created["id"])
-        store = getattr(self.backend, "store", None)
-        try:
-            if store is not None:
-                await store.claim_native_thread_tool_thread(thread_id)
-        except Exception as exc:
-            raise _CreatedThreadPostStartError(
-                thread_id=thread_id,
-                phase="toolHostRegistration",
-                initial_turn_status="notStarted",
-                cause=exc,
-            ) from exc
         turn_params: dict[str, Any] = {
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],

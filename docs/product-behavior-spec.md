@@ -451,8 +451,10 @@ Behavior:
 When IMCodex is the declared dynamic-tool host, every fresh native thread that
 IMCodex starts through `thread/start` MUST receive model-callable tools for
 listing and reading native threads, sending a message to a native thread, and
-creating another thread. These tools are not retrofitted into threads created
-by another App Server client.
+creating another thread. If a thread already has Desktop-registered tools,
+IMCodex leaves that tool set intact. Supported thread-tool calls are handled
+through native App Server APIs regardless of whether Desktop, CLI, or IMCodex
+originally created the calling thread.
 
 `create_thread` starts the child in the calling thread's native working
 directory, starts its initial turn, and gives the child the same thread-tool
@@ -461,16 +463,22 @@ the same capabilities as its parent. The bridge does not create a project
 catalog, worktree manager, pin model, handoff model, or remote-host registry to
 support these tools.
 
-IMCodex persists only the IDs of threads for which it registered this tool set.
-That minimal routing fact prevents both an external host and a private
-bridge-child from claiming a same-named tool call belonging to a thread created
-by another client. The fact is committed durably before the child's first turn
-starts. If native child creation succeeds but registration or initial-turn
-startup cannot be confirmed, the failed tool result still includes the created
-thread ID and tells the agent to inspect or message it instead of blindly
-creating another child.
+Thread creation origin is not a capability or authorization boundary, so
+IMCodex does not persist an ownership list for tool routing. Host selection is a
+connection-topology decision: a private or declared IMCodex host resolves the
+native mappings immediately, while an explicit shared endpoint leaves the
+request to the client that registered the tools. If native child creation
+succeeds but initial-turn startup cannot be confirmed, the failed tool result
+still includes the created thread ID and tells the agent to inspect or message
+it instead of blindly creating another child.
 
-Native `thread/fork` does not currently accept a dynamic-tool registration.
+The current native protocol accepts `dynamicTools` on `thread/start`, but not
+on `thread/resume`, `turn/start`, or `thread/fork`. Consequently IMCodex injects
+its tool set when it creates a thread and preserves existing Desktop tools when
+attaching, but cannot retrofit tools into an already-created thread that never
+had them. It must not replace or fork the user's thread to simulate injection.
+
+Native `thread/fork` does not currently accept dynamic-tool registration.
 Therefore agent-facing `fork_thread`, rename, and archive tools are not included
 in the IMCodex-created thread tool set. The user-facing `/fork` command retains
 native fork semantics, but its result is not covered by this tool-injection

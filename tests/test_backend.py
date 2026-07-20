@@ -486,10 +486,22 @@ async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_nat
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_resumes_selected_thread() -> None:
+async def test_attach_thread_preserves_existing_tools_without_resume_injection() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = AttachClient()
-    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    backend = CodexBackend(
+        client=client,
+        store=store,
+        service_name="imcodex-test",
+        thread_dynamic_tools=[
+            {
+                "type": "function",
+                "name": "list_threads",
+                "description": "List threads",
+                "inputSchema": {"type": "object"},
+            }
+        ],
+    )
 
     thread_id = await backend.attach_thread("qq", "conv-1", "thr_attached")
 
@@ -659,7 +671,6 @@ async def test_new_thread_receives_configured_dynamic_tools() -> None:
             ],
         }
     ]
-    assert backend.store.is_native_thread_tool_thread("thr_new") is True
 
 
 @pytest.mark.asyncio

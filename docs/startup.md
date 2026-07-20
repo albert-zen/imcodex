@@ -178,15 +178,18 @@ progress, because ordinary editors do not participate in that lock.
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.
 
-`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` declares that IMCodex is the only fallback
-host for Desktop-style thread-management tools on the selected App Server. The
+`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` declares that IMCodex handles supported
+Desktop-style thread-management tools on the selected App Server. The
 platform launchers set it automatically when they start or reuse the project's
 independent App Server. Explicit connect-only endpoints leave it disabled so a
 Desktop or other host cannot race IMCodex on side-effecting tool calls; set it
 manually only when that explicit endpoint has no other dynamic-tool host. Host
 mode also opts the App Server client into the upstream experimental protocol
 capability required by dynamic tools and paged thread history; it does not
-enable unrelated IMCodex product features.
+enable unrelated IMCodex product features. Host selection belongs to the App
+Server connection topology, not to individual threads: when enabled, IMCodex
+resolves native-mappable tool calls for Desktop-, CLI-, and IMCodex-created
+threads alike. It does not persist or infer per-thread tool ownership.
 
 For websocket cores that require bearer auth, set
 `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` to a local file containing the token, or

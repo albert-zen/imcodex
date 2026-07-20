@@ -64,8 +64,6 @@ class CodexThreadBackendMixin:
             **self._new_thread_dynamic_tool_params(),
         )
         snapshot = self._remember_snapshot(result.get("thread") or {})
-        if self.thread_dynamic_tools:
-            await self.store.claim_native_thread_tool_thread(snapshot.thread_id)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         return snapshot.thread_id
 

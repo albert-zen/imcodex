@@ -530,11 +530,16 @@ Internal failure handling MUST follow these rules:
   `dynamicTools` field. A thread created through the model-facing
   `create_thread` translation MUST register the same tools recursively. An
   explicit connect-only endpoint for which IMCodex is not the declared tool
-  host MUST NOT receive this injection. In every App Server topology, IMCodex
-  MUST resolve a thread-tool request only when the request's thread ID is
-  durably recorded as one for which IMCodex registered the tools; topology
-  configuration and tool name alone are insufficient ownership evidence. Child
-  registration MUST commit before its initial turn starts
+  host MUST NOT receive this injection. Existing Desktop-registered tools MUST
+  be left intact. When a supported thread-tool request reaches a private
+  bridge-child or a declared IMCodex host, IMCodex MUST resolve it through the
+  native App Server regardless of which client originally created the thread.
+  Thread creation origin is not an authorization boundary and MUST NOT be
+  persisted or consulted as tool-routing state. On an explicit shared endpoint
+  where IMCodex is not the host, requests remain delegated to the client that
+  registered them. The current native protocol exposes `dynamicTools` only on
+  `thread/start`; IMCodex MUST NOT replace, fork, or locally emulate an existing
+  thread merely to retrofit tools that were absent when it was created
 - IMCodex MUST NOT advertise an agent-facing thread tool whose native creation
   path cannot register the same tool set on the resulting thread. In the
   current protocol this excludes `thread/fork` from the injected tool surface

@@ -382,7 +382,6 @@ async def test_create_thread_uses_source_cwd_and_recursively_registers_tools() -
         "create_thread",
         "list_threads",
     }
-    assert backend.store.is_native_thread_tool_thread("thr_child") is True
     assert backend.calls[2] == (
         "turn/start",
         {
@@ -419,37 +418,6 @@ async def test_create_thread_reports_created_id_when_initial_turn_is_ambiguous()
     assert failure["threadId"] == "thr_child"
     assert failure["initialTurnStatus"] == "unknown"
     assert "instead of retrying" in failure["recovery"]
-
-
-@pytest.mark.asyncio
-async def test_create_thread_reports_created_id_when_provenance_commit_fails() -> None:
-    class FailingStore:
-        async def claim_native_thread_tool_thread(self, _thread_id: str) -> None:
-            raise OSError("disk full")
-
-    backend = RecordingBackend(
-        {
-            "thread/read": [{"thread": {"id": "thr_source", "cwd": "/work/imcodex"}}],
-            "thread/start": [{"thread": {"id": "thr_child", "cwd": "/work/imcodex"}}],
-        }
-    )
-    backend.service_name = "imcodex-test"
-    backend.thread_dynamic_tools = native_thread_dynamic_tool_specs()
-    backend.store = FailingStore()
-    adapter = NativeThreadToolAdapter(backend=backend)
-
-    response = await adapter.call(
-        "create_thread",
-        {"prompt": "检查回归"},
-        source_thread_id="thr_source",
-    )
-
-    assert response["success"] is False
-    failure = content(response)
-    assert failure["threadId"] == "thr_child"
-    assert failure["phase"] == "toolHostRegistration"
-    assert failure["initialTurnStatus"] == "notStarted"
-    assert not any(method == "turn/start" for method, _params in backend.calls)
 
 
 @pytest.mark.asyncio
