@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from ..models import OutboundMessage
+from ..models import OutboundArtifact, OutboundMessage
 
 
 EMPTY_COMPLETED_TURN_TEXT = "Codex completed the turn without returning a final message."
+_MAX_OUTBOUND_ARTIFACTS = 4
 
 
 @dataclass(slots=True)
@@ -16,6 +18,8 @@ class TurnBuffer:
     emitted_progress_texts: set[str] = field(default_factory=set)
     final_text: str = ""
     final_visible: bool = False
+    artifacts: list[OutboundArtifact] = field(default_factory=list)
+    artifact_errors: list[str] = field(default_factory=list)
 
 
 class MessagePump:
@@ -55,7 +59,13 @@ class MessagePump:
                 return None
             buffer.final_text = text
             buffer.final_visible = True
-            return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
+            return OutboundMessage(
+                channel_id="",
+                conversation_id="",
+                message_type="turn_result",
+                text=self._with_artifact_errors(text, buffer),
+                artifacts=tuple(buffer.artifacts),
+            )
         if phase is None:
             if text:
                 buffer.final_text = text
@@ -97,6 +107,24 @@ class MessagePump:
         lines.extend(f"- {path}" for path in paths)
         return self._emit_progress(buffer, "\n".join(lines))
 
+    def record_artifacts(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        artifacts: tuple[OutboundArtifact, ...] = (),
+        error: str | None = None,
+    ) -> None:
+        buffer = self._buffer(thread_id, turn_id)
+        merged = {Path(artifact.local_path).stem: artifact for artifact in buffer.artifacts}
+        merged.update({Path(artifact.local_path).stem: artifact for artifact in artifacts})
+        values = list(merged.values())
+        buffer.artifacts = values[:_MAX_OUTBOUND_ARTIFACTS]
+        if len(values) > _MAX_OUTBOUND_ARTIFACTS:
+            error = f"only {_MAX_OUTBOUND_ARTIFACTS} outbound artifacts can be delivered per turn"
+        if error and error not in buffer.artifact_errors:
+            buffer.artifact_errors.append(error)
+
     def finalize_turn(self, *, thread_id: str, turn_id: str, status: str) -> OutboundMessage | None:
         buffer = self._turns.pop((thread_id, turn_id), None)
         if buffer is None:
@@ -127,10 +155,23 @@ class MessagePump:
             text = "\n".join(buffer.command_summaries)
         if status == "completed" and not text.strip():
             text = EMPTY_COMPLETED_TURN_TEXT
-        return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
+        return OutboundMessage(
+            channel_id="",
+            conversation_id="",
+            message_type="turn_result",
+            text=self._with_artifact_errors(text, buffer),
+            artifacts=tuple(buffer.artifacts),
+        )
 
     def discard_turn(self, *, thread_id: str, turn_id: str) -> None:
         self._turns.pop((thread_id, turn_id), None)
+
+    def active_artifact_paths(self) -> set[str]:
+        return {
+            artifact.local_path
+            for buffer in self._turns.values()
+            for artifact in buffer.artifacts
+        }
 
     def recover_turn(
         self,
@@ -139,6 +180,8 @@ class MessagePump:
         turn_id: str,
         status: str,
         items: list[dict],
+        artifacts: tuple[OutboundArtifact, ...] = (),
+        artifact_errors: tuple[str, ...] = (),
     ) -> OutboundMessage | None:
         buffer = self._turns.pop((thread_id, turn_id), None)
         final_text = ""
@@ -171,11 +214,17 @@ class MessagePump:
                 ["Changed files:", *(f"- {path}" for path in dict.fromkeys(changed_files))]
             )
             text = "\n".join(part for part in (text, changes) if part)
+        if artifact_errors:
+            notice = "\n".join(f"- {error}" for error in artifact_errors)
+            text = "\n\n".join(
+                part for part in (text, f"Attachment delivery unavailable:\n{notice}") if part
+            )
         return OutboundMessage(
             channel_id="",
             conversation_id="",
             message_type="turn_result",
             text=text,
+            artifacts=artifacts,
         )
 
     def _buffer(self, thread_id: str, turn_id: str) -> TurnBuffer:
@@ -191,3 +240,12 @@ class MessagePump:
             return None
         buffer.emitted_progress_texts.add(text)
         return OutboundMessage(channel_id="", conversation_id="", message_type="turn_progress", text=text)
+
+    @staticmethod
+    def _with_artifact_errors(text: str, buffer: TurnBuffer) -> str:
+        if not buffer.artifact_errors:
+            return text
+        notice = "\n".join(f"- {error}" for error in buffer.artifact_errors)
+        return "\n\n".join(
+            part for part in (text, f"Attachment delivery unavailable:\n{notice}") if part
+        )

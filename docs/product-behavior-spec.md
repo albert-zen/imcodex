@@ -211,7 +211,7 @@ Start:
 Threads:
 
 - `/threads`
-- `/history [turns]`
+- `/history [turns] [--page N]`
 - `/fork`
 - `/rename <name>`
 - `/compact`
@@ -364,6 +364,10 @@ If the selected thread is already running:
 - if the selected thread was started in Codex Desktop and is still running,
   its later commentary, requests, and terminal result follow the same live
   projection path after the switch
+- if native Codex reports an active interaction that cannot accept direct
+  input from this connection, the switch fails explicitly and tells the user
+  to resolve that interaction on its owning client; the bridge does not invent
+  a local approval or input-request handoff
 
 If the selected thread is idle and history was requested:
 
@@ -409,6 +413,17 @@ If a completed native turn contains no final text or usable buffered output,
 the bridge sends an explicit empty-result notice instead of acknowledging a
 blank channel no-op as successful delivery.
 
+Native image/file outputs are carried as structured artifacts on that same
+terminal message, not as a bridge-defined message type. Explicit native image
+content blocks, image-generation `savedPath` values, and final Markdown links
+inside the native workspace are copied into a private content-addressed spool
+with type and size validation before the terminal outbox is staged. A rejected
+artifact adds a visible failure notice; an arbitrary local path outside the
+native workspace is never sent. The spool is capped at 256 MiB, and startup
+cleanup removes entries that are not referenced by the durable terminal outbox.
+Reference-aware cleanup also runs after a durable delivery acknowledgement,
+while preserving artifacts still buffered by active native turns.
+
 For the generic webhook, the immediate command response is always available in
 the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later
 native messages occur after the inbound HTTP exchange. If no outbound callback
@@ -417,22 +432,30 @@ than switching into an undeliverable live stream.
 
 If no thread browser is active, `/next`, `/prev`, and `/pick` should return a user-facing error telling the user to run `/threads` first.
 
-### `/history [N]`
+### `/history [N] [--page P]`
 
-`/history` shows one recent completed turn for the active native thread.
-`/history N` shows between one and five recent completed turns. The older
+`/history` shows one recent native turn for the active native thread.
+`/history N` shows between one and five native turns. `/history N --page P`
+walks native cursors from the newest page toward the oldest available page. The older
 `/thread history [N]` spelling remains a compatibility alias but is not the
 primary documented command.
 
 Behavior:
 
 - it requires an active thread
-- it is available only while native Codex reports the thread as idle
-- while the thread is running, it returns a status explaining that history can be requested after the current turn completes
-- it reads recent turns from native Codex using `thread/turns/list` or a native thread read that includes turns
-- it renders each selected turn as ordinary Markdown text with a distinct turn heading, quoted user input, and structurally preserved final Codex output; it does not introduce a second message type or replay commentary, reasoning, tool calls, or raw protocol payloads
+- it remains readable while native Codex reports an active turn, so another surface's in-progress or interrupted work is visible
+- it reads full native turns from Codex using `thread/turns/list` or a native thread read that includes turns; completed, failed, interrupted, active, and compacted turns are not filtered out
+- it renders each selected turn as ordinary Markdown text with a distinct turn heading, quoted user input, and structurally preserved final Codex output; when no final output exists, it preserves the latest partial agent message; it does not introduce a second message type or replay reasoning, tool calls, or raw protocol payloads
+- display limits and page sizes never become Codex context limits and no bridge-local transcript is created
 - if native history cannot be read, the user gets a friendly status instead of protocol noise
 - if a new turn starts after an idle history read begins, live projection waits until the history response has been delivered so old and new output cannot interleave
+
+Before ordinary input continues a bound thread, IMCodex calls native
+`thread/resume` for that exact `threadId` and reconciles the active turn. A
+different returned ID, or an active thread without a verifiable active turn,
+fails explicitly instead of starting a competing or approximate continuation.
+The resume response may be display-trimmed, but native Codex's canonical thread
+context is never rebuilt from `/history` output.
 
 ### `/fork`, `/rename <name>`, `/compact`
 

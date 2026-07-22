@@ -46,6 +46,17 @@ class TerminalDeliveryMixin:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self.store.update_terminal_delivery_message(
+                thread_id,
+                turn_id,
+                asdict(message),
+            )
+            try:
+                await self.store.flush_pending_writes()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
             emit_event(
                 component="bridge",
                 event="bridge.terminal_delivery.persistence_failed",
@@ -67,6 +78,17 @@ class TerminalDeliveryMixin:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            self.store.update_terminal_delivery_message(
+                thread_id,
+                turn_id,
+                asdict(message),
+            )
+            try:
+                await self.store.flush_pending_writes()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
             emit_event(
                 component="bridge",
                 event="bridge.terminal_delivery.failed",
@@ -84,11 +106,13 @@ class TerminalDeliveryMixin:
             self._schedule_terminal_delivery_retry()
             return [message], False
         self.store.complete_terminal_delivery(thread_id, turn_id)
-        await self._flush_terminal_delivery_ack(
+        ack_persisted = await self._flush_terminal_delivery_ack(
             thread_id=thread_id,
             turn_id=turn_id,
             message=message,
         )
+        if ack_persisted:
+            self._cleanup_outbound_artifact_spool()
         emit_event(
             component="bridge",
             event="bridge.terminal_delivery.succeeded",
@@ -186,6 +210,12 @@ class TerminalDeliveryMixin:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    self.store.update_terminal_delivery_message(
+                        pending.thread_id,
+                        pending.turn_id,
+                        asdict(message),
+                    )
+                    state_changed = True
                     emit_event(
                         component="bridge",
                         event="bridge.terminal_delivery.retry_failed",
@@ -232,6 +262,8 @@ class TerminalDeliveryMixin:
                         data={"error_type": type(exc).__name__},
                     )
                     self._schedule_terminal_delivery_retry()
+                else:
+                    self._cleanup_outbound_artifact_spool()
         return delivered_any
 
     async def _flush_terminal_delivery_ack(
@@ -240,7 +272,7 @@ class TerminalDeliveryMixin:
         thread_id: str,
         turn_id: str,
         message: OutboundMessage,
-    ) -> None:
+    ) -> bool:
         try:
             await self.store.flush_pending_writes()
         except asyncio.CancelledError:
@@ -262,6 +294,8 @@ class TerminalDeliveryMixin:
                 },
             )
             self._schedule_terminal_delivery_retry()
+            return False
+        return True
 
     async def _retry_terminal_delivery_ack_persistence(self) -> bool:
         if not self._terminal_delivery_ack_persistence_pending:
@@ -281,4 +315,25 @@ class TerminalDeliveryMixin:
             )
             return False
         self._terminal_delivery_ack_persistence_pending = False
+        self._cleanup_outbound_artifact_spool()
         return True
+
+    def _cleanup_outbound_artifact_spool(self) -> None:
+        stager = getattr(self.projector, "artifact_stager", None)
+        cleanup = getattr(stager, "cleanup_unreferenced", None)
+        if not callable(cleanup):
+            return
+        referenced = self.store.referenced_terminal_artifact_paths()
+        active_paths = getattr(self.projector.message_pump, "active_artifact_paths", None)
+        if callable(active_paths):
+            referenced.update(active_paths())
+        try:
+            cleanup(referenced)
+        except OSError as exc:
+            emit_event(
+                component="bridge",
+                event="bridge.outbound_artifact_cleanup.failed",
+                level="WARNING",
+                message="Outbound artifact cleanup failed",
+                data={"error_type": type(exc).__name__},
+            )

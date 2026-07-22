@@ -126,6 +126,16 @@ class InboundMessage:
     trace_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OutboundArtifact:
+    kind: Literal["image", "file"]
+    local_path: str
+    content_type: str
+    filename: str
+    size_bytes: int
+    sha256: str = ""
+
+
 @dataclass(slots=True)
 class OutboundMessage:
     channel_id: str
@@ -134,3 +144,10 @@ class OutboundMessage:
     text: str
     request_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[OutboundArtifact] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.artifacts = [
+            item if isinstance(item, OutboundArtifact) else OutboundArtifact(**item)
+            for item in self.artifacts
+        ]

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import defaultdict
+from dataclasses import replace
 import hashlib
 import json
 import logging
@@ -14,7 +16,7 @@ import httpx
 import websockets
 
 from ..config import validate_http_endpoint
-from ..models import InboundMessage, InboundQuote, InboundQuoteAttachment, OutboundMessage
+from ..models import InboundMessage, InboundQuote, InboundQuoteAttachment, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .base import BaseChannelAdapter
@@ -54,6 +56,10 @@ QQ_QUOTE_ATTACHMENT_LIMIT = 8
 QQ_QUOTE_FILENAME_LIMIT = 256
 QQ_QUOTE_TRANSCRIPT_LIMIT = 4_000
 QQ_QUOTE_REFERENCE_LIMIT = 512
+
+
+class QQPermanentArtifactError(RuntimeError):
+    pass
 
 
 def _config_bool(value: object, default: bool = False) -> bool:
@@ -159,6 +165,7 @@ def _qq_quote_attachment_kind(
 
 class QQChannelAdapter(BaseChannelAdapter):
     channel_id = "qq"
+    supports_outbound_artifacts = True
 
     def __init__(
         self,
@@ -171,6 +178,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         token_url: str = TOKEN_URL,
         http_client: httpx.AsyncClient | None = None,
         media_dir: Path | None = None,
+        outbound_media_dir: Path | None = None,
         media_materializer: QQMediaMaterializer | None = None,
         media_cleanup_sleep=asyncio.sleep,
         websocket_factory=websockets.connect,
@@ -194,6 +202,9 @@ class QQChannelAdapter(BaseChannelAdapter):
             clock=clock,
             cleanup_sleep=media_cleanup_sleep,
         )
+        self.outbound_media_dir = (
+            outbound_media_dir or Path(".imcodex") / "outbound-media"
+        ).resolve()
         self.websocket_factory = websocket_factory
         self.sleep = sleep
         self.clock = clock
@@ -226,6 +237,9 @@ class QQChannelAdapter(BaseChannelAdapter):
             api_base=str(config.get("api_base") or DEFAULT_API_BASE),
             markdown_enabled=_config_bool(config.get("markdown_enabled")),
             media_dir=Path(str(config.get("media_dir") or ".imcodex/channels/qq/inbound-media")),
+            outbound_media_dir=Path(
+                str(config.get("outbound_media_dir") or ".imcodex/outbound-media")
+            ),
             access_policy=ChannelAccessPolicy.from_config(config),
         )
 
@@ -341,13 +355,48 @@ class QQChannelAdapter(BaseChannelAdapter):
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
-        if not self.enabled or message.channel_id != "qq" or not message.text.strip():
+        if not self.enabled or message.channel_id != "qq":
+            return
+        if not message.text.strip() and not message.artifacts:
             return
         self.ensure_outbound_allowed(message)
         token = await self._get_access_token()
         path = self._conversation_path(message.conversation_id)
         reply_to = self._reply_to_message_id(message)
         sequence_key = reply_to or message.conversation_id
+        artifact_failures: list[str] = []
+        original_artifacts = list(message.artifacts)
+        for index, artifact in enumerate(original_artifacts):
+            try:
+                await self._send_artifact(
+                    message,
+                    artifact,
+                    token=token,
+                    message_path=path,
+                    sequence_key=sequence_key,
+                    reply_to=reply_to,
+                )
+            except QQPermanentArtifactError as exc:
+                artifact_failures.append(f"{artifact.filename}: {exc}")
+            except Exception:
+                # Successful earlier artifacts already have stable QQ message
+                # identities. Persist only this artifact and those not yet
+                # attempted so an outbox retry does not resend completed work.
+                message.artifacts = original_artifacts[index:]
+                raise
+            else:
+                message.artifacts = original_artifacts[index + 1 :]
+        message.artifacts = []
+        if artifact_failures:
+            notice = "Attachment delivery unavailable:\n" + "\n".join(
+                f"- {failure}" for failure in artifact_failures
+            )
+            if notice not in message.text:
+                message.text = "\n\n".join(
+                    part for part in (message.text, notice) if part
+                )
+        if not message.text.strip():
+            return
         body = self._message_body(
             message.text,
             msg_seq=self._message_sequence(message, sequence_key),
@@ -374,12 +423,140 @@ class QQChannelAdapter(BaseChannelAdapter):
                     return
                 raise
 
+    async def _send_artifact(
+        self,
+        message: OutboundMessage,
+        artifact: OutboundArtifact,
+        *,
+        token: str,
+        message_path: str,
+        sequence_key: str,
+        reply_to: str | None,
+    ) -> None:
+        try:
+            source = Path(artifact.local_path).resolve(strict=True)
+            source.relative_to(self.outbound_media_dir)
+        except (OSError, ValueError) as exc:
+            raise QQPermanentArtifactError(
+                "artifact is outside the managed spool or no longer exists"
+            ) from exc
+        if not source.is_file() or source.stat().st_size != artifact.size_bytes:
+            raise QQPermanentArtifactError("artifact changed after it was staged")
+        if artifact.kind == "file" and message.conversation_id.startswith("group:"):
+            raise QQPermanentArtifactError("QQ group conversations do not support generic files")
+        content = await asyncio.to_thread(source.read_bytes)
+        if len(content) != artifact.size_bytes or (
+            artifact.sha256
+            and hashlib.sha256(content).hexdigest() != artifact.sha256
+        ):
+            raise QQPermanentArtifactError("artifact changed after it was staged")
+        file_type = 1 if artifact.kind == "image" else 4
+        upload_body: dict[str, Any] = {
+            "file_type": file_type,
+            "srv_send_msg": False,
+            "file_data": base64.b64encode(content).decode("ascii"),
+        }
+        if artifact.kind == "file":
+            upload_body["file_name"] = artifact.filename
+        try:
+            upload = await self._post_json(
+                path=self._conversation_file_path(message.conversation_id),
+                token=token,
+                body=upload_body,
+            )
+        except httpx.HTTPStatusError as exc:
+            if self._permanent_artifact_status(exc.response.status_code):
+                raise QQPermanentArtifactError(
+                    f"QQ rejected the upload (HTTP {exc.response.status_code})"
+                ) from exc
+            raise
+        file_info = upload.get("file_info")
+        if not file_info:
+            raise QQPermanentArtifactError("QQ upload returned no file_info")
+        artifact_message = replace(
+            message,
+            metadata={
+                **message.metadata,
+                "delivery_id": self._artifact_delivery_id(message, artifact),
+            },
+            artifacts=[],
+        )
+        body: dict[str, Any] = {
+            "msg_type": 7,
+            "media": {"file_info": file_info},
+            "msg_seq": self._message_sequence(artifact_message, sequence_key),
+        }
+        if artifact.kind == "file":
+            body["content"] = artifact.filename
+        if reply_to:
+            body["msg_id"] = reply_to
+        try:
+            await self._post_message(path=message_path, token=token, body=body)
+        except httpx.HTTPStatusError as exc:
+            if self._acknowledge_duplicate_delivery(artifact_message, exc):
+                return
+            if self._permanent_artifact_status(exc.response.status_code):
+                raise QQPermanentArtifactError(
+                    f"QQ rejected the attachment message (HTTP {exc.response.status_code})"
+                ) from exc
+            raise
+
+    @staticmethod
+    def _artifact_delivery_id(
+        message: OutboundMessage,
+        artifact: OutboundArtifact,
+    ) -> str:
+        parent = str(message.metadata.get("delivery_id") or "unstable")
+        identity = (
+            f"{parent}\0{artifact.sha256 or artifact.local_path}"
+            f"\0{artifact.size_bytes}"
+        )
+        return f"{parent}:artifact:{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _permanent_artifact_status(status_code: int) -> bool:
+        return status_code in {400, 403, 404, 413, 415, 422}
+
     def prepare_durable_message(self, message: OutboundMessage) -> None:
-        if message.channel_id != "qq" or message.metadata.get("qq_reply_identity_pinned"):
+        if message.channel_id != "qq":
             return
-        reply_to = self._reply_to_message_id(message)
-        message.metadata["qq_reply_identity_pinned"] = True
-        message.metadata["qq_reply_to_message_id"] = reply_to
+        if message.artifacts:
+            deliverable: list[OutboundArtifact] = []
+            failures: list[str] = []
+            for artifact in message.artifacts:
+                error = self._artifact_validation_error(message, artifact)
+                if error is None:
+                    deliverable.append(artifact)
+                else:
+                    failures.append(f"{artifact.filename}: {error}")
+            message.artifacts = deliverable
+            if failures:
+                notice = "Attachment delivery unavailable:\n" + "\n".join(
+                    f"- {failure}" for failure in failures
+                )
+                message.text = "\n\n".join(
+                    part for part in (message.text, notice) if part
+                )
+        if not message.metadata.get("qq_reply_identity_pinned"):
+            reply_to = self._reply_to_message_id(message)
+            message.metadata["qq_reply_identity_pinned"] = True
+            message.metadata["qq_reply_to_message_id"] = reply_to
+
+    def _artifact_validation_error(
+        self,
+        message: OutboundMessage,
+        artifact: OutboundArtifact,
+    ) -> str | None:
+        if artifact.kind == "file" and message.conversation_id.startswith("group:"):
+            return "QQ group conversations do not support generic files"
+        try:
+            source = Path(artifact.local_path).resolve(strict=True)
+            source.relative_to(self.outbound_media_dir)
+        except (OSError, ValueError):
+            return "artifact is outside the managed spool or no longer exists"
+        if not source.is_file() or source.stat().st_size != artifact.size_bytes:
+            return "artifact changed after it was staged"
+        return None
 
     async def _run_forever(self) -> None:
         failures = 0
@@ -750,6 +927,9 @@ class QQChannelAdapter(BaseChannelAdapter):
             return f"/v2/groups/{conversation_id[6:]}/messages"
         raise ValueError(f"Unsupported QQ conversation id: {conversation_id}")
 
+    def _conversation_file_path(self, conversation_id: str) -> str:
+        return self._conversation_path(conversation_id).removesuffix("/messages") + "/files"
+
     def _conversation_user_id(self, conversation_id: str) -> str | None:
         if conversation_id.startswith("c2c:"):
             return conversation_id[4:] or None
@@ -803,6 +983,27 @@ class QQChannelAdapter(BaseChannelAdapter):
             json=body,
         )
         response.raise_for_status()
+
+    async def _post_json(
+        self,
+        *,
+        path: str,
+        token: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        response = await self.http_client.post(
+            f"{self.api_base}{path}",
+            headers={
+                "Authorization": f"QQBot {token}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("QQ media upload returned an invalid response")
+        return payload
 
     def _should_retry_plain_text(self, exc: httpx.HTTPStatusError) -> bool:
         return self.markdown_enabled and exc.response.status_code in {400, 403}

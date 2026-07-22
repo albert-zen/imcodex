@@ -16,6 +16,7 @@ from .appserver.retry import RetryBackoff
 from .appserver.supervisor import resolve_unix_socket_path
 from .appserver.thread_dynamic_tools import native_thread_dynamic_tool_specs
 from .bridge import BridgeService, CommandRouter, MessageProjector
+from .bridge.outbound_artifacts import OutboundArtifactStager
 from .channels import (
     MultiplexOutboundSink,
     UnifiedChannelMiddleware,
@@ -100,6 +101,8 @@ def build_runtime(
         ),
     )
     hosts_native_thread_tools = settings.native_thread_tool_host or not app_server_target.is_external
+    artifact_stager = OutboundArtifactStager(settings.data_dir / "outbound-media")
+    artifact_stager.cleanup_unreferenced(store.referenced_terminal_artifact_paths())
     service = BridgeService(
         store=store,
         backend=CodexBackend(
@@ -111,7 +114,9 @@ def build_runtime(
             ),
         ),
         command_router=CommandRouter(store),
-        projector=MessageProjector(),
+        projector=MessageProjector(
+            artifact_stager=artifact_stager
+        ),
         outbound_sink=None,
         native_thread_tool_host=settings.native_thread_tool_host,
     )

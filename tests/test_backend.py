@@ -104,7 +104,14 @@ class NewThreadClient:
 
     async def resume_thread(self, **params):
         self.resume_calls.append(params)
-        raise AssertionError("resume_thread should not be called for a freshly started thread")
+        return {
+            "thread": {
+                "id": "thr_new",
+                "cwd": r"D:\desktop\imcodex",
+                "preview": "New thread",
+                "status": "idle",
+            }
+        }
 
     async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
         self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
@@ -538,6 +545,94 @@ async def test_attach_thread_reconciles_native_active_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_attach_thread_refuses_inexact_native_handoff() -> None:
+    class InexactAttachClient:
+        async def resume_thread(self, **_params):
+            return {
+                "thread": {
+                    "id": "thr_other",
+                    "cwd": r"D:\desktop\attached",
+                    "status": "idle",
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = CodexBackend(client=InexactAttachClient(), store=store, service_name="test")
+
+    with pytest.raises(AppServerError, match="inexact handoff"):
+        await backend.attach_thread("qq", "conv-1", "thr_requested")
+
+    assert store.get_binding("qq", "conv-1").thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_refuses_unverifiable_active_handoff() -> None:
+    class UnverifiableAttachClient:
+        async def resume_thread(self, **params):
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": r"D:\desktop\attached",
+                    "status": "active",
+                    "turns": [],
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = CodexBackend(client=UnverifiableAttachClient(), store=store, service_name="test")
+
+    with pytest.raises(AppServerError, match="unverifiable handoff"):
+        await backend.attach_thread("qq", "conv-1", "thr_running")
+
+    assert store.get_binding("qq", "conv-1").thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_refuses_nontransferable_native_interaction() -> None:
+    class PendingInteractionClient:
+        async def resume_thread(self, **params):
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": r"D:\desktop\attached",
+                    "status": "active",
+                    "canAcceptDirectInput": False,
+                    "turns": [{"id": "turn_native", "status": "inProgress"}],
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = CodexBackend(client=PendingInteractionClient(), store=store, service_name="test")
+
+    with pytest.raises(AppServerError, match="cannot be transferred"):
+        await backend.attach_thread("qq", "conv-1", "thr_running")
+
+    assert store.get_binding("qq", "conv-1").thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_attach_thread_fails_closed_without_negotiated_direct_input_state() -> None:
+    class StableOnlyClient:
+        _experimental_api_enabled = False
+
+        async def resume_thread(self, **params):
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": r"D:\desktop\attached",
+                    "status": "active",
+                    "turns": [{"id": "turn_native", "status": "inProgress"}],
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    backend = CodexBackend(client=StableOnlyClient(), store=store, service_name="test")
+
+    with pytest.raises(AppServerError, match="cannot be transferred"):
+        await backend.attach_thread("qq", "conv-1", "thr_running")
+
+
+@pytest.mark.asyncio
 async def test_thread_operations_use_active_native_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\attached")
@@ -549,10 +644,17 @@ async def test_thread_operations_use_active_native_thread() -> None:
     await backend.rename_thread("qq", "conv-1", "Renamed thread")
     await backend.compact_thread("qq", "conv-1")
 
-    assert history == {"turns": []}
+    assert history == {"turns": [], "page": 1, "hasOlder": False}
     assert forked.thread_id == "thr_forked"
     assert store.get_binding("qq", "conv-1").thread_id == "thr_forked"
-    assert client.history_calls == [{"thread_id": "thr_1", "limit": 3}]
+    assert client.history_calls == [
+        {
+            "thread_id": "thr_1",
+            "limit": 3,
+            "items_view": "full",
+            "sort_direction": "desc",
+        }
+    ]
     assert client.fork_calls == ["thr_1"]
     assert client.rename_calls == [{"thread_id": "thr_forked", "name": "Renamed thread"}]
     assert client.compact_calls == ["thr_forked"]
@@ -611,7 +713,7 @@ async def test_resolve_thread_selector_rejects_ambiguous_label_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_text_reuses_fresh_thread_without_resume() -> None:
+async def test_submit_text_reconciles_fresh_thread_before_first_input() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
     client = NewThreadClient()
@@ -626,7 +728,9 @@ async def test_submit_text_reuses_fresh_thread_without_resume() -> None:
     assert client.start_thread_calls == [
         {"cwd": r"D:\desktop\imcodex", "service_name": "imcodex-test"},
     ]
-    assert client.resume_calls == []
+    assert client.resume_calls == [
+        {"thread_id": "thr_new", "service_name": "imcodex-test"}
+    ]
     assert client.start_turn_calls == [
         {
             "thread_id": "thr_new",
@@ -689,7 +793,11 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
         {
             "thread_id": "thr_old",
             "service_name": "imcodex-test",
-        }
+        },
+        {
+            "thread_id": "thr_old",
+            "service_name": "imcodex-test",
+        },
     ]
     assert client.start_turn_calls == [
         {
@@ -702,6 +810,60 @@ async def test_submit_text_resumes_loaded_thread_after_missing_rollout_error() -
             "input_items": [{"type": "text", "text": "continue"}],
             "summary": "concise",
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_text_steers_turn_discovered_during_resume_retry() -> None:
+    class ActiveOnRetryClient:
+        def __init__(self) -> None:
+            self.resume_calls = 0
+            self.start_turn_calls = 0
+            self.steer_turn_calls: list[dict] = []
+
+        async def resume_thread(self, **params):
+            self.resume_calls += 1
+            turns = []
+            status = "idle"
+            if self.resume_calls == 2:
+                status = "active"
+                turns = [{"id": "turn_native", "status": "inProgress"}]
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": r"D:\desktop\imcodex",
+                    "status": status,
+                    "turns": turns,
+                }
+            }
+
+        async def start_turn(self, thread_id: str, **_params):
+            self.start_turn_calls += 1
+            raise AppServerError(f"no rollout found for thread id {thread_id}")
+
+        async def steer_turn(self, thread_id: str, turn_id: str, **params):
+            self.steer_turn_calls.append(
+                {"thread_id": thread_id, "turn_id": turn_id, **params}
+            )
+            return {"turnId": turn_id}
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_old")
+    client = ActiveOnRetryClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    submission = await backend.submit_text("qq", "conv-1", "continue")
+
+    assert submission.kind == "steer"
+    assert submission.turn_id == "turn_native"
+    assert client.resume_calls == 2
+    assert client.start_turn_calls == 1
+    assert client.steer_turn_calls == [
+        {
+            "thread_id": "thr_old",
+            "turn_id": "turn_native",
+            "input_items": [{"type": "text", "text": "continue"}],
+        }
     ]
 
 

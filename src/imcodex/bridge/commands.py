@@ -14,6 +14,7 @@ _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
 _DEFAULT_HISTORY_TURNS = 1
 _MAX_HISTORY_TURNS = 5
+_HISTORY_USAGE = "Usage: /history [N] [--page N]"
 _THREADS_USAGE = "Usage: /threads [query] [--project <name-or-number>] [--page N]"
 
 
@@ -247,7 +248,7 @@ class CommandRouter:
         return self._history_response(
             binding.thread_id,
             command.args,
-            usage="Usage: /history [N]",
+            usage=_HISTORY_USAGE,
         )
 
     def _history_response(
@@ -259,15 +260,60 @@ class CommandRouter:
     ) -> CommandResponse:
         if thread_id is None:
             return CommandResponse(action="thread.history.missing", text="No active thread.")
-        limit = self._parse_history_limit(args, usage=usage)
-        if isinstance(limit, CommandResponse):
-            return limit
+        options = self._parse_history_options(args, usage=usage)
+        if isinstance(options, CommandResponse):
+            return options
+        limit, page = options
         return CommandResponse(
             action="thread.history.query",
             text="",
             thread_id=thread_id,
-            payload={"limit": limit},
+            payload={"limit": limit, "page": page},
         )
+
+    def _parse_history_options(
+        self,
+        args: list[str],
+        *,
+        usage: str,
+    ) -> tuple[int, int] | CommandResponse:
+        limit = _DEFAULT_HISTORY_TURNS
+        page = 1
+        positional: list[str] = []
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg == "--page":
+                if index + 1 >= len(args):
+                    return CommandResponse(action="thread.history.invalid", text=usage)
+                value = args[index + 1]
+                index += 2
+            elif arg.startswith("--page="):
+                value = arg.partition("=")[2]
+                index += 1
+            elif arg.startswith("--"):
+                return CommandResponse(action="thread.history.invalid", text=usage)
+            else:
+                positional.append(arg)
+                index += 1
+                continue
+            try:
+                page = int(value)
+            except ValueError:
+                return CommandResponse(action="thread.history.invalid", text=usage)
+        if len(positional) > 1:
+            return CommandResponse(action="thread.history.invalid", text=usage)
+        if positional:
+            parsed_limit = self._parse_history_limit(positional, usage=usage)
+            if isinstance(parsed_limit, CommandResponse):
+                return parsed_limit
+            limit = parsed_limit
+        if page < 1:
+            return CommandResponse(
+                action="thread.history.invalid",
+                text="History page must be 1 or greater.",
+            )
+        return limit, page
 
     def _parse_pick_history(self, args: list[str]) -> int | None | CommandResponse:
         if not args:
@@ -751,8 +797,8 @@ class CommandRouter:
                     "Threads",
                     "/threads [query]",
                     "Browse and switch threads.",
-                    "/history [turns]",
-                    "Show recent turns.",
+                    "/history [turns] [--page N]",
+                    "Browse native turns, including interrupted and active work.",
                     "/fork",
                     "Continue from a copy.",
                     "/rename <name>",

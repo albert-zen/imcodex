@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from io import BytesIO
 import json
 import os
@@ -20,7 +22,7 @@ from imcodex.channels.api import (
     MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS,
     _InboundWebhookGuard,
 )
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.models import InboundMessage, OutboundArtifact, OutboundMessage
 from imcodex.store import ConversationStore
 
 
@@ -1423,6 +1425,313 @@ async def test_qq_adapter_sends_markdown_messages_by_default() -> None:
         "msg_seq": 1,
         "msg_id": "msg-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_uploads_native_image_before_final_text(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "result.png"
+    image_path.write_bytes(PNG)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json={"file_info": "uploaded-image-token"})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            outbound_media_dir=outbound_root,
+            access_policy=ChannelAccessPolicy.allow_all(),
+        )
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="The image is attached.",
+                metadata={"delivery_id": "terminal-1"},
+                artifacts=(
+                    OutboundArtifact(
+                        kind="image",
+                        local_path=str(image_path),
+                        content_type="image/png",
+                        filename="result.png",
+                        size_bytes=len(PNG),
+                        sha256=hashlib.sha256(PNG).hexdigest(),
+                    ),
+                ),
+            )
+        )
+
+    outbound_requests = requests[1:]
+    assert [request.url.path for request in outbound_requests] == [
+        "/v2/users/user-1/files",
+        "/v2/users/user-1/messages",
+        "/v2/users/user-1/messages",
+    ]
+    upload = json.loads(outbound_requests[0].content)
+    media = json.loads(outbound_requests[1].content)
+    final_text = json.loads(outbound_requests[2].content)
+    assert upload["file_type"] == 1
+    assert upload["srv_send_msg"] is False
+    assert base64.b64decode(upload["file_data"]) == PNG
+    assert media["msg_type"] == 7
+    assert media["media"] == {"file_info": "uploaded-image-token"}
+    assert final_text["markdown"]["content"] == "The image is attached."
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_reports_permanent_artifact_upload_rejection(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "result.png"
+    image_path.write_bytes(PNG)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/files"):
+            return httpx.Response(413, json={"message": "too large"})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            outbound_media_dir=outbound_root,
+            access_policy=ChannelAccessPolicy.allow_all(),
+        )
+        message = OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="The image is attached.",
+                artifacts=[
+                    OutboundArtifact(
+                        kind="image",
+                        local_path=str(image_path),
+                        content_type="image/png",
+                        filename="result.png",
+                        size_bytes=len(PNG),
+                        sha256=hashlib.sha256(PNG).hexdigest(),
+                    )
+                ],
+            )
+        await adapter.send_message(message)
+
+    assert [request.url.path for request in requests[1:]] == [
+        "/v2/users/user-1/files",
+        "/v2/users/user-1/messages",
+    ]
+    final_text = json.loads(requests[-1].content)["markdown"]["content"]
+    assert "The image is attached." in final_text
+    assert "QQ rejected the upload (HTTP 413)" in final_text
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_keeps_only_unfinished_artifacts_after_transient_failure(
+    tmp_path: Path,
+) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    first_path = outbound_root / "first.png"
+    second_path = outbound_root / "second.png"
+    first_path.write_bytes(PNG)
+    second_content = PNG + b"second"
+    second_path.write_bytes(second_content)
+    upload_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal upload_count
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/files"):
+            upload_count += 1
+            if upload_count == 2:
+                return httpx.Response(500, json={"message": "retry"})
+            return httpx.Response(200, json={"file_info": "first-token"})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="c2c:user-1",
+        message_type="turn_result",
+        text="Two images.",
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(first_path),
+                content_type="image/png",
+                filename="first.png",
+                size_bytes=len(PNG),
+                sha256=hashlib.sha256(PNG).hexdigest(),
+            ),
+            OutboundArtifact(
+                kind="image",
+                local_path=str(second_path),
+                content_type="image/png",
+                filename="second.png",
+                size_bytes=len(second_content),
+                sha256=hashlib.sha256(second_content).hexdigest(),
+            ),
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            outbound_media_dir=outbound_root,
+            access_policy=ChannelAccessPolicy.allow_all(),
+        )
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await adapter.send_message(message)
+
+    assert [artifact.filename for artifact in message.artifacts] == ["second.png"]
+
+
+def test_qq_artifact_delivery_identity_is_stable_after_suffix_retry(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+        outbound_media_dir=outbound_root,
+        access_policy=ChannelAccessPolicy.allow_all(),
+    )
+    artifact = OutboundArtifact(
+        kind="image",
+        local_path=str(outbound_root / "second.png"),
+        content_type="image/png",
+        filename="second.png",
+        size_bytes=len(PNG),
+        sha256=hashlib.sha256(PNG).hexdigest(),
+    )
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="c2c:user-1",
+        message_type="turn_result",
+        text="Two images.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[artifact],
+    )
+
+    before = adapter._artifact_delivery_id(message, artifact)
+    message.artifacts = [artifact]
+    after = adapter._artifact_delivery_id(message, artifact)
+
+    assert before == after
+
+
+@pytest.mark.asyncio
+async def test_qq_adapter_rejects_same_size_artifact_mutation(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "result.png"
+    image_path.write_bytes(PNG)
+    digest = hashlib.sha256(PNG).hexdigest()
+    image_path.write_bytes(bytes([PNG[0] ^ 1]) + PNG[1:])
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            outbound_media_dir=outbound_root,
+            access_policy=ChannelAccessPolicy.allow_all(),
+        )
+        await adapter.send_message(
+            OutboundMessage(
+                channel_id="qq",
+                conversation_id="c2c:user-1",
+                message_type="turn_result",
+                text="The image is attached.",
+                artifacts=[
+                    OutboundArtifact(
+                        kind="image",
+                        local_path=str(image_path),
+                        content_type="image/png",
+                        filename="result.png",
+                        size_bytes=len(PNG),
+                        sha256=digest,
+                    )
+                ],
+            )
+        )
+
+    assert [request.url.path for request in requests[1:]] == [
+        "/v2/users/user-1/messages"
+    ]
+    final_text = json.loads(requests[-1].content)["markdown"]["content"]
+    assert "artifact changed after it was staged" in final_text
+
+
+def test_qq_durable_preparation_reports_unsupported_group_file(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    file_path = outbound_root / "report.txt"
+    file_path.write_text("report", encoding="utf-8")
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+        outbound_media_dir=outbound_root,
+        access_policy=ChannelAccessPolicy.allow_all(),
+    )
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="group:group-1",
+        message_type="turn_result",
+        text="Here is the report.",
+        artifacts=[
+            OutboundArtifact(
+                kind="file",
+                local_path=str(file_path),
+                content_type="text/plain",
+                filename="report.txt",
+                size_bytes=file_path.stat().st_size,
+            )
+        ],
+    )
+
+    adapter.prepare_durable_message(message)
+
+    assert message.artifacts == []
+    assert "QQ group conversations do not support generic files" in message.text
 
 
 @pytest.mark.asyncio

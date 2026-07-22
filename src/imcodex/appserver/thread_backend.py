@@ -18,7 +18,6 @@ from .client import AppServerError
 
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
-_MAX_THREAD_HISTORY_PAGES = 20
 _THREAD_LIST_BATCH_SIZE = 100
 
 
@@ -54,7 +53,27 @@ class CodexThreadBackendMixin:
                     raise StaleThreadBindingError(binding.thread_id) from exc
                 raise
             snapshot = self._remember_snapshot(result.get("thread") or {})
+            if snapshot.thread_id != binding.thread_id:
+                raise AppServerError(
+                    "Codex resumed a different thread; refusing an inexact continuation"
+                )
             self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+            self._reconcile_native_active_turn(result.get("thread") or {}, snapshot)
+            if (
+                str(snapshot.status or "").strip().lower() in ACTIVE_THREAD_STATUSES
+                and self.store.get_active_turn(snapshot.thread_id) is None
+            ):
+                raise AppServerError(
+                    "Codex reports this thread as active but did not expose its active turn; "
+                    "refusing to start a competing turn"
+                )
+            if self.store.get_active_turn(snapshot.thread_id) is not None and self._direct_input_unverifiable(
+                result.get("thread") or {}
+            ):
+                raise AppServerError(
+                    "this active thread has a native interaction that cannot be transferred; "
+                    "resolve it on the client that owns the request and retry"
+                )
             return snapshot.thread_id
         if binding.bootstrap_cwd is None:
             raise KeyError("No working directory selected for thread session")
@@ -81,10 +100,42 @@ class CodexThreadBackendMixin:
         payload = result.get("thread")
         if not isinstance(payload, dict):
             raise AppServerError(f"thread {thread_id} is not available in Codex")
+        returned_thread_id = str(payload.get("id") or payload.get("threadId") or "")
+        if returned_thread_id != thread_id:
+            raise AppServerError(
+                "Codex resumed a different thread; refusing an inexact handoff"
+            )
+        native_status = self._native_status(payload.get("status"))
+        native_active = self._native_active_turn(payload)
+        if (
+            native_status is not None
+            and native_status.strip().lower() in ACTIVE_THREAD_STATUSES
+            and native_active is None
+        ):
+            raise AppServerError(
+                "Codex reports this thread as active but did not expose its active turn; "
+                "refusing an unverifiable handoff"
+            )
+        if native_active is not None and self._direct_input_unverifiable(payload):
+            raise AppServerError(
+                "this active thread has a native interaction that cannot be transferred; "
+                "resolve it on the client that owns the request and retry"
+            )
         snapshot = self._remember_snapshot(payload)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
+
+    def _direct_input_unverifiable(self, payload: dict) -> bool:
+        capability = payload.get("canAcceptDirectInput")
+        if capability is False:
+            return True
+        # Production clients know whether the experimental field was negotiated.
+        # Fail closed for active cross-surface input when that client cannot prove
+        # the native thread accepts direct input. Protocol fakes without this
+        # implementation detail keep their legacy compatibility behavior.
+        negotiated = getattr(self.client, "_experimental_api_enabled", None)
+        return negotiated is not None and capability is not True
 
     async def resolve_thread_selector(
         self,
@@ -238,48 +289,49 @@ class CodexThreadBackendMixin:
         conversation_id: str,
         *,
         limit: int = 6,
+        page: int = 1,
     ) -> dict:
         thread_id = self._active_thread_id(channel_id, conversation_id)
         safe_limit = max(1, int(limit))
+        safe_page = max(1, int(page))
         try:
-            pages: list[list[dict]] = []
             cursor: str | None = None
             seen_cursors: set[str] = set()
-            completed_count = 0
-            for _ in range(_MAX_THREAD_HISTORY_PAGES):
-                page_options: dict[str, object] = {"limit": safe_limit}
+            for page_number in range(1, safe_page + 1):
+                page_options: dict[str, object] = {
+                    "limit": safe_limit,
+                    "items_view": "full",
+                    "sort_direction": "desc",
+                }
                 if cursor is not None:
                     page_options["cursor"] = cursor
                 payload = await self.client.list_thread_turns(thread_id, **page_options)
                 turns = self._history_turn_items(payload)
-                pages.append(turns)
-                completed_count += sum(self._history_turn_completed(turn) for turn in turns)
-                if completed_count >= safe_limit:
-                    break
                 next_cursor = self._next_thread_cursor(payload)
+                if page_number == safe_page:
+                    return {
+                        "turns": list(reversed(turns)),
+                        "page": safe_page,
+                        "hasOlder": next_cursor is not None,
+                    }
                 if next_cursor is None:
-                    break
+                    return {"turns": [], "page": safe_page, "hasOlder": False}
                 if next_cursor in seen_cursors:
                     raise AppServerError("thread history returned a repeated pagination cursor")
                 seen_cursors.add(next_cursor)
                 cursor = next_cursor
-            descending_turns = [turn for page in pages for turn in page]
-            selected = [
-                turn for turn in descending_turns if self._history_turn_completed(turn)
-            ][:safe_limit]
-            return {
-                "turns": list(reversed(selected))
-            }
         except AppServerError as exc:
             if not self._is_unsupported_method_error(exc):
                 raise
         payload = await self.client.read_thread(thread_id, include_turns=True)
-        completed = [
-            turn
-            for turn in self._history_turn_items(payload)
-            if self._history_turn_completed(turn)
-        ]
-        return {"turns": completed[-safe_limit:]}
+        turns = self._history_turn_items(payload)
+        end = max(0, len(turns) - ((safe_page - 1) * safe_limit))
+        start = max(0, end - safe_limit)
+        return {
+            "turns": turns[start:end],
+            "page": safe_page,
+            "hasOlder": start > 0,
+        }
 
     async def fork_thread(self, channel_id: str, conversation_id: str) -> NativeThreadSnapshot:
         thread_id = self._active_thread_id(channel_id, conversation_id)
@@ -364,33 +416,79 @@ class CodexThreadBackendMixin:
         input_items = self._native_user_input(text, attachments)
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
-            active = self.store.get_active_turn(binding.thread_id)
-            if active is not None and active[1] == "inProgress":
-                try:
-                    steer_kwargs: dict[str, object] = {"input_items": input_items}
-                    if expected_local_image_epoch is not None:
-                        steer_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
-                    await self.client.steer_turn(
-                        binding.thread_id,
-                        active[0],
-                        **steer_kwargs,
-                    )
-                except AppServerError as exc:
-                    if not self._is_stale_turn_error(exc):
-                        raise
-                    self.store.clear_active_turn(binding.thread_id)
-                else:
-                    return TurnSubmission(kind="steer", thread_id=binding.thread_id, turn_id=active[0])
+            # Native Codex is authoritative across Desktop, CLI, and IMCodex.
+            # Rejoin the exact thread before every input so cached bridge state
+            # cannot start a competing turn after another surface made progress.
+            if callable(getattr(self.client, "resume_thread", None)):
+                thread_id = await self.ensure_thread(channel_id, conversation_id)
+                expected_local_image_epoch = self._refresh_local_image_epoch(
+                    expected_local_image_epoch
+                )
+            else:
+                # Lightweight protocol fakes and compatibility clients may not
+                # expose resume. The production AppServerClient always does.
+                thread_id = binding.thread_id
             try:
-                return await self._start_turn(
-                    binding.thread_id,
+                return await self._submit_to_reconciled_thread(
+                    thread_id,
                     input_items,
                     expected_local_image_epoch=expected_local_image_epoch,
                 )
             except AppServerError as exc:
                 if not self._requires_thread_resume(exc):
                     raise
+                thread_id = await self.ensure_thread(channel_id, conversation_id)
+                expected_local_image_epoch = self._refresh_local_image_epoch(
+                    expected_local_image_epoch
+                )
+                return await self._submit_to_reconciled_thread(
+                    thread_id,
+                    input_items,
+                    expected_local_image_epoch=expected_local_image_epoch,
+                )
         thread_id = await self.ensure_thread(channel_id, conversation_id)
+        expected_local_image_epoch = self._refresh_local_image_epoch(
+            expected_local_image_epoch
+        )
+        return await self._start_turn(
+            thread_id,
+            input_items,
+            expected_local_image_epoch=expected_local_image_epoch,
+        )
+
+    def _refresh_local_image_epoch(self, current: int | None) -> int | None:
+        if current is None:
+            return None
+        capability = getattr(self.client, "local_image_paths_epoch", None)
+        if not callable(capability):
+            return current
+        refreshed = capability()
+        if refreshed is None:
+            raise AppServerError(
+                "configured App Server cannot read bridge-local image paths for this connection"
+            )
+        return int(refreshed)
+
+    async def _submit_to_reconciled_thread(
+        self,
+        thread_id: str,
+        input_items: list[dict[str, object]],
+        *,
+        expected_local_image_epoch: int | None,
+    ) -> TurnSubmission:
+        active = self.store.get_active_turn(thread_id)
+        if active is not None and active[1] == "inProgress":
+            try:
+                steer_kwargs: dict[str, object] = {"input_items": input_items}
+                if expected_local_image_epoch is not None:
+                    steer_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
+                await self.client.steer_turn(thread_id, active[0], **steer_kwargs)
+            except AppServerError as exc:
+                if not self._is_stale_turn_error(exc):
+                    raise
+                self.store.clear_active_turn(thread_id)
+            else:
+                return TurnSubmission(kind="steer", thread_id=thread_id, turn_id=active[0])
         return await self._start_turn(
             thread_id,
             input_items,

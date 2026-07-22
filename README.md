@@ -208,7 +208,10 @@ native resume payload. A small persistent delivery checkpoint records that a
 bound native turn still owes its IM conversation a terminal result; it is not
 used as active-turn authority. Projected terminal messages enter a durable
 outbox before channel delivery and retry across bridge restarts until the sink
-accepts them. `stdio://` lives and dies with the bridge and never
+accepts them. Bound threads are resumed and reconciled by exact native thread
+ID before each new input, so Desktop, CLI, and IMCodex continue the same
+canonical history instead of rebuilding context from displayed messages.
+`stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is
 rejected because it silently changed which App Server owned a request. Native
@@ -232,6 +235,11 @@ Built-in channel support now includes:
 | Feishu / Lark | Official Channel SDK websocket | Private, group, and topic text and images | Stable |
 | Weixin | Tencent iLink long polling | Direct text and images | Experimental |
 | Generic webhook | HTTP | Trusted text and image adapter injection | Loopback-only by default |
+
+QQ also delivers explicit native agent-generated images and C2C files as
+platform attachments. These are structured artifacts on the normal terminal
+message, validated and copied into a private outbound spool before delivery;
+arbitrary local paths are never uploaded.
 
 Remote IM adapters accept the platform-delivered scope by default. Optional
 stable user and conversation restrictions can be combined with `any` (default)

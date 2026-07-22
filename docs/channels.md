@@ -209,6 +209,15 @@ first HTTP acknowledgement is lost, later inbound traffic or passive-window
 expiry cannot change that retry identity, and QQ can deduplicate the repeated
 `msg_id + msg_seq` instead of presenting a second final answer.
 
+QQ terminal results may include structured Codex image artifacts. IMCodex
+uploads each staged image through the conversation's `/files` endpoint with
+`srv_send_msg=false`, sends the returned `file_info` as native `msg_type=7`,
+and only then sends the final Markdown text. Each media send derives a stable
+identity from the terminal delivery ID, so an acknowledgement-loss retry uses
+the same `msg_seq`. C2C generic files use QQ file type 4; QQ group generic files
+fail explicitly because that surface does not support them. Only files in the
+private `IMCODEX_DATA_DIR/outbound-media` spool can reach this path.
+
 The production API base is shown above. Use the sandbox base only for an app
 that is actually configured in the QQ sandbox:
 

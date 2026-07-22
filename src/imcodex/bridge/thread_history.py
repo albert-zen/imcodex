@@ -6,11 +6,13 @@ _HISTORY_TEXT_LIMIT = 1200
 
 def render_thread_history(payload: dict, *, limit: int = 1) -> str:
     turns = _thread_history_items(payload)
+    page = max(1, int(payload.get("page") or 1))
+    has_older = bool(payload.get("hasOlder") or payload.get("has_older"))
     if not turns:
-        return "## Thread History\n\n_No completed turns._"
+        return f"## Thread History · Page {page}\n\n_No turns on this page._"
     selected = turns[-limit:]
-    count_label = f"{len(selected)} recent completed turn{'s' if len(selected) != 1 else ''}"
-    lines = ["## Thread History", "", f"_{count_label}_"]
+    count_label = f"{len(selected)} native turn{'s' if len(selected) != 1 else ''}"
+    lines = [f"## Thread History · Page {page}", "", f"_{count_label}_"]
     for index, turn in enumerate(selected, start=1):
         turn_id = str(turn.get("id") or turn.get("turnId") or "").strip()
         status = str(turn.get("status") or "").strip()
@@ -41,8 +43,26 @@ def render_thread_history(payload: dict, *, limit: int = 1) -> str:
                 ]
             )
         if not user_text and not agent_text:
-            lines.extend(["", "_No user or final Codex message._"])
+            lines.extend(["", "_No user or Codex message._"])
+        if _turn_has_compaction(turn):
+            lines.extend(["", "_Native context compaction occurred in this turn._"])
+        error_text = _turn_error_text(turn)
+        if error_text:
+            lines.extend(["", "**Error**", "", _compact_history_text(error_text, _HISTORY_TEXT_LIMIT)])
+    if has_older:
+        lines.extend(["", "---", "", f"Older turns: `/history {limit} --page {page + 1}`"])
     return "\n".join(lines)
+
+
+def _turn_has_compaction(turn: dict) -> bool:
+    return any(str(item.get("type") or "") == "contextCompaction" for item in _turn_items(turn))
+
+
+def _turn_error_text(turn: dict) -> str:
+    error = turn.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("error") or "").strip()
+    return str(error or "").strip()
 
 
 def _thread_history_items(payload: dict) -> list[dict]:
@@ -75,6 +95,7 @@ def _turn_user_text(turn: dict) -> str:
 
 def _turn_agent_text(turn: dict) -> str:
     final_text = ""
+    latest_text = ""
     for item in _turn_items(turn):
         item_type = str(item.get("type") or item.get("kind") or "").lower()
         if "agent" not in item_type and "assistant" not in item_type:
@@ -82,10 +103,11 @@ def _turn_agent_text(turn: dict) -> str:
         text = _item_text(item)
         if not text:
             continue
+        latest_text = text
         phase = str(item.get("phase") or "").strip().lower()
         if phase == "final_answer" or ("assistant" in item_type and not phase):
             final_text = text
-    return final_text
+    return final_text or latest_text
 
 
 def _turn_items(turn: dict) -> list[dict]:
@@ -159,4 +181,6 @@ def _human_state(status: str) -> str:
         return "Completed"
     if normalized == "failed":
         return "Failed"
+    if normalized in {"interrupted", "cancelled", "canceled"}:
+        return "Interrupted" if normalized == "interrupted" else "Cancelled"
     return "Idle" if normalized == "idle" else str(status or "Idle").title()

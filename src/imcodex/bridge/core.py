@@ -535,6 +535,7 @@ class BridgeService(
             return await self._handle_thread_history_command(
                 message,
                 limit=int((response.payload or {}).get("limit") or 1),
+                page=int((response.payload or {}).get("page") or 1),
             )
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)

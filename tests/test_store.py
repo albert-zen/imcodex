@@ -93,7 +93,20 @@ def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> 
     assert unchanged.message["text"] == "Recovered result"
     assert unchanged.message["conversation_id"] == "conv-1"
 
-    reloaded.complete_terminal_delivery("thr_1", "turn_1")
+    reloaded.update_terminal_delivery_message(
+        "thr_1",
+        "turn_1",
+        {
+            **unchanged.message,
+            "text": "Recovered result with durable delivery progress",
+        },
+    )
+    updated = ConversationStore(clock=lambda: 8.5, state_path=state_path)
+    assert updated.list_pending_terminal_deliveries()[0].message["text"] == (
+        "Recovered result with durable delivery progress"
+    )
+
+    updated.complete_terminal_delivery("thr_1", "turn_1")
     assert ConversationStore(clock=lambda: 9.0, state_path=state_path).list_pending_terminal_deliveries() == []
 
 

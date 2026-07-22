@@ -8,8 +8,9 @@ from .message_pump import MessagePump
 
 
 class MessageProjector:
-    def __init__(self, *, message_pump: MessagePump | None = None) -> None:
+    def __init__(self, *, message_pump: MessagePump | None = None, artifact_stager=None) -> None:
         self.message_pump = message_pump or MessagePump()
+        self.artifact_stager = artifact_stager
 
     def project_notification(self, notification: dict, store) -> OutboundMessage | None:
         event = normalize_appserver_message(notification)
@@ -157,11 +158,18 @@ class MessageProjector:
             status_value = status_value.get("type") or status_value.get("status")
         status = str(status_value or "failed")
         items = turn.get("items")
+        artifacts, artifact_errors = self._collect_recovered_artifacts(
+            thread_id,
+            [item for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+            store,
+        )
         message = self.message_pump.recover_turn(
             thread_id=thread_id,
             turn_id=turn_id,
             status=status,
             items=[item for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+            artifacts=artifacts,
+            artifact_errors=artifact_errors,
         )
         return self._attach_to_thread(thread_id, store, message)
 
@@ -172,6 +180,27 @@ class MessageProjector:
         if self._is_stale_turn(thread_id, turn_id, store):
             return None
         item_type = item.get("type")
+        if self.artifact_stager is not None:
+            cwd = self._thread_cwd(thread_id, store)
+            try:
+                artifacts = self.artifact_stager.stage_native_item(item, cwd=cwd)
+                if item_type == "agentMessage" and item.get("phase") == "final_answer":
+                    artifacts += self.artifact_stager.stage_markdown_links(
+                        str(item.get("text") or ""),
+                        cwd=cwd,
+                    )
+                if artifacts:
+                    self.message_pump.record_artifacts(
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        artifacts=artifacts,
+                    )
+            except (OSError, ValueError) as exc:
+                self.message_pump.record_artifacts(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    error=str(exc),
+                )
         if item_type == "agentMessage":
             return self.message_pump.record_agent_message(
                 thread_id=thread_id,
@@ -199,6 +228,37 @@ class MessageProjector:
                 emit_progress=self._show_toolcalls(thread_id, store),
             )
         return None
+
+    def _collect_recovered_artifacts(self, thread_id: str, items: list[dict], store):
+        if self.artifact_stager is None:
+            return (), ()
+        cwd = self._thread_cwd(thread_id, store)
+        artifacts = []
+        errors = []
+        for item in items:
+            try:
+                artifacts.extend(self.artifact_stager.stage_native_item(item, cwd=cwd))
+                if item.get("type") == "agentMessage" and item.get("phase") == "final_answer":
+                    artifacts.extend(
+                        self.artifact_stager.stage_markdown_links(
+                            str(item.get("text") or ""),
+                            cwd=cwd,
+                        )
+                    )
+            except (OSError, ValueError) as exc:
+                errors.append(str(exc))
+        deduplicated = {artifact.local_path: artifact for artifact in artifacts}
+        return tuple(deduplicated.values()), tuple(dict.fromkeys(errors))
+
+    @staticmethod
+    def _thread_cwd(thread_id: str, store) -> str:
+        snapshot = store.get_thread_snapshot(thread_id)
+        if snapshot is not None and snapshot.cwd:
+            return snapshot.cwd
+        binding = store.find_binding_by_thread_id(thread_id)
+        if binding is not None and binding.bootstrap_cwd:
+            return binding.bootstrap_cwd
+        return ""
 
     def _attach_to_thread(self, thread_id: str, store, message: OutboundMessage | None) -> OutboundMessage | None:
         if message is None:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from imcodex.appserver import normalize_appserver_message
 from imcodex.bridge import MessageProjector
+from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
 from imcodex.models import NativeThreadSnapshot
 from imcodex.store import ConversationStore
@@ -108,6 +111,59 @@ def test_projector_suppresses_late_tool_progress_after_final_answer() -> None:
     assert final_message is not None
     assert final_message.message_type == "turn_result"
     assert late_tool is None
+
+
+def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path) -> None:
+    image_path = tmp_path / "generated.png"
+    from PIL import Image
+
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector(
+        artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
+    )
+
+    image_message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "image_1",
+                    "type": "imageGeneration",
+                    "status": "completed",
+                    "result": "generated",
+                    "savedPath": str(image_path),
+                },
+            },
+        },
+        store,
+    )
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "The generated image is attached.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert image_message is None
+    assert final is not None
+    assert len(final.artifacts) == 1
+    assert final.artifacts[0].kind == "image"
+    assert Path(final.artifacts[0].local_path).is_relative_to(tmp_path / "outbound-media")
 
 
 def test_projector_preserves_terminal_text_when_agent_message_has_no_phase() -> None:

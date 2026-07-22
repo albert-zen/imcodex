@@ -183,6 +183,7 @@ class ThreadHandoffMixin:
         message: InboundMessage,
         *,
         limit: int,
+        page: int = 1,
     ) -> list[OutboundMessage]:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
         if binding.thread_id is None:
@@ -215,23 +216,12 @@ class ThreadHandoffMixin:
         self._seal_thread_output_gate(gate)
         if snapshot is None:
             return [self._message(message, "command_result", "Thread history is not available.")]
-        if (
-            self.store.get_active_turn(snapshot.thread_id) is not None
-            or self._thread_status_is_active(snapshot.status)
-        ):
-            return [
-                self._message(
-                    message,
-                    "status",
-                    "This thread is currently running, so history is not available. "
-                    f"Try /history {limit} after the turn completes.",
-                )
-            ]
         try:
             payload = await self.backend.read_thread_history(
                 message.channel_id,
                 message.conversation_id,
                 limit=limit,
+                page=page,
             )
         except AppServerError as exc:
             self._seal_thread_output_gate(gate)

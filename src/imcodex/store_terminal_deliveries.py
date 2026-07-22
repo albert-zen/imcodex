@@ -54,6 +54,31 @@ class TerminalDeliveryStoreMixin:
             entries = (entry for entry in entries if entry.thread_id == thread_id)
         return [copy.deepcopy(entry) for entry in entries]
 
+    def update_terminal_delivery_message(
+        self,
+        thread_id: str,
+        turn_id: str,
+        message: dict,
+    ) -> None:
+        pending = self._pending_terminal_deliveries.get((thread_id, turn_id))
+        if pending is None or pending.message is None:
+            return
+        pending.message = copy.deepcopy(message)
+        self._save()
+
+    def referenced_terminal_artifact_paths(self) -> set[str]:
+        paths: set[str] = set()
+        for pending in self._pending_terminal_deliveries.values():
+            if pending.message is None:
+                continue
+            artifacts = pending.message.get("artifacts") or []
+            if not isinstance(artifacts, list):
+                continue
+            for artifact in artifacts:
+                if isinstance(artifact, dict) and artifact.get("local_path"):
+                    paths.add(str(artifact["local_path"]))
+        return paths
+
     def retry_terminal_delivery_persistence(self) -> None:
         if any(
             pending.message is not None

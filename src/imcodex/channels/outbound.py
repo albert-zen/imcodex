@@ -125,6 +125,16 @@ class MultiplexOutboundSink:
         sink = sink or self.default_sink
         if sink is None:
             return
+        if message.artifacts and not bool(
+            getattr(sink, "supports_outbound_artifacts", False)
+        ):
+            count = len(message.artifacts)
+            notice = (
+                f"Attachment delivery unavailable: this channel does not support "
+                f"{count} staged artifact{'s' if count != 1 else ''}."
+            )
+            message.text = "\n\n".join(part for part in (message.text, notice) if part)
+            message.artifacts = []
         prepare = getattr(sink, "prepare_durable_message", None)
         if callable(prepare):
             prepare(message)

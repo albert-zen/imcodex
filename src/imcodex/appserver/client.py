@@ -516,12 +516,18 @@ class AppServerClient:
         *,
         limit: int | None = None,
         cursor: str | None = None,
+        items_view: str | None = None,
+        sort_direction: str | None = None,
     ) -> JsonDict:
         payload: JsonDict = {"threadId": thread_id}
         if limit is not None:
             payload["limit"] = limit
         if cursor is not None:
             payload["cursor"] = cursor
+        if items_view is not None:
+            payload["itemsView"] = items_view
+        if sort_direction is not None:
+            payload["sortDirection"] = sort_direction
         return await self._request("thread/turns/list", payload)
 
     async def get_thread_goal(self, thread_id: str) -> JsonDict:

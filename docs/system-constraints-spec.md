@@ -219,6 +219,12 @@ When a thread switch succeeds:
 - the bridge MUST show the effective `CWD`
 - the displayed `CWD` must come from native thread state or the successful native switch result, not from an unrelated local guess
 
+Before accepting input for an existing binding, the bridge MUST resume the
+exact native thread and reconcile its active turn. If Codex returns a different
+thread, omits the turn for an active thread, or reports an interaction that
+cannot accept direct input, the bridge MUST fail explicitly instead of starting
+a competing turn or reconstructing native request state locally.
+
 ## Configuration Rules
 
 Model, permission, reasoning-effort, and personality changes MUST be expressed through native Codex configuration or native thread-level operations.
@@ -447,9 +453,12 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
 - cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
+- every ordinary input to an existing binding MUST resume and reconcile the exact native thread before steer/start; a different returned thread ID or an unverifiable active turn MUST fail explicitly rather than create a competing continuation
+- history display MUST use native turn APIs, preserve terminal and active turn statuses, and paginate to the oldest available turn without becoming model context or a bridge-local transcript
 - for every bound native turn, the bridge MAY persist a minimal terminal-delivery checkpoint, but MUST NOT use that checkpoint as active-turn authority; native resume remains the source of truth for whether the turn is active or terminal
 - when a watched turn completes during a disconnect or bridge process restart, recovery SHOULD project its terminal native result, MUST use a stable thread/turn delivery identity to deduplicate queued native notifications, and MUST discard any orphaned message-pump buffer
 - every projected terminal result MUST enter a durable delivery outbox before channel delivery and MUST remain retryable until its IM sink confirms delivery; a transient sink failure or bridge restart MUST NOT consume the only recovery marker
+- structured outbound artifacts MUST be staged from explicit native output, validated for type, size, and allowed roots, persisted with the terminal outbox, and delivered with stable per-artifact identities; adapters MUST NOT silently claim attachment success after a failed platform upload
 - once a terminal message is staged, replayed native notifications, interruption cleanup, stale native binding cleanup, and conversation rebinding MUST NOT overwrite, remove, or reroute it before sink acceptance
 - delivery-outbox draining MUST run for every App Server connection mode, including `stdio://`; native thread rehydration may remain mode-dependent
 - recovery health MUST remain degraded while a staged terminal delivery is pending, even if the native App Server connection is healthy

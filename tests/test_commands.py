@@ -335,7 +335,7 @@ def test_thread_history_reads_active_thread() -> None:
 
     assert response.action == "thread.history.query"
     assert response.thread_id == "thr_1"
-    assert response.payload == {"limit": 1}
+    assert response.payload == {"limit": 1, "page": 1}
 
 
 def test_history_is_primary_command_and_accepts_bounded_limit() -> None:
@@ -347,7 +347,18 @@ def test_history_is_primary_command_and_accepts_bounded_limit() -> None:
 
     assert response.action == "thread.history.query"
     assert response.thread_id == "thr_1"
-    assert response.payload == {"limit": 3}
+    assert response.payload == {"limit": 3, "page": 1}
+
+
+def test_history_accepts_stateless_native_page_selection() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/history 5 --page 3")
+
+    assert response.action == "thread.history.query"
+    assert response.payload == {"limit": 5, "page": 3}
 
 
 def test_native_thread_operations_require_active_thread() -> None:

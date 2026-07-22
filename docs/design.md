@@ -199,6 +199,18 @@ moves with the conversation-to-thread binding until projection. Once staged,
 the message keeps its exact IM route and survives native binding cleanup until
 the sink accepts it.
 
+Structured agent-sent artifacts are part of this delivery state, not native
+thread state. The bridge stages only explicit native output references into a
+private content-addressed spool; it does not scan a workspace or infer files
+from file-change events. Channel adapters translate those artifacts into their
+platform-native upload/send operations. Text remains the existing outbound
+message projection and is not wrapped in a second Markdown message type.
+
+Every new input to an already bound thread crosses a native resume/reconcile
+barrier first. This makes the exact native `threadId` authoritative after work
+from Desktop, CLI, or another IMCodex connection, while refusing to guess when
+an active native turn cannot be verified.
+
 `stdio://` remains an explicit bridge-child compatibility target for tests and
 older installations. It MUST NOT be selected as a fallback after an external
 target fails. Native Windows keeps an external two-process shape through the

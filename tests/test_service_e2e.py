@@ -23,6 +23,7 @@ from imcodex.models import (
     InboundMessage,
     InboundQuote,
     InboundQuoteAttachment,
+    OutboundArtifact,
     OutboundMessage,
 )
 from imcodex.store import ConversationStore
@@ -557,6 +558,20 @@ async def test_multimodal_input_uses_exact_native_turn_steer_payload() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "status": "active",
+                            "canAcceptDirectInput": True,
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                }
+            ],
             "turn/steer": [{"id": 2, "result": {"turnId": "turn_1"}}],
         }
     )
@@ -1029,6 +1044,20 @@ async def test_in_flight_turn_uses_native_steer() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "status": "active",
+                            "canAcceptDirectInput": True,
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                }
+            ],
             "turn/steer": [{"id": 2, "result": {"turnId": "turn_1"}}],
         }
     )
@@ -1054,7 +1083,7 @@ async def test_in_flight_turn_uses_native_steer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_in_flight_turn_falls_back_to_native_turn_start() -> None:
+async def test_native_resume_discards_stale_cached_turn_before_start() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -1095,7 +1124,7 @@ async def test_stale_in_flight_turn_falls_back_to_native_turn_start() -> None:
     assert messages == []
     assert store.get_active_turn("thr_1") == ("turn_2", "inProgress")
     methods = [payload.get("method") for payload in process.inputs if payload.get("method")]
-    assert methods.count("turn/steer") == 1
+    assert methods.count("turn/steer") == 0
     assert methods.count("turn/start") == 1
     await client.close()
 
@@ -1308,6 +1337,7 @@ async def test_connection_ready_rehydrates_bound_thread_and_replays_native_appro
                             "cwd": r"D:\work\alpha",
                             "preview": "Recovered thread",
                             "status": {"type": "active"},
+                            "canAcceptDirectInput": True,
                             "turns": [{"id": "turn_new", "status": "inProgress"}],
                         }
                     },
@@ -1598,6 +1628,43 @@ async def test_replayed_terminal_notification_cannot_overwrite_staged_outbox() -
     assert pending[0].message["metadata"]["qq_reply_to_message_id"] == "msg-original"
     assert store.get_active_turn("thr_1") is None
     assert sink.messages == []
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_initial_terminal_failure_persists_partial_artifact_progress() -> None:
+    class PartiallyFailingSink:
+        async def send_message(self, message: OutboundMessage) -> None:
+            message.artifacts = message.artifacts[1:]
+            raise RuntimeError("second artifact upload failed")
+
+    store = ConversationStore(clock=lambda: 1.0)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, PartiallyFailingSink())
+    service._terminal_delivery_closed = True
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        message_type="turn_result",
+        text="Two images.",
+        artifacts=[
+            OutboundArtifact("image", "first.png", "image/png", "first.png", 1, "a"),
+            OutboundArtifact("image", "second.png", "image/png", "second.png", 1, "b"),
+        ],
+    )
+
+    _outbound, delivered = await service._deliver_terminal_message(
+        ("thr_1", "turn_1"),
+        message,
+    )
+
+    assert delivered is False
+    pending = store.list_pending_terminal_deliveries()[0]
+    assert pending.message is not None
+    assert [artifact["filename"] for artifact in pending.message["artifacts"]] == [
+        "second.png"
+    ]
     await service.close()
     await client.close()
 
@@ -2940,6 +3007,18 @@ async def test_plain_text_cancels_all_pending_approvals_before_submitting_new_in
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
             "turn/start": [{"id": 2, "result": {"turn": {"id": "turn_2", "status": "inProgress"}}}],
         }
     )
@@ -4802,7 +4881,14 @@ async def test_thread_history_command_uses_native_turns_list_and_renders_summary
     assert "**Codex**\n\nI checked the relevant files" in messages[0].text
     assert "checking the relevant files now" not in messages[0].text
     payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
-    assert payloads == [{"threadId": "thr_1", "limit": 1}]
+    assert payloads == [
+        {
+            "threadId": "thr_1",
+            "limit": 1,
+            "itemsView": "full",
+            "sortDirection": "desc",
+        }
+    ]
     await client.close()
 
 
@@ -4865,7 +4951,14 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
     assert "**Codex**\n\nStable history loaded." in messages[0].text
     turns_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/turns/list"]
     read_payloads = [payload["params"] for payload in process.inputs if payload.get("method") == "thread/read"]
-    assert turns_payloads == [{"threadId": "thr_1", "limit": 1}]
+    assert turns_payloads == [
+        {
+            "threadId": "thr_1",
+            "limit": 1,
+            "itemsView": "full",
+            "sortDirection": "desc",
+        }
+    ]
     assert read_payloads == [
         {"threadId": "thr_1"},
         {"threadId": "thr_1", "includeTurns": True},
@@ -4874,7 +4967,7 @@ async def test_thread_history_command_falls_back_to_thread_read_when_turns_list_
 
 
 @pytest.mark.asyncio
-async def test_thread_history_omits_commentary_when_no_final_agent_message_exists() -> None:
+async def test_thread_history_preserves_partial_agent_output_without_final_message() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -4929,13 +5022,13 @@ async def test_thread_history_omits_commentary_when_no_final_agent_message_exist
     )
 
     assert "**You**\n> What happened?" in messages[0].text
-    assert "Still investigating" not in messages[0].text
-    assert "**Codex**" not in messages[0].text
+    assert "Still investigating" in messages[0].text
+    assert "**Codex**" in messages[0].text
     await client.close()
 
 
 @pytest.mark.asyncio
-async def test_thread_history_pages_past_noncompleted_turns() -> None:
+async def test_thread_history_preserves_noncompleted_turns_and_exposes_older_page() -> None:
     class PaginatedHistoryProcess(ScriptedProcess):
         def on_input(self, raw: str) -> None:
             payload = json.loads(raw)
@@ -5047,19 +5140,24 @@ async def test_thread_history_pages_past_noncompleted_turns() -> None:
         )
     )
 
-    assert messages[0].text.index("Second-newest request") < messages[0].text.index("Newest request")
-    assert "Second-newest result" in messages[0].text
+    assert messages[0].text.index("Newest request") < messages[0].text.index("Failed request")
     assert "Newest result" in messages[0].text
-    assert "Failed request" not in messages[0].text
+    assert "Failed result" in messages[0].text
+    assert "Failed" in messages[0].text
     assert "Older request" not in messages[0].text
+    assert "/history 2 --page 2" in messages[0].text
     payloads = [
         payload["params"]
         for payload in process.inputs
         if payload.get("method") == "thread/turns/list"
     ]
     assert payloads == [
-        {"threadId": "thr_1", "limit": 2},
-        {"threadId": "thr_1", "limit": 2, "cursor": "older"},
+        {
+            "threadId": "thr_1",
+            "limit": 2,
+            "itemsView": "full",
+            "sortDirection": "desc",
+        },
     ]
     await client.close()
 
@@ -5141,6 +5239,7 @@ async def test_pick_running_thread_ignores_history_and_releases_new_messages_aft
                             "cwd": "/work/alpha",
                             "preview": "Running work",
                             "status": "inProgress",
+                            "canAcceptDirectInput": True,
                             "turns": [{"id": "turn_1", "status": "inProgress"}],
                         }
                     },
@@ -5203,6 +5302,7 @@ async def test_pick_desktop_started_active_thread_receives_later_terminal_result
                             "cwd": "/work/alpha",
                             "preview": "Desktop work",
                             "status": "inProgress",
+                            "canAcceptDirectInput": True,
                             "turns": [{"id": "turn_desktop", "status": "inProgress"}],
                         }
                     },
@@ -5652,6 +5752,7 @@ async def test_handoff_preserves_wire_order_across_notification_and_request_lane
                             "cwd": "/work/alpha",
                             "preview": "Running work",
                             "status": "inProgress",
+                            "canAcceptDirectInput": True,
                             "turns": [{"id": "turn_1", "status": "inProgress"}],
                         }
                     },
@@ -5831,7 +5932,7 @@ async def test_pick_idle_thread_sends_history_before_messages_started_during_his
 
 
 @pytest.mark.asyncio
-async def test_history_rejects_running_thread_without_reading_turns() -> None:
+async def test_history_reads_running_native_thread_without_blocking_context() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
@@ -5844,6 +5945,22 @@ async def test_history_rejects_running_thread_without_reading_turns() -> None:
                             "cwd": "/work/alpha",
                             "status": "inProgress",
                         }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "id": 3,
+                    "result": {
+                        "turns": [
+                            {
+                                "id": "turn_running",
+                                "status": "inProgress",
+                                "items": [
+                                    {"type": "userMessage", "text": "Still working"},
+                                ],
+                            }
+                        ]
                     },
                 }
             ],
@@ -5866,8 +5983,9 @@ async def test_history_rejects_running_thread_without_reading_turns() -> None:
     )
 
     assert len(sink.messages) == 1
-    assert "currently running" in sink.messages[0].text
-    assert not any(payload.get("method") == "thread/turns/list" for payload in process.inputs)
+    assert "Working" in sink.messages[0].text
+    assert "Still working" in sink.messages[0].text
+    assert any(payload.get("method") == "thread/turns/list" for payload in process.inputs)
     await client.close()
 
 
