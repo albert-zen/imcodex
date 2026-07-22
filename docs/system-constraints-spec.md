@@ -220,10 +220,12 @@ When a thread switch succeeds:
 - the displayed `CWD` must come from native thread state or the successful native switch result, not from an unrelated local guess
 
 Before accepting input for an existing binding, the bridge MUST resume the
-exact native thread and reconcile its active turn. If Codex returns a different
-thread, omits the turn for an active thread, or reports an interaction that
-cannot accept direct input, the bridge MUST fail explicitly instead of starting
-a competing turn or reconstructing native request state locally.
+exact native thread and reconcile its active turn. A thread switch MAY bind an
+active thread that cannot currently accept direct input so the IM route can
+observe its output. Ordinary input MUST still fail explicitly if Codex returns
+a different thread, omits the turn for an active thread, or reports an
+interaction that cannot accept direct input, instead of starting a competing
+turn or reconstructing native request state locally.
 
 ## Configuration Rules
 

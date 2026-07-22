@@ -365,9 +365,10 @@ If the selected thread is already running:
   its later commentary, requests, and terminal result follow the same live
   projection path after the switch
 - if native Codex reports an active interaction that cannot accept direct
-  input from this connection, the switch fails explicitly and tells the user
-  to resolve that interaction on its owning client; the bridge does not invent
-  a local approval or input-request handoff
+  input from this connection, the switch still succeeds so the IM route can
+  observe later native output; an ordinary IM input fails explicitly until the
+  owning client resolves that interaction, and the bridge does not invent a
+  local approval or input-request handoff
 
 If the selected thread is idle and history was requested:
 

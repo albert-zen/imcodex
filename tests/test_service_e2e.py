@@ -5302,7 +5302,7 @@ async def test_pick_desktop_started_active_thread_receives_later_terminal_result
                             "cwd": "/work/alpha",
                             "preview": "Desktop work",
                             "status": "inProgress",
-                            "canAcceptDirectInput": True,
+                            "canAcceptDirectInput": False,
                             "turns": [{"id": "turn_desktop", "status": "inProgress"}],
                         }
                     },

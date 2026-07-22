@@ -588,7 +588,7 @@ async def test_attach_thread_refuses_unverifiable_active_handoff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_refuses_nontransferable_native_interaction() -> None:
+async def test_attach_thread_allows_observing_nontransferable_native_interaction() -> None:
     class PendingInteractionClient:
         async def resume_thread(self, **params):
             return {
@@ -604,14 +604,64 @@ async def test_attach_thread_refuses_nontransferable_native_interaction() -> Non
     store = ConversationStore(clock=lambda: 1.0)
     backend = CodexBackend(client=PendingInteractionClient(), store=store, service_name="test")
 
-    with pytest.raises(AppServerError, match="cannot be transferred"):
-        await backend.attach_thread("qq", "conv-1", "thr_running")
+    attached = await backend.attach_thread("qq", "conv-1", "thr_running")
 
-    assert store.get_binding("qq", "conv-1").thread_id is None
+    assert attached == "thr_running"
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_running"
+    assert store.get_active_turn("thr_running") == ("turn_native", "inProgress")
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_fails_closed_without_negotiated_direct_input_state() -> None:
+async def test_observed_nontransferable_thread_rejects_input_until_native_accepts_it() -> None:
+    class TemporarilyReadOnlyClient:
+        _experimental_api_enabled = True
+
+        def __init__(self) -> None:
+            self.can_accept_direct_input = False
+            self.steer_calls: list[dict] = []
+
+        async def resume_thread(self, **params):
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": r"D:\desktop\attached",
+                    "status": "active",
+                    "canAcceptDirectInput": self.can_accept_direct_input,
+                    "turns": [{"id": "turn_native", "status": "inProgress"}],
+                }
+            }
+
+        async def steer_turn(self, thread_id: str, turn_id: str, **params):
+            self.steer_calls.append(
+                {"thread_id": thread_id, "turn_id": turn_id, **params}
+            )
+            return {"turnId": turn_id}
+
+    store = ConversationStore(clock=lambda: 1.0)
+    client = TemporarilyReadOnlyClient()
+    backend = CodexBackend(client=client, store=store, service_name="test")
+
+    await backend.attach_thread("qq", "conv-1", "thr_running")
+
+    with pytest.raises(AppServerError, match="cannot be transferred"):
+        await backend.submit_text("qq", "conv-1", "continue")
+    assert client.steer_calls == []
+
+    client.can_accept_direct_input = True
+    submission = await backend.submit_text("qq", "conv-1", "continue")
+
+    assert submission.kind == "steer"
+    assert client.steer_calls == [
+        {
+            "thread_id": "thr_running",
+            "turn_id": "turn_native",
+            "input_items": [{"type": "text", "text": "continue"}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_bound_thread_input_fails_closed_without_negotiated_direct_input_state() -> None:
     class StableOnlyClient:
         _experimental_api_enabled = False
 
@@ -626,10 +676,13 @@ async def test_attach_thread_fails_closed_without_negotiated_direct_input_state(
             }
 
     store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_running")
     backend = CodexBackend(client=StableOnlyClient(), store=store, service_name="test")
 
     with pytest.raises(AppServerError, match="cannot be transferred"):
-        await backend.attach_thread("qq", "conv-1", "thr_running")
+        await backend.submit_text("qq", "conv-1", "continue")
+
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_running"
 
 
 @pytest.mark.asyncio

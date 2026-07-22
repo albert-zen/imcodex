@@ -116,11 +116,6 @@ class CodexThreadBackendMixin:
                 "Codex reports this thread as active but did not expose its active turn; "
                 "refusing an unverifiable handoff"
             )
-        if native_active is not None and self._direct_input_unverifiable(payload):
-            raise AppServerError(
-                "this active thread has a native interaction that cannot be transferred; "
-                "resolve it on the client that owns the request and retry"
-            )
         snapshot = self._remember_snapshot(payload)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         self._reconcile_native_active_turn(payload, snapshot)
