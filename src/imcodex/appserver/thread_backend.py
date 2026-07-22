@@ -67,13 +67,6 @@ class CodexThreadBackendMixin:
                     "Codex reports this thread as active but did not expose its active turn; "
                     "refusing to start a competing turn"
                 )
-            if self.store.get_active_turn(snapshot.thread_id) is not None and self._direct_input_unverifiable(
-                result.get("thread") or {}
-            ):
-                raise AppServerError(
-                    "this active thread has a native interaction that cannot be transferred; "
-                    "resolve it on the client that owns the request and retry"
-                )
             return snapshot.thread_id
         if binding.bootstrap_cwd is None:
             raise KeyError("No working directory selected for thread session")
@@ -120,17 +113,6 @@ class CodexThreadBackendMixin:
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
-
-    def _direct_input_unverifiable(self, payload: dict) -> bool:
-        capability = payload.get("canAcceptDirectInput")
-        if capability is False:
-            return True
-        # Production clients know whether the experimental field was negotiated.
-        # Fail closed for active cross-surface input when that client cannot prove
-        # the native thread accepts direct input. Protocol fakes without this
-        # implementation detail keep their legacy compatibility behavior.
-        negotiated = getattr(self.client, "_experimental_api_enabled", None)
-        return negotiated is not None and capability is not True
 
     async def resolve_thread_selector(
         self,
@@ -414,7 +396,8 @@ class CodexThreadBackendMixin:
             # Native Codex is authoritative across Desktop, CLI, and IMCodex.
             # Rejoin the exact thread before every input so cached bridge state
             # cannot start a competing turn after another surface made progress.
-            if callable(getattr(self.client, "resume_thread", None)):
+            can_resume = callable(getattr(self.client, "resume_thread", None))
+            if can_resume:
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(
                     expected_local_image_epoch
@@ -423,6 +406,8 @@ class CodexThreadBackendMixin:
                 # Lightweight protocol fakes and compatibility clients may not
                 # expose resume. The production AppServerClient always does.
                 thread_id = binding.thread_id
+            active = self.store.get_active_turn(thread_id)
+            attempted_steer = active is not None and active[1] == "inProgress"
             try:
                 return await self._submit_to_reconciled_thread(
                     thread_id,
@@ -436,6 +421,12 @@ class CodexThreadBackendMixin:
                 expected_local_image_epoch = self._refresh_local_image_epoch(
                     expected_local_image_epoch
                 )
+                # Native uses the same invalid-request class for both stale and
+                # temporarily non-steerable Turns. If resume still exposes an
+                # active Turn, preserve the authoritative steer rejection rather
+                # than risking a competing turn/start.
+                if attempted_steer and self.store.get_active_turn(thread_id) is not None:
+                    raise exc
                 return await self._submit_to_reconciled_thread(
                     thread_id,
                     input_items,
@@ -480,6 +471,8 @@ class CodexThreadBackendMixin:
                 await self.client.steer_turn(thread_id, active[0], **steer_kwargs)
             except AppServerError as exc:
                 if not self._is_stale_turn_error(exc):
+                    raise
+                if callable(getattr(self.client, "resume_thread", None)):
                     raise
                 self.store.clear_active_turn(thread_id)
             else:

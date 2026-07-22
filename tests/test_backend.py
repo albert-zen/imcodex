@@ -612,7 +612,7 @@ async def test_attach_thread_allows_observing_nontransferable_native_interaction
 
 
 @pytest.mark.asyncio
-async def test_observed_nontransferable_thread_rejects_input_until_native_accepts_it() -> None:
+async def test_observed_busy_thread_defers_input_acceptance_to_native_steer() -> None:
     class TemporarilyReadOnlyClient:
         _experimental_api_enabled = True
 
@@ -643,11 +643,6 @@ async def test_observed_nontransferable_thread_rejects_input_until_native_accept
 
     await backend.attach_thread("qq", "conv-1", "thr_running")
 
-    with pytest.raises(AppServerError, match="cannot be transferred"):
-        await backend.submit_text("qq", "conv-1", "continue")
-    assert client.steer_calls == []
-
-    client.can_accept_direct_input = True
     submission = await backend.submit_text("qq", "conv-1", "continue")
 
     assert submission.kind == "steer"
@@ -661,9 +656,12 @@ async def test_observed_nontransferable_thread_rejects_input_until_native_accept
 
 
 @pytest.mark.asyncio
-async def test_bound_thread_input_fails_closed_without_negotiated_direct_input_state() -> None:
+async def test_bound_thread_input_steers_without_experimental_direct_input_hint() -> None:
     class StableOnlyClient:
         _experimental_api_enabled = False
+
+        def __init__(self) -> None:
+            self.steer_calls: list[tuple[str, str]] = []
 
         async def resume_thread(self, **params):
             return {
@@ -675,13 +673,19 @@ async def test_bound_thread_input_fails_closed_without_negotiated_direct_input_s
                 }
             }
 
+        async def steer_turn(self, thread_id: str, turn_id: str, **_params):
+            self.steer_calls.append((thread_id, turn_id))
+            return {"turnId": turn_id}
+
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_running")
-    backend = CodexBackend(client=StableOnlyClient(), store=store, service_name="test")
+    client = StableOnlyClient()
+    backend = CodexBackend(client=client, store=store, service_name="test")
 
-    with pytest.raises(AppServerError, match="cannot be transferred"):
-        await backend.submit_text("qq", "conv-1", "continue")
+    submission = await backend.submit_text("qq", "conv-1", "continue")
 
+    assert submission.kind == "steer"
+    assert client.steer_calls == [("thr_running", "turn_native")]
     assert store.get_binding("qq", "conv-1").thread_id == "thr_running"
 
 

@@ -233,6 +233,9 @@ class BridgeService(
                 "Use /threads to pick another thread or /new to start fresh."
             )
             return [self._message(message, "status", text)]
+        except AppServerError as exc:
+            text = f"Codex could not accept this message: {self._safe_appserver_error(exc)}."
+            return [self._message(message, "error", text)]
         if submission.kind == "start":
             self.store.note_active_turn(submission.thread_id, submission.turn_id, "inProgress")
         return []

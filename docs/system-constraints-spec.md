@@ -222,10 +222,11 @@ When a thread switch succeeds:
 Before accepting input for an existing binding, the bridge MUST resume the
 exact native thread and reconcile its active turn. A thread switch MAY bind an
 active thread that cannot currently accept direct input so the IM route can
-observe its output. Ordinary input MUST still fail explicitly if Codex returns
-a different thread, omits the turn for an active thread, or reports an
-interaction that cannot accept direct input, instead of starting a competing
-turn or reconstructing native request state locally.
+observe its output. If a verifiable active Turn exists, ordinary input MUST use
+native `turn/steer` and let Codex accept or reject it. A different returned
+thread or an active thread with no exposed Turn MUST still fail explicitly
+instead of starting a competing turn or reconstructing native request state
+locally.
 
 ## Configuration Rules
 

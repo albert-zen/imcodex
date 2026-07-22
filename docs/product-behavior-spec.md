@@ -366,9 +366,9 @@ If the selected thread is already running:
   projection path after the switch
 - if native Codex reports an active interaction that cannot accept direct
   input from this connection, the switch still succeeds so the IM route can
-  observe later native output; an ordinary IM input fails explicitly until the
-  owning client resolves that interaction, and the bridge does not invent a
-  local approval or input-request handoff
+  observe later native output; ordinary IM input is offered to the verified
+  active Turn through native `turn/steer`, and any rejection comes from Codex
+  rather than a bridge-owned capability guess
 
 If the selected thread is idle and history was requested:
 

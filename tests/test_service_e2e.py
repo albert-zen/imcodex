@@ -566,7 +566,7 @@ async def test_multimodal_input_uses_exact_native_turn_steer_payload() -> None:
                             "id": "thr_1",
                             "cwd": r"D:\work\alpha",
                             "status": "active",
-                            "canAcceptDirectInput": True,
+                            "canAcceptDirectInput": False,
                             "turns": [{"id": "turn_1", "status": "inProgress"}],
                         }
                     },
@@ -1079,6 +1079,67 @@ async def test_in_flight_turn_uses_native_steer() -> None:
     )
 
     assert messages == []
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_native_steer_rejection_is_returned_as_a_specific_safe_error() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/resume": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "status": "active",
+                            "canAcceptDirectInput": False,
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                }
+            ],
+            "turn/steer": [
+                {
+                    "id": 3,
+                    "error": {
+                        "code": -32600,
+                        "message": "invalid request",
+                    },
+                }
+            ],
+            "turn/start": [
+                {
+                    "id": 4,
+                    "error": {"message": "turn/start must not be attempted"},
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="one more thing",
+        )
+    )
+
+    assert len(messages) == 1
+    assert messages[0].message_type == "error"
+    assert messages[0].text == "[System] Codex could not accept this message: invalid request."
+    assert "Request failed while talking to Codex" not in messages[0].text
+    methods = [payload.get("method") for payload in process.inputs]
+    assert methods.count("thread/resume") == 2
+    assert "turn/start" not in methods
     await client.close()
 
 
