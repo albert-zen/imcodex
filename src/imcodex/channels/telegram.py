@@ -22,13 +22,16 @@ from .artifacts import (
     PermanentArtifactDeliveryError,
     append_artifact_failures,
     read_managed_artifact,
+    record_artifact_delivery,
 )
 from .base import BaseChannelAdapter
 from .media import (
+    FileMediaMaterializer,
     ImageMediaMaterializer,
     MAX_IMAGE_COUNT,
     MediaDownloadError,
-    materialize_inbound_images,
+    MAX_FILE_COUNT,
+    materialize_inbound_media,
 )
 from .text import split_text
 
@@ -48,6 +51,13 @@ IMAGE_DOCUMENT_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 @dataclass(frozen=True, slots=True)
 class TelegramImageReference:
     file_id: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramFileReference:
+    file_id: str = field(repr=False)
+    filename: str = ""
+    content_type: str = ""
 
 
 class TelegramAPIError(RuntimeError):
@@ -152,6 +162,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         media_dir: Path | None = None,
         outbound_media_dir: Path | None = None,
         media_materializer: ImageMediaMaterializer[TelegramImageReference] | None = None,
+        file_materializer: FileMediaMaterializer[TelegramFileReference] | None = None,
         media_cleanup_sleep=asyncio.sleep,
         http_client: httpx.AsyncClient | None = None,
         sleep=asyncio.sleep,
@@ -177,6 +188,11 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             root=media_dir or Path(".imcodex") / "channels" / "telegram" / "inbound-media",
             download=self._download_image,
             clock=clock,
+            cleanup_sleep=media_cleanup_sleep,
+        )
+        self.file_materializer = file_materializer or FileMediaMaterializer(
+            root=media_dir or Path(".imcodex") / "channels" / "telegram" / "inbound-media",
+            download=self._download_file,
             cleanup_sleep=media_cleanup_sleep,
         )
         self.sleep = sleep
@@ -215,6 +231,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         self.validate_startup_configuration()
         self.bot_token = self._resolve_bot_token()
         await self.media_materializer.start()
+        await self.file_materializer.start()
         self._stop_event.clear()
         if self._runner_task is None or self._runner_task.done():
             self._runner_task = asyncio.create_task(self._run_forever())
@@ -251,6 +268,10 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             await self.media_materializer.stop()
         except Exception as exc:
             errors.append(exc)
+        try:
+            await self.file_materializer.stop()
+        except Exception as exc:
+            errors.append(exc)
         if self._owns_http_client:
             try:
                 await self.http_client.aclose()
@@ -264,13 +285,18 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         parsed = self._parse_inbound_update(update)
         if parsed is None:
             return None
-        inbound, reply_to_message_id, _image_references = parsed
+        inbound, reply_to_message_id, _image_references, _file_references = parsed
         return inbound, reply_to_message_id
 
     def _parse_inbound_update(
         self,
         update: dict[str, Any],
-    ) -> tuple[InboundMessage, str, tuple[TelegramImageReference, ...]] | None:
+    ) -> tuple[
+        InboundMessage,
+        str,
+        tuple[TelegramImageReference, ...],
+        tuple[TelegramFileReference, ...],
+    ] | None:
         message = update.get("message")
         if not isinstance(message, dict):
             return None
@@ -280,7 +306,8 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             return None
         text = str(message.get("text") or message.get("caption") or "").strip()
         image_references = self._parse_image_references(message)
-        if not text and not image_references:
+        file_references = self._parse_file_references(message)
+        if not text and not image_references and not file_references:
             return None
         sender_id = str(sender.get("id") or "")
         chat_id = str(chat.get("id") or "")
@@ -293,7 +320,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             if self.require_mention and not self._is_group_message_for_bot(message, text):
                 return None
             text = self._strip_bot_mention(text)
-            if not text and not image_references:
+            if not text and not image_references and not file_references:
                 return None
 
         conversation_id = f"chat:{chat_id}"
@@ -307,25 +334,27 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             message_id=f"{chat_id}:{message_id}",
             text=text,
         )
-        return inbound, message_id, image_references
+        return inbound, message_id, image_references, file_references
 
     async def handle_update(self, update: dict[str, Any]) -> None:
         parsed = self._parse_inbound_update(update)
         if parsed is None:
             return
-        inbound, reply_to_message_id, image_references = parsed
+        inbound, reply_to_message_id, image_references, file_references = parsed
         prepare_inbound = None
-        if image_references:
-            prepare_inbound = lambda message: materialize_inbound_images(
+        if image_references or file_references:
+            prepare_inbound = lambda message: materialize_inbound_media(
                 message,
-                image_references,
-                self.media_materializer,
+                image_references=image_references,
+                image_materializer=self.media_materializer,
+                file_references=file_references,
+                file_materializer=self.file_materializer,
             )
         await self.dispatch_inbound(
             inbound,
             reply_to_message_id=reply_to_message_id,
             prepare_inbound=prepare_inbound,
-            pending_attachment_count=len(image_references),
+            pending_attachment_count=len(image_references) + len(file_references),
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
@@ -342,7 +371,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         original_artifacts = list(message.artifacts)
         for index, artifact in enumerate(original_artifacts):
             try:
-                await self._send_artifact(
+                result = await self._send_artifact(
                     artifact,
                     chat_id=chat_id,
                     thread_id=thread_id,
@@ -364,6 +393,14 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 message.artifacts = original_artifacts[index:]
                 raise
             else:
+                platform_id = ""
+                if isinstance(result, dict):
+                    platform_id = str(result.get("message_id") or "")
+                record_artifact_delivery(
+                    message,
+                    artifact,
+                    platform_message_id=platform_id,
+                )
                 message.artifacts = original_artifacts[index + 1 :]
         message.artifacts = []
         append_artifact_failures(message, artifact_failures)
@@ -393,7 +430,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         chat_id: int,
         thread_id: int | None,
         reply_to: int | None,
-    ) -> None:
+    ) -> object:
         _source, content = await read_managed_artifact(
             artifact,
             root=self.outbound_media_dir,
@@ -405,7 +442,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             body["message_thread_id"] = thread_id
         if reply_to is not None:
             body["reply_parameters"] = {"message_id": reply_to}
-        await self._api_upload(
+        return await self._api_upload(
             method,
             body,
             field=field,
@@ -663,6 +700,16 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             # token. Keep that credential out of any later exception chain.
             raise MediaDownloadError from None
 
+    async def _download_file(
+        self,
+        reference: TelegramFileReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        await self._download_image(
+            TelegramImageReference(file_id=reference.file_id),
+            write_chunk,
+        )
+
     @staticmethod
     def _parse_image_references(
         message: dict[str, Any],
@@ -698,6 +745,29 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                     references.append(TelegramImageReference(file_id=file_id))
 
         return tuple(references[:MAX_IMAGE_COUNT])
+
+    @staticmethod
+    def _parse_file_references(
+        message: dict[str, Any],
+    ) -> tuple[TelegramFileReference, ...]:
+        document = message.get("document")
+        if not isinstance(document, dict):
+            return ()
+        file_id = str(document.get("file_id") or "").strip()
+        filename = str(document.get("file_name") or "").strip()
+        content_type = str(document.get("mime_type") or "").partition(";")[0].strip()
+        suffix = Path(filename).suffix.casefold()
+        if content_type.casefold().startswith("image/") or suffix in IMAGE_DOCUMENT_SUFFIXES:
+            return ()
+        if not filename:
+            filename = "file"
+        return (
+            TelegramFileReference(
+                file_id=file_id,
+                filename=filename,
+                content_type=content_type,
+            ),
+        )[:MAX_FILE_COUNT]
 
     def _response_payload(self, response: httpx.Response) -> dict[str, Any]:
         try:

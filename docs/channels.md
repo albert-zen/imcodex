@@ -9,11 +9,11 @@ native to Codex.
 
 | Channel | Public callback needed | Conversation scope | Initial capability |
 | --- | --- | --- | --- |
-| QQ | No | Private and group `@bot` | Text and JPEG/PNG/WebP images |
-| Telegram | No | Private, group, forum topic | Text and JPEG/PNG/WebP images |
-| Feishu / Lark | No | Private, group, topic | Text and JPEG/PNG/WebP images |
-| Weixin iLink | No | Direct only | Text and JPEG/PNG/WebP images, experimental |
-| Generic webhook | Only for remote gateways | Caller-defined | Trusted text and image injection |
+| QQ | No | Private and group `@bot` | Text, images, and supported files |
+| Telegram | No | Private, group, forum topic | Text, images, and supported files |
+| Feishu / Lark | No | Private, group, topic | Text, images, and supported files |
+| Weixin iLink | No | Direct only | Text, images, and supported files, experimental |
+| Generic webhook | Only for remote gateways | Caller-defined | Trusted text, image, and file injection |
 
 Telegram and Weixin use HTTPS long polling. QQ and Feishu use websocket
 connections. All of them make outbound connections from the machine running
@@ -613,3 +613,44 @@ official Python AI Bot SDK does not yet expose a fully awaitable authenticated
 startup and shutdown lifecycle. It can be integrated through the protected
 generic webhook today; a native adapter should wait for a lifecycle that can be
 cleanly supervised and tested.
+
+## Generic Inbound Files
+
+QQ, Telegram, Feishu, Weixin, and the generic webhook normalize ordinary
+attachments into the same managed input path. Supported files are PDF, UTF-8
+text, Markdown, common source code, and common text configuration formats.
+Files are limited to 25 MiB each and four per message. Platform filenames and
+MIME labels are hints: imcodex bounds the name and validates actual bytes before
+placing a randomized private file in the channel media spool.
+
+Images continue to use native `localImage`. Generic files use native Codex
+`mention` input with the staged filename and path. Both require a verified
+shared filesystem between imcodex and App Server. Unsupported, oversized,
+binary, damaged, or unavailable files produce a visible channel error. Generic
+webhook callers use repeated multipart fields named `files`; image fields
+remain `images`.
+
+## Explicit Agent Delivery
+
+An agent or operator can send through the already-running bridge:
+
+```bash
+python -m imcodex channels send \
+  --channel telegram \
+  --conversation chat:123456 \
+  --text "Analysis complete." \
+  --artifact reports/result.md
+```
+
+The command emits one JSON receipt and exits `0` for confirmed delivery, `3`
+for partial delivery, `1` for failed/unconfirmed delivery, and `2` for invalid
+local input. Artifact paths must be regular non-symlink files under the current
+working directory. The CLI uploads bytes to a loopback-only endpoint protected
+by the current bridge instance identity and a private per-process credential,
+so it neither exposes arbitrary local paths to HTTP nor creates competing
+channel connections. Request-scoped upload files are removed after the channel
+adapter returns.
+
+Use `--delivery-id` when retrying an attempted operation. If omitted, the CLI
+generates one. Per-artifact receipts include platform message identity when the
+adapter exposes it and adapter delivery identity where supported.

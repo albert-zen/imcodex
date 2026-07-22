@@ -56,11 +56,18 @@ _INPUT_ERROR_TEXT = {
     "unsupported_image": "Supported image formats are JPEG, PNG, and WebP.",
     "invalid_image": "That image appears to be damaged or incomplete. Please resend it.",
     "image_download_failed": "I couldn't download that image. Please resend it.",
+    "file_too_large": "Files must be at most 25 MiB.",
+    "too_many_files": "You can send up to 4 files in one message.",
+    "unsupported_file": (
+        "Supported files are PDF, plain text, Markdown, and common source-code formats."
+    ),
+    "invalid_file": "That file appears damaged, binary, or inconsistent with its filename.",
+    "file_download_failed": "I couldn't download that file. Please resend it.",
 }
 _GENERIC_ATTACHMENT_ERROR_TEXT = "I couldn't process that attachment. Please resend it."
-_REMOTE_APP_SERVER_IMAGE_ERROR_TEXT = (
-    "Image input requires imcodex and Codex App Server to share a verified local filesystem. "
-    "Use the IMCodex-managed local App Server or a same-filesystem stdio/Unix endpoint, then resend the image."
+_REMOTE_APP_SERVER_ATTACHMENT_ERROR_TEXT = (
+    "Attachment input requires imcodex and Codex App Server to share a verified local filesystem. "
+    "Use the IMCodex-managed local App Server or a same-filesystem stdio/Unix endpoint, then resend the attachment."
 )
 
 
@@ -121,7 +128,7 @@ class BridgeService(
         if binding.bootstrap_cwd is None and binding.thread_id is None:
             return [self._message(message, "status", self._render_onboarding())]
         if not self._supports_local_image_paths():
-            return [self._message(message, "error", _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT)]
+            return [self._message(message, "error", _REMOTE_APP_SERVER_ATTACHMENT_ERROR_TEXT)]
         return None
 
     async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
@@ -129,7 +136,7 @@ class BridgeService(
         if message.input_error is not None:
             message_kind = "input_error"
         elif message.attachments:
-            message_kind = "multimodal" if message.text.strip() else "image"
+            message_kind = "multimodal" if message.text.strip() else "attachment"
         elif message.text.startswith("/"):
             message_kind = "command"
         else:
@@ -203,7 +210,7 @@ class BridgeService(
         if binding.bootstrap_cwd is None and binding.thread_id is None:
             return [self._message(message, "status", self._render_onboarding())]
         if message.attachments and not self._supports_local_image_paths():
-            return [self._message(message, "error", _REMOTE_APP_SERVER_IMAGE_ERROR_TEXT)]
+            return [self._message(message, "error", _REMOTE_APP_SERVER_ATTACHMENT_ERROR_TEXT)]
         pending_approvals = self.store.list_pending_requests(
             message.channel_id,
             message.conversation_id,

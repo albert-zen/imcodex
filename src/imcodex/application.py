@@ -13,6 +13,7 @@ from .channels import create_app
 from .composition import SettingsSource, build_runtime
 from .config import Settings
 from .debug_harness.api import install_debug_routes
+from .delivery_api import install_delivery_route
 from .observability.health import (
     BRIDGE_HEALTH_KIND,
     BRIDGE_INSTANCE_HEADER,
@@ -44,26 +45,49 @@ def create_application(
     async def lifespan(app):
         app.state.runtime = runtime
         webhook_media = getattr(app.state, "webhook_media_materializer", None)
+        webhook_files = getattr(app.state, "webhook_file_materializer", None)
         wait_for_webhook_form_cleanup = getattr(
             app.state,
             "wait_for_webhook_form_cleanup",
             None,
         )
-        if webhook_media is not None:
-            await webhook_media.start()
+        webhook_media_started = False
+        webhook_files_started = False
+        runtime_started = False
+        credential_published = False
+        delivery_credential = getattr(app.state, "delivery_credential", None)
         try:
+            if webhook_media is not None:
+                await webhook_media.start()
+                webhook_media_started = True
+            if webhook_files is not None:
+                await webhook_files.start()
+                webhook_files_started = True
             await runtime.start()
-            try:
-                yield
-            finally:
-                await runtime.stop()
+            runtime_started = True
+            if delivery_credential is not None:
+                delivery_credential.publish()
+                credential_published = True
+            yield
         finally:
             try:
-                if webhook_media is not None:
-                    await webhook_media.stop()
+                if runtime_started:
+                    await runtime.stop()
             finally:
-                if callable(wait_for_webhook_form_cleanup):
-                    await wait_for_webhook_form_cleanup()
+                try:
+                    if credential_published and delivery_credential is not None:
+                        delivery_credential.clear()
+                finally:
+                    try:
+                        if webhook_files_started and webhook_files is not None:
+                            await webhook_files.stop()
+                    finally:
+                        try:
+                            if webhook_media_started and webhook_media is not None:
+                                await webhook_media.stop()
+                        finally:
+                            if callable(wait_for_webhook_form_cleanup):
+                                await wait_for_webhook_form_cleanup()
 
     app = create_app(
         runtime.service,
@@ -115,6 +139,12 @@ def create_application(
         return {"status": "shutting_down"}
 
     install_admin_routes(app, runtime, config_store=admin_config_store)
+    app.state.delivery_credential = install_delivery_route(
+        app,
+        runtime,
+        data_dir=Path(getattr(settings, "data_dir", Path(".imcodex"))),
+        run_dir=Path(getattr(settings, "run_dir", Path(".imcodex-run"))),
+    )
     if bool(getattr(settings, "debug_api_enabled", False)):
         install_debug_routes(app, runtime)
     app.router.lifespan_context = lifespan

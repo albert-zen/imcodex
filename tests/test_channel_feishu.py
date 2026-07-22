@@ -194,6 +194,30 @@ def test_feishu_requires_group_mention_and_preserves_malformed_images() -> None:
     assert adapter.parse_inbound_message(_message(raw_content_type="file")) is None
 
 
+def test_feishu_normalizes_generic_file_resource() -> None:
+    parsed = _adapter()._parse_inbound_message_with_images(
+        _message(
+            raw_content_type="file",
+            text="",
+            resources=[
+                SimpleNamespace(
+                    type="file",
+                    file_key="file_1",
+                    file_name="requirements.md",
+                    content_type="text/markdown",
+                )
+            ],
+        )
+    )
+
+    assert parsed is not None
+    inbound, images, files = parsed
+    assert inbound.text == ""
+    assert images == ()
+    assert files[0].filename == "requirements.md"
+    assert files[0].content_type == "text/markdown"
+
+
 def test_feishu_normalizes_image_and_rich_post_resources_without_exposing_refs() -> None:
     adapter = _adapter(require_mention=True)
     adapter._sdk = FakeFeishuSdk()
@@ -210,10 +234,11 @@ def test_feishu_normalizes_image_and_rich_post_resources_without_exposing_refs()
     parsed_direct = adapter._parse_inbound_message_with_images(direct_image)
 
     assert parsed_direct is not None
-    direct, direct_refs = parsed_direct
+    direct, direct_refs, direct_files = parsed_direct
     assert direct.text == ""
     assert direct_refs[0].message_id == "om_1"
     assert [reference.file_key for reference in direct_refs] == ["img_1"]
+    assert direct_files[0].file_key == "file_1"
     assert adapter.parse_inbound_message(direct_image) == direct
 
     post = _message(
@@ -234,10 +259,11 @@ def test_feishu_normalizes_image_and_rich_post_resources_without_exposing_refs()
     parsed_post = adapter._parse_inbound_message_with_images(post)
 
     assert parsed_post is not None
-    inbound, references = parsed_post
+    inbound, references, files = parsed_post
     assert inbound.text == "inspect these"
     assert inbound.conversation_id == "chat:oc_1:thread:omt_root"
     assert [reference.file_key for reference in references] == ["img_1", "img_2"]
+    assert files == ()
 
     external_markdown = _message(
         raw_content_type="post",
@@ -297,10 +323,11 @@ async def test_feishu_recovers_content_v2_images_omitted_by_minimum_sdk() -> Non
     parsed = _adapter()._parse_inbound_message_with_images(sdk_message)
 
     assert parsed is not None
-    inbound, references = parsed
+    inbound, references, files = parsed
     assert inbound.text == "look"
     assert inbound.conversation_id == "chat:oc_v2"
     assert [reference.file_key for reference in references] == ["img_v2_abc"]
+    assert files == ()
 
 
 @pytest.mark.asyncio
@@ -344,9 +371,10 @@ async def test_feishu_preserves_rendered_post_image_order_from_minimum_sdk() -> 
     parsed = _adapter()._parse_inbound_message_with_images(sdk_message)
 
     assert parsed is not None
-    inbound, references = parsed
+    inbound, references, files = parsed
     assert inbound.text == ""
     assert [reference.file_key for reference in references] == ["img_A", "img_B"]
+    assert files == ()
 
 
 @pytest.mark.asyncio
@@ -383,9 +411,10 @@ async def test_feishu_keeps_external_markdown_images_as_text() -> None:
     parsed = _adapter()._parse_inbound_message_with_images(sdk_message)
 
     assert parsed is not None
-    inbound, references = parsed
+    inbound, references, files = parsed
     assert inbound.text == markdown
     assert references == ()
+    assert files == ()
 
 
 @pytest.mark.asyncio
@@ -427,11 +456,12 @@ async def test_feishu_strips_any_alt_text_for_platform_image_keys() -> None:
     parsed = _adapter()._parse_inbound_message_with_images(sdk_message)
 
     assert parsed is not None
-    inbound, references = parsed
+    inbound, references, files = parsed
     assert inbound.text == "inspect please"
     assert [reference.file_key for reference in references] == [
         "img_v2_secret"
     ]
+    assert files == ()
 
 
 def test_feishu_bounds_unique_image_references_after_deduplication() -> None:
@@ -447,9 +477,10 @@ def test_feishu_bounds_unique_image_references_after_deduplication() -> None:
     )
 
     assert parsed is not None
-    _, references = parsed
+    _, references, files = parsed
     assert len(references) == MAX_IMAGE_COUNT + 1
     assert [reference.file_key for reference in references].count("img_0") == 1
+    assert files == ()
 
 
 @pytest.mark.asyncio
@@ -865,6 +896,8 @@ async def test_feishu_sends_staged_image_before_terminal_text(tmp_path: Path) ->
     assert sdk.sent[0][2]["reply_to"] == "om_1"
     assert len(sdk.sent[0][2]["uuid"]) == 50
     assert sdk.sent[1][1] == {"text": "Rendered preview."}
+    assert len(sdk.sent[1][2]["uuid"]) == 50
+    assert sdk.sent[1][2]["uuid"] != sdk.sent[0][2]["uuid"]
     assert message.artifacts == []
 
 
@@ -1361,7 +1394,7 @@ def test_feishu_sdk_is_created_with_strict_bounded_security(monkeypatch) -> None
     assert media_capabilities.image is True
     assert media_capabilities.audio is False
     assert media_capabilities.video is False
-    assert media_capabilities.file is False
+    assert media_capabilities.file is True
     assert media_capabilities.sticker is False
     dedup = captured["safety"].dedup
     assert dedup.enabled is False
@@ -1423,7 +1456,7 @@ def test_feishu_real_optional_sdk_construction_smoke() -> None:
         assert media_capabilities.image is True
         assert media_capabilities.audio is False
         assert media_capabilities.video is False
-        assert media_capabilities.file is False
+        assert media_capabilities.file is True
         assert media_capabilities.sticker is False
         assert sdk.config.safety.dedup.enabled is False
         assert sdk.config.safety.dedup.max_entries == 0

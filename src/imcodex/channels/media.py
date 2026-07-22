@@ -9,11 +9,16 @@ import os
 from pathlib import Path
 import secrets
 import time
-from typing import Awaitable, Callable, Generic, TypeVar
+from typing import Awaitable, Callable, Generic, Protocol, TypeVar
 import warnings
 
 from PIL import Image
 
+from ..file_types import (
+    InvalidGenericFileError,
+    UnsupportedGenericFileError,
+    detect_generic_file,
+)
 from ..models import InboundAttachment, InboundMessage
 from ..observability.runtime import emit_event
 from ..windows_security import secure_windows_path
@@ -33,6 +38,8 @@ MEDIA_LOCK_POLL_INTERVAL_S = 0.05
 MEDIA_LOCK_FILE_NAME = ".imcodex-spool.lock"
 MEDIA_PROCESS_TERMINATE_S = 1.0
 MEDIA_CANCELLATION_CLEANUP_S = 10.0 if os.name == "nt" else 2.0
+MAX_FILE_COUNT = 4
+MAX_FILE_BYTES = 25 * 1024 * 1024
 
 IMAGE_TOO_LARGE = "image_too_large"
 TOO_MANY_IMAGES = "too_many_images"
@@ -40,7 +47,11 @@ UNSUPPORTED_IMAGE = "unsupported_image"
 INVALID_IMAGE = "invalid_image"
 IMAGE_DOWNLOAD_FAILED = "image_download_failed"
 MEDIA_SPOOL_UNAVAILABLE_MESSAGE = "Inbound media staging is unavailable."
-
+FILE_TOO_LARGE = "file_too_large"
+TOO_MANY_FILES = "too_many_files"
+UNSUPPORTED_FILE = "unsupported_file"
+INVALID_FILE = "invalid_file"
+FILE_DOWNLOAD_FAILED = "file_download_failed"
 
 class ImageTooLargeError(Exception):
     pass
@@ -62,6 +73,18 @@ class MediaSpoolError(RuntimeError):
     pass
 
 
+class FileTooLargeError(Exception):
+    pass
+
+
+class UnsupportedFileError(Exception):
+    pass
+
+
+class InvalidFileError(Exception):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class MaterializedImage:
     content_type: str
@@ -76,6 +99,34 @@ class MediaResult:
 
 
 @dataclass(frozen=True, slots=True)
+class MaterializedFile:
+    content_type: str
+    local_path: str
+    size_bytes: int
+    filename: str
+
+
+@dataclass(frozen=True, slots=True)
+class FileMediaResult:
+    files: tuple[MaterializedFile, ...] = ()
+    input_error: str | None = None
+
+
+class FileReference(Protocol):
+    filename: str
+    content_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BufferedFile:
+    content_type: str
+    extension: str
+    data: bytes
+    token: str
+    filename: str
+
+
+@dataclass(frozen=True, slots=True)
 class _BufferedImage:
     content_type: str
     extension: str
@@ -86,6 +137,8 @@ class _BufferedImage:
 ImageReferenceT = TypeVar("ImageReferenceT")
 ChunkWriter = Callable[[bytes], Awaitable[None]]
 ImageDownloader = Callable[[ImageReferenceT, ChunkWriter], Awaitable[None]]
+FileReferenceT = TypeVar("FileReferenceT", bound=FileReference)
+FileDownloader = Callable[[FileReferenceT, ChunkWriter], Awaitable[None]]
 
 
 class ImageMediaMaterializer(Generic[ImageReferenceT]):
@@ -487,6 +540,162 @@ class ImageMediaMaterializer(Generic[ImageReferenceT]):
                 )
 
 
+class FileMediaMaterializer(ImageMediaMaterializer[FileReferenceT]):
+    """Validate and privately stage generic files in killable workers."""
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        download: FileDownloader[FileReferenceT],
+        clock: Callable[[], float] = time.time,
+        cleanup_sleep=asyncio.sleep,
+    ) -> None:
+        super().__init__(
+            root=root,
+            download=download,  # type: ignore[arg-type]
+            clock=clock,
+            cleanup_sleep=cleanup_sleep,
+        )
+        self.download: FileDownloader[FileReferenceT] = download  # type: ignore[assignment]
+
+    async def materialize(
+        self,
+        references: tuple[FileReferenceT, ...],
+    ) -> FileMediaResult:
+        if not references:
+            return FileMediaResult()
+        if len(references) > MAX_FILE_COUNT:
+            return FileMediaResult(input_error=TOO_MANY_FILES)
+        self._reap_processes()
+        if self._tainted:
+            return FileMediaResult(input_error=FILE_DOWNLOAD_FAILED)
+        try:
+            async with asyncio.timeout(MEDIA_MATERIALIZE_DEADLINE_S):
+                async with self._spool_lock:
+                    preflight_status, _files = await self._run_stage_worker(
+                        (),
+                        create=True,
+                        require_capacity=True,
+                    )
+                    if preflight_status != "ok":
+                        return FileMediaResult(input_error=preflight_status)
+                    buffered = await self._download_files(references)
+                    status, files = await self._run_stage_worker(
+                        buffered,
+                        create=True,
+                    )
+                if status == "ok":
+                    return FileMediaResult(files=files)
+                return FileMediaResult(input_error=status)
+        except FileTooLargeError:
+            return FileMediaResult(input_error=FILE_TOO_LARGE)
+        except UnsupportedFileError:
+            return FileMediaResult(input_error=UNSUPPORTED_FILE)
+        except InvalidFileError:
+            return FileMediaResult(input_error=INVALID_FILE)
+        except (TimeoutError, MediaDownloadError):
+            return FileMediaResult(input_error=FILE_DOWNLOAD_FAILED)
+        except Exception:
+            return FileMediaResult(input_error=FILE_DOWNLOAD_FAILED)
+
+    async def _download_files(
+        self,
+        references: tuple[FileReferenceT, ...],
+    ) -> tuple[_BufferedFile, ...]:
+        buffered: list[_BufferedFile] = []
+        for reference in references:
+            data = bytearray()
+
+            async def write_chunk(chunk: bytes) -> None:
+                if not isinstance(chunk, bytes):
+                    chunk = bytes(chunk)
+                if len(data) + len(chunk) > MAX_FILE_BYTES:
+                    raise FileTooLargeError
+                data.extend(chunk)
+
+            await self.download(reference, write_chunk)
+            filename = _bounded_filename(reference.filename)
+            content_type, extension = _validate_generic_file(filename, bytes(data))
+            buffered.append(
+                _BufferedFile(
+                    content_type=content_type,
+                    extension=extension,
+                    data=bytes(data),
+                    token=secrets.token_hex(16),
+                    filename=filename,
+                )
+            )
+        return tuple(buffered)
+
+    async def _run_stage_worker(
+        self,
+        files: tuple[_BufferedFile, ...],
+        *,
+        create: bool,
+        require_capacity: bool = False,
+    ) -> tuple[str, tuple[MaterializedFile, ...]]:
+        known_paths = tuple(
+            path
+            for item in files
+            for path in (
+                self.root / f"{item.token}.part",
+                self.root / f"{item.token}{item.extension}",
+            )
+        )
+        try:
+            payload = await self._run_process(
+                target=_stage_file_batch_worker,
+                args=(
+                    str(self.root),
+                    create,
+                    self.clock() - MEDIA_RETENTION_S,
+                    MEDIA_MAX_SPOOL_ENTRIES,
+                    MEDIA_QUOTA_BYTES,
+                    files,
+                    require_capacity,
+                ),
+                name="imcodex-file-stage",
+            )
+        except BaseException:
+            if known_paths:
+                try:
+                    await self._cleanup_known_paths(known_paths)
+                except MediaSpoolError:
+                    pass
+            raise
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            raise MediaSpoolError(MEDIA_SPOOL_UNAVAILABLE_MESSAGE)
+        status, raw_files = payload
+        if not isinstance(raw_files, tuple):
+            raise MediaSpoolError(MEDIA_SPOOL_UNAVAILABLE_MESSAGE)
+        if status != "ok":
+            if known_paths:
+                await self._cleanup_known_paths(known_paths)
+            return str(status), ()
+        return "ok", tuple(
+            MaterializedFile(
+                content_type=str(content_type),
+                local_path=str(local_path),
+                size_bytes=int(size_bytes),
+                filename=str(filename),
+            )
+            for content_type, local_path, size_bytes, filename in raw_files
+        )
+
+    async def _run_cleanup(self) -> None:
+        while not self._closed:
+            await self.cleanup_sleep(MEDIA_CLEANUP_INTERVAL_S)
+            if self._closed:
+                return
+            try:
+                await self.prepare()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Inbound file cleanup failed: %s", type(exc).__name__)
+
+
 def _stage_batch_worker(
     root_value: str,
     create: bool,
@@ -782,6 +991,191 @@ async def materialize_inbound_images(
             },
         )
     return inbound
+
+
+async def materialize_inbound_files(
+    inbound: InboundMessage,
+    references: tuple[FileReferenceT, ...],
+    materializer: FileMediaMaterializer[FileReferenceT],
+) -> InboundMessage:
+    """Append channel-neutral staged files without exposing platform secrets."""
+
+    emit_event(
+        component=f"channels.{inbound.channel_id}",
+        event="message.inbound.file.materializing",
+        message="Inbound file materialization started",
+        channel_id=inbound.channel_id,
+        conversation_id=inbound.conversation_id,
+        user_id=inbound.user_id,
+        message_id=inbound.message_id,
+        data={"attachment_count": len(references)},
+    )
+    result = await materializer.materialize(references)
+    inbound.attachments = (
+        *inbound.attachments,
+        *(
+            InboundAttachment(
+                kind="file",
+                content_type=item.content_type,
+                local_path=item.local_path,
+                size_bytes=item.size_bytes,
+                filename=item.filename,
+                source_channel_id=inbound.channel_id,
+                source_message_id=inbound.message_id,
+            )
+            for item in result.files
+        ),
+    )
+    if result.input_error is not None:
+        inbound.input_error = result.input_error
+        emit_event(
+            component=f"channels.{inbound.channel_id}",
+            event="message.inbound.file.rejected",
+            level="WARNING",
+            message="Inbound file materialization rejected",
+            channel_id=inbound.channel_id,
+            conversation_id=inbound.conversation_id,
+            user_id=inbound.user_id,
+            message_id=inbound.message_id,
+            data={"reason": result.input_error},
+        )
+    return inbound
+
+
+async def materialize_inbound_media(
+    inbound: InboundMessage,
+    *,
+    image_references: tuple = (),
+    image_materializer=None,
+    file_references: tuple = (),
+    file_materializer=None,
+) -> InboundMessage:
+    """Run the shared image and file trust boundaries for one IM message."""
+
+    if image_references:
+        inbound = await materialize_inbound_images(
+            inbound,
+            image_references,
+            image_materializer,
+        )
+    if inbound.input_error is None and file_references:
+        inbound = await materialize_inbound_files(
+            inbound,
+            file_references,
+            file_materializer,
+        )
+    return inbound
+
+
+def _bounded_filename(value: str) -> str:
+    normalized = str(value or "").replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    name = "".join(
+        character
+        for character in name
+        if character >= " " and character not in {"\x7f", "/", "\\"}
+    ).strip(" .")
+    if not name:
+        raise InvalidFileError
+    suffix = Path(name).suffix[:20]
+    stem_limit = max(1, 120 - len(suffix))
+    stem = Path(name).stem[:stem_limit].strip(" .") or "file"
+    return f"{stem}{suffix}"[:120]
+
+
+def _validate_generic_file(filename: str, content: bytes) -> tuple[str, str]:
+    try:
+        return detect_generic_file(filename, content)
+    except UnsupportedGenericFileError:
+        raise UnsupportedFileError from None
+    except InvalidGenericFileError:
+        raise InvalidFileError from None
+
+
+def _stage_file_batch_worker(
+    root_value: str,
+    create: bool,
+    cutoff: float,
+    max_entries: int,
+    quota_bytes: int,
+    files: tuple[_BufferedFile, ...],
+    require_capacity: bool,
+    connection,
+) -> None:
+    root = Path(root_value)
+    descriptor: int | None = None
+    all_paths = [
+        path
+        for item in files
+        for path in (
+            root / f"{item.token}.part",
+            root / f"{item.token}{item.extension}",
+        )
+    ]
+    result: tuple[str, tuple[tuple[str, str, int, str], ...]]
+    try:
+        while True:
+            status, descriptor = _try_process_lock_path(root, create=create)
+            if status == "missing":
+                result = ("ok", ())
+                break
+            if status == "acquired":
+                assert descriptor is not None
+                usage = _prepare_and_sweep_path(
+                    root,
+                    create=create,
+                    cutoff=cutoff,
+                    max_entries=max_entries,
+                )
+                if require_capacity and usage >= quota_bytes:
+                    raise MediaDownloadError
+                if usage + sum(len(item.data) for item in files) > quota_bytes:
+                    raise MediaDownloadError
+                staged: list[tuple[str, str, int, str]] = []
+                for item in files:
+                    part_path = root / f"{item.token}.part"
+                    final_path = root / f"{item.token}{item.extension}"
+                    file_descriptor: int | None = None
+                    try:
+                        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                        flags |= getattr(os, "O_BINARY", 0)
+                        if hasattr(os, "O_NOFOLLOW"):
+                            flags |= os.O_NOFOLLOW
+                        file_descriptor = os.open(part_path, flags, 0o600)
+                        _chmod_private_file(part_path)
+                        _write_all(file_descriptor, item.data)
+                        os.close(file_descriptor)
+                        file_descriptor = None
+                        os.replace(part_path, final_path)
+                        _chmod_private_file(final_path)
+                    finally:
+                        if file_descriptor is not None:
+                            os.close(file_descriptor)
+                    staged.append(
+                        (
+                            item.content_type,
+                            str(final_path),
+                            len(item.data),
+                            item.filename,
+                        )
+                    )
+                result = ("ok", tuple(staged))
+                break
+            time.sleep(MEDIA_LOCK_POLL_INTERVAL_S)
+    except BaseException:
+        _remove_paths(all_paths)
+        result = (FILE_DOWNLOAD_FAILED, ())
+    finally:
+        if descriptor is not None:
+            try:
+                _release_process_lock(descriptor)
+            except BaseException:
+                _remove_paths(all_paths)
+                result = (FILE_DOWNLOAD_FAILED, ())
+        try:
+            connection.send(result)
+        finally:
+            connection.close()
 
 
 def _sniff_image(header: bytes) -> tuple[str, str]:

@@ -126,6 +126,47 @@ def test_webhook_multipart_image_uses_shared_staging_pipeline(tmp_path: Path) ->
     assert path.read_bytes() == PNG
 
 
+def test_webhook_multipart_file_uses_shared_generic_staging_pipeline(
+    tmp_path: Path,
+) -> None:
+    service = CountingService(ConversationStore(clock=lambda: 1.0))
+    media_dir = tmp_path / "inbound-media"
+    client = TestClient(
+        create_app(
+            service,
+            inbound_token="webhook-secret",
+            media_dir=media_dir,
+        )
+    )
+
+    response = client.post(
+        "/api/channels/webhook/inbound",
+        headers={"Authorization": "Bearer webhook-secret"},
+        data={
+            "channel_id": "gateway",
+            "conversation_id": "conv-1",
+            "user_id": "u1",
+            "message_id": "file-1",
+        },
+        files={
+            "files": (
+                "../../requirements.md",
+                b"# Requirements\n",
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    attachment = service.calls[0].attachments[0]
+    assert attachment.kind == "file"
+    assert attachment.filename == "requirements.md"
+    assert attachment.content_type == "text/markdown"
+    assert attachment.source_channel_id == "gateway"
+    assert attachment.source_message_id == "file-1"
+    assert Path(attachment.local_path).read_bytes() == b"# Requirements\n"
+
+
 def test_webhook_multipart_rejects_internal_path_fields(tmp_path: Path) -> None:
     store = ConversationStore(clock=lambda: 1.0)
     service = CountingService(store)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+from pathlib import Path
 import re
 
 from ..models import InboundAttachment, NativeThreadSnapshot
@@ -18,6 +19,7 @@ from .client import AppServerError
 
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
+_ATTACHMENT_ONLY_DISPLAY_TEXT = "[Attachment]"
 _THREAD_LIST_BATCH_SIZE = 100
 
 
@@ -375,7 +377,7 @@ class CodexThreadBackendMixin:
         attachments: tuple[InboundAttachment, ...] = (),
     ) -> TurnSubmission:
         if attachments and not self.supports_local_image_paths():
-            raise AppServerError("configured App Server cannot read bridge-local image paths")
+            raise AppServerError("configured App Server cannot read bridge-local attachment paths")
         expected_local_image_epoch: int | None = None
         if attachments:
             epoch_capability = getattr(self.client, "local_image_paths_epoch", None)
@@ -388,7 +390,7 @@ class CodexThreadBackendMixin:
                         expected_local_image_epoch = epoch_capability()
                     if expected_local_image_epoch is None:
                         raise AppServerError(
-                            "configured App Server cannot read bridge-local image paths for this connection"
+                            "configured App Server cannot read bridge-local attachment paths for this connection"
                         )
         input_items = self._native_user_input(text, attachments)
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -450,7 +452,7 @@ class CodexThreadBackendMixin:
         refreshed = capability()
         if refreshed is None:
             raise AppServerError(
-                "configured App Server cannot read bridge-local image paths for this connection"
+                "configured App Server cannot read bridge-local attachment paths for this connection"
             )
         return int(refreshed)
 
@@ -497,11 +499,25 @@ class CodexThreadBackendMixin:
             # Codex App currently omits user messages whose native input has no
             # text item, even when localImage items are present. Keep the image
             # native while adding the smallest visible cross-surface caption.
-            input_items.append({"type": "text", "text": _IMAGE_ONLY_DISPLAY_TEXT})
+            display_text = (
+                _IMAGE_ONLY_DISPLAY_TEXT
+                if all(item.kind == "image" for item in attachments)
+                else _ATTACHMENT_ONLY_DISPLAY_TEXT
+            )
+            input_items.append({"type": "text", "text": display_text})
         for attachment in attachments:
-            if attachment.kind != "image":
+            if attachment.kind == "image":
+                input_items.append({"type": "localImage", "path": attachment.local_path})
+            elif attachment.kind == "file":
+                input_items.append(
+                    {
+                        "type": "mention",
+                        "name": attachment.filename or Path(attachment.local_path).name,
+                        "path": attachment.local_path,
+                    }
+                )
+            else:
                 raise ValueError(f"unsupported inbound attachment kind: {attachment.kind}")
-            input_items.append({"type": "localImage", "path": attachment.local_path})
         if not input_items:
             raise ValueError("inbound message has no supported input")
         return input_items

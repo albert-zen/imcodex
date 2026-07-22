@@ -855,3 +855,19 @@ A rewrite is acceptable only if a user can do the following end to end:
 10. Stop an active run with `/stop`.
 
 If a new implementation satisfies these behaviors cleanly and predictably, it matches the current product intent even if the internal architecture is completely different.
+
+## Unified Channel Attachments and Explicit Delivery
+
+- Inbound images and generic files share a channel-neutral attachment envelope.
+- Channels authenticate and download platform objects; the shared media layer
+  validates bytes, bounds names/count/size, stages private randomized files,
+  and expires them after the retention window.
+- Images project to `localImage`. Supported generic files project to native
+  `mention(name, path)` and are interpreted by Codex, not bridge extractors.
+- Unsupported attachments fail visibly and never become arbitrary local paths.
+- Explicit delivery enters the running bridge over its loopback-only current-
+  instance endpoint and reuses configured access policy, staging, adapters,
+  multiplex routing, retry identity, and outbound artifact behavior.
+- Explicit delivery always names its channel and conversation and returns a
+  machine-readable overall/per-artifact receipt. It does not infer a remote
+  destination or create a second channel runtime.

@@ -63,6 +63,39 @@ class OutboundArtifactStager:
                     )
         return tuple(artifacts)
 
+    def stage_upload(
+        self,
+        content: bytes,
+        *,
+        kind: str,
+        content_type: str,
+        filename: str,
+    ) -> OutboundArtifact:
+        """Stage bytes received by the authenticated local delivery endpoint."""
+
+        safe_name = Path(str(filename or "").replace("\\", "/")).name
+        if not safe_name or len(safe_name) > 120:
+            raise ValueError("artifact filename must be between 1 and 120 characters")
+        if kind not in {"image", "file"}:
+            raise ValueError("artifact kind must be image or file")
+        limit = _MAX_IMAGE_BYTES if kind == "image" else _MAX_FILE_BYTES
+        if len(content) > limit:
+            raise ValueError(f"{kind} output exceeds the delivery size limit")
+        if kind == "file":
+            # Explicit delivery accepts the same safely inspectable generic
+            # file set as inbound IM attachments.
+            from ..file_types import detect_generic_file
+
+            detected_type, _suffix = detect_generic_file(safe_name, content)
+            content_type = detected_type
+        return self._stage_bytes(
+            content,
+            kind=kind,
+            content_type=content_type or "application/octet-stream",
+            filename=safe_name,
+            unique=True,
+        )
+
     def stage_markdown_links(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
         artifacts: list[OutboundArtifact] = []
         for match in _MARKDOWN_LINK.finditer(text):
@@ -156,6 +189,7 @@ class OutboundArtifactStager:
         kind: str,
         content_type: str,
         filename: str,
+        unique: bool = False,
     ) -> OutboundArtifact:
         if kind == "image":
             try:
@@ -175,7 +209,12 @@ class OutboundArtifactStager:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if os.name != "nt":
             os.chmod(self.root, 0o700)
-        target = self.root / f"{digest}{suffix}"
+        target_name = (
+            f"{digest}.{secrets.token_hex(8)}{suffix}"
+            if unique
+            else f"{digest}{suffix}"
+        )
+        target = self.root / target_name
         if target.exists():
             try:
                 if (

@@ -146,10 +146,11 @@ def test_telegram_accepts_image_only_and_selects_largest_photo_size() -> None:
     )
 
     assert parsed is not None
-    inbound, reply_to, references = parsed
+    inbound, reply_to, references, file_references = parsed
     assert inbound.text == ""
     assert reply_to == "10"
     assert [reference.file_id for reference in references] == ["largest"]
+    assert file_references == ()
     # Keep the existing public parsing contract: platform references stay private.
     assert adapter.parse_inbound_update(
         {
@@ -201,7 +202,9 @@ def test_telegram_accepts_only_image_like_documents() -> None:
 
     assert mime_image is not None and mime_image[2][0].file_id == "png"
     assert extension_image is not None and extension_image[2][0].file_id == "webp"
-    assert non_image is None
+    assert non_image is not None
+    assert non_image[2] == ()
+    assert non_image[3][0].filename == "report.pdf"
 
 
 def test_telegram_preserves_malformed_image_envelopes_for_stable_error() -> None:

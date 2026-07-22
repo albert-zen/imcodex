@@ -13,17 +13,25 @@ from .artifacts import (
     PermanentArtifactDeliveryError,
     append_artifact_failures,
     read_managed_artifact,
+    record_artifact_delivery,
     stable_artifact_identity,
 )
 from .base import BaseChannelAdapter
 from .media import (
+    FileMediaMaterializer,
+    MAX_FILE_COUNT,
     MAX_IMAGE_COUNT,
     ImageMediaMaterializer,
     MediaDownloadError,
-    materialize_inbound_images,
+    materialize_inbound_media,
 )
 from .text import split_text
-from .weixin_ilink import ILinkError, WeixinILinkTransport, WeixinImageReference
+from .weixin_ilink import (
+    ILinkError,
+    WeixinFileReference,
+    WeixinILinkTransport,
+    WeixinImageReference,
+)
 from .weixin_state import (
     WeixinCredentials,
     WeixinStateStore,
@@ -61,6 +69,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         media_dir: Path | None = None,
         outbound_media_dir: Path | None = None,
         media_materializer: ImageMediaMaterializer[WeixinImageReference] | None = None,
+        file_materializer: FileMediaMaterializer[WeixinFileReference] | None = None,
         sleep=asyncio.sleep,
     ) -> None:
         super().__init__(
@@ -85,6 +94,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         self.media_materializer = media_materializer or ImageMediaMaterializer(
             root=media_dir or self.state_dir / "inbound-media",
             download=self._download_inbound_image,
+        )
+        self.file_materializer = file_materializer or FileMediaMaterializer(
+            root=media_dir or self.state_dir / "inbound-media",
+            download=self._download_inbound_file,
         )
 
     @classmethod
@@ -137,7 +150,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         self._transport = transport
         try:
             await self.media_materializer.start()
+            await self.file_materializer.start()
         except BaseException:
+            await self.file_materializer.stop()
+            await self.media_materializer.stop()
             self._transport = None
             try:
                 await transport.close()
@@ -188,6 +204,10 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             await self.media_materializer.stop()
         except Exception as exc:
             errors.append(exc)
+        try:
+            await self.file_materializer.stop()
+        except Exception as exc:
+            errors.append(exc)
         transport = self._transport
         self._transport = None
         if transport is not None:
@@ -210,7 +230,11 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     def _parse_inbound_message(
         self,
         payload: dict[str, Any],
-    ) -> tuple[InboundMessage, tuple[WeixinImageReference, ...]] | None:
+    ) -> tuple[
+        InboundMessage,
+        tuple[WeixinImageReference, ...],
+        tuple[WeixinFileReference, ...],
+    ] | None:
         if self._int_value(payload.get("message_type")) != 1:
             return None
         if str(payload.get("group_id") or "").strip():
@@ -221,7 +245,8 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         message_id = self._stable_message_id(payload)
         text = self._text_from_items(payload.get("item_list"))
         image_references = self._image_references_from_items(payload.get("item_list"))
-        if not message_id or (not text and not image_references):
+        file_references = self._file_references_from_items(payload.get("item_list"))
+        if not message_id or (not text and not image_references and not file_references):
             return None
         return (
             InboundMessage(
@@ -232,6 +257,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
                 text=text,
             ),
             image_references,
+            file_references,
         )
 
     async def handle_raw_message(self, payload: dict[str, Any]) -> None:
@@ -252,18 +278,19 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         parsed = self._parse_inbound_message(payload)
         if parsed is None:
             return
-        inbound, image_references = parsed
+        inbound, image_references, file_references = parsed
         prepare_inbound = None
-        if image_references:
+        if image_references or file_references:
             prepare_inbound = lambda message: self._materialize_inbound(
                 message,
                 image_references,
+                file_references,
             )
         await self.dispatch_inbound(
             inbound,
             reply_to_message_id=inbound.message_id,
             prepare_inbound=prepare_inbound,
-            pending_attachment_count=len(image_references),
+            pending_attachment_count=len(image_references) + len(file_references),
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
@@ -320,6 +347,13 @@ class WeixinChannelAdapter(BaseChannelAdapter):
                 message.artifacts = original_artifacts[index:]
                 raise
             else:
+                record_artifact_delivery(
+                    message,
+                    artifact,
+                    delivery_identity=(
+                        f"imcodex-artifact-{identity[:32]}" if identity else ""
+                    ),
+                )
                 message.artifacts = original_artifacts[index + 1 :]
         message.artifacts = []
         append_artifact_failures(message, artifact_failures)
@@ -456,15 +490,29 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             raise MediaDownloadError
         await download(reference, write_chunk)
 
+    async def _download_inbound_file(
+        self,
+        reference: WeixinFileReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        transport = self._transport
+        download = getattr(transport, "download_file", None)
+        if not callable(download):
+            raise MediaDownloadError
+        await download(reference, write_chunk)
+
     async def _materialize_inbound(
         self,
         inbound: InboundMessage,
         image_references: tuple[WeixinImageReference, ...],
+        file_references: tuple[WeixinFileReference, ...],
     ) -> InboundMessage:
-        return await materialize_inbound_images(
+        return await materialize_inbound_media(
             inbound,
-            image_references,
-            self.media_materializer,
+            image_references=image_references,
+            image_materializer=self.media_materializer,
+            file_references=file_references,
+            file_materializer=self.file_materializer,
         )
 
     def _create_transport(self, credentials: WeixinCredentials) -> object:
@@ -534,6 +582,40 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             # Preserve one item beyond the common limit so the whole message
             # is rejected rather than silently dropping later images.
             if len(references) > MAX_IMAGE_COUNT:
+                break
+        return tuple(references)
+
+    @classmethod
+    def _file_references_from_items(
+        cls,
+        value: object,
+    ) -> tuple[WeixinFileReference, ...]:
+        if not isinstance(value, list):
+            return ()
+        references: list[WeixinFileReference] = []
+        for item in value:
+            if not isinstance(item, dict) or cls._int_value(item.get("type")) != 4:
+                continue
+            file_item = item.get("file_item")
+            file_item = file_item if isinstance(file_item, dict) else {}
+            media = file_item.get("media")
+            media = media if isinstance(media, dict) else {}
+            references.append(
+                WeixinFileReference(
+                    encrypted_query_param=cls._string_value(
+                        media.get("encrypt_query_param")
+                    ),
+                    aes_key=cls._string_value(media.get("aes_key")),
+                    full_url=cls._string_value(media.get("full_url")),
+                    aeskey=cls._string_value(file_item.get("aeskey")),
+                    filename=cls._string_value(
+                        file_item.get("file_name") or file_item.get("name")
+                    )
+                    or "file",
+                    content_type=cls._string_value(file_item.get("content_type")),
+                )
+            )
+            if len(references) > MAX_FILE_COUNT:
                 break
         return tuple(references)
 

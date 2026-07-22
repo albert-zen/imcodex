@@ -49,6 +49,16 @@ class WeixinImageReference:
     aeskey: str = field(default="", repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class WeixinFileReference:
+    encrypted_query_param: str = field(default="", repr=False)
+    aes_key: str = field(default="", repr=False)
+    full_url: str = field(default="", repr=False)
+    aeskey: str = field(default="", repr=False)
+    filename: str = ""
+    content_type: str = ""
+
+
 class ILinkError(RuntimeError):
     def __init__(self, message: str, *, code: int | None = None) -> None:
         super().__init__(message)
@@ -355,6 +365,13 @@ class WeixinILinkTransport:
         except ValueError:
             raise MediaDownloadError from None
         await write_chunk(final_plaintext)
+
+    async def download_file(
+        self,
+        reference: WeixinFileReference,
+        write_chunk: Callable[[bytes], Awaitable[None]],
+    ) -> None:
+        await self.download_image(reference, write_chunk)  # type: ignore[arg-type]
 
     async def notify_start(self) -> dict[str, Any]:
         return await self._notify("ilink/bot/msg/notifystart")

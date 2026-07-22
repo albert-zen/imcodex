@@ -963,6 +963,40 @@ async def test_submit_input_starts_image_only_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_input_projects_generic_file_as_native_mention() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    client = MultimodalClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    attachment = InboundAttachment(
+        kind="file",
+        content_type="text/markdown",
+        local_path="/tmp/inbound.md",
+        size_bytes=12,
+        filename="requirements.md",
+        source_channel_id="qq",
+        source_message_id="msg-1",
+    )
+
+    await backend.submit_input("qq", "conv-1", "", (attachment,))
+
+    assert client.start_turn_calls == [
+        {
+            "thread_id": "thr_1",
+            "input_items": [
+                {"type": "text", "text": "[Attachment]"},
+                {
+                    "type": "mention",
+                    "name": "requirements.md",
+                    "path": "/tmp/inbound.md",
+                },
+            ],
+            "summary": "concise",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_submit_input_binds_image_submission_to_capability_epoch() -> None:
     class EpochClient:
         def __init__(self) -> None:
@@ -1004,7 +1038,7 @@ async def test_submit_input_rejects_images_when_client_capability_is_unknown() -
     )
     image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
 
-    with pytest.raises(AppServerError, match="cannot read bridge-local image paths"):
+    with pytest.raises(AppServerError, match="cannot read bridge-local attachment paths"):
         await backend.submit_input("qq", "conv-1", "", (image,))
 
 

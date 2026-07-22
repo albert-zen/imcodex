@@ -531,14 +531,17 @@ class UnifiedChannelMiddleware:
 
     @staticmethod
     def _attachment_metadata(inbound: InboundMessage) -> list[dict[str, object]]:
-        return [
-            {
+        metadata: list[dict[str, object]] = []
+        for attachment in inbound.attachments:
+            item: dict[str, object] = {
                 "kind": attachment.kind,
                 "content_type": attachment.content_type,
                 "size_bytes": attachment.size_bytes,
             }
-            for attachment in inbound.attachments
-        ]
+            if attachment.filename:
+                item["filename"] = attachment.filename
+            metadata.append(item)
+        return metadata
 
     @classmethod
     def _inbound_content_sha256(cls, inbound: InboundMessage) -> str:
@@ -550,6 +553,7 @@ class UnifiedChannelMiddleware:
                     attachment.kind,
                     attachment.content_type,
                     str(attachment.size_bytes),
+                    attachment.filename,
                 )
             )
         for value in values:

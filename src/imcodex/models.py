@@ -91,10 +91,13 @@ class NativeAppServerJournalEntry:
 
 @dataclass(frozen=True, slots=True)
 class InboundAttachment:
-    kind: Literal["image"]
+    kind: Literal["image", "file"]
     content_type: str
     local_path: str
     size_bytes: int
+    filename: str = ""
+    source_channel_id: str = ""
+    source_message_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)

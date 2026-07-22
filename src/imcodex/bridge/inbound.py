@@ -23,7 +23,14 @@ def render_inbound_input(message: InboundMessage) -> str:
 
     current_text = message.text.strip()
     if not current_text:
-        current_text = "[Image]" if message.attachments else "[No additional text]"
+        if message.attachments:
+            current_text = (
+                "[Image]"
+                if all(item.kind == "image" for item in message.attachments)
+                else "[Attachment]"
+            )
+        else:
+            current_text = "[No additional text]"
     return "\n".join(
         (
             _QUOTED_MESSAGE_BEGIN,

@@ -38,6 +38,7 @@ from imcodex.channels.qq_media import (
     QQMediaMaterializer,
     QQMediaResult,
     parse_qq_image_references,
+    parse_qq_file_references,
 )
 
 
@@ -122,6 +123,28 @@ def test_parse_qq_image_references_ignores_declared_metadata_and_bounds_input() 
     assert len(references) == 5
     assert references[0].url == TRUSTED_URL
     assert all("secret.png" not in reference.url for reference in references)
+
+
+def test_parse_qq_file_references_separates_generic_files_from_images() -> None:
+    references = parse_qq_file_references(
+        [
+            {
+                "content_type": "application/pdf",
+                "filename": "report.pdf",
+                "url": TRUSTED_URL,
+            },
+            {
+                "content_type": "image/png",
+                "filename": "preview.png",
+                "url": TRUSTED_URL,
+            },
+        ]
+    )
+
+    assert len(references) == 1
+    assert references[0].filename == "report.pdf"
+    assert references[0].content_type == "application/pdf"
+    assert "https://" not in repr(references)
 
 
 @pytest.mark.asyncio

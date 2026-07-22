@@ -39,6 +39,7 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 - [Channel setup and security](docs/channels.md)
 - [Product behavior](docs/product-behavior-spec.md)
 - [System constraints](docs/system-constraints-spec.md)
+- [Unified attachment and delivery decision](docs/adr/0002-unified-channel-message-delivery.md)
 
 ## Run
 

@@ -218,3 +218,111 @@ def test_application_stops_webhook_media_when_runtime_start_fails(
             pass
 
     assert events == ["media.start", "runtime.start", "media.stop"]
+
+
+def test_application_rolls_back_image_materializer_when_file_start_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class ImageMaterializer:
+        async def start(self) -> None:
+            events.append("image.start")
+
+        async def stop(self) -> None:
+            events.append("image.stop")
+
+    class FileMaterializer:
+        async def start(self) -> None:
+            events.append("file.start")
+            raise RuntimeError("file startup failed")
+
+        async def stop(self) -> None:
+            events.append("file.stop")
+
+    class Runtime:
+        service = _Service()
+
+        async def start(self) -> None:
+            events.append("runtime.start")
+
+        async def stop(self) -> None:
+            events.append("runtime.stop")
+
+    def create_with_materializers(service, **kwargs):
+        return create_channel_app(
+            service,
+            **kwargs,
+            media_materializer=ImageMaterializer(),
+            file_materializer=FileMaterializer(),
+        )
+
+    monkeypatch.setattr("imcodex.application.create_app", create_with_materializers)
+    app = create_application(
+        settings=SimpleNamespace(
+            inbound_webhook_token="",
+            debug_api_enabled=False,
+            data_dir=tmp_path,
+            run_dir=tmp_path / "run",
+        ),
+        runtime=Runtime(),
+    )
+
+    with pytest.raises(RuntimeError, match="file startup failed"):
+        with TestClient(app):
+            pass
+
+    assert events == ["image.start", "file.start", "image.stop"]
+
+
+def test_application_stops_runtime_when_delivery_credential_publish_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    events: list[str] = []
+
+    class Materializer:
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    class Runtime:
+        service = _Service()
+
+        async def start(self) -> None:
+            events.append("runtime.start")
+
+        async def stop(self) -> None:
+            events.append("runtime.stop")
+
+    def create_with_materializers(service, **kwargs):
+        return create_channel_app(
+            service,
+            **kwargs,
+            media_materializer=Materializer(),
+            file_materializer=Materializer(),
+        )
+
+    monkeypatch.setattr("imcodex.application.create_app", create_with_materializers)
+    app = create_application(
+        settings=SimpleNamespace(
+            inbound_webhook_token="",
+            debug_api_enabled=False,
+            data_dir=tmp_path,
+            run_dir=tmp_path / "run",
+        ),
+        runtime=Runtime(),
+    )
+
+    def fail_publish() -> None:
+        raise RuntimeError("credential publish failed")
+
+    app.state.delivery_credential.publish = fail_publish
+    with pytest.raises(RuntimeError, match="credential publish failed"):
+        with TestClient(app):
+            pass
+
+    assert events == ["runtime.start", "runtime.stop"]

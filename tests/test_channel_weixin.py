@@ -32,6 +32,20 @@ def _image_item(
     }
 
 
+def _file_item(filename: str = "requirements.md") -> dict:
+    return {
+        "type": 4,
+        "file_item": {
+            "file_name": filename,
+            "content_type": "text/markdown",
+            "media": {
+                "encrypt_query_param": "file-ticket",
+                "aes_key": "AAECAwQFBgcICQoLDA0ODw==",
+            },
+        },
+    }
+
+
 def _raw_message(
     *,
     user_id: str = "owner@im.wechat",
@@ -168,12 +182,21 @@ def test_weixin_normalizes_text_pure_image_and_captioned_images(tmp_path: Path) 
     assert pure_image is not None and pure_image.text == ""
     parsed_captioned = adapter._parse_inbound_message(captioned_message)
     assert parsed_captioned is not None
-    captioned, references = parsed_captioned
+    captioned, references, file_references = parsed_captioned
     assert captioned.text == "describe these"
     assert len(references) == 2
+    assert file_references == ()
     assert "secret-ticket" not in repr(references)
     assert adapter.parse_inbound_message(voice_message) is None
     assert adapter.parse_inbound_message(malformed_message) is None
+
+    parsed_file = adapter._parse_inbound_message(
+        {**_raw_message(text=""), "item_list": [_file_item()]}
+    )
+    assert parsed_file is not None
+    assert parsed_file[1] == ()
+    assert parsed_file[2][0].filename == "requirements.md"
+    assert "file-ticket" not in repr(parsed_file[2])
 
     too_many = {
         **_raw_message(text=""),

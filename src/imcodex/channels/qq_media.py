@@ -15,6 +15,7 @@ from .media import (
     INVALID_IMAGE,
     MAX_IMAGE_BYTES,
     MAX_IMAGE_COUNT,
+    MAX_FILE_COUNT,
     MAX_IMAGE_PIXELS,
     MEDIA_MATERIALIZE_DEADLINE_S,
     MEDIA_QUOTA_BYTES,
@@ -22,6 +23,7 @@ from .media import (
     TOO_MANY_IMAGES,
     UNSUPPORTED_IMAGE,
     ImageMediaMaterializer,
+    FileMediaMaterializer,
     MaterializedImage,
     MediaDownloadError,
     MediaResult,
@@ -48,6 +50,13 @@ class QQImageReference:
     url: str = field(repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class QQFileReference:
+    url: str = field(repr=False)
+    filename: str = ""
+    content_type: str = ""
+
+
 # Backwards-compatible internal names while staging is now channel-neutral.
 QQMaterializedImage = MaterializedImage
 QQMediaResult = MediaResult
@@ -62,10 +71,46 @@ def parse_qq_image_references(value: object) -> tuple[QQImageReference, ...]:
     for item in value:
         if not isinstance(item, dict):
             continue
+        content_type = str(item.get("content_type") or "").casefold()
+        filename = str(item.get("filename") or item.get("name") or "").strip()
+        suffix = Path(filename).suffix.casefold()
+        if (
+            filename
+            and not content_type.startswith("image/")
+            and suffix not in {".jpg", ".jpeg", ".png", ".webp"}
+        ):
+            continue
         references.append(QQImageReference(url=str(item.get("url") or "").strip()))
         # Preserve one item beyond the limit so the common materializer can
         # reject the whole message without retaining an unbounded list.
         if len(references) > MAX_IMAGE_COUNT:
+            break
+    return tuple(references)
+
+
+def parse_qq_file_references(value: object) -> tuple[QQFileReference, ...]:
+    if not isinstance(value, list):
+        return ()
+    references: list[QQFileReference] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        content_type = str(item.get("content_type") or "").strip()
+        if content_type.casefold().startswith("image/"):
+            continue
+        filename = str(item.get("filename") or item.get("name") or "").strip()
+        if not filename:
+            continue
+        if Path(filename).suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}:
+            continue
+        references.append(
+            QQFileReference(
+                url=str(item.get("url") or "").strip(),
+                filename=filename,
+                content_type=content_type,
+            )
+        )
+        if len(references) > MAX_FILE_COUNT:
             break
     return tuple(references)
 
@@ -114,6 +159,51 @@ class QQMediaMaterializer(ImageMediaMaterializer[QQImageReference]):
         except httpx.HTTPError:
             # httpx exceptions retain the signed request URL. Keep that URL
             # out of later exception chains and diagnostics.
+            raise MediaDownloadError from None
+
+
+class QQFileMaterializer(FileMediaMaterializer[QQFileReference]):
+    def __init__(
+        self,
+        *,
+        root: Path,
+        http_client: httpx.AsyncClient,
+        clock: Callable[[], float] = time.time,
+        cleanup_sleep=asyncio.sleep,
+    ) -> None:
+        self.http_client = http_client
+        super().__init__(
+            root=root,
+            download=self._download_file,
+            clock=clock,
+            cleanup_sleep=cleanup_sleep,
+        )
+
+    async def _download_file(self, reference: QQFileReference, write_chunk) -> None:
+        url = _normalize_media_url(reference.url)
+        try:
+            async with self.http_client.stream(
+                "GET",
+                url,
+                headers={"Accept-Encoding": "identity"},
+                follow_redirects=False,
+                timeout=_DOWNLOAD_TIMEOUT,
+            ) as response:
+                if 300 <= response.status_code < 400 or not response.is_success:
+                    raise MediaDownloadError
+                if response.headers.get("Content-Encoding", "").strip().casefold() not in {
+                    "",
+                    "identity",
+                }:
+                    raise MediaDownloadError
+                if response.is_stream_consumed:
+                    await write_chunk(response.content)
+                else:
+                    async for chunk in response.aiter_raw():
+                        await write_chunk(chunk)
+        except MediaDownloadError:
+            raise
+        except httpx.HTTPError:
             raise MediaDownloadError from None
 
 

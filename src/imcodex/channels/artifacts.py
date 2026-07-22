@@ -48,6 +48,11 @@ def append_artifact_failures(message: OutboundMessage, failures: list[str]) -> N
     )
     if notice not in message.text:
         message.text = "\n\n".join(part for part in (message.text, notice) if part)
+    recorded = message.metadata.setdefault("artifact_failures", [])
+    if isinstance(recorded, list):
+        for failure in failures:
+            if failure not in recorded:
+                recorded.append(failure)
 
 
 def stable_artifact_identity(
@@ -64,3 +69,25 @@ def stable_artifact_identity(
         ).encode("utf-8")
     ).hexdigest()
     return digest
+
+
+def record_artifact_delivery(
+    message: OutboundMessage,
+    artifact: OutboundArtifact,
+    *,
+    platform_message_id: str = "",
+    delivery_identity: str = "",
+) -> None:
+    receipts = message.metadata.setdefault("artifact_receipts", [])
+    if not isinstance(receipts, list):
+        return
+    receipts.append(
+        {
+            "filename": artifact.filename,
+            "sha256": artifact.sha256,
+            "local_path": artifact.local_path,
+            "status": "delivered",
+            "platform_message_id": platform_message_id,
+            "delivery_identity": delivery_identity,
+        }
+    )
