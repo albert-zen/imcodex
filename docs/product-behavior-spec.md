@@ -334,9 +334,10 @@ that Codex returned for the thread, including last-known native metadata retaine
 across partial native updates. The bridge must not infer a separate project model
 from unconfirmed or app-private fields.
 
-### `/next`, `/prev`, `/pick <n> [--history [N]]`, `/exit`
+### `/next`, `/prev`, `/pick <number-or-query> [--history [N] | --catchup [N]]`, `/exit`
 
-These commands operate on the active thread browser opened by `/threads`.
+Numeric picks operate on the active thread browser opened by `/threads`.
+Text queries may be used without opening the browser first.
 
 Behavior:
 
@@ -345,6 +346,9 @@ Behavior:
 - `/pick <n>` switches to the selected thread from the current page
 - `/pick <n> --history` requests one recent turn after switching
 - `/pick <n> --history N` requests between one and five recent turns
+- `/pick <n> --catchup` requests the five most recent native commentary messages from the latest Turn after switching
+- `/pick <n> --catchup N` requests between one and twenty recent native commentary messages
+- `/pick <query>` first performs a native thread query; one result switches directly, multiple results open the filtered Threads panel, and no results trigger an unfiltered native query and open the full Threads panel
 - `/exit` closes the active thread browser
 
 When `/pick <n>` succeeds:
@@ -438,7 +442,7 @@ native messages occur after the inbound HTTP exchange. If no outbound callback
 can route that generic channel, `/pick` and `/history` fail explicitly rather
 than switching into an undeliverable live stream.
 
-If no thread browser is active, `/next`, `/prev`, and `/pick` should return a user-facing error telling the user to run `/threads` first.
+If no thread browser is active, `/next` and `/prev` should return a user-facing error telling the user to run `/threads` first. A numeric `/pick` without browser context is treated as a direct text query rather than a page index.
 
 ### `/history [N] [--page P]`
 
@@ -470,6 +474,22 @@ A different returned ID, or an active thread without a verifiable active turn,
 fails explicitly instead of starting a competing or approximate continuation.
 The resume response may be display-trimmed, but native Codex's canonical thread
 context is never rebuilt from `/history` output.
+
+### `/catchup [N]`
+
+`/catchup` reads recent commentary from the latest native Turn without starting
+or steering a model Turn. It defaults to five messages and accepts between one
+and twenty.
+
+Behavior:
+
+- it requires an active thread binding
+- it reads the latest full native Turn through the same native history APIs as `/history`
+- it renders only completed native agent messages whose phase is `commentary`
+- it excludes user messages, reasoning, raw protocol payloads, tool calls, tool output, and final answers
+- it uses ordinary channel Markdown and does not introduce a new message type
+- it remains stateless and restart-safe: repeated calls read native history again rather than maintaining a bridge-owned unread cursor
+- `/pick <number-or-query> --catchup [N]` performs the same read after a successful switch while the handoff ordering gate keeps newer live output behind the switch notice and catch-up response
 
 ### `/fork`, `/rename <name>`, `/compact`
 

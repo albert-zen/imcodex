@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 _HISTORY_TEXT_LIMIT = 1200
+_CATCHUP_TEXT_LIMIT = 800
 
 
 def render_thread_history(payload: dict, *, limit: int = 1) -> str:
@@ -51,6 +52,34 @@ def render_thread_history(payload: dict, *, limit: int = 1) -> str:
             lines.extend(["", "**Error**", "", _compact_history_text(error_text, _HISTORY_TEXT_LIMIT)])
     if has_older:
         lines.extend(["", "---", "", f"Older turns: `/history {limit} --page {page + 1}`"])
+    return "\n".join(lines)
+
+
+def render_thread_catchup(payload: dict, *, limit: int = 5) -> str:
+    turns = _thread_history_items(payload)
+    if not turns:
+        return "## Recent Activity\n\n_No native Turn is available._"
+    turn = turns[-1]
+    status_value = turn.get("status")
+    if isinstance(status_value, dict):
+        status_value = status_value.get("type") or status_value.get("status")
+    status = _human_state(str(status_value or "idle"))
+    commentary = _turn_commentary(turn)[-max(1, int(limit)) :]
+    lines = ["## Recent Activity", "", f"_Latest Turn · {status}_"]
+    if not commentary:
+        lines.extend(["", "_No completed commentary is available for this Turn._"])
+        return "\n".join(lines)
+    for index, value in enumerate(commentary, start=1):
+        lines.extend(
+            [
+                "",
+                f"### {index}",
+                "",
+                _compact_history_text(value, _CATCHUP_TEXT_LIMIT),
+            ]
+        )
+    if status == "Working":
+        lines.extend(["", "_Thread is still working._"])
     return "\n".join(lines)
 
 
@@ -108,6 +137,20 @@ def _turn_agent_text(turn: dict) -> str:
         if phase == "final_answer" or ("assistant" in item_type and not phase):
             final_text = text
     return final_text or latest_text
+
+
+def _turn_commentary(turn: dict) -> list[str]:
+    messages: list[str] = []
+    for item in _turn_items(turn):
+        item_type = str(item.get("type") or item.get("kind") or "").lower()
+        if "agent" not in item_type and "assistant" not in item_type:
+            continue
+        if str(item.get("phase") or "").strip().lower() != "commentary":
+            continue
+        text = _item_text(item)
+        if text:
+            messages.append(text)
+    return messages
 
 
 def _turn_items(turn: dict) -> list[dict]:

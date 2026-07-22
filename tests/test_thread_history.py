@@ -1,4 +1,4 @@
-from imcodex.bridge.thread_history import render_thread_history
+from imcodex.bridge.thread_history import render_thread_catchup, render_thread_history
 
 
 def test_history_uses_readable_markdown_and_preserves_codex_structure() -> None:
@@ -103,3 +103,46 @@ def test_history_closes_a_truncated_code_fence_before_the_next_turn() -> None:
     separator = text.index("\n---\n")
     assert text[:separator].rstrip().endswith("```\n…")
     assert "### 2. Completed · `turn_2`" in text[separator:]
+
+
+def test_catchup_renders_only_recent_native_commentary() -> None:
+    text = render_thread_catchup(
+        {
+            "turns": [
+                {
+                    "id": "turn_active",
+                    "status": "inProgress",
+                    "items": [
+                        {"type": "userMessage", "text": "Implement it"},
+                        {"type": "agentMessage", "phase": "commentary", "text": "First update"},
+                        {"type": "commandExecution", "text": "tool details"},
+                        {"type": "agentMessage", "phase": "commentary", "text": "Second update"},
+                        {"type": "agentMessage", "phase": "final_answer", "text": "Not yet final"},
+                    ],
+                }
+            ]
+        },
+        limit=1,
+    )
+
+    assert text == (
+        "## Recent Activity\n\n"
+        "_Latest Turn · Working_\n\n"
+        "### 1\n\n"
+        "Second update\n\n"
+        "_Thread is still working._"
+    )
+    assert "First update" not in text
+    assert "tool details" not in text
+    assert "Not yet final" not in text
+
+
+def test_catchup_has_clear_empty_states() -> None:
+    assert render_thread_catchup({"turns": []}) == "## Recent Activity\n\n_No native Turn is available._"
+    assert render_thread_catchup(
+        {"turns": [{"id": "turn_1", "status": "completed", "items": []}]}
+    ) == (
+        "## Recent Activity\n\n"
+        "_Latest Turn · Completed_\n\n"
+        "_No completed commentary is available for this Turn._"
+    )

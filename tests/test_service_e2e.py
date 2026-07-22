@@ -5430,6 +5430,222 @@ async def test_pick_active_thread_receives_later_native_terminal_result() -> Non
 
 
 @pytest.mark.asyncio
+async def test_direct_pick_unique_query_switches_and_returns_native_catchup() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "thr_dev",
+                                "cwd": "/work/zen",
+                                "name": "开发主线程",
+                                "preview": "Working on handoff",
+                                "status": "inProgress",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+            "thread/resume": [
+                {
+                    "id": 3,
+                    "result": {
+                        "thread": {
+                            "id": "thr_dev",
+                            "cwd": "/work/zen",
+                            "name": "开发主线程",
+                            "status": "inProgress",
+                            "turns": [{"id": "turn_1", "status": "inProgress"}],
+                        }
+                    },
+                }
+            ],
+            "thread/turns/list": [
+                {
+                    "id": 4,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "turn_1",
+                                "status": "inProgress",
+                                "items": [
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "commentary",
+                                        "text": "Located the native handoff path.",
+                                    },
+                                    {
+                                        "type": "agentMessage",
+                                        "phase": "commentary",
+                                        "text": "Running the regression tests now.",
+                                    },
+                                ],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/pick 开发主 --catchup 2",
+        ),
+    )
+
+    assert sink.messages[0].text.startswith("[System] Switched to 开发主线程.")
+    assert sink.messages[1].text == (
+        "## Recent Activity\n\n"
+        "_Latest Turn · Working_\n\n"
+        "### 1\n\n"
+        "Located the native handoff path.\n\n"
+        "### 2\n\n"
+        "Running the regression tests now.\n\n"
+        "_Thread is still working._"
+    )
+    list_payloads = [payload for payload in process.inputs if payload.get("method") == "thread/list"]
+    assert len(list_payloads) == 1
+    assert list_payloads[0]["params"]["searchTerm"] == "开发主"
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_dev"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_pick_ambiguous_query_opens_filtered_threads_panel() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {"id": "thr_1", "cwd": "/work/a", "name": "开发主线程", "status": "idle"},
+                            {"id": "thr_2", "cwd": "/work/b", "name": "开发主线程备份", "status": "idle"},
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage("qq", "conv-1", "u1", "m1", "/pick 开发主")
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Threads · [All projects] · Page 1/1" in messages[0].text
+    assert "开发主线程" in messages[0].text
+    assert "开发主线程备份" in messages[0].text
+    context = store.get_thread_browser_context("qq", "conv-1")
+    assert context is not None
+    assert context.query == "开发主"
+    assert context.thread_ids == ["thr_1", "thr_2"]
+    assert len([payload for payload in process.inputs if payload.get("method") == "thread/list"]) == 1
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_pick_empty_query_opens_unfiltered_threads_panel() -> None:
+    process = SequentialScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {"id": 2, "result": {"data": [], "nextCursor": None}},
+                {
+                    "id": 3,
+                    "result": {
+                        "data": [
+                            {"id": "thr_other", "cwd": "/work/other", "name": "Other work", "status": "idle"}
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage("qq", "conv-1", "u1", "m1", "/pick missing")
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Other work" in messages[0].text
+    assert "(none)" not in messages[0].text
+    context = store.get_thread_browser_context("qq", "conv-1")
+    assert context is not None
+    assert context.query is None
+    list_payloads = [payload for payload in process.inputs if payload.get("method") == "thread/list"]
+    assert len(list_payloads) == 2
+    assert list_payloads[0]["params"]["searchTerm"] == "missing"
+    assert "searchTerm" not in list_payloads[1]["params"]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_catchup_reads_latest_native_turn_without_starting_model_work() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/turns/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "turn_1",
+                                "status": "inProgress",
+                                "items": [
+                                    {"type": "agentMessage", "phase": "commentary", "text": "Still working"}
+                                ],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage("qq", "conv-1", "u1", "m1", "/catchup"),
+    )
+
+    assert sink.messages[0].text.startswith("## Recent Activity")
+    assert "Still working" in sink.messages[0].text
+    methods = [payload.get("method") for payload in process.inputs]
+    assert methods.count("thread/turns/list") == 1
+    assert "turn/start" not in methods
+    assert "turn/steer" not in methods
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_full_handoff_gate_preserves_native_server_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

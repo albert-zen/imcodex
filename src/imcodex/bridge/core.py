@@ -540,6 +540,11 @@ class BridgeService(
                 limit=int((response.payload or {}).get("limit") or 1),
                 page=int((response.payload or {}).get("page") or 1),
             )
+        if response.action == "thread.catchup.query":
+            return await self._handle_thread_catchup_command(
+                message,
+                limit=int((response.payload or {}).get("limit") or 5),
+            )
         if response.action == "thread.new":
             thread_id = await self.backend.create_new_thread(message.channel_id, message.conversation_id)
             return [self._message(message, "status", f"Started thread {thread_id}.")]
@@ -586,7 +591,16 @@ class BridgeService(
                 message,
                 thread_id,
                 history_limit=(response.payload or {}).get("history_limit"),
+                catchup_limit=(response.payload or {}).get("catchup_limit"),
                 verb="Switched to",
+            )
+        if response.action == "thread.pick.query":
+            payload = response.payload or {}
+            return await self._handle_direct_thread_pick(
+                message,
+                query=str(payload.get("query") or "").strip(),
+                history_limit=payload.get("history_limit"),
+                catchup_limit=payload.get("catchup_limit"),
             )
         if response.action == "threads.exit":
             self.store.clear_thread_browser_context(message.channel_id, message.conversation_id)
@@ -609,6 +623,7 @@ class BridgeService(
                 message,
                 snapshot.thread_id,
                 history_limit=None,
+                catchup_limit=None,
                 verb="Attached to",
             )
         if response.action == "turn.stop":

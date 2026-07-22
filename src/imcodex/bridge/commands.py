@@ -14,7 +14,11 @@ _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
 _DEFAULT_HISTORY_TURNS = 1
 _MAX_HISTORY_TURNS = 5
+_DEFAULT_CATCHUP_MESSAGES = 5
+_MAX_CATCHUP_MESSAGES = 20
 _HISTORY_USAGE = "Usage: /history [N] [--page N]"
+_CATCHUP_USAGE = "Usage: /catchup [N]"
+_PICK_USAGE = "Usage: /pick <number-or-query> [--history [N] | --catchup [N]]"
 _THREADS_USAGE = "Usage: /threads [query] [--project <name-or-number>] [--page N]"
 
 
@@ -182,30 +186,30 @@ class CommandRouter:
         )
 
     def _handle_pick(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        context = self.store.get_thread_browser_context(channel_id, conversation_id)
-        if context is None:
-            return CommandResponse(action="threads.browser.missing", text="Use /threads first.")
         if not command.args:
             return CommandResponse(
                 action="thread.pick.invalid",
-                text="Usage: /pick <n> [--history [N]]",
+                text=_PICK_USAGE,
             )
-        try:
-            index = int(command.args[0])
-        except ValueError:
-            return CommandResponse(
-                action="thread.pick.invalid",
-                text="Usage: /pick <n> [--history [N]]",
-            )
-        if index < 1 or index > len(context.thread_ids):
-            return CommandResponse(action="thread.pick.invalid", text="Pick a number from the current page.")
-        history_limit = self._parse_pick_history(command.args[1:])
-        if isinstance(history_limit, CommandResponse):
-            return history_limit
-        payload: dict[str, object] = {"index": index - 1}
+        options = self._parse_pick_options(command.args)
+        if isinstance(options, CommandResponse):
+            return options
+        selector, history_limit, catchup_limit = options
+        context = self.store.get_thread_browser_context(channel_id, conversation_id)
+        if context is not None and selector.isdigit():
+            index = int(selector)
+            if index < 1 or index > len(context.thread_ids):
+                return CommandResponse(action="thread.pick.invalid", text="Pick a number from the current page.")
+            action = "thread.pick"
+            payload: dict[str, object] = {"index": index - 1}
+        else:
+            action = "thread.pick.query"
+            payload = {"query": selector}
         if history_limit is not None:
             payload["history_limit"] = history_limit
-        return CommandResponse(action="thread.pick", text="", payload=payload)
+        if catchup_limit is not None:
+            payload["catchup_limit"] = catchup_limit
+        return CommandResponse(action=action, text="", payload=payload)
 
     def _handle_exit(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del command
@@ -271,6 +275,24 @@ class CommandRouter:
             payload={"limit": limit, "page": page},
         )
 
+    def _handle_catchup(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
+        binding = self.store.get_binding(channel_id, conversation_id)
+        if binding.thread_id is None:
+            return CommandResponse(action="thread.catchup.missing", text="No active thread.")
+        limit = self._parse_catchup_limit(
+            command.args,
+            usage=_CATCHUP_USAGE,
+            action="thread.catchup.invalid",
+        )
+        if isinstance(limit, CommandResponse):
+            return limit
+        return CommandResponse(
+            action="thread.catchup.query",
+            text="",
+            thread_id=binding.thread_id,
+            payload={"limit": limit},
+        )
+
     def _parse_history_options(
         self,
         args: list[str],
@@ -315,28 +337,71 @@ class CommandRouter:
             )
         return limit, page
 
-    def _parse_pick_history(self, args: list[str]) -> int | None | CommandResponse:
-        if not args:
-            return None
-        if len(args) == 1 and args[0] == "--history":
-            return _DEFAULT_HISTORY_TURNS
-        if len(args) == 1 and args[0].startswith("--history="):
-            value = args[0].partition("=")[2]
-            return self._parse_history_limit(
-                [value],
-                usage="Usage: /pick <n> [--history [N]]",
-                action="thread.pick.invalid",
-            )
-        if len(args) == 2 and args[0] == "--history":
-            return self._parse_history_limit(
-                [args[1]],
-                usage="Usage: /pick <n> [--history [N]]",
-                action="thread.pick.invalid",
-            )
-        return CommandResponse(
-            action="thread.pick.invalid",
-            text="Usage: /pick <n> [--history [N]]",
-        )
+    def _parse_pick_options(
+        self,
+        args: list[str],
+    ) -> tuple[str, int | None, int | None] | CommandResponse:
+        selector_parts: list[str] = []
+        history_limit: int | None = None
+        catchup_limit: int | None = None
+        options_started = False
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg in {"--history", "--catchup"}:
+                options_started = True
+                option = arg[2:]
+                values: list[str] = []
+                if index + 1 < len(args) and args[index + 1].isdigit():
+                    values = [args[index + 1]]
+                    index += 1
+                if option == "history":
+                    parsed = self._parse_history_limit(
+                        values,
+                        usage=_PICK_USAGE,
+                        action="thread.pick.invalid",
+                    )
+                    history_limit = parsed if isinstance(parsed, int) else None
+                else:
+                    parsed = self._parse_catchup_limit(
+                        values,
+                        usage=_PICK_USAGE,
+                        action="thread.pick.invalid",
+                    )
+                    catchup_limit = parsed if isinstance(parsed, int) else None
+                if isinstance(parsed, CommandResponse):
+                    return parsed
+            elif arg.startswith("--history="):
+                options_started = True
+                parsed = self._parse_history_limit(
+                    [arg.partition("=")[2]],
+                    usage=_PICK_USAGE,
+                    action="thread.pick.invalid",
+                )
+                if isinstance(parsed, CommandResponse):
+                    return parsed
+                history_limit = parsed
+            elif arg.startswith("--catchup="):
+                options_started = True
+                parsed = self._parse_catchup_limit(
+                    [arg.partition("=")[2]],
+                    usage=_PICK_USAGE,
+                    action="thread.pick.invalid",
+                )
+                if isinstance(parsed, CommandResponse):
+                    return parsed
+                catchup_limit = parsed
+            elif arg.startswith("--"):
+                return CommandResponse(action="thread.pick.invalid", text=_PICK_USAGE)
+            else:
+                if options_started:
+                    return CommandResponse(action="thread.pick.invalid", text=_PICK_USAGE)
+                selector_parts.append(arg)
+            index += 1
+        selector = " ".join(selector_parts).strip()
+        if not selector or (history_limit is not None and catchup_limit is not None):
+            return CommandResponse(action="thread.pick.invalid", text=_PICK_USAGE)
+        return selector, history_limit, catchup_limit
 
     def _parse_history_limit(
         self,
@@ -357,6 +422,28 @@ class CommandRouter:
             return CommandResponse(
                 action=action,
                 text=f"History turns must be between 1 and {_MAX_HISTORY_TURNS}.",
+            )
+        return limit
+
+    def _parse_catchup_limit(
+        self,
+        args: list[str],
+        *,
+        usage: str,
+        action: str,
+    ) -> int | CommandResponse:
+        if not args:
+            return _DEFAULT_CATCHUP_MESSAGES
+        if len(args) != 1:
+            return CommandResponse(action=action, text=usage)
+        try:
+            limit = int(args[0])
+        except ValueError:
+            return CommandResponse(action=action, text=usage)
+        if limit < 1 or limit > _MAX_CATCHUP_MESSAGES:
+            return CommandResponse(
+                action=action,
+                text=f"Catch-up messages must be between 1 and {_MAX_CATCHUP_MESSAGES}.",
             )
         return limit
 
@@ -797,8 +884,12 @@ class CommandRouter:
                     "Threads",
                     "/threads [query]",
                     "Browse and switch threads.",
+                    "/pick <number-or-query> [--catchup [N]]",
+                    "Switch from the current list or search and switch directly.",
                     "/history [turns] [--page N]",
                     "Browse native turns, including interrupted and active work.",
+                    "/catchup [messages]",
+                    "Review recent native commentary from the latest turn.",
                     "/fork",
                     "Continue from a copy.",
                     "/rename <name>",

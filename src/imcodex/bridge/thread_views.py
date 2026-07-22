@@ -29,8 +29,13 @@ class ThreadViewMixin:
         query: str | None = None,
         project: str | None = None,
         refresh: bool = True,
+        catalog: list[NativeThreadSnapshot] | None = None,
     ) -> str:
-        threads = await self._load_thread_catalog(message, query=query, refresh=refresh)
+        threads = (
+            list(catalog)
+            if catalog is not None
+            else await self._load_thread_catalog(message, query=query, refresh=refresh)
+        )
         project_options = self._thread_project_options(threads)
         project_path, project_error = self._resolve_thread_project(project, project_options)
         if project_error is not None:

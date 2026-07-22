@@ -267,6 +267,34 @@ def test_pick_uses_current_thread_browser_page() -> None:
     assert response.payload == {"index": 1}
 
 
+def test_pick_without_browser_uses_text_as_native_query() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/pick 开发 主线 --catchup 8")
+
+    assert response.action == "thread.pick.query"
+    assert response.payload == {"query": "开发 主线", "catchup_limit": 8}
+
+
+def test_pick_text_queries_even_when_a_browser_is_open() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1"],
+        page=1,
+        total=1,
+        query=None,
+    )
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/pick release polish")
+
+    assert response.action == "thread.pick.query"
+    assert response.payload == {"query": "release polish"}
+
+
 def test_pick_accepts_optional_history_limit() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_thread_browser_context(
@@ -286,6 +314,37 @@ def test_pick_accepts_optional_history_limit() -> None:
     assert default_history.payload == {"index": 1, "history_limit": 1}
     assert explicit_history.payload == {"index": 1, "history_limit": 3}
     assert equals_history.payload == {"index": 1, "history_limit": 4}
+
+
+def test_pick_accepts_optional_catchup_limit() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_thread_browser_context(
+        "qq",
+        "conv-1",
+        thread_ids=["thr_1", "thr_2"],
+        page=1,
+        total=2,
+        query=None,
+    )
+    router = CommandRouter(store)
+
+    default_catchup = router.handle("qq", "conv-1", "/pick 2 --catchup")
+    explicit_catchup = router.handle("qq", "conv-1", "/pick 2 --catchup 12")
+    equals_catchup = router.handle("qq", "conv-1", "/pick 2 --catchup=20")
+
+    assert default_catchup.payload == {"index": 1, "catchup_limit": 5}
+    assert explicit_catchup.payload == {"index": 1, "catchup_limit": 12}
+    assert equals_catchup.payload == {"index": 1, "catchup_limit": 20}
+
+
+def test_pick_rejects_history_and_catchup_together() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/pick release --history --catchup")
+
+    assert response.action == "thread.pick.invalid"
+    assert response.text == "Usage: /pick <number-or-query> [--history [N] | --catchup [N]]"
 
 
 def test_pick_rejects_invalid_history_limit() -> None:
@@ -324,6 +383,32 @@ def test_thread_history_requires_active_thread() -> None:
 
     assert response.action == "thread.history.missing"
     assert response.text == "No active thread."
+
+
+def test_catchup_reads_active_thread_without_model_work() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    router = CommandRouter(store)
+
+    response = router.handle("qq", "conv-1", "/catchup 12")
+
+    assert response.action == "thread.catchup.query"
+    assert response.thread_id == "thr_1"
+    assert response.payload == {"limit": 12}
+
+
+def test_catchup_validates_limit_and_requires_active_thread() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    missing = router.handle("qq", "conv-1", "/catchup")
+    store.bind_thread("qq", "conv-1", "thr_1")
+    invalid = router.handle("qq", "conv-1", "/catchup 21")
+
+    assert missing.action == "thread.catchup.missing"
+    assert missing.text == "No active thread."
+    assert invalid.action == "thread.catchup.invalid"
+    assert invalid.text == "Catch-up messages must be between 1 and 20."
 
 
 def test_thread_history_reads_active_thread() -> None:

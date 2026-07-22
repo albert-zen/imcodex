@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from ..appserver import AppServerError, ThreadSelectionError, normalize_appserver_message
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event
-from .thread_history import render_thread_history
+from .thread_history import render_thread_catchup, render_thread_history
 
 
 _ACTIVE_THREAD_STATUSES = frozenset({"active", "inprogress", "in_progress", "running", "working"})
@@ -90,6 +90,7 @@ class ThreadHandoffMixin:
         thread_id: str,
         *,
         history_limit: object,
+        catchup_limit: object,
         verb: str,
     ) -> list[OutboundMessage]:
         try:
@@ -139,6 +140,7 @@ class ThreadHandoffMixin:
             lines.append(f"CWD: {snapshot.cwd}")
 
         requested_history = self._positive_int(history_limit)
+        requested_catchup = self._positive_int(catchup_limit)
         if running:
             if requested_history is not None:
                 lines.append(
@@ -146,9 +148,27 @@ class ThreadHandoffMixin:
                     f"ignored --history {requested_history}."
                 )
             lines.append("Now following native updates for this thread here.")
-            return [self._message(message, "status", "\n".join(lines))]
+            outbound = [self._message(message, "status", "\n".join(lines))]
+            if requested_catchup is not None:
+                outbound.extend(
+                    await self._read_thread_catchup(
+                        message,
+                        gate,
+                        limit=requested_catchup,
+                    )
+                )
+            return outbound
 
         outbound = [self._message(message, "status", "\n".join(lines))]
+        if requested_catchup is not None:
+            outbound.extend(
+                await self._read_thread_catchup(
+                    message,
+                    gate,
+                    limit=requested_catchup,
+                )
+            )
+            return outbound
         if requested_history is None:
             return outbound
         try:
@@ -177,6 +197,105 @@ class ThreadHandoffMixin:
             )
         )
         return outbound
+
+    async def _handle_direct_thread_pick(
+        self,
+        message: InboundMessage,
+        *,
+        query: str,
+        history_limit: object,
+        catchup_limit: object,
+    ) -> list[OutboundMessage]:
+        try:
+            result = await self.backend.query_all_threads(
+                message.channel_id,
+                message.conversation_id,
+                search_term=query,
+            )
+            if len(result.threads) == 1:
+                return await self._switch_thread(
+                    message,
+                    result.threads[0].thread_id,
+                    history_limit=history_limit,
+                    catchup_limit=catchup_limit,
+                    verb="Switched to",
+                )
+            if result.threads:
+                text = await self._render_threads(
+                    message,
+                    page=1,
+                    query=query,
+                    refresh=False,
+                    catalog=result.threads,
+                )
+            else:
+                text = await self._render_threads(
+                    message,
+                    page=1,
+                    query=None,
+                    refresh=True,
+                )
+        except AppServerError:
+            text = (
+                "Threads could not be refreshed from Codex right now. "
+                "Use /status, /thread read, or try /pick again in a moment."
+            )
+            return [self._message(message, "status", text)]
+        return [self._message(message, "command_result", text)]
+
+    async def _handle_thread_catchup_command(
+        self,
+        message: InboundMessage,
+        *,
+        limit: int,
+    ) -> list[OutboundMessage]:
+        binding = self.store.get_binding(message.channel_id, message.conversation_id)
+        if binding.thread_id is None:
+            return [self._message(message, "command_result", "No active thread.")]
+        try:
+            gate = await self._begin_thread_output_gate(
+                message.channel_id,
+                message.conversation_id,
+                binding.thread_id,
+                message.message_id,
+            )
+        except AppServerError as exc:
+            return [self._message(message, "status", self._safe_appserver_error(exc))]
+        self._seal_thread_output_gate(gate)
+        return await self._read_thread_catchup(message, gate, limit=limit)
+
+    async def _read_thread_catchup(
+        self,
+        message: InboundMessage,
+        gate: _ThreadOutputGate,
+        *,
+        limit: int,
+    ) -> list[OutboundMessage]:
+        try:
+            payload = await self.backend.read_thread_history(
+                message.channel_id,
+                message.conversation_id,
+                limit=1,
+                page=1,
+            )
+        except AppServerError as exc:
+            self._seal_thread_output_gate(gate)
+            text = f"Recent activity could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
+            return [self._message(message, "command_result", text)]
+        except asyncio.CancelledError:
+            await self._discard_thread_output_gate(gate, note="thread catch-up query cancelled")
+            raise
+        except Exception:
+            await self._discard_thread_output_gate(gate, note="thread catch-up query failed")
+            raise
+        self._seal_thread_output_gate(gate)
+        return [
+            self._message(
+                message,
+                "command_result",
+                render_thread_catchup(payload, limit=limit),
+            )
+        ]
 
     async def _handle_thread_history_command(
         self,
