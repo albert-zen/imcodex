@@ -39,7 +39,7 @@ class CodexBackendErrorMixin:
 
     def _requires_thread_resume(self, error: AppServerError) -> bool:
         message = str(error).lower()
-        return self._is_stale_thread_error(error) or any(
+        return self._is_stale_turn_error(error) or any(
             marker in message
             for marker in (
                 "not loaded",

@@ -363,12 +363,19 @@ If the selected thread is already running:
 - later visible native messages continue to the newly bound IM conversation without waiting for another inbound IM message
 - if the selected thread was started in Codex Desktop and is still running,
   its later commentary, requests, and terminal result follow the same live
-  projection path after the switch
+  projection path after the switch when native Codex delivers those events on
+  the configured App Server connection
 - if native Codex reports an active interaction that cannot accept direct
-  input from this connection, the switch still succeeds so the IM route can
-  observe later native output; ordinary IM input is offered to the verified
-  active Turn through native `turn/steer`, and any rejection comes from Codex
-  rather than a bridge-owned capability guess
+  input from this connection, the switch still succeeds, but IMCodex does not
+  describe that state as a bridge-owned read-only mode; ordinary IM input is
+  offered to the verified active Turn through native `turn/steer`, and any
+  rejection comes from Codex rather than a bridge-owned capability guess
+
+IMCodex does not infer Turn ownership or reject a handoff solely from the
+transport or process topology. It subscribes and submits through native
+`thread/resume` and `turn/steer`, lets Codex resolve concurrent-client state,
+and reports a native rejection without silently interrupting another client or
+starting a competing Turn.
 
 If the selected thread is idle and history was requested:
 
@@ -451,9 +458,15 @@ Behavior:
 - if native history cannot be read, the user gets a friendly status instead of protocol noise
 - if a new turn starts after an idle history read begins, live projection waits until the history response has been delivered so old and new output cannot interleave
 
-Before ordinary input continues a bound thread, IMCodex calls native
-`thread/resume` for that exact `threadId` and reconciles the active turn. A
-different returned ID, or an active thread without a verifiable active turn,
+Before ordinary input continues a bound thread, IMCodex first uses native
+`turn/steer` when it has already observed a verified active Turn on the current
+App Server connection. It does not call `thread/resume` first, because doing so
+can race with a newly created rollout and is unnecessary for live steering. If
+that steer is rejected as stale, IMCodex resumes the exact `threadId` once and
+reconciles native state: it starts a new Turn only when Codex confirms the
+thread is idle, and it preserves the steer rejection when Codex still reports
+an active Turn. With no verified active Turn, IMCodex resumes before starting.
+A different returned ID, or an active thread without a verifiable active turn,
 fails explicitly instead of starting a competing or approximate continuation.
 The resume response may be display-trimmed, but native Codex's canonical thread
 context is never rebuilt from `/history` output.

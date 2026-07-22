@@ -393,21 +393,20 @@ class CodexThreadBackendMixin:
         input_items = self._native_user_input(text, attachments)
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
-            # Native Codex is authoritative across Desktop, CLI, and IMCodex.
-            # Rejoin the exact thread before every input so cached bridge state
-            # cannot start a competing turn after another surface made progress.
             can_resume = callable(getattr(self.client, "resume_thread", None))
-            if can_resume:
+            thread_id = binding.thread_id
+            active = self.store.get_active_turn(thread_id)
+            attempted_steer = active is not None and active[1] == "inProgress"
+
+            # Keep the live App Server connection authoritative for a Turn we
+            # already observed. Resuming first can race with a just-created
+            # rollout and, across clients, can replace useful live state with a
+            # persisted snapshot before native turn/steer gets a chance.
+            if not attempted_steer and can_resume:
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(
                     expected_local_image_epoch
                 )
-            else:
-                # Lightweight protocol fakes and compatibility clients may not
-                # expose resume. The production AppServerClient always does.
-                thread_id = binding.thread_id
-            active = self.store.get_active_turn(thread_id)
-            attempted_steer = active is not None and active[1] == "inProgress"
             try:
                 return await self._submit_to_reconciled_thread(
                     thread_id,
@@ -415,7 +414,7 @@ class CodexThreadBackendMixin:
                     expected_local_image_epoch=expected_local_image_epoch,
                 )
             except AppServerError as exc:
-                if not self._requires_thread_resume(exc):
+                if not can_resume or not self._requires_thread_resume(exc):
                     raise
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(

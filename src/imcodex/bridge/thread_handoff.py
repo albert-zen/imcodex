@@ -145,7 +145,7 @@ class ThreadHandoffMixin:
                     f"History was not shown because this thread is currently running; "
                     f"ignored --history {requested_history}."
                 )
-            lines.append("Messages produced after this switch will continue here.")
+            lines.append("Now following native updates for this thread here.")
             return [self._message(message, "status", "\n".join(lines))]
 
         outbound = [self._message(message, "status", "\n".join(lines))]

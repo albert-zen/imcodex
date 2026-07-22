@@ -219,14 +219,22 @@ When a thread switch succeeds:
 - the bridge MUST show the effective `CWD`
 - the displayed `CWD` must come from native thread state or the successful native switch result, not from an unrelated local guess
 
-Before accepting input for an existing binding, the bridge MUST resume the
-exact native thread and reconcile its active turn. A thread switch MAY bind an
-active thread that cannot currently accept direct input so the IM route can
-observe its output. If a verifiable active Turn exists, ordinary input MUST use
-native `turn/steer` and let Codex accept or reject it. A different returned
-thread or an active thread with no exposed Turn MUST still fail explicitly
-instead of starting a competing turn or reconstructing native request state
-locally.
+Before accepting input for an existing binding, the bridge MUST use native
+`turn/steer` first when it has already observed a verifiable active Turn on the
+current App Server connection. It MUST NOT precede that steer with an
+unnecessary `thread/resume`. If native rejects the steer as stale, the bridge
+MUST resume the exact thread once and start a new Turn only if the reconciled
+native state is idle. With no verifiable active Turn, the bridge MUST resume
+before starting. A thread switch MAY bind an active thread that cannot
+currently accept direct input; this MUST NOT be presented as a bridge-owned
+read-only mode. A different returned thread or an active thread with no exposed
+Turn MUST still fail explicitly instead of starting a competing turn or
+reconstructing native request state locally.
+
+The bridge MUST NOT infer Turn ownership or reject a handoff solely from App
+Server transport or process topology. It MUST try the applicable native
+resume/steer path and let Codex resolve concurrent-client state. A failed
+handoff MUST NOT silently interrupt another client or start a competing Turn.
 
 ## Configuration Rules
 

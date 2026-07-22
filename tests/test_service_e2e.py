@@ -1079,6 +1079,9 @@ async def test_in_flight_turn_uses_native_steer() -> None:
     )
 
     assert messages == []
+    methods = [payload.get("method") for payload in process.inputs]
+    assert methods.count("thread/resume") == 0
+    assert methods.count("turn/steer") == 1
     await client.close()
 
 
@@ -1138,7 +1141,8 @@ async def test_native_steer_rejection_is_returned_as_a_specific_safe_error() -> 
     assert messages[0].text == "[System] Codex could not accept this message: invalid request."
     assert "Request failed while talking to Codex" not in messages[0].text
     methods = [payload.get("method") for payload in process.inputs]
-    assert methods.count("thread/resume") == 2
+    assert methods.count("thread/resume") == 1
+    assert methods.count("turn/steer") == 1
     assert "turn/start" not in methods
     await client.close()
 
@@ -1185,7 +1189,8 @@ async def test_native_resume_discards_stale_cached_turn_before_start() -> None:
     assert messages == []
     assert store.get_active_turn("thr_1") == ("turn_2", "inProgress")
     methods = [payload.get("method") for payload in process.inputs if payload.get("method")]
-    assert methods.count("turn/steer") == 0
+    assert methods.count("turn/steer") == 1
+    assert methods.count("thread/resume") == 1
     assert methods.count("turn/start") == 1
     await client.close()
 
@@ -5341,7 +5346,7 @@ async def test_pick_running_thread_ignores_history_and_releases_new_messages_aft
         "State: Working\n"
         "CWD: /work/alpha\n"
         "History was not shown because this thread is currently running; ignored --history 3.\n"
-        "Messages produced after this switch will continue here.",
+        "Now following native updates for this thread here.",
         "Progress produced during the switch.",
         "More progress produced during the switch.",
     ]
@@ -5350,7 +5355,7 @@ async def test_pick_running_thread_ignores_history_and_releases_new_messages_aft
 
 
 @pytest.mark.asyncio
-async def test_pick_desktop_started_active_thread_receives_later_terminal_result() -> None:
+async def test_pick_active_thread_receives_later_native_terminal_result() -> None:
     process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],

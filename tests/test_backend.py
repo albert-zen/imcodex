@@ -618,9 +618,11 @@ async def test_observed_busy_thread_defers_input_acceptance_to_native_steer() ->
 
         def __init__(self) -> None:
             self.can_accept_direct_input = False
+            self.resume_calls = 0
             self.steer_calls: list[dict] = []
 
         async def resume_thread(self, **params):
+            self.resume_calls += 1
             return {
                 "thread": {
                     "id": params["thread_id"],
@@ -653,6 +655,9 @@ async def test_observed_busy_thread_defers_input_acceptance_to_native_steer() ->
             "input_items": [{"type": "text", "text": "continue"}],
         }
     ]
+    # attach_thread performs the only resume; successful live steering must
+    # not resume the thread again first.
+    assert client.resume_calls == 1
 
 
 @pytest.mark.asyncio
@@ -661,9 +666,11 @@ async def test_bound_thread_input_steers_without_experimental_direct_input_hint(
         _experimental_api_enabled = False
 
         def __init__(self) -> None:
+            self.resume_calls = 0
             self.steer_calls: list[tuple[str, str]] = []
 
         async def resume_thread(self, **params):
+            self.resume_calls += 1
             return {
                 "thread": {
                     "id": params["thread_id"],
@@ -686,6 +693,9 @@ async def test_bound_thread_input_steers_without_experimental_direct_input_hint(
 
     assert submission.kind == "steer"
     assert client.steer_calls == [("thr_running", "turn_native")]
+    # No active Turn was cached, so one resume discovers native state before
+    # deciding between turn/steer and turn/start.
+    assert client.resume_calls == 1
     assert store.get_binding("qq", "conv-1").thread_id == "thr_running"
 
 
