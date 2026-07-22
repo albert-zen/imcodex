@@ -168,6 +168,28 @@ On POSIX, spool directories and files use `0700` and `0600`. On Windows,
 imcodex installs a protected current-user-only DACL and rejects symlink,
 junction, and other reparse-point spool roots before cleanup.
 
+## Shared Agent Artifact Output
+
+QQ, Telegram, Feishu/Lark, Weixin, and the generic outbound webhook consume the
+same structured artifacts from a terminal Codex result. Images are delivered as
+native platform previews when the platform supports them; generic files are
+delivered as platform files. Artifacts are sent before the terminal text, and
+there is no channel-specific feature switch.
+
+Only validated files copied into the private
+`IMCODEX_DATA_DIR/outbound-media` spool are eligible. When an adapter returns a
+failure, the durable retry retains only the artifacts not yet accepted. QQ and
+Weixin derive stable platform delivery identities, and Feishu supplies a stable
+SDK UUID. Telegram has no equivalent client idempotency key: it does not retry
+an ambiguous upload inside the adapter, but the durable outbox may replay it
+after an ambiguous live failure or a process exit before the bridge checkpoints
+progress.
+
+The generic outbound webhook uses JSON for text-only messages. A message with
+artifacts uses `multipart/form-data`: the `payload` field contains the normal
+outbound JSON contract plus the artifact manifest, and each file is carried in
+a repeated `artifacts` field. Receivers should deduplicate by `delivery_id`.
+
 ## QQ
 
 Create and configure a bot in the

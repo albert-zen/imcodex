@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -565,6 +566,67 @@ async def test_ilink_send_text_rejects_nonzero_protocol_result() -> None:
     assert exc_info.value.code == -14
     assert "bot-secret" not in str(exc_info.value)
     assert "context-secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_ilink_uploads_encrypted_image_and_sends_media_reference() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/getuploadurl"):
+            return httpx.Response(200, json={"ret": 0, "upload_param": "upload-ticket"})
+        if request.url.path == "/c2c/upload":
+            return httpx.Response(200, headers={"x-encrypted-param": "download-ticket"})
+        if request.url.path.endswith("/sendmessage"):
+            return httpx.Response(200, json={"ret": 0})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = WeixinILinkTransport(token="bot-secret", http_client=client)
+        client_id = await transport.send_artifact(
+            to_user_id="owner@im.wechat",
+            content=PNG,
+            filename="preview.png",
+            kind="image",
+            context_token="context-secret",
+            client_id="stable-artifact-id",
+        )
+
+    assert client_id == "stable-artifact-id"
+    assert [request.url.path for request in requests] == [
+        "/ilink/bot/getuploadurl",
+        "/c2c/upload",
+        "/ilink/bot/sendmessage",
+    ]
+    assert [request.method for request in requests] == ["POST", "PUT", "POST"]
+
+    upload_request = json.loads(requests[0].content)
+    assert upload_request["media_type"] == 1
+    assert upload_request["rawsize"] == len(PNG)
+    assert upload_request["rawfilemd5"] == hashlib.md5(PNG).hexdigest()
+    assert upload_request["filesize"] > len(PNG)
+    assert upload_request["filesize"] % 16 == 0
+    assert upload_request["no_need_thumb"] is True
+    assert len(upload_request["aeskey"]) == 32
+
+    assert requests[1].url.params["encrypted_query_param"] == "upload-ticket"
+    assert requests[1].url.params["filekey"] == upload_request["filekey"]
+    assert requests[1].content != PNG
+    assert len(requests[1].content) == upload_request["filesize"]
+
+    send_request = json.loads(requests[2].content)
+    message = send_request["msg"]
+    assert message["client_id"] == "stable-artifact-id"
+    assert message["to_user_id"] == "owner@im.wechat"
+    assert message["context_token"] == "context-secret"
+    image_item = message["item_list"][0]
+    assert image_item["type"] == 2
+    assert image_item["image_item"]["mid_size"] == upload_request["filesize"]
+    media = image_item["image_item"]["media"]
+    assert media["encrypt_query_param"] == "download-ticket"
+    assert media["encrypt_type"] == 1
+    assert base64.b64decode(media["aes_key"]).decode("ascii") == upload_request["aeskey"]
 
 
 def test_ilink_rejects_insecure_base_url() -> None:

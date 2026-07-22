@@ -26,7 +26,7 @@ from imcodex.channels.media import (
     MediaDownloadError,
 )
 from imcodex.channels.middleware import UnifiedChannelMiddleware
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.models import InboundMessage, OutboundArtifact, OutboundMessage
 
 
 _PROCESS_COMPLETION_TIMEOUT_S = 10 if sys.platform == "win32" else 1
@@ -826,6 +826,200 @@ async def test_feishu_sends_chunked_thread_replies() -> None:
             "reply_in_thread": True,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_feishu_sends_staged_image_before_terminal_text(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = _png_bytes()
+    image_path.write_bytes(content)
+    sdk = FakeFeishuSdk()
+    adapter = _adapter(
+        channel_factory=lambda **_config: sdk,
+        outbound_media_dir=outbound_root,
+    )
+    adapter._sdk = sdk
+    message = OutboundMessage(
+        channel_id="feishu",
+        conversation_id="chat:oc_1",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1", "reply_to_message_id": "om_1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(image_path),
+                content_type="image/png",
+                filename="preview.png",
+                size_bytes=len(content),
+            )
+        ],
+    )
+
+    await adapter.send_message(message)
+
+    assert sdk.sent[0][0] == "oc_1"
+    assert sdk.sent[0][1] == {"image": {"source": content}}
+    assert sdk.sent[0][2]["reply_to"] == "om_1"
+    assert len(sdk.sent[0][2]["uuid"]) == 50
+    assert sdk.sent[1][1] == {"text": "Rendered preview."}
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_keeps_upload_failed_artifact_pending(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = _png_bytes()
+    image_path.write_bytes(content)
+
+    class TransientUploadSdk(FakeFeishuSdk):
+        async def send(self, to: str, message: dict, opts: dict):
+            self.sent.append((to, message, opts))
+            return SimpleNamespace(
+                success=False,
+                error=SimpleNamespace(
+                    code="upload_failed",
+                    retryable=False,
+                    hint="image upload transport error: timeout",
+                ),
+            )
+
+    sdk = TransientUploadSdk()
+    adapter = _adapter(outbound_media_dir=outbound_root)
+    adapter._sdk = sdk
+    artifact = OutboundArtifact(
+        kind="image",
+        local_path=str(image_path),
+        content_type="image/png",
+        filename="preview.png",
+        size_bytes=len(content),
+    )
+    message = OutboundMessage(
+        channel_id="feishu",
+        conversation_id="chat:oc_1",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[artifact],
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily rejected"):
+        await adapter.send_message(message)
+
+    assert message.artifacts == [artifact]
+    assert len(sdk.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_feishu_reports_permanent_upload_rejection(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = _png_bytes()
+    image_path.write_bytes(content)
+
+    class RejectedUploadSdk(FakeFeishuSdk):
+        async def send(self, to: str, message: dict, opts: dict):
+            self.sent.append((to, message, opts))
+            if "image" in message:
+                return SimpleNamespace(
+                    success=False,
+                    error=SimpleNamespace(
+                        code="upload_failed",
+                        retryable=False,
+                        hint="image upload rejected by server: invalid image",
+                    ),
+                )
+            return SimpleNamespace(success=True)
+
+    sdk = RejectedUploadSdk()
+    adapter = _adapter(outbound_media_dir=outbound_root)
+    adapter._sdk = sdk
+    message = OutboundMessage(
+        channel_id="feishu",
+        conversation_id="chat:oc_1",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(image_path),
+                content_type="image/png",
+                filename="preview.png",
+                size_bytes=len(content),
+            )
+        ],
+    )
+
+    await adapter.send_message(message)
+
+    assert message.artifacts == []
+    assert len(sdk.sent) == 2
+    assert sdk.sent[1][1]["text"].startswith("Rendered preview.")
+    assert "Attachment delivery unavailable" in sdk.sent[1][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_keeps_prior_permanent_failure_when_later_upload_retries(
+    tmp_path: Path,
+) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "retry.png"
+    content = _png_bytes()
+    image_path.write_bytes(content)
+
+    class TransientUploadSdk(FakeFeishuSdk):
+        async def send(self, to: str, message: dict, opts: dict):
+            self.sent.append((to, message, opts))
+            return SimpleNamespace(
+                success=False,
+                error=SimpleNamespace(
+                    code="upload_failed",
+                    retryable=False,
+                    hint="network connection timed out",
+                ),
+            )
+
+    sdk = TransientUploadSdk()
+    adapter = _adapter(outbound_media_dir=outbound_root)
+    adapter._sdk = sdk
+    retry_artifact = OutboundArtifact(
+        kind="image",
+        local_path=str(image_path),
+        content_type="image/png",
+        filename="retry.png",
+        size_bytes=len(content),
+    )
+    message = OutboundMessage(
+        channel_id="feishu",
+        conversation_id="chat:oc_1",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(outbound_root / "missing.png"),
+                content_type="image/png",
+                filename="missing.png",
+                size_bytes=10,
+            ),
+            retry_artifact,
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="temporarily rejected"):
+        await adapter.send_message(message)
+
+    assert message.artifacts == [retry_artifact]
+    assert "missing.png" in message.text
+    assert "Attachment delivery unavailable" in message.text
 
 
 @pytest.mark.asyncio

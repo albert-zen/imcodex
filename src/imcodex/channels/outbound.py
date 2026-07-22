@@ -2,26 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import math
+from pathlib import Path
 
 import httpx
 
 from .registry import BUILTIN_CHANNEL_IDS
+from .artifacts import (
+    PermanentArtifactDeliveryError,
+    append_artifact_failures,
+    read_managed_artifact,
+)
 
 
 class WebhookOutboundSink:
+    supports_outbound_artifacts = True
+
     def __init__(
         self,
         outbound_url: str,
         client: httpx.AsyncClient | None = None,
         *,
         bearer_token: str = "",
+        outbound_media_dir: str | Path = ".imcodex/outbound-media",
         max_attempts: int = 3,
         sleep=asyncio.sleep,
     ) -> None:
         self.outbound_url = outbound_url
         self.client = client
         self.bearer_token = bearer_token.strip()
+        self.outbound_media_dir = Path(outbound_media_dir).resolve()
         self.max_attempts = max(1, int(max_attempts))
         self.sleep = sleep
         self._validate_endpoint()
@@ -35,12 +46,110 @@ class WebhookOutboundSink:
             "request_id": message.request_id,
             "metadata": message.metadata,
         }
+        files = None
+        data = None
+        if message.artifacts:
+            uploads = []
+            manifest = []
+            deliverable = []
+            failures: list[str] = []
+            for artifact in message.artifacts:
+                try:
+                    _source, content = await read_managed_artifact(
+                        artifact,
+                        root=self.outbound_media_dir,
+                    )
+                except PermanentArtifactDeliveryError as exc:
+                    failures.append(f"{artifact.filename}: {exc}")
+                    continue
+                deliverable.append(artifact)
+                uploads.append(
+                    (
+                        "artifacts",
+                        (artifact.filename, content, artifact.content_type),
+                    )
+                )
+                manifest.append(
+                    {
+                        "kind": artifact.kind,
+                        "filename": artifact.filename,
+                        "content_type": artifact.content_type,
+                        "size_bytes": artifact.size_bytes,
+                        "sha256": artifact.sha256,
+                    }
+                )
+            message.artifacts = deliverable
+            append_artifact_failures(message, failures)
+            payload["text"] = message.text
+            if uploads:
+                payload["artifacts"] = manifest
+                data = {"payload": json.dumps(payload, ensure_ascii=False)}
+                files = uploads
+        if not message.text.strip() and not message.artifacts:
+            return
         headers = {"Authorization": f"Bearer {self.bearer_token}"} if self.bearer_token else None
         if self.client is not None:
-            await self._post_with_retries(self.client, payload=payload, headers=headers)
+            await self._post_with_artifact_fallback(
+                self.client,
+                message=message,
+                payload=payload,
+                headers=headers,
+                data=data,
+                files=files,
+            )
             return
         async with httpx.AsyncClient() as client:
-            await self._post_with_retries(client, payload=payload, headers=headers)
+            await self._post_with_artifact_fallback(
+                client,
+                message=message,
+                payload=payload,
+                headers=headers,
+                data=data,
+                files=files,
+            )
+
+    async def _post_with_artifact_fallback(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        message,
+        payload: dict,
+        headers: dict[str, str] | None,
+        data: dict[str, str] | None,
+        files: list[tuple[str, tuple[str, bytes, str]]] | None,
+    ) -> None:
+        try:
+            await self._post_with_retries(
+                client,
+                payload=payload,
+                headers=headers,
+                data=data,
+                files=files,
+            )
+            return
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if files is None or status not in {400, 413, 415, 422}:
+                raise
+
+        rejected = list(message.artifacts)
+        message.artifacts = []
+        append_artifact_failures(
+            message,
+            [
+                f"{artifact.filename}: webhook rejected the attachment (HTTP {status})"
+                for artifact in rejected
+            ],
+        )
+        if not message.text.strip():
+            return
+        payload.pop("artifacts", None)
+        payload["text"] = message.text
+        await self._post_with_retries(
+            client,
+            payload=payload,
+            headers=headers,
+        )
 
     async def _post_with_retries(
         self,
@@ -48,6 +157,8 @@ class WebhookOutboundSink:
         *,
         payload: dict,
         headers: dict[str, str] | None,
+        data: dict[str, str] | None = None,
+        files: list[tuple[str, tuple[str, bytes, str]]] | None = None,
     ) -> None:
         delivery_id = str(payload.get("metadata", {}).get("delivery_id") or "")
         attempts = self.max_attempts if delivery_id else 1
@@ -55,7 +166,9 @@ class WebhookOutboundSink:
             try:
                 response = await client.post(
                     self.outbound_url,
-                    json=payload,
+                    json=payload if files is None else None,
+                    data=data,
+                    files=files,
                     headers=headers,
                 )
             except httpx.TransportError:

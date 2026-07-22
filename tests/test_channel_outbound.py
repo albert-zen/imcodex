@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from imcodex.channels import MultiplexOutboundSink, WebhookOutboundSink
-from imcodex.models import OutboundMessage
+from imcodex.models import OutboundArtifact, OutboundMessage
 
 
 @pytest.mark.asyncio
@@ -84,6 +85,191 @@ async def test_webhook_outbound_sink_retries_with_stable_delivery_id() -> None:
         json.loads(requests[0].content),
     ]
     assert delays == [1]
+
+
+@pytest.mark.asyncio
+async def test_webhook_outbound_sink_sends_artifacts_as_multipart(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = b"preview-bytes"
+    image_path.write_bytes(content)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        sink = WebhookOutboundSink(
+            "https://gateway.example/outbound",
+            client=client,
+            bearer_token="outbound-secret",
+            outbound_media_dir=outbound_root,
+        )
+        await sink.send_message(
+            OutboundMessage(
+                channel_id="gateway",
+                conversation_id="conv-1",
+                message_type="turn_result",
+                text="Rendered preview.",
+                metadata={"delivery_id": "terminal-1"},
+                artifacts=[
+                    OutboundArtifact(
+                        kind="image",
+                        local_path=str(image_path),
+                        content_type="image/png",
+                        filename="preview.png",
+                        size_bytes=len(content),
+                    )
+                ],
+            )
+        )
+
+    request = requests[0]
+    assert request.headers["Content-Type"].startswith("multipart/form-data;")
+    assert b'name="payload"' in request.content
+    assert b'"kind": "image"' in request.content
+    assert b'name="artifacts"; filename="preview.png"' in request.content
+    assert content in request.content
+
+
+@pytest.mark.asyncio
+async def test_webhook_converts_missing_artifact_to_visible_notice(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="turn_result",
+        text="Done.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="file",
+                local_path=str(outbound_root / "missing.pdf"),
+                content_type="application/pdf",
+                filename="missing.pdf",
+                size_bytes=100,
+            )
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        sink = WebhookOutboundSink(
+            "https://gateway.example/outbound",
+            client=client,
+            bearer_token="outbound-secret",
+            outbound_media_dir=outbound_root,
+        )
+        await sink.send_message(message)
+
+    payload = json.loads(requests[0].content)
+    assert "Attachment delivery unavailable" in payload["text"]
+    assert "missing.pdf" in payload["text"]
+    assert "artifacts" not in payload
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_webhook_converts_permanent_multipart_rejection_to_notice(
+    tmp_path: Path,
+) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    artifact_path = outbound_root / "preview.png"
+    artifact_path.write_bytes(b"preview")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(415)
+        return httpx.Response(204)
+
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="turn_result",
+        text="Done.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(artifact_path),
+                content_type="image/png",
+                filename="preview.png",
+                size_bytes=7,
+            )
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        sink = WebhookOutboundSink(
+            "https://gateway.example/outbound",
+            client=client,
+            bearer_token="outbound-secret",
+            outbound_media_dir=outbound_root,
+        )
+        await sink.send_message(message)
+
+    assert len(requests) == 2
+    assert requests[0].headers["Content-Type"].startswith("multipart/form-data;")
+    fallback = json.loads(requests[1].content)
+    assert "Attachment delivery unavailable" in fallback["text"]
+    assert "preview.png" in fallback["text"]
+    assert "artifacts" not in fallback
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_webhook_removes_rejected_artifact_before_failed_notice_retry(
+    tmp_path: Path,
+) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    artifact_path = outbound_root / "preview.png"
+    artifact_path.write_bytes(b"preview")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(415 if len(requests) == 1 else 503)
+
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="turn_result",
+        text="Done.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(artifact_path),
+                content_type="image/png",
+                filename="preview.png",
+                size_bytes=7,
+            )
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        sink = WebhookOutboundSink(
+            "https://gateway.example/outbound",
+            client=client,
+            bearer_token="outbound-secret",
+            outbound_media_dir=outbound_root,
+            max_attempts=1,
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await sink.send_message(message)
+
+    assert len(requests) == 2
+    assert message.artifacts == []
+    assert "Attachment delivery unavailable" in message.text
 
 
 def test_webhook_outbound_sink_bounds_untrusted_retry_after() -> None:

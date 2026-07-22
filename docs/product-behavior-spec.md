@@ -436,6 +436,17 @@ cleanup removes entries that are not referenced by the durable terminal outbox.
 Reference-aware cleanup also runs after a durable delivery acknowledgement,
 while preserving artifacts still buffered by active native turns.
 
+Every configured outbound channel consumes that same artifact contract. QQ,
+Telegram, Feishu/Lark, and Weixin project images and files into their native
+attachment APIs; the generic outbound webhook projects artifact messages as a
+multipart payload. If an adapter reports a later failure, the bridge records
+its in-memory per-artifact progress back to the durable message, then retries
+only the remaining tail; terminal text is sent last. A process crash between a
+platform acceptance and that checkpoint remains at-least-once unless the
+platform supports the adapter's stable delivery identity. A
+permanent platform or validation rejection becomes a visible failure notice;
+a retryable failure leaves only the uncompleted tail pending.
+
 For the generic webhook, the immediate command response is always available in
 the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later
 native messages occur after the inbound HTTP exchange. If no outbound callback

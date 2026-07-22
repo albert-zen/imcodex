@@ -9,6 +9,12 @@ from typing import Any, Awaitable, Callable
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
+from .artifacts import (
+    PermanentArtifactDeliveryError,
+    append_artifact_failures,
+    read_managed_artifact,
+    stable_artifact_identity,
+)
 from .base import BaseChannelAdapter
 from .media import (
     MAX_IMAGE_COUNT,
@@ -40,6 +46,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
     """Experimental direct-message adapter for Tencent iLink."""
 
     channel_id = "weixin"
+    supports_outbound_artifacts = True
 
     def __init__(
         self,
@@ -52,6 +59,7 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         state_store: WeixinStateStore | None = None,
         transport_factory: Callable[[WeixinCredentials], object] | None = None,
         media_dir: Path | None = None,
+        outbound_media_dir: Path | None = None,
         media_materializer: ImageMediaMaterializer[WeixinImageReference] | None = None,
         sleep=asyncio.sleep,
     ) -> None:
@@ -71,6 +79,9 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         self._runner_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._auth_stale = False
+        self.outbound_media_dir = Path(
+            outbound_media_dir or Path(".imcodex") / "outbound-media"
+        ).resolve()
         self.media_materializer = media_materializer or ImageMediaMaterializer(
             root=media_dir or self.state_dir / "inbound-media",
             download=self._download_inbound_image,
@@ -87,6 +98,9 @@ class WeixinChannelAdapter(BaseChannelAdapter):
             state_dir=Path(state_dir),
             media_dir=Path(
                 str(config.get("media_dir") or Path(state_dir) / "inbound-media")
+            ),
+            outbound_media_dir=Path(
+                str(config.get("outbound_media_dir") or ".imcodex/outbound-media")
             ),
             access_policy=ChannelAccessPolicy.from_config(config),
             poll_timeout_ms=int(config.get("poll_timeout_ms") or 35_000),
@@ -253,7 +267,9 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
-        if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
+        if not self.enabled or message.channel_id != self.channel_id:
+            return
+        if not message.text.strip() and not message.artifacts:
             return
         self.ensure_outbound_allowed(message)
         if self._auth_stale:
@@ -266,6 +282,49 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         if not context_token:
             raise RuntimeError("Weixin cannot send before this user has supplied an active context token.")
         delivery_id = str(message.metadata.get("delivery_id") or "").strip()
+        artifact_failures: list[str] = []
+        original_artifacts = list(message.artifacts)
+        for index, artifact in enumerate(original_artifacts):
+            try:
+                _source, content = await read_managed_artifact(
+                    artifact,
+                    root=self.outbound_media_dir,
+                )
+                identity = stable_artifact_identity(message, artifact)
+                await transport.send_artifact(
+                    to_user_id=user_id,
+                    content=content,
+                    filename=artifact.filename,
+                    kind=artifact.kind,
+                    context_token=context_token,
+                    client_id=(f"imcodex-artifact-{identity[:32]}" if identity else None),
+                )
+            except PermanentArtifactDeliveryError as exc:
+                artifact_failures.append(f"{artifact.filename}: {exc}")
+            except ILinkError as exc:
+                if exc.code == STALE_TOKEN_CODE:
+                    self._mark_stale_token()
+                    append_artifact_failures(message, artifact_failures)
+                    message.artifacts = original_artifacts[index:]
+                    raise
+                if exc.code in {413, 415, 422}:
+                    artifact_failures.append(
+                        f"{artifact.filename}: Weixin rejected the upload"
+                    )
+                else:
+                    append_artifact_failures(message, artifact_failures)
+                    message.artifacts = original_artifacts[index:]
+                    raise
+            except Exception:
+                append_artifact_failures(message, artifact_failures)
+                message.artifacts = original_artifacts[index:]
+                raise
+            else:
+                message.artifacts = original_artifacts[index + 1 :]
+        message.artifacts = []
+        append_artifact_failures(message, artifact_failures)
+        if not message.text.strip():
+            return
         for index, chunk in enumerate(split_text(message.text, limit=WEIXIN_TEXT_LIMIT)):
             try:
                 await transport.send_text(

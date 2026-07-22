@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass, field
+import hashlib
 import json
 import re
 import secrets
@@ -12,7 +13,7 @@ from urllib.parse import quote, urlsplit
 import uuid
 
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
+from Crypto.Util.Padding import pad, unpad
 import httpx
 
 from .media import MediaDownloadError
@@ -150,6 +151,142 @@ class WeixinILinkTransport:
         )
         self._raise_protocol_error(payload, operation="sendmessage")
         return message_client_id
+
+    async def send_artifact(
+        self,
+        *,
+        to_user_id: str,
+        content: bytes,
+        filename: str,
+        kind: str,
+        context_token: str,
+        client_id: str | None = None,
+    ) -> str:
+        """Upload one staged image/file to Tencent CDN and send its iLink item."""
+
+        if kind not in {"image", "file"}:
+            raise ILinkError("unsupported iLink artifact kind", code=400)
+        aes_key = secrets.token_bytes(16)
+        ciphertext = await asyncio.to_thread(_encrypt_outbound_artifact, content, aes_key)
+        file_key = secrets.token_hex(16)
+        upload = await self._request_json(
+            "POST",
+            "ilink/bot/getuploadurl",
+            body={
+                "filekey": file_key,
+                "media_type": 1 if kind == "image" else 3,
+                "to_user_id": to_user_id,
+                "rawsize": len(content),
+                "rawfilemd5": hashlib.md5(content).hexdigest(),
+                "filesize": len(ciphertext),
+                "no_need_thumb": True,
+                "aeskey": aes_key.hex(),
+                "base_info": BASE_INFO,
+            },
+            timeout_s=15.0,
+            max_attempts=3,
+        )
+        self._raise_protocol_error(upload, operation="getuploadurl")
+        upload_url = self._cdn_upload_url(
+            upload_full_url=str(upload.get("upload_full_url") or ""),
+            upload_param=str(upload.get("upload_param") or ""),
+            file_key=file_key,
+        )
+        encrypted_param = await self._upload_cdn(upload_url, ciphertext)
+        media = {
+            "encrypt_query_param": encrypted_param,
+            # Tencent's published plugin encodes the hexadecimal key string,
+            # rather than the raw 16 bytes, for outbound CDNMedia.aes_key.
+            "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
+            "encrypt_type": 1,
+        }
+        if kind == "image":
+            item = {
+                "type": 2,
+                "image_item": {"media": media, "mid_size": len(ciphertext)},
+            }
+        else:
+            item = {
+                "type": 4,
+                "file_item": {
+                    "media": media,
+                    "file_name": filename,
+                    "len": str(len(content)),
+                },
+            }
+        message_client_id = client_id or f"imcodex-weixin-{uuid.uuid4().hex}"
+        payload = await self._request_json(
+            "POST",
+            "ilink/bot/sendmessage",
+            body={
+                "msg": {
+                    "from_user_id": "",
+                    "to_user_id": to_user_id,
+                    "client_id": message_client_id,
+                    "message_type": 2,
+                    "message_state": 2,
+                    "item_list": [item],
+                    "context_token": context_token,
+                },
+                "base_info": BASE_INFO,
+            },
+            timeout_s=15.0,
+            max_attempts=3,
+        )
+        self._raise_protocol_error(payload, operation="sendmessage")
+        return message_client_id
+
+    @staticmethod
+    def _cdn_upload_url(
+        *,
+        upload_full_url: str,
+        upload_param: str,
+        file_key: str,
+    ) -> str:
+        if upload_full_url.strip():
+            try:
+                return _validate_weixin_media_url(upload_full_url)
+            except MediaDownloadError:
+                raise ILinkError("iLink getuploadurl returned an invalid upload target", code=400) from None
+        if not upload_param.strip():
+            raise ILinkError("iLink getuploadurl returned no upload target", code=400)
+        return (
+            f"{DEFAULT_ILINK_CDN_BASE_URL}/upload"
+            f"?encrypted_query_param={quote(upload_param, safe='')}"
+            f"&filekey={quote(file_key, safe='')}"
+        )
+
+    async def _upload_cdn(self, url: str, ciphertext: bytes) -> str:
+        for attempt in range(1, 4):
+            try:
+                response = await self.http_client.put(
+                    url,
+                    content=ciphertext,
+                    headers={"Content-Type": "application/octet-stream"},
+                    follow_redirects=False,
+                    timeout=20.0,
+                )
+            except httpx.HTTPError as exc:
+                if attempt >= 3:
+                    raise ILinkError(
+                        f"iLink CDN upload failed ({type(exc).__name__})"
+                    ) from None
+                await self.sleep(min(2 ** (attempt - 1), 4))
+                continue
+            if 300 <= response.status_code < 400:
+                raise ILinkError("iLink CDN upload refused a redirect", code=400)
+            if 400 <= response.status_code < 500:
+                raise ILinkError("iLink CDN rejected the upload", code=response.status_code)
+            if response.status_code != 200:
+                if attempt < 3:
+                    await self.sleep(min(2 ** (attempt - 1), 4))
+                    continue
+                raise ILinkError("iLink CDN upload failed", code=response.status_code)
+            encrypted_param = str(response.headers.get("x-encrypted-param") or "").strip()
+            if not encrypted_param:
+                raise ILinkError("iLink CDN upload returned no media reference", code=400)
+            return encrypted_param
+        raise ILinkError("iLink CDN upload exhausted retry attempts")
 
     async def download_image(
         self,
@@ -349,6 +486,12 @@ def _image_download_url(reference: WeixinImageReference) -> str:
     return (
         f"{DEFAULT_ILINK_CDN_BASE_URL}/download"
         f"?encrypted_query_param={quote(query_param, safe='')}"
+    )
+
+
+def _encrypt_outbound_artifact(content: bytes, aes_key: bytes) -> bytes:
+    return AES.new(aes_key, AES.MODE_ECB).encrypt(
+        pad(content, AES.block_size, style="pkcs7")
     )
 
 

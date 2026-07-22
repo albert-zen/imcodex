@@ -21,7 +21,7 @@ from imcodex.observability.logger import (
     reset_observability_logging,
 )
 from imcodex.channels.media import IMAGE_DOWNLOAD_FAILED
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.models import InboundMessage, OutboundArtifact, OutboundMessage
 from imcodex.store import ConversationStore
 
 
@@ -814,6 +814,101 @@ async def test_telegram_does_not_retry_ambiguous_send_failure() -> None:
             )
 
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_telegram_sends_staged_image_before_terminal_text(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    image_path.write_bytes(PNG)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 9}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(
+            http_client=client,
+            outbound_media_dir=outbound_root,
+        )
+        message = OutboundMessage(
+            channel_id="telegram",
+            conversation_id="chat:-1001:topic:77",
+            message_type="turn_result",
+            text="Rendered preview.",
+            metadata={"reply_to_message_id": "42"},
+            artifacts=[
+                OutboundArtifact(
+                    kind="image",
+                    local_path=str(image_path),
+                    content_type="image/png",
+                    filename="preview.png",
+                    size_bytes=len(PNG),
+                )
+            ],
+        )
+        await adapter.send_message(message)
+
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "sendPhoto",
+        "sendMessage",
+    ]
+    upload = requests[0].content
+    assert b'name="photo"; filename="preview.png"' in upload
+    assert PNG in upload
+    assert b'name="message_thread_id"' in upload and b"77" in upload
+    assert b'"message_id": 42' in upload
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_preserves_artifact_across_permission_recovery(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    image_path.write_bytes(PNG)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                403,
+                json={"ok": False, "error_code": 403, "description": "Forbidden"},
+            )
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    artifact = OutboundArtifact(
+        kind="image",
+        local_path=str(image_path),
+        content_type="image/png",
+        filename="preview.png",
+        size_bytes=len(PNG),
+    )
+    message = OutboundMessage(
+        channel_id="telegram",
+        conversation_id="chat:123",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[artifact],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = _adapter(http_client=client, outbound_media_dir=outbound_root)
+        with pytest.raises(TelegramAPIError, match="403"):
+            await adapter.send_message(message)
+        assert message.artifacts == [artifact]
+
+        await adapter.send_message(message)
+
+    assert message.artifacts == []
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "sendPhoto",
+        "sendPhoto",
+        "sendMessage",
+    ]
 
 
 @pytest.mark.asyncio

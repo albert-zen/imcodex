@@ -15,9 +15,14 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import httpx
 
 from ..config import validate_http_endpoint
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
+from .artifacts import (
+    PermanentArtifactDeliveryError,
+    append_artifact_failures,
+    read_managed_artifact,
+)
 from .base import BaseChannelAdapter
 from .media import (
     ImageMediaMaterializer,
@@ -130,6 +135,7 @@ def read_telegram_bot_token_file(path: Path) -> str:
 
 class TelegramChannelAdapter(BaseChannelAdapter):
     channel_id = "telegram"
+    supports_outbound_artifacts = True
 
     def __init__(
         self,
@@ -144,6 +150,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         poll_timeout_s: int = 30,
         state_dir: Path | None = None,
         media_dir: Path | None = None,
+        outbound_media_dir: Path | None = None,
         media_materializer: ImageMediaMaterializer[TelegramImageReference] | None = None,
         media_cleanup_sleep=asyncio.sleep,
         http_client: httpx.AsyncClient | None = None,
@@ -161,6 +168,9 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         self.require_mention = require_mention
         self.poll_timeout_s = max(1, int(poll_timeout_s))
         self.state_dir = state_dir
+        self.outbound_media_dir = Path(
+            outbound_media_dir or Path(".imcodex") / "outbound-media"
+        ).resolve()
         self.http_client = http_client or httpx.AsyncClient()
         self._owns_http_client = http_client is None
         self.media_materializer = media_materializer or ImageMediaMaterializer(
@@ -182,6 +192,7 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         token_file = str(config.get("bot_token_file") or "").strip()
         state_dir = str(config.get("state_dir") or "").strip()
         media_dir = str(config.get("media_dir") or "").strip()
+        outbound_media_dir = str(config.get("outbound_media_dir") or "").strip()
         return cls(
             enabled=bool(config.get("enabled")),
             bot_token=str(config.get("bot_token") or ""),
@@ -193,6 +204,9 @@ class TelegramChannelAdapter(BaseChannelAdapter):
             poll_timeout_s=int(config.get("poll_timeout_s") or 30),
             state_dir=Path(state_dir) if state_dir else None,
             media_dir=Path(media_dir) if media_dir else None,
+            outbound_media_dir=(
+                Path(outbound_media_dir) if outbound_media_dir else None
+            ),
         )
 
     async def start(self) -> None:
@@ -315,13 +329,46 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
-        if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
+        if not self.enabled or message.channel_id != self.channel_id:
+            return
+        if not message.text.strip() and not message.artifacts:
             return
         self.ensure_outbound_allowed(message)
         chat_id, thread_id = self._parse_conversation_id(message.conversation_id)
         reply_to = self._parse_reply_message_id(
             message.metadata.get("reply_to_message_id") or message.metadata.get("message_id")
         )
+        artifact_failures: list[str] = []
+        original_artifacts = list(message.artifacts)
+        for index, artifact in enumerate(original_artifacts):
+            try:
+                await self._send_artifact(
+                    artifact,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    reply_to=reply_to,
+                )
+            except PermanentArtifactDeliveryError as exc:
+                artifact_failures.append(f"{artifact.filename}: {exc}")
+            except TelegramAPIError as exc:
+                if self._artifact_error_is_permanent(exc):
+                    artifact_failures.append(
+                        f"{artifact.filename}: Telegram rejected the upload"
+                    )
+                else:
+                    append_artifact_failures(message, artifact_failures)
+                    message.artifacts = original_artifacts[index:]
+                    raise
+            except Exception:
+                append_artifact_failures(message, artifact_failures)
+                message.artifacts = original_artifacts[index:]
+                raise
+            else:
+                message.artifacts = original_artifacts[index + 1 :]
+        message.artifacts = []
+        append_artifact_failures(message, artifact_failures)
+        if not message.text.strip():
+            return
         for index, chunk in enumerate(split_text(message.text, limit=TELEGRAM_TEXT_LIMIT)):
             body: dict[str, object] = {
                 "chat_id": chat_id,
@@ -338,6 +385,34 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 max_attempts=3,
                 retry_ambiguous=False,
             )
+
+    async def _send_artifact(
+        self,
+        artifact: OutboundArtifact,
+        *,
+        chat_id: int,
+        thread_id: int | None,
+        reply_to: int | None,
+    ) -> None:
+        _source, content = await read_managed_artifact(
+            artifact,
+            root=self.outbound_media_dir,
+        )
+        field = "photo" if artifact.kind == "image" else "document"
+        method = "sendPhoto" if artifact.kind == "image" else "sendDocument"
+        body: dict[str, object] = {"chat_id": chat_id}
+        if thread_id is not None:
+            body["message_thread_id"] = thread_id
+        if reply_to is not None:
+            body["reply_parameters"] = {"message_id": reply_to}
+        await self._api_upload(
+            method,
+            body,
+            field=field,
+            filename=artifact.filename,
+            content=content,
+            content_type=artifact.content_type,
+        )
 
     async def _run_forever(self) -> None:
         failures = 0
@@ -477,6 +552,61 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 raise TelegramAPIError(error_code=error_code, description=description)
             return payload.get("result")
         raise RuntimeError("Telegram API request exhausted retry attempts.")
+
+    async def _api_upload(
+        self,
+        method: str,
+        body: dict[str, object],
+        *,
+        field: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> object:
+        url = f"{self.api_base}/bot{self.bot_token}/{method}"
+        form = {
+            key: json.dumps(value, ensure_ascii=False) if isinstance(value, dict) else str(value)
+            for key, value in body.items()
+        }
+        try:
+            response = await self.http_client.post(
+                url,
+                data=form,
+                files={field: (filename, content, content_type)},
+                timeout=30.0,
+            )
+        except httpx.HTTPError as exc:
+            raise TelegramAPIError(
+                error_code=0,
+                description=f"network request failed ({type(exc).__name__})",
+            ) from None
+        payload = self._response_payload(response)
+        error_code = int(payload.get("error_code") or response.status_code or 0)
+        if not response.is_success or payload.get("ok") is not True:
+            raise TelegramAPIError(
+                error_code=error_code,
+                description=str(payload.get("description") or "upload failed"),
+                retry_after=self._retry_after(payload, response) if error_code == 429 else None,
+            )
+        return payload.get("result")
+
+    @staticmethod
+    def _artifact_error_is_permanent(error: TelegramAPIError) -> bool:
+        if error.error_code not in {400, 413, 415, 422}:
+            return False
+        description = error.description.casefold()
+        return any(
+            marker in description
+            for marker in (
+                "file is too big",
+                "file too large",
+                "image_process_failed",
+                "photo_invalid_dimensions",
+                "wrong file type",
+                "unsupported media",
+                "invalid media",
+            )
+        )
 
     async def _download_image(
         self,

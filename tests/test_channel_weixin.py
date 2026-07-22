@@ -13,7 +13,7 @@ from imcodex.channels.weixin_state import (
     WeixinStateStore,
     WeixinTransportState,
 )
-from imcodex.models import InboundMessage, OutboundMessage
+from imcodex.models import InboundMessage, OutboundArtifact, OutboundMessage
 
 
 def _image_item(
@@ -53,6 +53,7 @@ class FakeTransport:
     def __init__(self, responses: list[dict] | None = None) -> None:
         self.responses = list(responses or [])
         self.sent: list[dict] = []
+        self.sent_artifacts: list[dict] = []
         self.notify_start_calls = 0
         self.notify_stop_calls = 0
         self.close_calls = 0
@@ -82,6 +83,10 @@ class FakeTransport:
     async def send_text(self, **payload) -> str:
         self.sent.append(payload)
         return "out-1"
+
+    async def send_artifact(self, **payload) -> str:
+        self.sent_artifacts.append(payload)
+        return "artifact-1"
 
 
 class FakeMediaMaterializer:
@@ -487,6 +492,110 @@ async def test_weixin_uses_stable_delivery_id_for_chunk_retries(tmp_path: Path) 
         "imcodex:stable:0",
         "imcodex:stable:1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_weixin_sends_staged_image_before_terminal_text(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = b"preview-bytes"
+    image_path.write_bytes(content)
+    transport = FakeTransport()
+    adapter = _adapter(
+        tmp_path,
+        transport=transport,
+        outbound_media_dir=outbound_root,
+    )
+    adapter._transport = transport
+    adapter._state.set_context_token("owner@im.wechat", "context-secret")
+    message = OutboundMessage(
+        channel_id="weixin",
+        conversation_id="user:owner@im.wechat",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="image",
+                local_path=str(image_path),
+                content_type="image/png",
+                filename="preview.png",
+                size_bytes=len(content),
+            )
+        ],
+    )
+
+    await adapter.send_message(message)
+
+    assert transport.sent_artifacts == [
+        {
+            "to_user_id": "owner@im.wechat",
+            "content": content,
+            "filename": "preview.png",
+            "kind": "image",
+            "context_token": "context-secret",
+            "client_id": transport.sent_artifacts[0]["client_id"],
+        }
+    ]
+    assert transport.sent_artifacts[0]["client_id"].startswith("imcodex-artifact-")
+    assert transport.sent[0]["text"] == "Rendered preview."
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_weixin_preserves_artifact_across_permission_recovery(tmp_path: Path) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    image_path = outbound_root / "preview.png"
+    content = b"preview-bytes"
+    image_path.write_bytes(content)
+
+    class RecoveringTransport(FakeTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_upload = True
+
+        async def send_artifact(self, **payload) -> str:
+            self.sent_artifacts.append(payload)
+            if self.fail_upload:
+                self.fail_upload = False
+                raise ILinkError("iLink upload forbidden", code=403)
+            return "artifact-1"
+
+    transport = RecoveringTransport()
+    adapter = _adapter(
+        tmp_path,
+        transport=transport,
+        outbound_media_dir=outbound_root,
+    )
+    adapter._transport = transport
+    adapter._state.set_context_token("owner@im.wechat", "context-secret")
+    artifact = OutboundArtifact(
+        kind="image",
+        local_path=str(image_path),
+        content_type="image/png",
+        filename="preview.png",
+        size_bytes=len(content),
+    )
+    message = OutboundMessage(
+        channel_id="weixin",
+        conversation_id="user:owner@im.wechat",
+        message_type="turn_result",
+        text="Rendered preview.",
+        metadata={"delivery_id": "terminal-1"},
+        artifacts=[artifact],
+    )
+
+    with pytest.raises(ILinkError, match="forbidden"):
+        await adapter.send_message(message)
+    assert message.artifacts == [artifact]
+
+    await adapter.send_message(message)
+
+    assert message.artifacts == []
+    assert len(transport.sent_artifacts) == 2
+    assert transport.sent[0]["text"] == "Rendered preview."
 
 
 @pytest.mark.asyncio

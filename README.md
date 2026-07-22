@@ -236,10 +236,11 @@ Built-in channel support now includes:
 | Weixin | Tencent iLink long polling | Direct text and images | Experimental |
 | Generic webhook | HTTP | Trusted text and image adapter injection | Loopback-only by default |
 
-QQ also delivers explicit native agent-generated images and C2C files as
-platform attachments. These are structured artifacts on the normal terminal
-message, validated and copied into a private outbound spool before delivery;
-arbitrary local paths are never uploaded.
+QQ, Telegram, Feishu/Lark, Weixin, and the generic outbound webhook deliver
+explicit native agent-generated images and files through one structured
+artifact contract. Files are validated and copied into a private outbound spool
+before native platform delivery (or webhook multipart delivery); arbitrary
+local paths are never uploaded.
 
 Remote IM adapters accept the platform-delivered scope by default. Optional
 stable user and conversation restrictions can be combined with `any` (default)

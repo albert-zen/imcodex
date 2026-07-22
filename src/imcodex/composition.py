@@ -125,6 +125,7 @@ def build_runtime(
         WebhookOutboundSink(
             settings.outbound_url,
             bearer_token=settings.outbound_webhook_token,
+            outbound_media_dir=settings.data_dir / "outbound-media",
         )
         if settings.outbound_url
         else None

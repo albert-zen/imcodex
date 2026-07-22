@@ -346,6 +346,7 @@ class Settings:
                 "poll_timeout_s": self.telegram_poll_timeout_s,
                 "state_dir": self.data_dir / "channels" / "telegram",
                 "media_dir": self.data_dir / "channels" / "telegram" / "inbound-media",
+                "outbound_media_dir": self.data_dir / "outbound-media",
             },
             "feishu": {
                 "enabled": self.feishu_enabled,
@@ -358,11 +359,13 @@ class Settings:
                 "require_mention": self.feishu_require_mention,
                 "startup_timeout_s": self.feishu_startup_timeout_s,
                 "media_dir": self.data_dir / "channels" / "feishu" / "inbound-media",
+                "outbound_media_dir": self.data_dir / "outbound-media",
             },
             "weixin": {
                 "enabled": self.weixin_enabled,
                 "state_dir": weixin_state_dir,
                 "media_dir": weixin_state_dir / "inbound-media",
+                "outbound_media_dir": self.data_dir / "outbound-media",
                 "allowed_user_ids": self.weixin_allowed_user_ids,
                 "allowed_conversation_ids": self.weixin_allowed_conversation_ids,
                 "access_match": self.weixin_access_match,

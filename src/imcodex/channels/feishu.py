@@ -14,9 +14,15 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
+from .artifacts import (
+    PermanentArtifactDeliveryError,
+    append_artifact_failures,
+    read_managed_artifact,
+    stable_artifact_identity,
+)
 from .base import BaseChannelAdapter
 from .media import (
     MAX_IMAGE_BYTES,
@@ -80,6 +86,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
     """Feishu/Lark text and image adapter over the official Channel SDK."""
 
     channel_id = "feishu"
+    supports_outbound_artifacts = True
 
     def __init__(
         self,
@@ -93,6 +100,7 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         require_mention: bool = True,
         startup_timeout_s: float = 30.0,
         media_dir: Path | None = None,
+        outbound_media_dir: Path | None = None,
         media_materializer: ImageMediaMaterializer[FeishuImageReference] | None = None,
         http_client: httpx.AsyncClient | None = None,
         resource_downloader: Callable[
@@ -123,6 +131,9 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         self._tenant_access_token = ""
         self._tenant_access_token_expires_at = 0.0
         self._tenant_token_lock = asyncio.Lock()
+        self.outbound_media_dir = Path(
+            outbound_media_dir or Path(".imcodex") / "outbound-media"
+        ).resolve()
         self.media_materializer = media_materializer or ImageMediaMaterializer(
             root=media_dir or Path(".imcodex") / "channels" / "feishu" / "inbound-media",
             download=self._download_image,
@@ -154,6 +165,9 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             startup_timeout_s=float(config.get("startup_timeout_s") or 30.0),
             media_dir=Path(
                 str(config.get("media_dir") or ".imcodex/channels/feishu/inbound-media")
+            ),
+            outbound_media_dir=Path(
+                str(config.get("outbound_media_dir") or ".imcodex/outbound-media")
             ),
         )
 
@@ -332,7 +346,9 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         )
 
     async def send_message(self, message: OutboundMessage) -> None:
-        if not self.enabled or message.channel_id != self.channel_id or not message.text.strip():
+        if not self.enabled or message.channel_id != self.channel_id:
+            return
+        if not message.text.strip() and not message.artifacts:
             return
         self.ensure_outbound_allowed(message)
         sdk = self._sdk
@@ -347,6 +363,40 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         )
         if thread_id and not reply_to:
             raise RuntimeError("Feishu topic delivery requires a persisted inbound message ID for reply routing.")
+        artifact_failures: list[str] = []
+        original_artifacts = list(message.artifacts)
+        for index, artifact in enumerate(original_artifacts):
+            try:
+                result = await self._send_artifact(
+                    sdk,
+                    chat_id=chat_id,
+                    artifact=artifact,
+                    message=message,
+                    reply_to=reply_to,
+                    reply_in_thread=bool(thread_id),
+                )
+            except PermanentArtifactDeliveryError as exc:
+                artifact_failures.append(f"{artifact.filename}: {exc}")
+            except Exception:
+                append_artifact_failures(message, artifact_failures)
+                message.artifacts = original_artifacts[index:]
+                raise
+            else:
+                if hasattr(result, "success") and not bool(getattr(result, "success")):
+                    error = getattr(result, "error", None)
+                    if self._artifact_error_is_permanent(error):
+                        artifact_failures.append(
+                            f"{artifact.filename}: Feishu rejected the upload"
+                        )
+                    else:
+                        append_artifact_failures(message, artifact_failures)
+                        message.artifacts = original_artifacts[index:]
+                        raise RuntimeError("Feishu temporarily rejected an outbound artifact.")
+                message.artifacts = original_artifacts[index + 1 :]
+        message.artifacts = []
+        append_artifact_failures(message, artifact_failures)
+        if not message.text.strip():
+            return
         for chunk in split_text(message.text, limit=FEISHU_TEXT_LIMIT):
             opts: dict[str, object] = {"receive_id_type": "chat_id"}
             if reply_to:
@@ -356,6 +406,78 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             result = await sdk.send(chat_id, {"text": chunk}, opts)
             if hasattr(result, "success") and not bool(getattr(result, "success")):
                 raise RuntimeError("Feishu rejected an outbound message.")
+
+    async def _send_artifact(
+        self,
+        sdk: object,
+        *,
+        chat_id: str,
+        artifact: OutboundArtifact,
+        message: OutboundMessage,
+        reply_to: str,
+        reply_in_thread: bool,
+    ):
+        _source, content = await read_managed_artifact(
+            artifact,
+            root=self.outbound_media_dir,
+        )
+        if artifact.kind == "image":
+            outbound = {"image": {"source": content}}
+        else:
+            outbound = {
+                "file": {
+                    "source": content,
+                    "fileName": artifact.filename,
+                }
+            }
+        opts: dict[str, object] = {"receive_id_type": "chat_id"}
+        if reply_to:
+            opts["reply_to"] = reply_to
+        if reply_in_thread:
+            opts["reply_in_thread"] = True
+        identity = stable_artifact_identity(message, artifact)
+        if identity:
+            opts["uuid"] = identity[:50]
+        return await sdk.send(chat_id, outbound, opts)
+
+    @staticmethod
+    def _artifact_error_is_permanent(error: object) -> bool:
+        if bool(getattr(error, "retryable", False)):
+            return False
+        code = getattr(error, "code", None)
+        code_value = str(getattr(code, "value", code) or "").casefold()
+        # lark-channel-sdk 1.1 folds upload transport failures and upstream
+        # rejections into UPLOAD_FAILED with retryable=False. Inspect its
+        # human-readable hint so only ambiguous transport failures stay
+        # pending; explicit server rejection is a permanent artifact failure.
+        if code_value != "upload_failed":
+            return False
+        hint = str(getattr(error, "hint", "") or "").casefold()
+        if any(
+            marker in hint
+            for marker in (
+                "transport error",
+                "network",
+                "connection",
+                "timed out",
+                "timeout",
+                "tls",
+            )
+        ):
+            return False
+        return any(
+            marker in hint
+            for marker in (
+                "invalid image",
+                "invalid file",
+                "unsupported",
+                "too large",
+                "file size",
+                "content type",
+                "file type",
+                "format",
+            )
+        )
 
     async def _run_forever(self) -> None:
         failures = 0
