@@ -711,6 +711,26 @@ class BridgeService(
         capture_projection=None,
     ) -> list[OutboundMessage]:
         event = normalize_appserver_message(notification)
+        if event.kind == "item_started" and event.thread_id and event.turn_id:
+            async with self._terminal_projection_lock:
+                if self.projector.resume_turn_output(
+                    thread_id=event.thread_id,
+                    turn_id=event.turn_id,
+                    store=self.store,
+                ):
+                    terminal_key = (event.thread_id, event.turn_id)
+                    self._recent_terminal_deliveries.pop(terminal_key, None)
+                    self.store.note_active_turn(event.thread_id, event.turn_id, "inProgress")
+                    emit_event(
+                        component="bridge",
+                        event="bridge.turn_output.resumed",
+                        message="Native work continued after a visible final item",
+                        data={
+                            "thread_id": event.thread_id,
+                            "turn_id": event.turn_id,
+                            "item_id": event.item_id,
+                        },
+                    )
         if event.kind in _TERMINAL_PROJECTION_EVENT_KINDS:
             async with self._terminal_projection_lock:
                 event_terminal_key = self._event_terminal_key(event)
@@ -1133,6 +1153,23 @@ class BridgeService(
         if terminal_key is None:
             self._attach_native_delivery_id(message, native_message, namespace=namespace)
             return
+        if native_message.get("method") == "item/completed":
+            params = native_message.get("params")
+            params = params if isinstance(params, dict) else {}
+            item = params.get("item")
+            item = item if isinstance(item, dict) else {}
+            item_id = str(item.get("id") or params.get("itemId") or "")
+            if item_id:
+                if message is not None:
+                    message.metadata["delivery_id"] = self._stable_terminal_item_delivery_id(
+                        thread_id=terminal_key[0],
+                        turn_id=terminal_key[1],
+                        item_id=item_id,
+                    )
+                    message.metadata["native_item_id"] = item_id
+                return
+            self._attach_native_delivery_id(message, native_message, namespace=namespace)
+            return
         self._attach_native_delivery_id(
             message,
             {
@@ -1141,6 +1178,20 @@ class BridgeService(
             },
             namespace="terminal",
         )
+
+    @staticmethod
+    def _stable_terminal_item_delivery_id(
+        *,
+        thread_id: str,
+        turn_id: str,
+        item_id: str,
+    ) -> str:
+        digest = hashlib.sha256()
+        for value in ("terminal-item", thread_id, turn_id, item_id):
+            encoded = value.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        return f"imcodex:native:{digest.hexdigest()}"
 
     def _remember_terminal_delivery(self, terminal_key: tuple[str, str]) -> None:
         self._recent_terminal_deliveries.pop(terminal_key, None)

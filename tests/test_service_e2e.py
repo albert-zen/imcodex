@@ -2659,6 +2659,100 @@ async def test_terminal_notification_without_outbound_sink_is_not_marked_deliver
 
 
 @pytest.mark.asyncio
+async def test_native_work_after_final_resumes_live_output_for_the_same_turn() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "First answer.",
+                },
+            },
+        }
+    )
+    await service.handle_notification(
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {"id": "reasoning_2", "type": "reasoning"},
+            },
+        }
+    )
+    assert service.projector.message_pump._turns[
+        ("thr_1", "turn_1")
+    ].final_visible is False
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "commentary_2",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "Continuing after the queued steer.",
+                },
+            },
+        }
+    )
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_2",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Second answer.",
+                },
+            },
+        }
+    )
+    await service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        }
+    )
+
+    assert [message.text for message in sink.messages] == [
+        "First answer.",
+        "Continuing after the queued steer.",
+        "Second answer.",
+    ]
+    final_delivery_ids = [
+        str(message.metadata.get("delivery_id") or "")
+        for message in sink.messages
+        if message.message_type == "turn_result"
+    ]
+    assert len(final_delivery_ids) == 2
+    assert final_delivery_ids[0] != final_delivery_ids[1]
+    assert store.list_pending_terminal_deliveries() == []
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_terminal_delivery_recovers_after_transient_persistence_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

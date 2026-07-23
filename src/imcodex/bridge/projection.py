@@ -151,6 +151,14 @@ class MessageProjector:
     def discard_recovered_turn(self, *, thread_id: str, turn_id: str) -> None:
         self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
 
+    def resume_turn_output(self, *, thread_id: str, turn_id: str, store) -> bool:
+        if self._is_stale_turn(thread_id, turn_id, store):
+            return False
+        return self.message_pump.resume_turn_output(
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+
     def project_recovered_turn(self, *, thread_id: str, turn: dict, store) -> OutboundMessage | None:
         turn_id = str(turn.get("id") or turn.get("turnId") or "")
         status_value = turn.get("status")

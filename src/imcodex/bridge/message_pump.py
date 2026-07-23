@@ -26,6 +26,22 @@ class MessagePump:
     def __init__(self) -> None:
         self._turns: dict[tuple[str, str], TurnBuffer] = {}
 
+    def resume_turn_output(self, *, thread_id: str, turn_id: str) -> bool:
+        """Re-open progress after native work starts beyond a visible final item."""
+
+        buffer = self._turns.get((thread_id, turn_id))
+        if buffer is None or not buffer.final_visible:
+            return False
+        buffer.deltas.clear()
+        buffer.command_summaries.clear()
+        buffer.changed_files.clear()
+        buffer.emitted_progress_texts.clear()
+        buffer.final_text = ""
+        buffer.final_visible = False
+        buffer.artifacts.clear()
+        buffer.artifact_errors.clear()
+        return True
+
     def record_delta(
         self,
         *,

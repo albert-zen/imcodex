@@ -113,6 +113,58 @@ def test_projector_suppresses_late_tool_progress_after_final_answer() -> None:
     assert late_tool is None
 
 
+def test_projector_reopens_commentary_when_native_work_starts_after_final_answer() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    projector = MessageProjector()
+
+    final_message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "First answer.",
+                },
+            },
+        },
+        store,
+    )
+
+    resumed = projector.resume_turn_output(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        store=store,
+    )
+    commentary = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "commentary_2",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "Continuing after the queued steer.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert final_message is not None
+    assert resumed is True
+    assert commentary is not None
+    assert commentary.message_type == "turn_progress"
+    assert commentary.text == "Continuing after the queued steer."
+
+
 def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path) -> None:
     image_path = tmp_path / "generated.png"
     from PIL import Image
