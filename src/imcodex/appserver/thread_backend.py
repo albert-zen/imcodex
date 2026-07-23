@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import os
-from pathlib import Path
 import re
 
 from ..models import InboundAttachment, NativeThreadSnapshot
@@ -20,6 +19,7 @@ from .client import AppServerError
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
 _ATTACHMENT_ONLY_DISPLAY_TEXT = "[Attachment]"
+_ATTACHMENTS_DISPLAY_TEXT = "[Attachments]"
 _THREAD_LIST_BATCH_SIZE = 100
 
 
@@ -493,8 +493,13 @@ class CodexThreadBackendMixin:
         attachments: tuple[InboundAttachment, ...],
     ) -> list[dict[str, object]]:
         input_items: list[dict[str, object]] = []
-        if text.strip():
-            input_items.append({"type": "text", "text": text})
+        file_attachments = tuple(item for item in attachments if item.kind == "file")
+        durable_text = CodexThreadBackendMixin._with_file_attachment_manifest(
+            text,
+            file_attachments,
+        )
+        if durable_text.strip():
+            input_items.append({"type": "text", "text": durable_text})
         elif attachments:
             # Codex App currently omits user messages whose native input has no
             # text item, even when localImage items are present. Keep the image
@@ -512,7 +517,9 @@ class CodexThreadBackendMixin:
                 input_items.append(
                     {
                         "type": "mention",
-                        "name": attachment.filename or Path(attachment.local_path).name,
+                        "name": CodexThreadBackendMixin._safe_attachment_filename(
+                            attachment
+                        ),
                         "path": attachment.local_path,
                     }
                 )
@@ -521,6 +528,65 @@ class CodexThreadBackendMixin:
         if not input_items:
             raise ValueError("inbound message has no supported input")
         return input_items
+
+    @staticmethod
+    def _with_file_attachment_manifest(
+        text: str,
+        attachments: tuple[InboundAttachment, ...],
+    ) -> str:
+        if not attachments:
+            return text
+        header = (
+            _ATTACHMENT_ONLY_DISPLAY_TEXT
+            if len(attachments) == 1
+            else _ATTACHMENTS_DISPLAY_TEXT
+        )
+        lines = [header]
+        for attachment in attachments:
+            path = str(attachment.local_path)
+            if not path or any(
+                ord(character) < 32 or ord(character) == 127 for character in path
+            ):
+                raise ValueError(
+                    "inbound attachment path contains unsupported control characters"
+                )
+            lines.extend(
+                (
+                    f"- {CodexThreadBackendMixin._safe_attachment_filename(attachment)}",
+                    f"  Path: {path}",
+                )
+            )
+        manifest = "\n".join(lines)
+        if not text.strip():
+            return manifest
+        if text.endswith(_ATTACHMENT_ONLY_DISPLAY_TEXT):
+            prefix = text[: -len(_ATTACHMENT_ONLY_DISPLAY_TEXT)]
+            if not prefix or prefix.endswith("\n"):
+                return f"{prefix}{manifest}"
+        if text.endswith("\n\n"):
+            separator = ""
+        elif text.endswith("\n"):
+            separator = "\n"
+        else:
+            separator = "\n\n"
+        return f"{text}{separator}{manifest}"
+
+    @staticmethod
+    def _safe_attachment_filename(attachment: InboundAttachment) -> str:
+        candidate = (
+            str(attachment.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+        )
+        candidate = "".join(
+            character
+            for character in candidate
+            if character >= " " and character != "\x7f"
+        ).strip(" .")
+        if candidate:
+            return candidate[:120]
+        fallback = (
+            str(attachment.local_path).replace("\\", "/").rsplit("/", 1)[-1]
+        )
+        return fallback[:120] or "attachment"
 
     async def _start_turn(
         self,

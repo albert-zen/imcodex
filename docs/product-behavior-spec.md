@@ -864,6 +864,10 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
   and expires them after the retention window.
 - Images project to `localImage`. Supported generic files project to native
   `mention(name, path)` and are interpreted by Codex, not bridge extractors.
+  Their sanitized filename and staged local path are also written into the
+  native text input. This makes the attachment visible in rollout history,
+  `thread/read`, recovery, and cross-client continuation even when native
+  history omits the structured mention item.
 - Unsupported attachments fail visibly and never become arbitrary local paths.
 - Explicit delivery enters the running bridge over its loopback-only current-
   instance endpoint and reuses configured access policy, staging, adapters,

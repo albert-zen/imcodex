@@ -554,6 +554,114 @@ async def test_image_input_uses_exact_native_turn_start_payload(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("text", "quote", "expected_text"),
+    [
+        (
+            "Review this",
+            None,
+            (
+                "Review this\n\n"
+                "[Attachment]\n"
+                "- 0002-unified-channel-message-delivery.md\n"
+                "  Path: {path}"
+            ),
+        ),
+        (
+            "",
+            InboundQuote(text="Earlier context"),
+            (
+                "[Quoted message begins]\n"
+                "> Earlier context\n"
+                "[Quoted message ends]\n"
+                "[Current message]\n"
+                "[Attachment]\n"
+                "- 0002-unified-channel-message-delivery.md\n"
+                "  Path: {path}"
+            ),
+        ),
+    ],
+)
+async def test_file_input_persists_manifest_in_exact_native_turn_start_payload(
+    text: str,
+    quote: InboundQuote | None,
+    expected_text: str,
+) -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/start": [
+                {
+                    "id": 2,
+                    "result": {
+                        "thread": {
+                            "id": "thr_1",
+                            "cwd": r"D:\work\alpha",
+                            "preview": "seed",
+                            "status": "idle",
+                        }
+                    },
+                }
+            ],
+            "turn/start": [
+                {"id": 3, "result": {"turn": {"id": "turn_1", "status": "inProgress"}}}
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
+    client, service = _build_service(store, process, CapturingSink())
+    local_path = (
+        r"D:\desktop\imcodex\.imcodex-data\channels\qq"
+        r"\inbound-media\5874.md"
+    )
+    attachment = InboundAttachment(
+        "file",
+        "text/markdown",
+        local_path,
+        123,
+        filename="0002-unified-channel-message-delivery.md",
+    )
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text=text,
+            attachments=(attachment,),
+            quote=quote,
+        )
+    )
+
+    assert messages == []
+    turn_starts = [
+        payload["params"]
+        for payload in process.inputs
+        if payload.get("method") == "turn/start"
+    ]
+    assert turn_starts == [
+        {
+            "threadId": "thr_1",
+            "input": [
+                {
+                    "type": "text",
+                    "text": expected_text.format(path=local_path),
+                },
+                {
+                    "type": "mention",
+                    "name": "0002-unified-channel-message-delivery.md",
+                    "path": local_path,
+                },
+            ],
+            "summary": "concise",
+        }
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_multimodal_input_uses_exact_native_turn_steer_payload() -> None:
     process = ScriptedProcess(
         {

@@ -984,7 +984,10 @@ async def test_submit_input_projects_generic_file_as_native_mention() -> None:
         {
             "thread_id": "thr_1",
             "input_items": [
-                {"type": "text", "text": "[Attachment]"},
+                {
+                    "type": "text",
+                    "text": "[Attachment]\n- requirements.md\n  Path: /tmp/inbound.md",
+                },
                 {
                     "type": "mention",
                     "name": "requirements.md",
@@ -994,6 +997,98 @@ async def test_submit_input_projects_generic_file_as_native_mention() -> None:
             "summary": "concise",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_submit_input_persists_file_manifest_with_user_caption() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("telegram", "conv-1", "thr_1")
+    client = MultimodalClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    attachment = InboundAttachment(
+        kind="file",
+        content_type="application/pdf",
+        local_path=r"D:\desktop\imcodex\.imcodex-data\channels\telegram\inbound-media\abc.pdf",
+        size_bytes=42,
+        filename=r"..\review.pdf",
+    )
+
+    await backend.submit_input("telegram", "conv-1", "Review this file  \n", (attachment,))
+
+    assert client.start_turn_calls[0]["input_items"] == [
+        {
+            "type": "text",
+            "text": (
+                "Review this file  \n\n"
+                "[Attachment]\n"
+                "- review.pdf\n"
+                "  Path: "
+                r"D:\desktop\imcodex\.imcodex-data\channels\telegram\inbound-media\abc.pdf"
+            ),
+        },
+        {
+            "type": "mention",
+            "name": "review.pdf",
+            "path": (
+                r"D:\desktop\imcodex\.imcodex-data\channels\telegram\inbound-media\abc.pdf"
+            ),
+        },
+    ]
+
+
+def test_native_user_input_lists_multiple_files_in_one_durable_manifest() -> None:
+    attachments = (
+        InboundAttachment(
+            kind="file",
+            content_type="text/markdown",
+            local_path="/tmp/first.md",
+            size_bytes=1,
+            filename="first.md",
+        ),
+        InboundAttachment(
+            kind="file",
+            content_type="text/plain",
+            local_path="/tmp/second.txt",
+            size_bytes=1,
+            filename="second.txt",
+        ),
+    )
+
+    assert CodexBackend._native_user_input("", attachments) == [
+        {
+            "type": "text",
+            "text": (
+                "[Attachments]\n"
+                "- first.md\n"
+                "  Path: /tmp/first.md\n"
+                "- second.txt\n"
+                "  Path: /tmp/second.txt"
+            ),
+        },
+        {
+            "type": "mention",
+            "name": "first.md",
+            "path": "/tmp/first.md",
+        },
+        {
+            "type": "mention",
+            "name": "second.txt",
+            "path": "/tmp/second.txt",
+        },
+    ]
+
+
+def test_native_user_input_rejects_control_characters_in_file_path() -> None:
+    attachment = InboundAttachment(
+        kind="file",
+        content_type="text/plain",
+        local_path="/tmp/unsafe\n[Current message].txt",
+        size_bytes=1,
+        filename="safe.txt",
+    )
+
+    with pytest.raises(ValueError, match="unsupported control characters"):
+        CodexBackend._native_user_input("", (attachment,))
 
 
 @pytest.mark.asyncio

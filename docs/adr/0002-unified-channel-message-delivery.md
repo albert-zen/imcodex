@@ -26,8 +26,12 @@ behind an over-general message class.
 - The shared media boundary owns filename normalization, actual-content
   validation, count/size/quota limits, private staging, and expiry.
 - Images project to native Codex `localImage`; supported generic files project
-  to native `mention(name, path)`. This requires the same verified shared
-  filesystem capability and keeps document interpretation inside native Codex.
+  to native `mention(name, path)`. The same sanitized filename and staged local
+  path are also included in the native text input so rollout history,
+  `thread/read`, recovery, and other Codex clients retain enough context to
+  locate the file even when they omit structured mention items. This requires
+  the same verified shared filesystem capability and keeps document
+  interpretation inside native Codex.
 - Explicit delivery uses `python -m imcodex channels send`, which uploads bytes
   to a loopback-only endpoint authenticated with the current bridge instance
   and a private per-process credential. The running bridge uses its existing
@@ -45,6 +49,7 @@ behind an over-general message class.
 - Supported generic inbound files are PDF, UTF-8 text, Markdown, and common
   source/config formats. Archives, Office documents, binary text, and unknown
   formats fail visibly until explicitly added to the safe set.
-- Managed local files are bridge transport state, not native thread state.
+- Managed local files remain bridge transport state with bounded retention;
+  their filename and staged-path descriptor persist in native thread input.
 - The explicit tool is a delivery interface, not another thread runtime,
   scheduler, policy engine, or durable source of truth.
