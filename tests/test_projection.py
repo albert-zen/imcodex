@@ -165,6 +165,38 @@ def test_projector_reopens_commentary_when_native_work_starts_after_final_answer
     assert commentary.text == "Continuing after the queued steer."
 
 
+def test_projector_labels_plan_updates_as_distinct_progress() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/plan/updated",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "explanation": "Checking delivery recovery.",
+                "plan": [
+                    {"step": "Reproduce failure", "status": "completed"},
+                    {"step": "Verify restart", "status": "in_progress"},
+                ],
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn_progress"
+    assert message.metadata["progress_kind"] == "plan"
+    assert message.text == (
+        "[Plan update]\n"
+        "Checking delivery recovery.\n"
+        "[completed] Reproduce failure\n"
+        "[in_progress] Verify restart"
+    )
+
+
 def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path) -> None:
     image_path = tmp_path / "generated.png"
     from PIL import Image

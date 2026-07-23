@@ -2,19 +2,19 @@ from __future__ import annotations
 
 import copy
 
-from .models import PendingTerminalDelivery
+from .models import PendingTerminalDelivery, TerminalDeliveryWatch
 
 
 class TerminalDeliveryStoreMixin:
-    """Persist IM delivery checkpoints without persisting native turn truth."""
+    """Persist native recovery watches and the independent IM delivery outbox."""
 
     def watch_terminal_delivery(self, thread_id: str, turn_id: str) -> None:
         if not thread_id or not turn_id or self.find_binding_by_thread_id(thread_id) is None:
             return
         key = (thread_id, turn_id)
-        if key in self._pending_terminal_deliveries:
+        if key in self._terminal_delivery_watches:
             return
-        self._pending_terminal_deliveries[key] = PendingTerminalDelivery(
+        self._terminal_delivery_watches[key] = TerminalDeliveryWatch(
             thread_id=thread_id,
             turn_id=turn_id,
             created_at=self.clock(),
@@ -24,26 +24,40 @@ class TerminalDeliveryStoreMixin:
     def stage_terminal_delivery(
         self,
         *,
+        delivery_id: str,
         thread_id: str,
         turn_id: str,
         message: dict,
     ) -> PendingTerminalDelivery:
-        key = (thread_id, turn_id)
-        pending = self._pending_terminal_deliveries.get(key)
+        if not delivery_id:
+            raise ValueError("delivery_id is required for terminal delivery staging")
+        pending = self._pending_terminal_deliveries.get(delivery_id)
         if pending is None:
+            self._next_terminal_delivery_sequence += 1
             pending = PendingTerminalDelivery(
+                delivery_id=delivery_id,
                 thread_id=thread_id,
                 turn_id=turn_id,
+                message=copy.deepcopy(message),
                 created_at=self.clock(),
+                sequence=self._next_terminal_delivery_sequence,
             )
-            self._pending_terminal_deliveries[key] = pending
-        elif pending.message is not None:
+            self._pending_terminal_deliveries[delivery_id] = pending
+        else:
             # A staged payload owns this delivery key until acknowledgement.
             # Native replays and later route context must not replace it.
             return copy.deepcopy(pending)
-        pending.message = copy.deepcopy(message)
         self._save()
         return copy.deepcopy(pending)
+
+    def list_terminal_delivery_watches(
+        self,
+        thread_id: str | None = None,
+    ) -> list[TerminalDeliveryWatch]:
+        entries = self._terminal_delivery_watches.values()
+        if thread_id is not None:
+            entries = (entry for entry in entries if entry.thread_id == thread_id)
+        return [copy.deepcopy(entry) for entry in entries]
 
     def list_pending_terminal_deliveries(
         self,
@@ -52,16 +66,21 @@ class TerminalDeliveryStoreMixin:
         entries = self._pending_terminal_deliveries.values()
         if thread_id is not None:
             entries = (entry for entry in entries if entry.thread_id == thread_id)
-        return [copy.deepcopy(entry) for entry in entries]
+        return [
+            copy.deepcopy(entry)
+            for entry in sorted(
+                entries,
+                key=lambda entry: (entry.sequence, entry.created_at, entry.delivery_id),
+            )
+        ]
 
     def update_terminal_delivery_message(
         self,
-        thread_id: str,
-        turn_id: str,
+        delivery_id: str,
         message: dict,
     ) -> None:
-        pending = self._pending_terminal_deliveries.get((thread_id, turn_id))
-        if pending is None or pending.message is None:
+        pending = self._pending_terminal_deliveries.get(delivery_id)
+        if pending is None:
             return
         pending.message = copy.deepcopy(message)
         self._save()
@@ -69,8 +88,6 @@ class TerminalDeliveryStoreMixin:
     def referenced_terminal_artifact_paths(self) -> set[str]:
         paths: set[str] = set()
         for pending in self._pending_terminal_deliveries.values():
-            if pending.message is None:
-                continue
             artifacts = pending.message.get("artifacts") or []
             if not isinstance(artifacts, list):
                 continue
@@ -80,24 +97,18 @@ class TerminalDeliveryStoreMixin:
         return paths
 
     def retry_terminal_delivery_persistence(self) -> None:
-        if any(
-            pending.message is not None
-            for pending in self._pending_terminal_deliveries.values()
-        ):
+        if self._pending_terminal_deliveries:
             self._save()
 
     def retry_state_persistence(self) -> None:
         self._save()
 
-    def complete_terminal_delivery(self, thread_id: str, turn_id: str) -> None:
-        if self._pending_terminal_deliveries.pop((thread_id, turn_id), None) is not None:
+    def complete_terminal_delivery(self, delivery_id: str) -> None:
+        if self._pending_terminal_deliveries.pop(delivery_id, None) is not None:
             self._save()
 
     def discard_terminal_watch(self, thread_id: str, turn_id: str) -> None:
-        key = (thread_id, turn_id)
-        pending = self._pending_terminal_deliveries.get(key)
-        if pending is not None and pending.message is None:
-            self._pending_terminal_deliveries.pop(key, None)
+        if self._terminal_delivery_watches.pop((thread_id, turn_id), None) is not None:
             self._save()
 
     def _remove_terminal_deliveries_for_thread(
@@ -106,9 +117,14 @@ class TerminalDeliveryStoreMixin:
         *,
         preserve_staged: bool = False,
     ) -> None:
+        self._terminal_delivery_watches = {
+            key: watch
+            for key, watch in self._terminal_delivery_watches.items()
+            if watch.thread_id != thread_id
+        }
         self._pending_terminal_deliveries = {
-            key: pending
-            for key, pending in self._pending_terminal_deliveries.items()
+            delivery_id: pending
+            for delivery_id, pending in self._pending_terminal_deliveries.items()
             if pending.thread_id != thread_id
-            or (preserve_staged and pending.message is not None)
+            or preserve_staged
         }

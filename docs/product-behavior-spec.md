@@ -410,17 +410,29 @@ ambiguous platform send is not presented again as a stale request. The final
 timeout path performs the same pending check before returning a delivery error
 to Codex.
 
-Terminal results use a separate durable delivery checkpoint. The checkpoint
-records only that a bound native thread/turn still owes the current IM route a
-terminal result; it is never consulted as native active-turn truth. Once the
-result is projected, the exact outbound message and stable delivery ID remain
-in an outbox until a channel sink accepts delivery. Rehydration recovers a
+Visible final-answer items and completed-Turn fallbacks use a separate durable
+delivery checkpoint. A nonblank native `final_answer` item is delivered as one
+visible answer segment, but it does not mark the native Turn complete. If a
+later `item/started` shows that queued steering continued the same Turn,
+commentary and a later answer segment resume immediately without waiting for a
+new IM message. Native `turn/completed`, not an answer phase, remains the
+authoritative lifecycle boundary.
+
+The Turn-level checkpoint records only that a bound native thread/turn still
+owes the current IM route a completion result; it is never consulted as native
+active-turn truth. Once an answer segment is projected, its exact outbound
+message and a stable identity derived from the native answer item remain in an
+outbox until a channel sink accepts delivery. Multiple answer segments from
+one Turn coexist and retry independently; an older pending segment does not
+suppress or overwrite later commentary or answers. Answer segments for the
+same IM conversation remain ordered in the outbox, while failures in one
+conversation do not block another conversation. Rehydration recovers a
 watched turn that completed while the bridge process was stopped, and a staged
-message survives another restart without re-running the native turn.
-After staging, native thread cleanup or conversation rebinding does not discard
-or reroute that exact message; it remains owed to the IM route captured at
-projection time.
-Recovery remains degraded while any staged terminal message is still pending.
+message survives another restart without re-running the native turn. After
+staging, native thread cleanup or conversation rebinding does not discard or
+reroute that exact message; it remains owed to the IM route captured at
+projection time. Recovery remains degraded while any staged answer or
+completed-Turn fallback is still pending.
 If a completed native turn contains no final text or usable buffered output,
 the bridge sends an explicit empty-result notice instead of acknowledging a
 blank channel no-op as successful delivery.
@@ -808,6 +820,11 @@ The default display behavior is:
 - show commentary/progress
 - hide tool-call detail
 - show final result
+
+Native plan updates are progress, not final results. Because most IM channels
+have only one message stream, a visible plan update must carry an explicit
+`Plan update` label and structured progress metadata so it cannot be mistaken
+for ordinary commentary or the final answer.
 
 The bridge should still ingest and understand native tool-call output even when it is hidden from the user by default.
 

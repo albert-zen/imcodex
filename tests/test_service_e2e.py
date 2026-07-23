@@ -15,6 +15,7 @@ from imcodex.appserver.thread_dynamic_tools import (
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.bridge.inbound import render_inbound_input
 from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
+from imcodex.bridge.terminal_identity import stable_terminal_turn_delivery_id
 from imcodex.bridge.thread_views import ThreadViewMixin
 from imcodex.channels import MultiplexOutboundSink
 from imcodex.channels.middleware import UnifiedChannelMiddleware
@@ -25,6 +26,7 @@ from imcodex.models import (
     InboundQuoteAttachment,
     OutboundArtifact,
     OutboundMessage,
+    TerminalDeliveryIdentity,
 )
 from imcodex.store import ConversationStore
 
@@ -1692,6 +1694,7 @@ async def test_recovery_health_is_degraded_while_terminal_delivery_is_pending() 
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     store.stage_terminal_delivery(
+        delivery_id="imcodex:native:terminal-1",
         thread_id="thr_1",
         turn_id="turn_1",
         message={
@@ -1723,10 +1726,101 @@ async def test_recovery_health_is_degraded_while_terminal_delivery_is_pending() 
 
 
 @pytest.mark.asyncio
+async def test_recovery_keeps_turn_watch_until_recovered_message_is_durable() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, CapturingSink())
+    service._terminal_delivery_closed = True
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    async def recover_completed_turn() -> dict:
+        return {
+            "summary": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+            "recoveredTurns": [
+                {
+                    "threadId": "thr_1",
+                    "turn": {
+                        "id": "turn_1",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "id": "answer_1",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Recovered answer",
+                            }
+                        ],
+                    },
+                }
+            ],
+            "discardedTurns": [],
+        }
+
+    async def fail_persistence() -> None:
+        raise OSError("disk unavailable")
+
+    service.backend.rehydrate_bound_threads = recover_completed_turn  # type: ignore[method-assign]
+    store.flush_pending_writes = fail_persistence  # type: ignore[method-assign]
+
+    result = await service.handle_connection_ready(1)
+
+    assert result is not None
+    assert result["status"] == "degraded"
+    assert result["rehydration"]["deliveryPending"] == 1
+    assert [watch.turn_id for watch in store.list_terminal_delivery_watches()] == [
+        "turn_1"
+    ]
+    assert [
+        pending.message["text"]
+        for pending in store.list_pending_terminal_deliveries()
+    ] == ["Recovered answer"]
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_live_completion_keeps_turn_watch_until_fallback_is_durable() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, CapturingSink())
+    service._terminal_delivery_closed = True
+
+    async def fail_persistence() -> None:
+        raise OSError("disk unavailable")
+
+    store.flush_pending_writes = fail_persistence  # type: ignore[method-assign]
+
+    await service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        }
+    )
+
+    assert [watch.turn_id for watch in store.list_terminal_delivery_watches()] == [
+        "turn_1"
+    ]
+    assert [
+        pending.message["text"]
+        for pending in store.list_pending_terminal_deliveries()
+    ] == [EMPTY_COMPLETED_TURN_TEXT]
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_staged_terminal_delivery_retries_after_native_binding_is_cleared() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_stale")
     store.stage_terminal_delivery(
+        delivery_id="imcodex:native:terminal-1",
         thread_id="thr_stale",
         turn_id="turn_1",
         message={
@@ -1755,11 +1849,64 @@ async def test_staged_terminal_delivery_retries_after_native_binding_is_cleared(
 
 
 @pytest.mark.asyncio
+async def test_terminal_outbox_failure_blocks_only_the_same_im_destination() -> None:
+    class FailFirstConversationSink:
+        def __init__(self) -> None:
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            if message.conversation_id == "conv-1":
+                raise OSError("conv-1 unavailable")
+            self.messages.append(message)
+
+    store = ConversationStore(clock=lambda: 1.0)
+    for delivery_id, conversation_id in (
+        ("delivery-1", "conv-1"),
+        ("delivery-2", "conv-1"),
+        ("delivery-3", "conv-2"),
+    ):
+        store.stage_terminal_delivery(
+            delivery_id=delivery_id,
+            thread_id=f"thread-{conversation_id}",
+            turn_id="turn_1",
+            message={
+                "channel_id": "qq",
+                "conversation_id": conversation_id,
+                "message_type": "turn_result",
+                "text": delivery_id,
+                "metadata": {"delivery_id": delivery_id},
+            },
+        )
+    sink = FailFirstConversationSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)  # type: ignore[arg-type]
+    service._terminal_delivery_closed = True
+
+    delivered = await service._deliver_pending_terminal_once()
+
+    assert delivered is True
+    assert [message.text for message in sink.messages] == ["delivery-3"]
+    assert [
+        pending.delivery_id for pending in store.list_pending_terminal_deliveries()
+    ] == ["delivery-1", "delivery-2"]
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_replayed_terminal_notification_cannot_overwrite_staged_outbox() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    delivery_id = stable_terminal_turn_delivery_id(
+        thread_id="thr_1",
+        turn_id="turn_1",
+    )
     store.stage_terminal_delivery(
+        delivery_id=delivery_id,
         thread_id="thr_1",
         turn_id="turn_1",
         message={
@@ -1769,15 +1916,12 @@ async def test_replayed_terminal_notification_cannot_overwrite_staged_outbox() -
             "text": "Exact final answer",
             "request_id": None,
             "metadata": {
-                "delivery_id": "imcodex:native:terminal-1",
+                "delivery_id": delivery_id,
                 "qq_reply_identity_pinned": True,
                 "qq_reply_to_message_id": "msg-original",
             },
         },
     )
-    sink = CapturingSink()
-    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
-    client, service = _build_service(store, process, sink)
 
     projected = await service.handle_notification(
         {
@@ -1823,12 +1967,13 @@ async def test_initial_terminal_failure_persists_partial_artifact_progress() -> 
         ],
     )
 
-    _outbound, delivered = await service._deliver_terminal_message(
-        ("thr_1", "turn_1"),
+    _outbound, delivered, durable = await service._deliver_terminal_message(
+        TerminalDeliveryIdentity("delivery-1", "thr_1", "turn_1"),
         message,
     )
 
     assert delivered is False
+    assert durable is True
     pending = store.list_pending_terminal_deliveries()[0]
     assert pending.message is not None
     assert [artifact["filename"] for artifact in pending.message["artifacts"]] == [
@@ -1843,6 +1988,7 @@ async def test_stdio_connection_ready_drains_persisted_terminal_outbox() -> None
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     store.stage_terminal_delivery(
+        delivery_id="imcodex:native:terminal-1",
         thread_id="thr_1",
         turn_id="turn_1",
         message={
@@ -2734,6 +2880,15 @@ async def test_native_work_after_final_resumes_live_output_for_the_same_turn() -
             },
         }
     )
+    assert await service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        }
+    ) == []
 
     assert [message.text for message in sink.messages] == [
         "First answer.",
@@ -2748,6 +2903,120 @@ async def test_native_work_after_final_resumes_live_output_for_the_same_turn() -
     assert len(final_delivery_ids) == 2
     assert final_delivery_ids[0] != final_delivery_ids[1]
     assert store.list_pending_terminal_deliveries() == []
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_answer_segment_does_not_suppress_later_output_in_same_turn() -> None:
+    class FailFirstAnswerSink:
+        def __init__(self) -> None:
+            self.messages: list[OutboundMessage] = []
+            self.fail_first = True
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            if self.fail_first and message.text == "First answer.":
+                raise OSError("first answer delivery failed")
+            self.messages.append(message)
+
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = FailFirstAnswerSink()
+    client, service = _build_service(store, process, sink)  # type: ignore[arg-type]
+    service._terminal_delivery_closed = True
+    first_answer = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "thr_1",
+            "turnId": "turn_1",
+            "item": {
+                "id": "answer_1",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "First answer.",
+            },
+        },
+    }
+
+    await service.handle_notification(first_answer)
+    await service.handle_notification(
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {"id": "reasoning_2", "type": "reasoning"},
+            },
+        }
+    )
+    # A native replay of the failed item must be ignored by item identity and
+    # must not close the newly resumed projection segment.
+    assert await service.handle_notification(first_answer) == []
+    assert service.projector.message_pump._turns[
+        ("thr_1", "turn_1")
+    ].final_visible is False
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "commentary_2",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                    "text": "Continuing after the queued steer.",
+                },
+            },
+        }
+    )
+    await service.handle_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_2",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Second answer.",
+                },
+            },
+        }
+    )
+    await service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        }
+    )
+
+    assert [message.text for message in sink.messages] == [
+        "Continuing after the queued steer.",
+    ]
+    pending = store.list_pending_terminal_deliveries()
+    assert [(item.turn_id, item.message["text"]) for item in pending] == [
+        ("turn_1", "First answer."),
+        ("turn_1", "Second answer."),
+    ]
+    assert [watch.turn_id for watch in store.list_terminal_delivery_watches()] == [
+        "turn_1"
+    ]
+    sink.fail_first = False
+    assert await service._deliver_pending_terminal_once() is True
+    assert [message.text for message in sink.messages] == [
+        "Continuing after the queued steer.",
+        "First answer.",
+        "Second answer.",
+    ]
+    assert store.list_pending_terminal_deliveries() == []
+    assert store.list_terminal_delivery_watches() == []
     await service.close()
     await client.close()
 

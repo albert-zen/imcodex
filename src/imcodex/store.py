@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from .models import (
     NativeThreadSnapshot,
     PendingNativeRequestRoute,
     PendingTerminalDelivery,
+    TerminalDeliveryWatch,
     ThreadBrowserContext,
 )
 from .store_native_events import (
@@ -52,7 +54,9 @@ class ConversationStore(
         journal_limit = max(1, int(native_event_journal_limit))
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
-        self._pending_terminal_deliveries: dict[tuple[str, str], PendingTerminalDelivery] = {}
+        self._terminal_delivery_watches: dict[tuple[str, str], TerminalDeliveryWatch] = {}
+        self._pending_terminal_deliveries: dict[str, PendingTerminalDelivery] = {}
+        self._next_terminal_delivery_sequence = 0
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
@@ -585,12 +589,22 @@ class ConversationStore(
                 or binding.reply_context
             ],
             "pending_requests": [],
+            "terminal_delivery_watches": [
+                {
+                    "thread_id": watch.thread_id,
+                    "turn_id": watch.turn_id,
+                    "created_at": watch.created_at,
+                }
+                for watch in self._terminal_delivery_watches.values()
+            ],
             "pending_terminal_deliveries": [
                 {
+                    "delivery_id": pending.delivery_id,
                     "thread_id": pending.thread_id,
                     "turn_id": pending.turn_id,
                     "message": pending.message,
                     "created_at": pending.created_at,
+                    "sequence": pending.sequence,
                 }
                 for pending in self._pending_terminal_deliveries.values()
             ],
@@ -668,10 +682,25 @@ class ConversationStore(
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
+        terminal_delivery_watches = payload.get("terminal_delivery_watches", [])
+        if not isinstance(terminal_delivery_watches, list):
+            raise RuntimeError(f"Invalid terminal delivery watch state: {self.state_path}")
+        for item in terminal_delivery_watches:
+            if not isinstance(item, dict):
+                raise RuntimeError(f"Invalid terminal delivery watch entry: {self.state_path}")
+            thread_id = str(item.get("thread_id") or "")
+            turn_id = str(item.get("turn_id") or "")
+            if not thread_id or not turn_id:
+                raise RuntimeError(f"Invalid terminal delivery watch entry: {self.state_path}")
+            self._terminal_delivery_watches[(thread_id, turn_id)] = TerminalDeliveryWatch(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                created_at=float(item.get("created_at") or 0.0),
+            )
         pending_terminal_deliveries = payload.get("pending_terminal_deliveries", [])
         if not isinstance(pending_terminal_deliveries, list):
             raise RuntimeError(f"Invalid pending terminal delivery state: {self.state_path}")
-        for item in pending_terminal_deliveries:
+        for legacy_sequence, item in enumerate(pending_terminal_deliveries, start=1):
             if not isinstance(item, dict):
                 raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
             thread_id = str(item.get("thread_id") or "")
@@ -679,9 +708,31 @@ class ConversationStore(
             message = item.get("message")
             if not thread_id or not turn_id or (message is not None and not isinstance(message, dict)):
                 raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
-            self._pending_terminal_deliveries[(thread_id, turn_id)] = PendingTerminalDelivery(
+            if message is None:
+                # State written before watches and projected deliveries were
+                # split used an empty outbox entry as the turn watch.
+                self._terminal_delivery_watches[(thread_id, turn_id)] = TerminalDeliveryWatch(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    created_at=float(item.get("created_at") or 0.0),
+                )
+                continue
+            metadata = message.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            delivery_id = str(item.get("delivery_id") or metadata.get("delivery_id") or "")
+            if not delivery_id:
+                canonical = json.dumps(message, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                delivery_id = f"imcodex:legacy-terminal:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+            sequence = int(item.get("sequence") or legacy_sequence)
+            self._next_terminal_delivery_sequence = max(
+                self._next_terminal_delivery_sequence,
+                sequence,
+            )
+            self._pending_terminal_deliveries[delivery_id] = PendingTerminalDelivery(
+                delivery_id=delivery_id,
                 thread_id=thread_id,
                 turn_id=turn_id,
                 message=copy.deepcopy(message),
                 created_at=float(item.get("created_at") or 0.0),
+                sequence=sequence,
             )

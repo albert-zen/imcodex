@@ -638,10 +638,6 @@ class CodexThreadBackendMixin:
             if not binding.thread_id:
                 continue
             summary["total"] += 1
-            watched_deliveries = {
-                pending.turn_id: pending
-                for pending in self.store.list_pending_terminal_deliveries(binding.thread_id)
-            }
             cached_active = self.store.get_active_turn(binding.thread_id)
             if cached_active is not None:
                 # Cached turn state is not authoritative across a transport
@@ -774,18 +770,18 @@ class CodexThreadBackendMixin:
                         {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
                     )
                 self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
-            recovery_turn_ids = set(watched_deliveries)
-            if cached_active is not None:
-                recovery_turn_ids.add(cached_active[0])
+            # Resume may synchronously replay item/turn notifications before
+            # returning the thread snapshot. Re-read the watch set so a turn
+            # already completed through that live path is not recovered and
+            # projected a second time from the snapshot.
+            recovery_turn_ids = {
+                watch.turn_id
+                for watch in self.store.list_terminal_delivery_watches(snapshot.thread_id)
+            }
             if native_active is not None:
                 recovery_turn_ids.discard(native_active[0])
             recovery_unverified = False
             for recovery_turn_id in recovery_turn_ids:
-                pending_delivery = watched_deliveries.get(recovery_turn_id)
-                if pending_delivery is not None and pending_delivery.message is not None:
-                    # The native result was already projected before the
-                    # process stopped. The delivery outbox owns its retry.
-                    continue
                 terminal_turn = self._turn_by_id(payload, recovery_turn_id)
                 if terminal_turn is None or not self._turn_is_terminal(terminal_turn):
                     summary["unverified"] += 1

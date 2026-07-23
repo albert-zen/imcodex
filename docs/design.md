@@ -199,6 +199,26 @@ moves with the conversation-to-thread binding until projection. Once staged,
 the message keeps its exact IM route and survives native binding cleanup until
 the sink accepts it.
 
+Native lifecycle, visible answer projection, and IM delivery have different
+granularities and must not share one implicit terminal flag. A
+`final_answer` agent-message item closes one visible answer segment; it does
+not complete the native Turn. Only native Turn lifecycle events such as
+`turn/completed` are authoritative for completion. Queued steering can make
+the same Turn emit another item after a visible answer and later emit another
+`final_answer`, so the message pump may reopen presentation state without
+changing native Turn truth.
+
+The durable outbox must use the identity of the unit actually being delivered.
+A Turn-level watch is sufficient to recover a completion that happened while
+the bridge was offline, but each projected answer item needs an item/segment
+identity so multiple answers from one Turn can coexist and retry independently.
+A pending delivery for one answer segment must never suppress, overwrite, or
+consume later commentary or answer segments from the same native Turn. Durable
+answer segments for one IM destination drain in projection order; a failure in
+one destination does not block outbox progress for a different destination.
+That order is an explicit durable outbox sequence, not an assumption about
+dictionary iteration order or wall-clock timestamp uniqueness.
+
 Structured agent-sent artifacts are part of this delivery state, not native
 thread state. The bridge stages only explicit native output references into a
 private content-addressed spool; it does not scan a workspace or infer files

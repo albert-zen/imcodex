@@ -1216,6 +1216,7 @@ async def test_interrupt_never_consumes_already_staged_terminal_delivery() -> No
     store.bind_thread("qq", "conv-1", "thr_old")
     store.note_active_turn("thr_old", "turn_1", "inProgress")
     store.stage_terminal_delivery(
+        delivery_id="stable-1",
         thread_id="thr_old",
         turn_id="turn_1",
         message={
@@ -1323,7 +1324,7 @@ async def test_rehydrate_recovers_watched_turn_after_full_process_restart(tmp_pa
     result = await backend.rehydrate_bound_threads()
 
     assert store.get_active_turn("thr_1") is None
-    assert [item.turn_id for item in store.list_pending_terminal_deliveries("thr_1")] == [
+    assert [item.turn_id for item in store.list_terminal_delivery_watches("thr_1")] == [
         "turn_1"
     ]
     assert result["recoveredTurns"] == [{"threadId": "thr_1", "turn": terminal_turn}]
@@ -1364,6 +1365,7 @@ async def test_stale_native_thread_keeps_already_staged_terminal_delivery() -> N
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_stale")
     store.stage_terminal_delivery(
+        delivery_id="stable-1",
         thread_id="thr_stale",
         turn_id="turn_1",
         message={

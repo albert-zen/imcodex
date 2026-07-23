@@ -103,6 +103,7 @@ class MessageProjector:
                     conversation_id="",
                     message_type="turn_progress",
                     text=self._render_plan_update(event.payload),
+                    metadata={"progress_kind": "plan"},
                 ),
             )
         if event.kind == "diff_updated":
@@ -382,7 +383,7 @@ class MessageProjector:
         return labels.get(status, status or "updated")
 
     def _render_plan_update(self, params: dict) -> str:
-        lines: list[str] = []
+        lines = ["[Plan update]"]
         explanation = params.get("explanation")
         if explanation:
             lines.append(str(explanation))

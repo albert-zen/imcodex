@@ -96,6 +96,19 @@ state should get a clean-context review loop before human closeout.
 When review findings reveal missing durable intent, update the relevant docs
 instead of leaving the reasoning trapped in a transient conversation.
 
+Lifecycle fixes must be reviewed across the boundaries they connect, not only
+on the reproduced success path. In particular:
+
+- distinguish native Turn completion, item/answer-segment completion, and IM
+  delivery acknowledgement
+- trace identity changes through in-memory deduplication, durable outbox keys,
+  retries, restart recovery, and adapter idempotency
+- combine continuation scenarios such as queued steering with successful,
+  failed, ambiguous, and replayed delivery
+
+Changing only the visible delivery ID is not sufficient when persistence or
+deduplication still uses a coarser Turn-level key.
+
 ## Commit Messages
 
 Commit messages should follow a small Conventional Commits shape:

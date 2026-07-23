@@ -187,6 +187,17 @@ The persisted bridge state should contain only:
 - minimal terminal-delivery checkpoints and projected outbox payloads needed
   to finish IM delivery across a bridge restart
 
+Terminal recovery state has two deliberately separate granularities:
+
+- a Turn-level watch records only that native state must be reconciled after a
+  disconnect
+- an item/segment-level outbox record represents one exact IM message still
+  owed to its captured destination
+
+The watch is not delivery identity and the outbox is not native Turn truth. One
+native Turn may produce multiple visible answer segments, each with its own
+stable delivery identity, acknowledgement, and retry lifecycle.
+
 ### Runtime-only state
 
 The following should be runtime-only and rebuildable:

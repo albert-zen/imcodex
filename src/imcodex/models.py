@@ -33,18 +33,38 @@ class PendingNativeRequestRoute:
 
 
 @dataclass(slots=True)
-class PendingTerminalDelivery:
-    """Minimal IM delivery state for one native turn's terminal result.
-
-    Native Codex remains authoritative for the turn itself.  An empty
-    ``message`` means the bridge is only watching the turn so it can recover a
-    result that completes while the bridge is offline.
-    """
+class TerminalDeliveryWatch:
+    """A native turn that must be reconciled after transport recovery."""
 
     thread_id: str
     turn_id: str
-    message: dict[str, Any] | None = None
     created_at: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalDeliveryIdentity:
+    """Stable identity and native context for one projected IM message."""
+
+    delivery_id: str
+    thread_id: str
+    turn_id: str
+
+
+@dataclass(slots=True)
+class PendingTerminalDelivery:
+    """One projected IM message that remains owed to its destination.
+
+    A native turn may produce more than one answer segment. ``delivery_id`` is
+    therefore the durable identity; ``thread_id`` and ``turn_id`` are routing
+    and observability context, not the outbox key.
+    """
+
+    delivery_id: str
+    thread_id: str
+    turn_id: str
+    message: dict[str, Any] = field(default_factory=dict)
+    created_at: float = 0.0
+    sequence: int = 0
 
 
 @dataclass(slots=True)

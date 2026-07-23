@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict
 
-from ..models import OutboundMessage
+from ..models import OutboundMessage, TerminalDeliveryIdentity
 from ..observability.message_trace import text_sha256
 from ..observability.runtime import emit_event
 
@@ -27,14 +27,21 @@ class TerminalDeliveryMixin:
 
     async def _deliver_terminal_message(
         self,
-        terminal_key: tuple[str, str],
+        identity: TerminalDeliveryIdentity,
         message: OutboundMessage,
-    ) -> tuple[list[OutboundMessage], bool]:
-        thread_id, turn_id = terminal_key
+    ) -> tuple[list[OutboundMessage], bool, bool]:
+        delivery_id = identity.delivery_id
+        thread_id = identity.thread_id
+        turn_id = identity.turn_id
+        existing_delivery_id = str(message.metadata.get("delivery_id") or "")
+        if existing_delivery_id and existing_delivery_id != delivery_id:
+            raise ValueError("terminal delivery identity does not match message metadata")
+        message.metadata["delivery_id"] = delivery_id
         prepare = getattr(self.outbound_sink, "prepare_durable_message", None)
         if callable(prepare):
             prepare(message)
         pending = self.store.stage_terminal_delivery(
+            delivery_id=delivery_id,
             thread_id=thread_id,
             turn_id=turn_id,
             message=asdict(message),
@@ -43,16 +50,18 @@ class TerminalDeliveryMixin:
             message = OutboundMessage(**pending.message)
         try:
             await self.store.flush_pending_writes()
+            durable = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            durable = False
             self.store.update_terminal_delivery_message(
-                thread_id,
-                turn_id,
+                delivery_id,
                 asdict(message),
             )
             try:
                 await self.store.flush_pending_writes()
+                durable = True
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -72,15 +81,29 @@ class TerminalDeliveryMixin:
                 },
             )
             self._schedule_terminal_delivery_retry()
-            return [message], False
+            return [message], False, durable
+        if not self._is_terminal_route_head(delivery_id, message):
+            emit_event(
+                component="bridge",
+                event="bridge.terminal_delivery.ordered",
+                message="Terminal IM delivery is waiting behind an earlier message",
+                channel_id=message.channel_id,
+                conversation_id=message.conversation_id,
+                data={
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "delivery_id": delivery_id,
+                },
+            )
+            self._schedule_terminal_delivery_retry()
+            return [message], False, True
         try:
             outbound = await self._emit_required(message)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self.store.update_terminal_delivery_message(
-                thread_id,
-                turn_id,
+                delivery_id,
                 asdict(message),
             )
             try:
@@ -104,8 +127,8 @@ class TerminalDeliveryMixin:
                 },
             )
             self._schedule_terminal_delivery_retry()
-            return [message], False
-        self.store.complete_terminal_delivery(thread_id, turn_id)
+            return [message], False, True
+        self.store.complete_terminal_delivery(delivery_id)
         ack_persisted = await self._flush_terminal_delivery_ack(
             thread_id=thread_id,
             turn_id=turn_id,
@@ -127,7 +150,7 @@ class TerminalDeliveryMixin:
                 "text_sha256": text_sha256(message.text),
             },
         )
-        return outbound, True
+        return outbound, True, True
 
     def _schedule_terminal_delivery_retry(self) -> None:
         if self._terminal_delivery_closed:
@@ -146,9 +169,7 @@ class TerminalDeliveryMixin:
         try:
             while not self._terminal_delivery_closed:
                 pending = [
-                    item
-                    for item in self.store.list_pending_terminal_deliveries()
-                    if item.message is not None
+                    item for item in self.store.list_pending_terminal_deliveries()
                 ]
                 if not pending and not self._terminal_delivery_ack_persistence_pending:
                     return
@@ -169,6 +190,7 @@ class TerminalDeliveryMixin:
     async def _deliver_pending_terminal_once(self) -> bool:
         delivered_any = False
         state_changed = False
+        blocked_routes: set[tuple[str, str]] = set()
         async with self._terminal_projection_lock:
             try:
                 self.store.retry_terminal_delivery_persistence()
@@ -185,17 +207,23 @@ class TerminalDeliveryMixin:
                 )
                 return False
             for pending in self.store.list_pending_terminal_deliveries():
-                if pending.message is None:
-                    continue
                 payload = dict(pending.message)
                 if not payload.get("channel_id") or not payload.get("conversation_id"):
-                    self.store.complete_terminal_delivery(pending.thread_id, pending.turn_id)
+                    self.store.complete_terminal_delivery(pending.delivery_id)
+                    self._release_completed_turn_watch_if_settled(
+                        pending.thread_id,
+                        pending.turn_id,
+                    )
                     state_changed = True
                     continue
                 try:
                     message = OutboundMessage(**payload)
                 except (TypeError, ValueError):
-                    self.store.complete_terminal_delivery(pending.thread_id, pending.turn_id)
+                    self.store.complete_terminal_delivery(pending.delivery_id)
+                    self._release_completed_turn_watch_if_settled(
+                        pending.thread_id,
+                        pending.turn_id,
+                    )
                     state_changed = True
                     emit_event(
                         component="bridge",
@@ -205,14 +233,16 @@ class TerminalDeliveryMixin:
                         data={"thread_id": pending.thread_id, "turn_id": pending.turn_id},
                     )
                     continue
+                route = (message.channel_id, message.conversation_id)
+                if route in blocked_routes:
+                    continue
                 try:
                     await self._emit_required(message)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self.store.update_terminal_delivery_message(
-                        pending.thread_id,
-                        pending.turn_id,
+                        pending.delivery_id,
                         asdict(message),
                     )
                     state_changed = True
@@ -230,10 +260,15 @@ class TerminalDeliveryMixin:
                             "error_type": type(exc).__name__,
                         },
                     )
+                    blocked_routes.add(route)
                     continue
-                self.store.complete_terminal_delivery(pending.thread_id, pending.turn_id)
+                self.store.complete_terminal_delivery(pending.delivery_id)
                 state_changed = True
-                self._remember_terminal_delivery((pending.thread_id, pending.turn_id))
+                self._remember_terminal_delivery(pending.delivery_id)
+                self._release_completed_turn_watch_if_settled(
+                    pending.thread_id,
+                    pending.turn_id,
+                )
                 delivered_any = True
                 emit_event(
                     component="bridge",
@@ -265,6 +300,35 @@ class TerminalDeliveryMixin:
                 else:
                     self._cleanup_outbound_artifact_spool()
         return delivered_any
+
+    def _is_terminal_route_head(
+        self,
+        delivery_id: str,
+        message: OutboundMessage,
+    ) -> bool:
+        for pending in self.store.list_pending_terminal_deliveries():
+            payload = pending.message
+            if (
+                payload.get("channel_id") == message.channel_id
+                and payload.get("conversation_id") == message.conversation_id
+            ):
+                return pending.delivery_id == delivery_id
+        return True
+
+    def _release_completed_turn_watch_if_settled(
+        self,
+        thread_id: str,
+        turn_id: str,
+    ) -> None:
+        terminal_key = (thread_id, turn_id)
+        if terminal_key not in self._recent_completed_turns:
+            return
+        if any(
+            pending.turn_id == turn_id
+            for pending in self.store.list_pending_terminal_deliveries(thread_id)
+        ):
+            return
+        self.store.discard_terminal_watch(thread_id, turn_id)
 
     async def _flush_terminal_delivery_ack(
         self,
