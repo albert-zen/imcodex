@@ -649,11 +649,6 @@ async def test_file_input_persists_manifest_in_exact_native_turn_start_payload(
                     "type": "text",
                     "text": expected_text.format(path=local_path),
                 },
-                {
-                    "type": "mention",
-                    "name": "0002-unified-channel-message-delivery.md",
-                    "path": local_path,
-                },
             ],
             "summary": "concise",
         }

@@ -25,13 +25,14 @@ behind an over-general message class.
   identity, and conversion to/from the neutral envelopes.
 - The shared media boundary owns filename normalization, actual-content
   validation, count/size/quota limits, private staging, and expiry.
-- Images project to native Codex `localImage`; supported generic files project
-  to native `mention(name, path)`. The same sanitized filename and staged local
-  path are also included in the native text input so rollout history,
-  `thread/read`, recovery, and other Codex clients retain enough context to
-  locate the file even when they omit structured mention items. This requires
-  the same verified shared filesystem capability and keeps document
-  interpretation inside native Codex.
+- Images project to native Codex `localImage`. Native Codex has no generic file
+  input item, and `mention` is reserved for apps, plugins, and skills, so
+  supported generic files project only to a native text manifest containing the
+  sanitized filename and staged local path. The manifest persists in rollout
+  history, `thread/read`, recovery, and other Codex clients, while the agent
+  reads the file through native filesystem tools. This requires the same
+  verified shared filesystem capability and keeps document interpretation
+  inside native Codex.
 - Explicit delivery uses `python -m imcodex channels send`, which uploads bytes
   to a loopback-only endpoint authenticated with the current bridge instance
   and a private per-process credential. The running bridge uses its existing

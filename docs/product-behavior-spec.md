@@ -862,12 +862,13 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
 - Channels authenticate and download platform objects; the shared media layer
   validates bytes, bounds names/count/size, stages private randomized files,
   and expires them after the retention window.
-- Images project to `localImage`. Supported generic files project to native
-  `mention(name, path)` and are interpreted by Codex, not bridge extractors.
-  Their sanitized filename and staged local path are also written into the
-  native text input. This makes the attachment visible in rollout history,
-  `thread/read`, recovery, and cross-client continuation even when native
-  history omits the structured mention item.
+- Images project to `localImage`. Native Codex has no generic file input item,
+  and `mention` is reserved for apps, plugins, and skills. Supported generic
+  files therefore project to a native text manifest containing their sanitized
+  filename and staged local path, and Codex reads them through native
+  filesystem tools rather than bridge extractors. This makes the attachment
+  visible in rollout history, `thread/read`, recovery, and cross-client
+  continuation.
 - Unsupported attachments fail visibly and never become arbitrary local paths.
 - Explicit delivery enters the running bridge over its loopback-only current-
   instance endpoint and reuses configured access policy, staging, adapters,

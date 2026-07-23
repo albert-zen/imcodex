@@ -514,15 +514,10 @@ class CodexThreadBackendMixin:
             if attachment.kind == "image":
                 input_items.append({"type": "localImage", "path": attachment.local_path})
             elif attachment.kind == "file":
-                input_items.append(
-                    {
-                        "type": "mention",
-                        "name": CodexThreadBackendMixin._safe_attachment_filename(
-                            attachment
-                        ),
-                        "path": attachment.local_path,
-                    }
-                )
+                # Generic files have no native Codex input item. Their durable
+                # text manifest gives the agent a stable path it can read with
+                # native filesystem tools and survives thread history rebuilds.
+                continue
             else:
                 raise ValueError(f"unsupported inbound attachment kind: {attachment.kind}")
         if not input_items:

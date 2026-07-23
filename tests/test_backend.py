@@ -963,7 +963,7 @@ async def test_submit_input_starts_image_only_turn() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_input_projects_generic_file_as_native_mention() -> None:
+async def test_submit_input_projects_generic_file_as_durable_text_manifest() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     client = MultimodalClient()
@@ -987,11 +987,6 @@ async def test_submit_input_projects_generic_file_as_native_mention() -> None:
                 {
                     "type": "text",
                     "text": "[Attachment]\n- requirements.md\n  Path: /tmp/inbound.md",
-                },
-                {
-                    "type": "mention",
-                    "name": "requirements.md",
-                    "path": "/tmp/inbound.md",
                 },
             ],
             "summary": "concise",
@@ -1026,13 +1021,6 @@ async def test_submit_input_persists_file_manifest_with_user_caption() -> None:
                 r"D:\desktop\imcodex\.imcodex-data\channels\telegram\inbound-media\abc.pdf"
             ),
         },
-        {
-            "type": "mention",
-            "name": "review.pdf",
-            "path": (
-                r"D:\desktop\imcodex\.imcodex-data\channels\telegram\inbound-media\abc.pdf"
-            ),
-        },
     ]
 
 
@@ -1064,16 +1052,6 @@ def test_native_user_input_lists_multiple_files_in_one_durable_manifest() -> Non
                 "- second.txt\n"
                 "  Path: /tmp/second.txt"
             ),
-        },
-        {
-            "type": "mention",
-            "name": "first.md",
-            "path": "/tmp/first.md",
-        },
-        {
-            "type": "mention",
-            "name": "second.txt",
-            "path": "/tmp/second.txt",
         },
     ]
 
