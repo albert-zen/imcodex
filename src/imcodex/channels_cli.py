@@ -257,7 +257,7 @@ def _send(
         )
         return 1
     output(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    if response.is_success and result.get("status") == "delivered":
+    if response.is_success and result.get("status") in {"delivered", "queued"}:
         return 0
     if result.get("status") == "partial":
         return 3

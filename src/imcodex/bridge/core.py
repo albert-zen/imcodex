@@ -1142,7 +1142,10 @@ class BridgeService(
                 self._active_recovery_artifact_paths.difference_update(
                     recovery_artifact_paths
                 )
-                self._cleanup_outbound_artifact_spool()
+                await self._release_outbound_artifact_leases(
+                    recovery_artifact_paths
+                )
+                await self._cleanup_outbound_artifact_spool()
         if delivery_failed:
             summary["deliveryFailed"] = delivery_failed
         await self._deliver_pending_terminal_once()

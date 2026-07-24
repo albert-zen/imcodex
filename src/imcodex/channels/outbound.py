@@ -13,6 +13,7 @@ from .artifacts import (
     PermanentArtifactDeliveryError,
     append_artifact_failures,
     read_managed_artifact,
+    record_artifact_failure,
 )
 
 
@@ -60,7 +61,9 @@ class WebhookOutboundSink:
                         root=self.outbound_media_dir,
                     )
                 except PermanentArtifactDeliveryError as exc:
-                    failures.append(f"{artifact.filename}: {exc}")
+                    error = str(exc)
+                    failures.append(f"{artifact.filename}: {error}")
+                    record_artifact_failure(message, artifact, error=error)
                     continue
                 deliverable.append(artifact)
                 uploads.append(
@@ -134,10 +137,13 @@ class WebhookOutboundSink:
 
         rejected = list(message.artifacts)
         message.artifacts = []
+        error = f"webhook rejected the attachment batch (HTTP {status})"
+        for artifact in rejected:
+            record_artifact_failure(message, artifact, error=error)
         append_artifact_failures(
             message,
             [
-                f"{artifact.filename}: webhook rejected the attachment (HTTP {status})"
+                f"{artifact.filename}: {error}"
                 for artifact in rejected
             ],
         )
@@ -231,6 +237,15 @@ class MultiplexOutboundSink:
             return False
         return self.default_sink is not None
 
+    def validate_message(self, message) -> None:
+        sink = self._sink_for(message.channel_id)
+        ensure_allowed = getattr(sink, "ensure_outbound_allowed", None)
+        if callable(ensure_allowed):
+            ensure_allowed(message)
+        validate = getattr(sink, "validate_outbound_message", None)
+        if callable(validate):
+            validate(message)
+
     def prepare_durable_message(self, message) -> None:
         sink = self.channel_sinks.get(message.channel_id)
         if sink is None and message.channel_id in BUILTIN_CHANNEL_IDS:
@@ -241,11 +256,18 @@ class MultiplexOutboundSink:
         if message.artifacts and not bool(
             getattr(sink, "supports_outbound_artifacts", False)
         ):
-            count = len(message.artifacts)
+            rejected = list(message.artifacts)
+            count = len(rejected)
             notice = (
                 f"Attachment delivery unavailable: this channel does not support "
                 f"{count} staged artifact{'s' if count != 1 else ''}."
             )
+            for artifact in rejected:
+                record_artifact_failure(
+                    message,
+                    artifact,
+                    error="this channel does not support outbound artifacts",
+                )
             message.text = "\n\n".join(part for part in (message.text, notice) if part)
             message.artifacts = []
         prepare = getattr(sink, "prepare_durable_message", None)

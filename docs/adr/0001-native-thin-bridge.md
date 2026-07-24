@@ -186,6 +186,8 @@ The persisted bridge state should contain only:
 - minimal native request routing data
 - minimal terminal-delivery checkpoints and projected outbox payloads needed
   to finish IM delivery across a bridge restart
+- standalone messages explicitly submitted to an IM destination, using that
+  same outbound outbox rather than a second delivery path
 
 Terminal recovery state has two deliberately separate granularities:
 
@@ -297,11 +299,17 @@ The message pump may own:
 
 - ordering
 - throttling
-- stale-turn suppression
+- explicit presentation suppression for a Turn the user stopped
 - final-result precedence
 - visibility filtering
 
 The message pump must not become a second source of truth for turn state.
+In particular, a cached local active-Turn hint must never cause a native item,
+server request, or Turn lifecycle event with another Turn ID to be discarded.
+`turn/started` refreshes that hint only when it is empty or already names the
+same Turn; a conflicting hint is resolved by native resume/reconciliation, not
+event arrival order. Distinct native item IDs remain distinct projected
+messages even when their rendered text is identical.
 
 ## Migration Strategy
 

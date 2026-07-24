@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -144,6 +146,59 @@ def test_channels_cli_lists_builtin_channels(monkeypatch, tmp_path: Path) -> Non
     assert any("telegram" in line for line in outputs)
     assert any("feishu" in line for line in outputs)
     assert any("weixin" in line and "experimental" in line for line in outputs)
+
+
+def test_channels_cli_treats_durably_queued_delivery_as_accepted(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    current = run_dir / "current"
+    current.mkdir(parents=True)
+    (current / "health.json").write_text(
+        json.dumps(
+                {
+                    "instance_id": "instance-1",
+                    "http": {
+                        "host": "127.0.0.1",
+                        "port": 8765,
+                        "listening": True,
+                    },
+                }
+        ),
+        encoding="utf-8",
+    )
+    (current / "delivery-token").write_text("token-1", encoding="utf-8")
+    monkeypatch.setattr(
+        "imcodex.channels_cli.httpx.post",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            is_success=True,
+            json=lambda: {
+                "status": "queued",
+                "delivery_id": "stable-1",
+            },
+        ),
+    )
+    outputs: list[str] = []
+
+    result = run_channels_cli(
+        [
+            "send",
+            "--channel",
+            "qq",
+            "--conversation",
+            "user:1",
+            "--text",
+            "hello",
+            "--delivery-id",
+            "stable-1",
+        ],
+        settings=SimpleNamespace(run_dir=run_dir),
+        output=outputs.append,
+    )
+
+    assert result == 0
+    assert json.loads(outputs[0])["status"] == "queued"
 
 
 def test_channels_cli_doctor_reports_enabled_channel_without_secrets(

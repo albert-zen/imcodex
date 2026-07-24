@@ -270,6 +270,9 @@ semantics.
 For native Codex settings, the console MUST:
 
 - read effective values and supported choices through the App Server boundary
+- expose reasoning-effort choices only when the selected native model advertises
+  them; missing native catalog or capability metadata MUST yield no synthetic
+  compatibility choices while preserving the ability to clear the override
 - project managed new-thread defaults and native feature requirements as effective, read-only state
 - write model, reasoning effort, personality, Fast mode, and permission changes
   through native Codex configuration operations
@@ -464,6 +467,7 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
 - cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
+- cached `active_turn` is a routing hint only and MUST NOT suppress a native item, server request, or Turn lifecycle event with another Turn ID; only an explicitly suppressed Turn MAY have its presentation hidden
 - every ordinary input to an existing binding MUST resume and reconcile the exact native thread before steer/start; a different returned thread ID or an unverifiable active turn MUST fail explicitly rather than create a competing continuation
 - history display MUST use native turn APIs, preserve terminal and active turn statuses, and paginate to the oldest available turn without becoming model context or a bridge-local transcript
 - for every bound native turn, the bridge MAY persist a minimal terminal-delivery checkpoint, but MUST NOT use that checkpoint as active-turn authority; native resume remains the source of truth for whether the turn is active or terminal
@@ -474,9 +478,13 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - every projected answer segment or completed-Turn fallback MUST enter a durable delivery outbox before channel delivery and MUST remain retryable until its IM sink confirms delivery; a transient sink failure or bridge restart MUST NOT consume the only recovery marker
 - an acknowledged answer delivery identity MUST remain durable for the remaining lifetime of its Turn watch, so a restart before native Turn completion cannot replay the answer or emit a false empty-result fallback; the receipt MUST be removed when the watch is consumed
 - multiple projected answer items from one native Turn MUST be independently stageable, deduplicated, acknowledged, and retried; a pending delivery for one item MUST NOT suppress, overwrite, reroute, or consume later commentary or answer items from that Turn
+- distinct native item IDs MUST remain distinct projected messages even when their rendered text is identical; delivery deduplication MUST use identity rather than content
 - snapshot recovery MUST enumerate all nonblank final-answer items in native order; explicit artifacts after the last answer MUST use a separate completed-Turn fallback identity, and answer items without a distinct stable identity MUST fail recovery explicitly rather than be conflated
 - durable answer segments for one IM destination MUST drain in projection order; a blocked destination MUST NOT prevent an unrelated destination from making delivery progress
 - structured outbound artifacts MUST be staged from explicit native output, validated for type, size, and allowed roots, persisted with the terminal outbox, and delivered with stable per-artifact identities; adapters MUST NOT silently claim attachment success after a failed platform upload
+- every channel with a per-artifact platform API MUST use the shared batch checkpoint contract: confirmed artifacts are recorded, retryable failures preserve only the failed artifact and unattempted suffix, and permanent failures become visible notices while later artifacts continue; a batch-atomic multipart webhook MUST instead preserve and report the whole batch as one delivery attempt
+- standalone channel/tool delivery MUST enter the same durable outbound outbox and managed artifact spool as projected native output; HTTP or tool entrypoints MUST NOT bypass the service boundary to call a channel sink directly
+- standalone delivery IDs MUST use a namespace separate from native projection identities; the bounded acknowledgement ledger MUST retain the final per-artifact outcome so same-payload idempotent replay cannot turn a prior partial/permanent failure into inferred success, while the same external ID with different content or destination MUST fail explicitly
 - once a terminal message is staged, replayed native notifications, interruption cleanup, stale native binding cleanup, and conversation rebinding MUST NOT overwrite, remove, or reroute it before sink acceptance
 - delivery-outbox draining MUST run for every App Server connection mode, including `stdio://`; native thread rehydration may remain mode-dependent
 - recovery health MUST remain degraded while a staged terminal delivery is pending, even if the native App Server connection is healthy

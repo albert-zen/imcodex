@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from starlette.datastructures import UploadFile
@@ -15,7 +14,6 @@ from starlette.datastructures import FormData
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.responses import JSONResponse
 
-from .bridge.outbound_artifacts import OutboundArtifactStager
 from .models import OutboundArtifact, OutboundMessage
 from .observability.health import BRIDGE_INSTANCE_HEADER
 from .windows_security import secure_windows_path
@@ -52,19 +50,11 @@ class _BoundedDeliveryParser(MultiPartParser):
 
 
 class LocalDeliveryCredential:
-    def __init__(
-        self,
-        run_dir: Path,
-        *,
-        prepare: Callable[[], None] | None = None,
-    ) -> None:
+    def __init__(self, run_dir: Path) -> None:
         self.path = Path(run_dir) / "current" / DELIVERY_TOKEN_FILE
         self.token = secrets.token_urlsafe(32)
-        self.prepare = prepare
 
     def publish(self) -> None:
-        if self.prepare is not None:
-            self.prepare()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
         if hasattr(os, "O_NOFOLLOW"):
@@ -102,15 +92,9 @@ def install_delivery_route(
     app: FastAPI,
     runtime,
     *,
-    data_dir: Path,
     run_dir: Path,
 ) -> LocalDeliveryCredential:
-    stager = OutboundArtifactStager(Path(data_dir) / "outbound-media" / "tool")
-    stage_lock = asyncio.Lock()
-    credential = LocalDeliveryCredential(
-        run_dir,
-        prepare=lambda: stager.cleanup_unreferenced(set()),
-    )
+    credential = LocalDeliveryCredential(run_dir)
 
     @app.post(DELIVERY_PATH, include_in_schema=False)
     async def deliver(request: Request):
@@ -200,33 +184,44 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "At most 4 artifacts may be delivered.")
         if any(not isinstance(upload, UploadFile) for upload in uploads):
             await _raise_form_error(form, 422, "artifacts must be uploaded files.")
-        sink = getattr(runtime.service, "outbound_sink", None)
-        can_deliver = getattr(sink, "can_deliver", None)
-        if sink is None or not callable(can_deliver) or not can_deliver(channel_id):
+        service = runtime.service
+        can_deliver = getattr(service, "can_deliver_outbound", None)
+        validate_message = getattr(service, "validate_outbound_message", None)
+        stage_upload = getattr(service, "stage_outbound_upload", None)
+        discard_uploads = getattr(service, "discard_outbound_uploads", None)
+        deliver_message = getattr(service, "deliver_outbound_message", None)
+        if (
+            not callable(can_deliver)
+            or not callable(validate_message)
+            or not callable(stage_upload)
+            or not callable(discard_uploads)
+            or not callable(deliver_message)
+            or not can_deliver(channel_id)
+        ):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
 
         artifacts: list[OutboundArtifact] = []
         try:
-            async with stage_lock:
-                for item, upload in zip(manifest, uploads, strict=True):
-                    if not isinstance(item, dict):
-                        raise ValueError("artifact manifest entries must be objects")
-                    content = await upload.read()
-                    artifacts.append(
-                        await asyncio.to_thread(
-                            stager.stage_upload,
-                            content,
-                            kind=str(item.get("kind") or "file"),
-                            content_type=str(
-                                upload.content_type or item.get("content_type") or ""
-                            ),
-                            filename=str(upload.filename or item.get("filename") or ""),
-                        )
+            for item, upload in zip(manifest, uploads, strict=True):
+                if not isinstance(item, dict):
+                    raise ValueError("artifact manifest entries must be objects")
+                content = await upload.read()
+                artifacts.append(
+                    await stage_upload(
+                        content,
+                        kind=str(item.get("kind") or "file"),
+                        content_type=str(
+                            upload.content_type or item.get("content_type") or ""
+                        ),
+                        filename=str(upload.filename or item.get("filename") or ""),
                     )
+                )
         except ValueError as exc:
-            async with stage_lock:
-                await asyncio.to_thread(_clear_delivery_artifacts, artifacts)
+            await discard_uploads(artifacts)
             raise HTTPException(status_code=422, detail=str(exc)) from None
+        except BaseException:
+            await asyncio.shield(discard_uploads(artifacts))
+            raise
         finally:
             for upload in uploads:
                 if isinstance(upload, UploadFile):
@@ -243,9 +238,19 @@ def install_delivery_route(
                 metadata={"delivery_id": delivery_id, "source": "channels.send"},
                 artifacts=list(artifacts),
             )
-            sink.prepare_durable_message(message)
             try:
-                await sink.send_message(message)
+                validate_message(message)
+                outbound, delivered, durable = await deliver_message(message)
+            except ValueError as exc:
+                return JSONResponse(
+                    _delivery_receipt(
+                        message,
+                        artifacts,
+                        status="rejected",
+                        error=str(exc),
+                    ),
+                    status_code=409,
+                )
             except PermissionError as exc:
                 return JSONResponse(
                     _delivery_receipt(
@@ -266,12 +271,30 @@ def install_delivery_route(
                     ),
                     status_code=502,
                 )
-            receipt = _delivery_receipt(message, artifacts, status="delivered")
-            status_code = 207 if receipt["status"] == "partial" else 200
+            if delivered:
+                status = "delivered"
+                status_code = 200
+            elif durable:
+                status = "queued"
+                status_code = 202
+            else:
+                status = "failed"
+                status_code = 503
+            receipt_message = outbound[-1] if outbound else message
+            receipt = _delivery_receipt(
+                receipt_message,
+                artifacts,
+                status=status,
+                delivery_id=delivery_id,
+            )
+            if receipt["status"] == "partial":
+                status_code = 207
             return JSONResponse(receipt, status_code=status_code)
         finally:
-            async with stage_lock:
-                await asyncio.to_thread(_clear_delivery_artifacts, artifacts)
+            # Pending deliveries are already referenced by the durable outbox,
+            # so the shared cleanup preserves them. Always surrender the
+            # request-scoped active lease, including validation/conflict paths.
+            await discard_uploads(artifacts)
 
     return credential
 
@@ -294,19 +317,6 @@ async def _raise_form_error(form, status_code: int, detail: str) -> None:
         if isinstance(value, UploadFile):
             await value.close()
     raise HTTPException(status_code=status_code, detail=detail)
-
-
-def _clear_delivery_artifacts(artifacts: list[OutboundArtifact]) -> None:
-    """Remove request-scoped uploads after the channel adapter has returned."""
-
-    for artifact in artifacts:
-        candidate = Path(artifact.local_path)
-        try:
-            if candidate.is_file() and not candidate.is_symlink():
-                candidate.unlink(missing_ok=True)
-        except OSError:
-            # Global startup cleanup remains the fallback after interruption.
-            continue
 
 
 def _authorize_local_instance(
@@ -338,28 +348,50 @@ def _delivery_receipt(
     *,
     status: str,
     error: str = "",
+    delivery_id: str | None = None,
 ) -> dict[str, object]:
     failures = message.metadata.get("artifact_failures") or []
     failure_strings = [str(item) for item in failures if isinstance(item, str)]
     recorded = message.metadata.get("artifact_receipts") or []
+    recorded_items = [item for item in recorded if isinstance(item, dict)]
     items = []
     for artifact in artifacts:
-        delivery = next(
+        delivery_index = next(
             (
-                item
-                for item in recorded
-                if isinstance(item, dict)
-                and item.get("local_path") == artifact.local_path
+                index
+                for index, item in enumerate(recorded_items)
+                if item.get("local_path") == artifact.local_path
             ),
-            {},
+            None,
+        )
+        if delivery_index is None and artifact.sha256:
+            delivery_index = next(
+                (
+                    index
+                    for index, item in enumerate(recorded_items)
+                    if item.get("sha256") == artifact.sha256
+                    and item.get("filename") == artifact.filename
+                ),
+                None,
+            )
+        delivery = (
+            recorded_items.pop(delivery_index)
+            if delivery_index is not None
+            else {}
         )
         failure = ""
-        if not delivery:
+        recorded_status = str(delivery.get("status") or "")
+        if recorded_status == "failed":
+            failure = str(delivery.get("error") or "")
+        elif not delivery:
             for index, candidate in enumerate(failure_strings):
                 if candidate.startswith(f"{artifact.filename}:"):
                     failure = failure_strings.pop(index)
                     break
-        delivered = bool(delivery)
+        delivered = recorded_status == "delivered"
+        outcome_unknown = bool(
+            message.metadata.get("artifact_outcome_unknown")
+        )
         items.append(
             {
                 "filename": artifact.filename,
@@ -368,10 +400,14 @@ def _delivery_receipt(
                     "failed"
                     if failure
                     else "delivered"
-                    if delivered or status == "delivered"
+                    if delivered or (status == "delivered" and not outcome_unknown)
                     else "unknown"
                 ),
-                "error": failure.partition(":")[2].strip() if failure else "",
+                "error": (
+                    failure.partition(":")[2].strip()
+                    if failure.startswith(f"{artifact.filename}:")
+                    else failure
+                ),
                 "platform_message_id": str(delivery.get("platform_message_id") or ""),
                 "delivery_identity": str(delivery.get("delivery_identity") or ""),
             }
@@ -380,7 +416,11 @@ def _delivery_receipt(
     if status == "delivered" and any(item["status"] == "failed" for item in items):
         overall = "partial"
     return {
-        "delivery_id": str(message.metadata.get("delivery_id") or ""),
+        "delivery_id": (
+            delivery_id
+            if delivery_id is not None
+            else str(message.metadata.get("delivery_id") or "")
+        ),
         "channel_id": message.channel_id,
         "conversation_id": message.conversation_id,
         "status": overall,

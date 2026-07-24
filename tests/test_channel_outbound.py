@@ -227,6 +227,63 @@ async def test_webhook_converts_permanent_multipart_rejection_to_notice(
 
 
 @pytest.mark.asyncio
+async def test_webhook_records_each_same_named_artifact_rejected_as_one_batch(
+    tmp_path: Path,
+) -> None:
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    first_path = outbound_root / "first.txt"
+    second_path = outbound_root / "second.txt"
+    first_path.write_bytes(b"one")
+    second_path.write_bytes(b"two")
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(415 if len(requests) == 1 else 204)
+
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="Done.",
+        metadata={"delivery_id": "terminal-same-name"},
+        artifacts=[
+            OutboundArtifact(
+                kind="file",
+                local_path=str(first_path),
+                content_type="text/plain",
+                filename="result.txt",
+                size_bytes=3,
+            ),
+            OutboundArtifact(
+                kind="file",
+                local_path=str(second_path),
+                content_type="text/plain",
+                filename="result.txt",
+                size_bytes=3,
+            ),
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        sink = WebhookOutboundSink(
+            "https://gateway.example/outbound",
+            client=client,
+            bearer_token="outbound-secret",
+            outbound_media_dir=outbound_root,
+        )
+        await sink.send_message(message)
+
+    receipts = message.metadata["artifact_receipts"]
+    assert [receipt["status"] for receipt in receipts] == ["failed", "failed"]
+    assert [receipt["local_path"] for receipt in receipts] == [
+        str(first_path),
+        str(second_path),
+    ]
+    assert message.artifacts == []
+
+
+@pytest.mark.asyncio
 async def test_webhook_removes_rejected_artifact_before_failed_notice_retry(
     tmp_path: Path,
 ) -> None:
@@ -339,6 +396,18 @@ def test_multiplex_delegates_durable_message_preparation_to_channel() -> None:
     sink.prepare_durable_message(message)
 
     assert message.metadata["platform_identity"] == "pinned"
+
+
+def test_multiplex_delegates_route_validation_before_durable_staging() -> None:
+    class Sink:
+        def validate_outbound_message(self, message: OutboundMessage) -> None:
+            raise ValueError(f"invalid route: {message.conversation_id}")
+
+    sink = MultiplexOutboundSink(channel_sinks={"qq": Sink()})
+    message = OutboundMessage("qq", "invalid", "tool_delivery", "Hello")
+
+    with pytest.raises(ValueError, match="invalid route: invalid"):
+        sink.validate_message(message)
 
 
 @pytest.mark.asyncio

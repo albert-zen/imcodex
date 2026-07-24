@@ -19,10 +19,10 @@ from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .artifacts import (
+    ArtifactDeliveryReceipt,
     PermanentArtifactDeliveryError,
-    append_artifact_failures,
+    deliver_artifact_batch,
     read_managed_artifact,
-    record_artifact_delivery,
 )
 from .base import BaseChannelAdapter
 from .media import (
@@ -367,9 +367,10 @@ class TelegramChannelAdapter(BaseChannelAdapter):
         reply_to = self._parse_reply_message_id(
             message.metadata.get("reply_to_message_id") or message.metadata.get("message_id")
         )
-        artifact_failures: list[str] = []
-        original_artifacts = list(message.artifacts)
-        for index, artifact in enumerate(original_artifacts):
+
+        async def send_artifact(
+            artifact: OutboundArtifact,
+        ) -> ArtifactDeliveryReceipt:
             try:
                 result = await self._send_artifact(
                     artifact,
@@ -377,33 +378,20 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                     thread_id=thread_id,
                     reply_to=reply_to,
                 )
-            except PermanentArtifactDeliveryError as exc:
-                artifact_failures.append(f"{artifact.filename}: {exc}")
             except TelegramAPIError as exc:
                 if self._artifact_error_is_permanent(exc):
-                    artifact_failures.append(
-                        f"{artifact.filename}: Telegram rejected the upload"
-                    )
-                else:
-                    append_artifact_failures(message, artifact_failures)
-                    message.artifacts = original_artifacts[index:]
-                    raise
-            except Exception:
-                append_artifact_failures(message, artifact_failures)
-                message.artifacts = original_artifacts[index:]
+                    raise PermanentArtifactDeliveryError(
+                        "Telegram rejected the upload"
+                    ) from exc
                 raise
-            else:
-                platform_id = ""
-                if isinstance(result, dict):
-                    platform_id = str(result.get("message_id") or "")
-                record_artifact_delivery(
-                    message,
-                    artifact,
-                    platform_message_id=platform_id,
-                )
-                message.artifacts = original_artifacts[index + 1 :]
-        message.artifacts = []
-        append_artifact_failures(message, artifact_failures)
+            platform_id = ""
+            if isinstance(result, dict):
+                platform_id = str(result.get("message_id") or "")
+            return ArtifactDeliveryReceipt(
+                platform_message_id=platform_id,
+            )
+
+        await deliver_artifact_batch(message, send_artifact)
         if not message.text.strip():
             return
         for index, chunk in enumerate(split_text(message.text, limit=TELEGRAM_TEXT_LIMIT)):
@@ -422,6 +410,11 @@ class TelegramChannelAdapter(BaseChannelAdapter):
                 max_attempts=3,
                 retry_ambiguous=False,
             )
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        """Reject malformed routes before they enter the durable retry outbox."""
+
+        self._parse_conversation_id(message.conversation_id)
 
     async def _send_artifact(
         self,

@@ -19,10 +19,10 @@ from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .artifacts import (
+    ArtifactDeliveryReceipt,
     PermanentArtifactDeliveryError,
-    append_artifact_failures,
+    deliver_artifact_batch,
     read_managed_artifact,
-    record_artifact_delivery,
     stable_artifact_identity,
 )
 from .base import BaseChannelAdapter
@@ -400,48 +400,36 @@ class FeishuChannelAdapter(BaseChannelAdapter):
         )
         if thread_id and not reply_to:
             raise RuntimeError("Feishu topic delivery requires a persisted inbound message ID for reply routing.")
-        artifact_failures: list[str] = []
-        original_artifacts = list(message.artifacts)
-        for index, artifact in enumerate(original_artifacts):
-            try:
-                result = await self._send_artifact(
-                    sdk,
-                    chat_id=chat_id,
-                    artifact=artifact,
-                    message=message,
-                    reply_to=reply_to,
-                    reply_in_thread=bool(thread_id),
-                )
-            except PermanentArtifactDeliveryError as exc:
-                artifact_failures.append(f"{artifact.filename}: {exc}")
-            except Exception:
-                append_artifact_failures(message, artifact_failures)
-                message.artifacts = original_artifacts[index:]
-                raise
-            else:
-                if hasattr(result, "success") and not bool(getattr(result, "success")):
-                    error = getattr(result, "error", None)
-                    if self._artifact_error_is_permanent(error):
-                        artifact_failures.append(
-                            f"{artifact.filename}: Feishu rejected the upload"
-                        )
-                    else:
-                        append_artifact_failures(message, artifact_failures)
-                        message.artifacts = original_artifacts[index:]
-                        raise RuntimeError("Feishu temporarily rejected an outbound artifact.")
-                else:
-                    record_artifact_delivery(
-                        message,
-                        artifact,
-                        platform_message_id=str(
-                            getattr(result, "message_id", "")
-                            or getattr(result, "messageId", "")
-                            or ""
-                        ),
+
+        async def send_artifact(
+            artifact: OutboundArtifact,
+        ) -> ArtifactDeliveryReceipt:
+            result = await self._send_artifact(
+                sdk,
+                chat_id=chat_id,
+                artifact=artifact,
+                message=message,
+                reply_to=reply_to,
+                reply_in_thread=bool(thread_id),
+            )
+            if hasattr(result, "success") and not bool(getattr(result, "success")):
+                error = getattr(result, "error", None)
+                if self._artifact_error_is_permanent(error):
+                    raise PermanentArtifactDeliveryError(
+                        "Feishu rejected the upload"
                     )
-                message.artifacts = original_artifacts[index + 1 :]
-        message.artifacts = []
-        append_artifact_failures(message, artifact_failures)
+                raise RuntimeError(
+                    "Feishu temporarily rejected an outbound artifact."
+                )
+            return ArtifactDeliveryReceipt(
+                platform_message_id=str(
+                    getattr(result, "message_id", "")
+                    or getattr(result, "messageId", "")
+                    or ""
+                ),
+            )
+
+        await deliver_artifact_batch(message, send_artifact)
         if not message.text.strip():
             return
         delivery_id = str(message.metadata.get("delivery_id") or "").strip()
@@ -458,6 +446,24 @@ class FeishuChannelAdapter(BaseChannelAdapter):
             result = await sdk.send(chat_id, {"text": chunk}, opts)
             if hasattr(result, "success") and not bool(getattr(result, "success")):
                 raise RuntimeError("Feishu rejected an outbound message.")
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        """Reject routes that cannot become deliverable by retrying unchanged."""
+
+        _chat_id, thread_id = self._parse_conversation_id(message.conversation_id)
+        if not thread_id:
+            return
+        reply_to = str(
+            message.metadata.get("reply_to_message_id")
+            or message.metadata.get("message_id")
+            or self._last_inbound_message_id(message)
+            or ""
+        )
+        if not reply_to:
+            raise ValueError(
+                "Feishu topic delivery requires a persisted inbound message ID "
+                "for reply routing."
+            )
 
     async def _send_artifact(
         self,

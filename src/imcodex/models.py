@@ -55,8 +55,9 @@ class PendingTerminalDelivery:
     """One projected IM message that remains owed to its destination.
 
     A native turn may produce more than one answer segment. ``delivery_id`` is
-    therefore the durable identity; ``thread_id`` and ``turn_id`` are routing
-    and observability context, not the outbox key.
+    therefore the durable identity; ``thread_id`` and ``turn_id`` are optional
+    native context, not the outbox key. Standalone channel delivery leaves both
+    empty.
     """
 
     delivery_id: str

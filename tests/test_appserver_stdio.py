@@ -580,6 +580,159 @@ async def test_server_request_dispatch_is_not_blocked_by_slow_notifications() ->
 
 
 @pytest.mark.asyncio
+async def test_server_request_handler_failure_replies_with_jsonrpc_internal_error() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    handler_called = asyncio.Event()
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    def fail_request(_request: dict) -> None:
+        handler_called.set()
+        raise RuntimeError("approval handler failed")
+
+    client.add_server_request_handler(fail_request)
+    await client.initialize()
+    process.stdout.lines.put_nowait(
+        b'{"id":91,"method":"item/commandExecution/requestApproval","params":{}}\n'
+    )
+
+    await asyncio.wait_for(handler_called.wait(), timeout=1)
+    for _ in range(10):
+        if any(payload.get("id") == 91 and "error" in payload for payload in process.sent):
+            break
+        await asyncio.sleep(0)
+
+    assert process.sent[-1] == {
+        "id": 91,
+        "error": {
+            "code": -32603,
+            "message": "Internal error",
+            "data": {"method": "item/commandExecution/requestApproval"},
+        },
+    }
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_server_request_failure_after_reply_does_not_send_second_response() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    handler_called = asyncio.Event()
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    async def reply_then_fail(request: dict) -> None:
+        await client.reply_to_transport_request(
+            request["params"]["_transport_request_id"],
+            {"accepted": True},
+            expected_connection_epoch=request["params"]["_connection_epoch"],
+        )
+        handler_called.set()
+        raise RuntimeError("post-reply bookkeeping failed")
+
+    client.add_server_request_handler(reply_then_fail)
+    await client.initialize()
+    process.stdout.lines.put_nowait(
+        b'{"id":91,"method":"item/commandExecution/requestApproval","params":{}}\n'
+    )
+
+    await asyncio.wait_for(handler_called.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    replies = [
+        payload
+        for payload in process.sent
+        if payload.get("id") == 91 and ("result" in payload or "error" in payload)
+    ]
+    assert replies == [{"id": 91, "result": {"accepted": True}}]
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_notification_handler_failure_does_not_emit_request_error() -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    handler_called = asyncio.Event()
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    def fail_notification(_notification: dict) -> None:
+        handler_called.set()
+        raise RuntimeError("notification handler failed")
+
+    client.add_notification_handler(fail_notification)
+    await client.initialize()
+    process.stdout.lines.put_nowait(b'{"method":"thread/status/changed","params":{}}\n')
+
+    await asyncio.wait_for(handler_called.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert client.connection_mode == "spawned-stdio"
+    assert not any("error" in payload and "method" not in payload for payload in process.sent)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_server_request_error_reply_resets_the_same_connection(monkeypatch) -> None:
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    reset_called = asyncio.Event()
+    client = AppServerClient(
+        supervisor=AppServerSupervisor(
+            app_server_url="stdio://",
+            spawn_process=lambda *_args: process,
+        ),
+        client_info={"name": "imcodex", "title": "IMCodex", "version": "0.1.0"},
+    )
+
+    def fail_request(_request: dict) -> None:
+        raise RuntimeError("request handler failed")
+
+    client.add_server_request_handler(fail_request)
+    await client.initialize()
+    connection_epoch = client.connection_epoch
+    original_reset_connection = client._reset_connection
+
+    async def fail_error_reply(payload: dict, *, transport=None) -> None:
+        assert payload["id"] == 91
+        assert payload["error"]["code"] == -32603
+        raise ConnectionError("reply transport failed")
+
+    async def capture_reset(*, notify_handlers: bool = True) -> None:
+        assert notify_handlers is True
+        reset_called.set()
+
+    monkeypatch.setattr(client, "_send_json", fail_error_reply)
+    monkeypatch.setattr(client, "_reset_connection", capture_reset)
+
+    await client._dispatch_one(
+        {
+            "id": 91,
+            "method": "item/commandExecution/requestApproval",
+            "params": {},
+        },
+        connection_epoch,
+        queue_kind="server_request",
+    )
+
+    assert reset_called.is_set()
+    monkeypatch.setattr(client, "_reset_connection", original_reset_connection)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_server_request_resolution_preserves_wire_order_with_its_request() -> None:
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
     request_started = asyncio.Event()

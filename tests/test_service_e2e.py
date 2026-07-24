@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import uuid
 
 import pytest
@@ -19,6 +20,7 @@ from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.bridge.terminal_identity import stable_terminal_turn_delivery_id
 from imcodex.bridge.thread_views import ThreadViewMixin
 from imcodex.channels import MultiplexOutboundSink
+from imcodex.channels.artifacts import record_artifact_failure
 from imcodex.channels.middleware import UnifiedChannelMiddleware
 from imcodex.models import (
     InboundAttachment,
@@ -2286,6 +2288,350 @@ async def test_initial_terminal_failure_persists_partial_artifact_progress() -> 
     assert [artifact["filename"] for artifact in pending.message["artifacts"]] == [
         "second.png"
     ]
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_standalone_delivery_uses_shared_outbox_across_restart_and_is_idempotent(
+    tmp_path,
+) -> None:
+    class FailingOnceSink:
+        def __init__(self) -> None:
+            self.fail = True
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            if self.fail:
+                raise RuntimeError("temporary channel outage")
+            self.messages.append(message)
+
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    sink = FailingOnceSink()
+    client, service = _build_service(store, process, sink)
+    service._terminal_delivery_closed = True
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="Standalone delivery",
+        metadata={"delivery_id": "tool-delivery-1"},
+    )
+
+    _outbound, delivered, durable = await service.deliver_outbound_message(message)
+
+    assert delivered is False
+    assert durable is True
+    pending = store.list_pending_terminal_deliveries()
+    assert len(pending) == 1
+    assert pending[0].delivery_id.startswith("imcodex:standalone:")
+    assert (pending[0].thread_id, pending[0].turn_id) == ("", "")
+    await store.flush_pending_writes()
+    await service.close()
+    await client.close()
+
+    reloaded_store = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    reloaded_process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    sink.fail = False
+    reloaded_client, reloaded_service = _build_service(
+        reloaded_store,
+        reloaded_process,
+        sink,
+    )
+    reloaded_service._terminal_delivery_closed = True
+    assert await reloaded_service._deliver_pending_terminal_once() is True
+    assert [item.text for item in sink.messages] == ["Standalone delivery"]
+    await reloaded_store.flush_pending_writes()
+    await reloaded_service.close()
+    await reloaded_client.close()
+
+    acknowledged_store = ConversationStore(clock=lambda: 3.0, state_path=state_path)
+    acknowledged_process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    acknowledged_client, acknowledged_service = _build_service(
+        acknowledged_store,
+        acknowledged_process,
+        sink,
+    )
+    _outbound, delivered, durable = (
+        await acknowledged_service.deliver_outbound_message(message)
+    )
+
+    assert delivered is True
+    assert durable is True
+    assert [item.text for item in sink.messages] == ["Standalone delivery"]
+    conflicting = OutboundMessage(
+        channel_id="qq",
+        conversation_id="different-conversation",
+        message_type="tool_delivery",
+        text="Different payload",
+        metadata={"delivery_id": "tool-delivery-1"},
+    )
+    with pytest.raises(ValueError, match="already used"):
+        await acknowledged_service.deliver_outbound_message(conflicting)
+
+    acknowledged_service.projector.artifact_stager = OutboundArtifactStager(
+        tmp_path / "outbound-media"
+    )
+    conflicting_artifact = await acknowledged_service.stage_outbound_upload(
+        b"# conflicting\n",
+        kind="file",
+        content_type="text/markdown",
+        filename="conflicting.md",
+    )
+    conflicting.artifacts = [conflicting_artifact]
+    with pytest.raises(ValueError, match="already used"):
+        await acknowledged_service.deliver_outbound_message(conflicting)
+
+    assert not os.path.exists(conflicting_artifact.local_path)
+    assert conflicting_artifact.local_path not in (
+        acknowledged_service._active_standalone_artifact_paths
+    )
+    await acknowledged_service.close()
+    await acknowledged_client.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_conflicting_standalone_delivery_ids_admit_only_one_payload(
+    tmp_path,
+) -> None:
+    class RecordingSink:
+        def __init__(self) -> None:
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.messages.append(message)
+
+    store = ConversationStore(clock=lambda: 1.0)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    sink = RecordingSink()
+    client, service = _build_service(store, process, sink)
+    service._terminal_delivery_closed = True
+    await service._terminal_projection_lock.acquire()
+    first = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="First payload",
+        metadata={"delivery_id": "concurrent-id"},
+    )
+    second = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-2",
+        message_type="tool_delivery",
+        text="Second payload",
+        metadata={"delivery_id": "concurrent-id"},
+    )
+    first_task = asyncio.create_task(service.deliver_outbound_message(first))
+    second_task = asyncio.create_task(service.deliver_outbound_message(second))
+    await asyncio.sleep(0)
+    service._terminal_projection_lock.release()
+
+    results = await asyncio.gather(
+        first_task,
+        second_task,
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, ValueError) for result in results) == 1
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert len(sink.messages) == 1
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_terminal_prepare_releases_artifact_removed_before_outbox_staging(
+    tmp_path,
+) -> None:
+    class RejectingArtifactSink:
+        def prepare_durable_message(self, message: OutboundMessage) -> None:
+            message.artifacts = []
+            message.text = "Attachment delivery unavailable."
+
+        async def send_message(self, _message: OutboundMessage) -> None:
+            return None
+
+    store = ConversationStore(clock=lambda: 1.0)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, RejectingArtifactSink())
+    service._terminal_delivery_closed = True
+    service.projector.artifact_stager = OutboundArtifactStager(
+        tmp_path / "outbound-media"
+    )
+    artifact = await service.stage_outbound_upload(
+        b"# rejected\n",
+        kind="file",
+        content_type="text/markdown",
+        filename="rejected.md",
+    )
+    message = OutboundMessage(
+        channel_id="gateway",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="",
+        metadata={"delivery_id": "tool-rejected-artifact"},
+        artifacts=[artifact],
+    )
+
+    _outbound, delivered, durable = await service.deliver_outbound_message(message)
+
+    assert delivered is True
+    assert durable is True
+    assert not os.path.exists(artifact.local_path)
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_standalone_ack_replays_persisted_artifact_outcome_after_restart(
+    tmp_path,
+) -> None:
+    class PermanentRejectSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary channel outage")
+            for artifact in message.artifacts:
+                record_artifact_failure(
+                    message,
+                    artifact,
+                    error="platform rejected the file",
+                )
+            message.artifacts = []
+
+    state_path = tmp_path / "state.json"
+    sink = PermanentRejectSink()
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    service._terminal_delivery_closed = True
+    service.projector.artifact_stager = OutboundArtifactStager(
+        tmp_path / "outbound-media"
+    )
+    artifact = await service.stage_outbound_upload(
+        b"# same content\n",
+        kind="file",
+        content_type="text/markdown",
+        filename="result.md",
+    )
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="Result",
+        metadata={"delivery_id": "tool-artifact-outcome"},
+        artifacts=[artifact],
+    )
+
+    first, delivered, durable = await service.deliver_outbound_message(message)
+
+    assert delivered is False
+    assert durable is True
+    assert first[0].metadata.get("artifact_receipts") is None
+    acknowledged_delivery_id = (
+        store.list_pending_terminal_deliveries()[0].delivery_id
+    )
+    assert await service._deliver_pending_terminal_once() is True
+    outcome = store.get_standalone_delivery_outcome(
+        acknowledged_delivery_id
+    )
+    assert outcome is not None
+    assert outcome["artifact_receipts"][0]["status"] == "failed"
+    await store.flush_pending_writes()
+    await service.close()
+    await client.close()
+
+    reloaded_store = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    reloaded_process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    reloaded_client, reloaded_service = _build_service(
+        reloaded_store,
+        reloaded_process,
+        sink,
+    )
+    reloaded_service.projector.artifact_stager = OutboundArtifactStager(
+        tmp_path / "outbound-media"
+    )
+    replay_artifact = await reloaded_service.stage_outbound_upload(
+        b"# same content\n",
+        kind="file",
+        content_type="text/markdown",
+        filename="result.md",
+    )
+    replay = OutboundMessage(
+        channel_id="qq",
+        conversation_id="conv-1",
+        message_type="tool_delivery",
+        text="Result",
+        metadata={"delivery_id": "tool-artifact-outcome"},
+        artifacts=[replay_artifact],
+    )
+
+    repeated, delivered, durable = (
+        await reloaded_service.deliver_outbound_message(replay)
+    )
+
+    assert delivered is True
+    assert durable is True
+    assert sink.calls == 2
+    assert repeated[0].artifacts == []
+    assert repeated[0].metadata["artifact_receipts"][0]["error"] == (
+        "platform rejected the file"
+    )
+    assert not os.path.exists(replay_artifact.local_path)
+    await reloaded_service.close()
+    await reloaded_client.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_standalone_stage_reclaims_worker_result(
+    tmp_path,
+) -> None:
+    class NullSink:
+        async def send_message(self, _message: OutboundMessage) -> None:
+            return None
+
+    store = ConversationStore(clock=lambda: 1.0)
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, NullSink())
+    stager = OutboundArtifactStager(tmp_path / "outbound-media")
+    service.projector.artifact_stager = stager
+    original_stage = stager.stage_upload
+    started = threading.Event()
+    finish = threading.Event()
+
+    def blocked_stage(*args, **kwargs):
+        started.set()
+        assert finish.wait(timeout=5)
+        return original_stage(*args, **kwargs)
+
+    stager.stage_upload = blocked_stage  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        service.stage_outbound_upload(
+            b"# cancelled\n",
+            kind="file",
+            content_type="text/markdown",
+            filename="cancelled.md",
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert list((tmp_path / "outbound-media").iterdir()) == []
     await service.close()
     await client.close()
 

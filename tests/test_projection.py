@@ -169,6 +169,123 @@ def test_projector_reopens_commentary_when_native_work_starts_after_final_answer
     assert commentary.text == "Continuing after the queued steer."
 
 
+def test_projector_preserves_distinct_native_items_with_identical_text() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+
+    messages = [
+        projector.project_notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thr_1",
+                    "turnId": "turn_1",
+                    "item": {
+                        "id": item_id,
+                        "type": "agentMessage",
+                        "phase": "commentary",
+                        "text": "Still working.",
+                    },
+                },
+            },
+            store,
+        )
+        for item_id in ("commentary_1", "commentary_2")
+    ]
+
+    assert [message.text for message in messages if message is not None] == [
+        "Still working.",
+        "Still working.",
+    ]
+    assert [
+        message.metadata["native_item_id"]
+        for message in messages
+        if message is not None
+    ] == ["commentary_1", "commentary_2"]
+
+
+def test_projector_deduplicates_replayed_native_item_by_identity() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+    notification = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "thr_1",
+            "turnId": "turn_1",
+            "item": {
+                "id": "commentary_1",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "text": "Still working.",
+            },
+        },
+    }
+
+    first = projector.project_notification(notification, store)
+    replay = projector.project_notification(notification, store)
+
+    assert first is not None
+    assert replay is None
+
+
+def test_projector_keeps_native_item_identity_after_resuming_output() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+    notification = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "thr_1",
+            "turnId": "turn_1",
+            "item": {
+                "id": "answer_1",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "Done.",
+            },
+        },
+    }
+
+    assert projector.project_notification(notification, store) is not None
+    assert projector.resume_turn_output(
+        thread_id="thr_1",
+        turn_id="turn_1",
+        store=store,
+    )
+
+    assert projector.project_notification(notification, store) is None
+
+
+def test_projector_accepts_native_item_when_active_turn_hint_differs() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_hint", "inProgress")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_native",
+                "item": {
+                    "id": "answer_native",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "Native output wins.",
+                },
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.text == "Native output wins."
+    assert message.metadata["native_item_id"] == "answer_native"
+
+
 def test_projector_labels_plan_updates_as_distinct_progress() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
@@ -251,6 +368,41 @@ def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path
     assert len(final.artifacts) == 1
     assert final.artifacts[0].kind == "image"
     assert Path(final.artifacts[0].local_path).is_relative_to(tmp_path / "outbound-media")
+
+
+def test_projector_releases_staged_artifact_when_turn_buffer_is_discarded(
+    tmp_path,
+) -> None:
+    image_path = tmp_path / "generated.png"
+    from PIL import Image
+
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    stager = OutboundArtifactStager(tmp_path / "outbound-media")
+    projector = MessageProjector(artifact_stager=stager)
+
+    projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "image_1",
+                    "type": "imageGeneration",
+                    "savedPath": str(image_path),
+                },
+            },
+        },
+        store,
+    )
+    staged_path = next(iter(projector.message_pump.active_artifact_paths()))
+
+    projector.discard_recovered_turn(thread_id="thr_1", turn_id="turn_1")
+    stager.cleanup_unreferenced(set())
+
+    assert not Path(staged_path).exists()
 
 
 def test_projector_preserves_terminal_text_when_agent_message_has_no_phase() -> None:
@@ -583,7 +735,26 @@ def test_projector_ignores_replayed_turn_started_for_older_turn() -> None:
     assert store.get_active_turn("thr_1") == ("turn_2", "inProgress")
 
 
-def test_projector_drops_request_from_stale_turn() -> None:
+def test_projector_uses_native_turn_started_when_active_hint_is_empty() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    projector = MessageProjector()
+
+    projector.project_notification(
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "inProgress"},
+            },
+        },
+        store,
+    )
+
+    assert store.get_active_turn("thr_1") == ("turn_1", "inProgress")
+
+
+def test_projector_accepts_native_request_even_when_active_turn_hint_differs() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     store.bind_thread("qq", "conv-1", "thr_1")
@@ -604,8 +775,32 @@ def test_projector_drops_request_from_stale_turn() -> None:
         store,
     )
 
-    assert message is None
-    assert store.match_pending_request("qq", "conv-1", "native-request-old") is None
+    assert message is not None
+    assert message.request_id == "native-request-old"
+    assert store.match_pending_request("qq", "conv-1", "native-request-old") is not None
+
+
+def test_projector_accepts_native_completion_when_active_turn_hint_differs() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_hint", "inProgress")
+    projector = MessageProjector()
+
+    message = projector.project_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_native", "status": "failed"},
+            },
+        },
+        store,
+    )
+
+    assert message is not None
+    assert message.message_type == "turn/completed"
+    assert message.metadata["status"] == "failed"
+    assert store.get_active_turn("thr_1") == ("turn_hint", "inProgress")
 
 
 def test_projector_suppresses_late_output_for_stopped_turn() -> None:

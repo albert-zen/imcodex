@@ -18,7 +18,7 @@ class MessageProjector:
             binding = store.find_binding_by_thread_id(event.thread_id)
             if binding is None:
                 return None
-            if self._is_stale_turn(event.thread_id, event.turn_id, store):
+            if self._is_suppressed_turn(event.thread_id, event.turn_id, store):
                 return None
             route = store.upsert_pending_request(
                 request_id=event.request_id or "",
@@ -47,9 +47,11 @@ class MessageProjector:
             status = str(turn.get("status") or "inProgress")
             if event.thread_id and turn_id:
                 active = store.get_active_turn(event.thread_id)
-                if active is None or active[0] == turn_id:
-                    if not store.is_turn_suppressed(event.thread_id, turn_id):
-                        store.note_active_turn(event.thread_id, turn_id, status)
+                if (
+                    (active is None or active[0] == turn_id)
+                    and not store.is_turn_suppressed(event.thread_id, turn_id)
+                ):
+                    store.note_active_turn(event.thread_id, turn_id, status)
             return None
         if event.kind == "thread_name_updated":
             name = str(event.payload.get("name") or "").strip()
@@ -119,7 +121,7 @@ class MessageProjector:
                 ),
             )
         if event.kind == "agent_delta":
-            if self._is_stale_turn(event.thread_id, event.turn_id, store):
+            if self._is_suppressed_turn(event.thread_id, event.turn_id, store):
                 return None
             self.message_pump.record_delta(
                 thread_id=event.thread_id,
@@ -134,10 +136,13 @@ class MessageProjector:
             turn = event.payload.get("turn") or {}
             turn_id = str(turn.get("id") or event.turn_id or "")
             status = str(turn.get("status") or "")
-            if self._is_stale_turn(event.thread_id, turn_id, store):
+            if self._is_suppressed_turn(event.thread_id, turn_id, store):
                 if event.thread_id and turn_id:
                     store.complete_turn(event.thread_id, turn_id, status)
-                self.message_pump.discard_turn(thread_id=event.thread_id, turn_id=turn_id)
+                self._discard_turn_buffer(
+                    thread_id=event.thread_id,
+                    turn_id=turn_id,
+                )
                 return None
             if event.thread_id and turn_id:
                 store.complete_turn(event.thread_id, turn_id, status)
@@ -149,15 +154,22 @@ class MessageProjector:
         return None
 
     def discard_recovered_turn(self, *, thread_id: str, turn_id: str) -> None:
-        self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
+        self._discard_turn_buffer(thread_id=thread_id, turn_id=turn_id)
 
     def resume_turn_output(self, *, thread_id: str, turn_id: str, store) -> bool:
-        if self._is_stale_turn(thread_id, turn_id, store):
+        if self._is_suppressed_turn(thread_id, turn_id, store):
             return False
-        return self.message_pump.resume_turn_output(
+        artifacts = self.message_pump.buffered_artifacts(
             thread_id=thread_id,
             turn_id=turn_id,
         )
+        resumed = self.message_pump.resume_turn_output(
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        if resumed and self.artifact_stager is not None:
+            self.artifact_stager.release(artifacts)
+        return resumed
 
     def project_recovered_turn(
         self,
@@ -183,7 +195,7 @@ class MessageProjector:
             store=store,
         )
         if final_messages:
-            self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
+            self._discard_turn_buffer(thread_id=thread_id, turn_id=turn_id)
             return [
                 attached
                 for message in final_messages
@@ -209,11 +221,24 @@ class MessageProjector:
         item = params.get("item") or {}
         thread_id = str(params.get("threadId") or "")
         turn_id = str(params.get("turnId") or "")
-        if self._is_stale_turn(thread_id, turn_id, store):
+        if self._is_suppressed_turn(thread_id, turn_id, store):
+            return None
+        item_id = str(
+            item.get("id")
+            or params.get("itemId")
+            or item.get("itemId")
+            or ""
+        )
+        if not self.message_pump.claim_completed_item(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            item_id=item_id,
+        ):
             return None
         item_type = item.get("type")
         if self.artifact_stager is not None:
             cwd = self._thread_cwd(thread_id, store)
+            artifacts = ()
             try:
                 artifacts = self.artifact_stager.stage_native_item(item, cwd=cwd)
                 if item_type == "agentMessage" and item.get("phase") == "final_answer":
@@ -228,6 +253,7 @@ class MessageProjector:
                         artifacts=artifacts,
                     )
             except (OSError, ValueError) as exc:
+                self.artifact_stager.release(artifacts)
                 self.message_pump.record_artifacts(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -240,6 +266,7 @@ class MessageProjector:
                 phase=item.get("phase"),
                 text=str(item.get("text") or ""),
                 emit_commentary=self._show_commentary(thread_id, store),
+                item_id=item_id,
             )
         if item_type == "commandExecution":
             command = str(item.get("command") or "")
@@ -250,6 +277,7 @@ class MessageProjector:
                 turn_id=turn_id,
                 command=command,
                 emit_progress=self._show_toolcalls(thread_id, store),
+                item_id=item_id,
             )
         if item_type == "fileChange":
             paths = [str(change.get("path")) for change in item.get("changes", []) if change.get("path")]
@@ -258,6 +286,7 @@ class MessageProjector:
                 turn_id=turn_id,
                 paths=paths,
                 emit_progress=self._show_toolcalls(thread_id, store),
+                item_id=item_id,
             )
         return None
 
@@ -482,15 +511,18 @@ class MessageProjector:
         binding = store.find_binding_by_thread_id(thread_id)
         return False if binding is None else binding.show_system
 
-    def _is_stale_turn(self, thread_id: str, turn_id: str, store) -> bool:
+    def _is_suppressed_turn(self, thread_id: str, turn_id: str, store) -> bool:
         if not thread_id or not turn_id:
             return False
-        if store.is_turn_suppressed(thread_id, turn_id):
-            return True
-        active = store.get_active_turn(thread_id)
-        if active is None:
-            return False
-        return active[0] != turn_id
+        return store.is_turn_suppressed(thread_id, turn_id)
+
+    def _discard_turn_buffer(self, *, thread_id: str, turn_id: str) -> None:
+        artifacts = self.message_pump.discard_turn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+        )
+        if self.artifact_stager is not None:
+            self.artifact_stager.release(artifacts)
 
     def _reconcile_thread_status(self, event, store) -> None:
         status = self._thread_status(event.payload)

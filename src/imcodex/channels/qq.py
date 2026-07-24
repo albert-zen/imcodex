@@ -19,7 +19,13 @@ from ..config import validate_http_endpoint
 from ..models import InboundMessage, InboundQuote, InboundQuoteAttachment, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
-from .artifacts import append_artifact_failures, record_artifact_delivery
+from .artifacts import (
+    ArtifactDeliveryReceipt,
+    PermanentArtifactDeliveryError,
+    append_artifact_failures,
+    deliver_artifact_batch,
+    record_artifact_failure,
+)
 from .base import BaseChannelAdapter
 from .media import materialize_inbound_media
 from .qq_media import (
@@ -66,7 +72,7 @@ QQ_QUOTE_TRANSCRIPT_LIMIT = 4_000
 QQ_QUOTE_REFERENCE_LIMIT = 512
 
 
-class QQPermanentArtifactError(RuntimeError):
+class QQPermanentArtifactError(PermanentArtifactDeliveryError):
     pass
 
 
@@ -394,35 +400,23 @@ class QQChannelAdapter(BaseChannelAdapter):
         path = self._conversation_path(message.conversation_id)
         reply_to = self._reply_to_message_id(message)
         sequence_key = reply_to or message.conversation_id
-        artifact_failures: list[str] = []
-        original_artifacts = list(message.artifacts)
-        for index, artifact in enumerate(original_artifacts):
-            try:
-                await self._send_artifact(
-                    message,
-                    artifact,
-                    token=token,
-                    message_path=path,
-                    sequence_key=sequence_key,
-                    reply_to=reply_to,
-                )
-            except QQPermanentArtifactError as exc:
-                artifact_failures.append(f"{artifact.filename}: {exc}")
-            except Exception:
-                # Successful earlier artifacts already have stable QQ message
-                # identities. Persist only this artifact and those not yet
-                # attempted so an outbox retry does not resend completed work.
-                message.artifacts = original_artifacts[index:]
-                raise
-            else:
-                record_artifact_delivery(
-                    message,
-                    artifact,
-                    delivery_identity=self._artifact_delivery_id(message, artifact),
-                )
-                message.artifacts = original_artifacts[index + 1 :]
-        message.artifacts = []
-        append_artifact_failures(message, artifact_failures)
+
+        async def send_artifact(
+            artifact: OutboundArtifact,
+        ) -> ArtifactDeliveryReceipt:
+            await self._send_artifact(
+                message,
+                artifact,
+                token=token,
+                message_path=path,
+                sequence_key=sequence_key,
+                reply_to=reply_to,
+            )
+            return ArtifactDeliveryReceipt(
+                delivery_identity=self._artifact_delivery_id(message, artifact),
+            )
+
+        await deliver_artifact_batch(message, send_artifact)
         if not message.text.strip():
             return
         body = self._message_body(
@@ -450,6 +444,11 @@ class QQChannelAdapter(BaseChannelAdapter):
                 if self._acknowledge_duplicate_delivery(message, fallback_exc):
                     return
                 raise
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        """Reject malformed routes before they enter the durable retry outbox."""
+
+        self._conversation_path(message.conversation_id)
 
     async def _send_artifact(
         self,
@@ -560,6 +559,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                     deliverable.append(artifact)
                 else:
                     failures.append(f"{artifact.filename}: {error}")
+                    record_artifact_failure(message, artifact, error=error)
             message.artifacts = deliverable
             append_artifact_failures(message, failures)
         if not message.metadata.get("qq_reply_identity_pinned"):

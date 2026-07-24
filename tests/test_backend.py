@@ -2263,15 +2263,134 @@ class FailingModelCatalogClient(SettingsClient):
 
 
 @pytest.mark.asyncio
-async def test_reasoning_fallback_rejects_values_outside_compatibility_choices() -> None:
+async def test_reasoning_catalog_failure_exposes_no_synthetic_choices_and_allows_reset() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    client = FailingModelCatalogClient()
+    client = FailingModelCatalogClient(config={"model": "gpt-current"})
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    with pytest.raises(AppServerError, match="available efforts"):
-        await backend.set_reasoning_effort("qq", "conv-1", "banana")
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert options["selectedModel"] == "gpt-current"
+    assert options["reasoningEfforts"] == []
+    assert options["reasoningOptionsAvailable"] is False
+    assert options["reasoningOptionsSource"] == "unavailable"
+    assert options["reasoningOptionsWarning"] == "model catalog unavailable"
+
+    with pytest.raises(AppServerError, match="options are unavailable"):
+        await backend.set_reasoning_effort("qq", "conv-1", "high")
+
+    await backend.set_reasoning_effort("qq", "conv-1", None)
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": None,
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reload_user_config": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_options_are_unavailable_when_configured_model_is_absent() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-missing"},
+        models=[
+            {
+                "id": "gpt-other",
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert options["selectedModel"] == "gpt-missing"
+    assert options["reasoningEfforts"] == []
+    assert options["reasoningOptionsAvailable"] is False
+    assert options["reasoningOptionsSource"] == "unavailable"
+    assert options["reasoningOptionsWarning"] == "the active model was not found in the native model catalog"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_options_do_not_guess_catalog_first_entry_as_active_model() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        models=[
+            {
+                "id": "gpt-first",
+                "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+            }
+        ],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert options["selectedModel"] is None
+    assert options["reasoningEfforts"] == []
+    assert options["reasoningOptionsAvailable"] is False
+    assert options["reasoningOptionsSource"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_options_are_unavailable_without_native_effort_metadata() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-current"},
+        models=[{"id": "gpt-current", "displayName": "GPT Current"}],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    options = await backend.read_reasoning_options("qq", "conv-1")
+
+    assert options["selectedModel"] == "gpt-current"
+    assert options["selectedModelDisplayName"] == "GPT Current"
+    assert options["reasoningEfforts"] == []
+    assert options["reasoningOptionsAvailable"] is False
+    assert options["reasoningOptionsSource"] == "unavailable"
+    assert (
+        options["reasoningOptionsWarning"]
+        == "the native model catalog did not include reasoning effort metadata"
+    )
+
+    with pytest.raises(AppServerError, match="options are unavailable for GPT Current"):
+        await backend.set_reasoning_effort("qq", "conv-1", "high")
 
     assert client.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_atomic_preferences_reject_non_default_reasoning_without_native_metadata() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = SettingsClient(
+        config={"model": "gpt-current"},
+        models=[{"id": "gpt-current"}],
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    with pytest.raises(AppServerError, match="does not advertise supportedReasoningEfforts"):
+        await backend.set_global_preferences({"reasoningEffort": "high"})
+
+    await backend.set_global_preferences({"reasoningEffort": None})
+
+    assert client.batch_calls == [
+        {
+            "edits": [
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": None,
+                    "mergeStrategy": "replace",
+                }
+            ],
+            "reload_user_config": True,
+        }
+    ]
 
 
 class PaginatedModelCatalogClient(SettingsClient):
@@ -2309,7 +2428,10 @@ async def test_reasoning_catalog_follows_pagination_to_find_selected_model() -> 
 
     options = await backend.read_reasoning_options("qq", "conv-1")
 
-    assert client.model_calls == [{}, {"cursor": "page-2"}]
+    assert client.model_calls == [
+        {"includeHidden": True},
+        {"includeHidden": True, "cursor": "page-2"},
+    ]
     assert options["selectedModel"] == "gpt-selected"
     assert options["reasoningEfforts"] == [
         {"reasoningEffort": "ultra", "description": "Deep"},

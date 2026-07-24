@@ -139,11 +139,15 @@ def create_application(
         return {"status": "shutting_down"}
 
     install_admin_routes(app, runtime, config_store=admin_config_store)
+    configured_run_dir = getattr(settings, "run_dir", None)
     app.state.delivery_credential = install_delivery_route(
         app,
         runtime,
-        data_dir=Path(getattr(settings, "data_dir", Path(".imcodex"))),
-        run_dir=Path(getattr(settings, "run_dir", Path(".imcodex-run"))),
+        run_dir=(
+            Path(configured_run_dir)
+            if configured_run_dir is not None
+            else Path(getattr(settings, "data_dir", Path(".imcodex"))) / "run"
+        ),
     )
     if bool(getattr(settings, "debug_api_enabled", False)):
         install_debug_routes(app, runtime)

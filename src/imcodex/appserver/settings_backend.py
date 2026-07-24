@@ -43,16 +43,6 @@ _LEGACY_PERMISSION_PRESETS = {
         },
     ],
 }
-_FALLBACK_REASONING_EFFORTS = (
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultra",
-)
 _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _NATIVE_PERMISSION_CONFIG_KEYS = (
     "default_permissions",
@@ -285,7 +275,7 @@ class CodexSettingsBackendMixin:
         *,
         config_result: dict | None = None,
         include_models: bool = False,
-        include_hidden: bool = False,
+        include_hidden: bool = True,
         effective_config: dict | None = None,
     ) -> dict:
         result = (
@@ -297,33 +287,38 @@ class CodexSettingsBackendMixin:
         except AppServerError as exc:
             if include_models:
                 result["models"] = []
-            result["reasoningEfforts"] = self._fallback_reasoning_efforts()
-            result["reasoningOptionsSource"] = "fallback"
-            result["reasoningOptionsWarning"] = str(exc)
-            result["selectedModel"] = self._configured_model_id(config)
-            return result
+            return self._unavailable_reasoning_options(
+                result,
+                selected_model=self._configured_model_id(config),
+                warning=str(exc),
+            )
 
         models = [item for item in catalog.get("data", []) if isinstance(item, dict)]
         if include_models:
             result["models"] = models
         selected = self._select_reasoning_model(config, models)
         if selected is None:
-            result["reasoningEfforts"] = self._fallback_reasoning_efforts()
-            result["reasoningOptionsSource"] = "fallback"
-            result["reasoningOptionsWarning"] = "the active model was not found in the native model catalog"
-            result["selectedModel"] = self._configured_model_id(config)
-            return result
+            return self._unavailable_reasoning_options(
+                result,
+                selected_model=self._configured_model_id(config),
+                warning="the active model was not found in the native model catalog",
+            )
 
         efforts = self._native_reasoning_efforts(selected)
+        selected_model = str(selected.get("id") or selected.get("model") or "") or None
+        selected_model_display_name = str(selected.get("displayName") or "") or None
         if efforts is None:
-            result["reasoningEfforts"] = self._fallback_reasoning_efforts()
-            result["reasoningOptionsSource"] = "fallback"
-            result["reasoningOptionsWarning"] = "the native model catalog did not include reasoning effort metadata"
-        else:
-            result["reasoningEfforts"] = efforts
-            result["reasoningOptionsSource"] = "native"
-        result["selectedModel"] = str(selected.get("id") or selected.get("model") or "") or None
-        result["selectedModelDisplayName"] = str(selected.get("displayName") or "") or None
+            return self._unavailable_reasoning_options(
+                result,
+                selected_model=selected_model,
+                selected_model_display_name=selected_model_display_name,
+                warning="the native model catalog did not include reasoning effort metadata",
+            )
+        result["reasoningEfforts"] = efforts
+        result["reasoningOptionsAvailable"] = True
+        result["reasoningOptionsSource"] = "native"
+        result["selectedModel"] = selected_model
+        result["selectedModelDisplayName"] = selected_model_display_name
         result["defaultReasoningEffort"] = selected.get("defaultReasoningEffort")
         return result
 
@@ -765,7 +760,12 @@ class CodexSettingsBackendMixin:
 
         effort = effective_candidate.get("model_reasoning_effort") or effective_candidate.get("reasoningEffort")
         native_efforts = self._native_reasoning_efforts(selected)
-        if effort is not None and native_efforts is not None:
+        if effort is not None and native_efforts is None:
+            raise AppServerError(
+                "reasoning effort options are unavailable because the selected native model "
+                "does not advertise supportedReasoningEfforts"
+            )
+        if effort is not None:
             supported = {item["reasoningEffort"] for item in native_efforts}
             if str(effort).lower() not in supported:
                 raise AppServerError(
@@ -1220,7 +1220,7 @@ class CodexSettingsBackendMixin:
                 None,
             )
         default = next((model for model in models if model.get("isDefault")), None)
-        return default or (models[0] if models else None)
+        return default
 
     @staticmethod
     def _model_supports_fast_tier(model: dict) -> bool:
@@ -1243,6 +1243,15 @@ class CodexSettingsBackendMixin:
         )
 
     def _validated_reasoning_effort(self, effort: str, options: dict) -> str:
+        if options.get("reasoningOptionsAvailable") is False:
+            model = str(
+                options.get("selectedModelDisplayName")
+                or options.get("selectedModel")
+                or "the active model"
+            )
+            raise AppServerError(
+                f"reasoning effort options are unavailable for {model}; use default to clear the override"
+            )
         supported = {
             str(item.get("reasoningEffort") or "").lower()
             for item in options.get("reasoningEfforts", [])
@@ -1281,5 +1290,19 @@ class CodexSettingsBackendMixin:
             efforts.append(normalized)
         return efforts
 
-    def _fallback_reasoning_efforts(self) -> list[dict]:
-        return [{"reasoningEffort": effort} for effort in _FALLBACK_REASONING_EFFORTS]
+    @staticmethod
+    def _unavailable_reasoning_options(
+        result: dict,
+        *,
+        selected_model: str | None,
+        warning: str,
+        selected_model_display_name: str | None = None,
+    ) -> dict:
+        result["reasoningEfforts"] = []
+        result["reasoningOptionsAvailable"] = False
+        result["reasoningOptionsSource"] = "unavailable"
+        result["reasoningOptionsWarning"] = warning
+        result["selectedModel"] = selected_model
+        if selected_model_display_name is not None:
+            result["selectedModelDisplayName"] = selected_model_display_name
+        return result

@@ -1,14 +1,66 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from ..models import OutboundArtifact, OutboundMessage
 
 
 class PermanentArtifactDeliveryError(RuntimeError):
     """An artifact cannot be delivered and retrying the same bytes will not help."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDeliveryReceipt:
+    platform_message_id: str = ""
+    delivery_identity: str = ""
+
+
+async def deliver_artifact_batch(
+    message: OutboundMessage,
+    send_one: Callable[
+        [OutboundArtifact],
+        Awaitable[ArtifactDeliveryReceipt | None],
+    ],
+) -> None:
+    """Deliver artifacts with one shared retry checkpoint contract.
+
+    A transient failure leaves the failed artifact and the unattempted suffix
+    on ``message.artifacts`` for the durable outbox retry. Permanent failures
+    become a text notice and do not block the remaining artifacts.
+    """
+
+    failures: list[str] = []
+    original_artifacts = list(message.artifacts)
+    for index, artifact in enumerate(original_artifacts):
+        try:
+            receipt = await send_one(artifact)
+        except PermanentArtifactDeliveryError as exc:
+            error = str(exc)
+            failures.append(f"{artifact.filename}: {error}")
+            record_artifact_failure(message, artifact, error=error)
+        except asyncio.CancelledError:
+            append_artifact_failures(message, failures)
+            message.artifacts = original_artifacts[index:]
+            raise
+        except Exception:
+            append_artifact_failures(message, failures)
+            message.artifacts = original_artifacts[index:]
+            raise
+        else:
+            receipt = receipt or ArtifactDeliveryReceipt()
+            record_artifact_delivery(
+                message,
+                artifact,
+                platform_message_id=receipt.platform_message_id,
+                delivery_identity=receipt.delivery_identity,
+            )
+        message.artifacts = original_artifacts[index + 1 :]
+    message.artifacts = []
+    append_artifact_failures(message, failures)
 
 
 async def read_managed_artifact(
@@ -89,5 +141,27 @@ def record_artifact_delivery(
             "status": "delivered",
             "platform_message_id": platform_message_id,
             "delivery_identity": delivery_identity,
+        }
+    )
+
+
+def record_artifact_failure(
+    message: OutboundMessage,
+    artifact: OutboundArtifact,
+    *,
+    error: str,
+) -> None:
+    receipts = message.metadata.setdefault("artifact_receipts", [])
+    if not isinstance(receipts, list):
+        return
+    receipts.append(
+        {
+            "filename": artifact.filename,
+            "sha256": artifact.sha256,
+            "local_path": artifact.local_path,
+            "status": "failed",
+            "error": error,
+            "platform_message_id": "",
+            "delivery_identity": "",
         }
     )

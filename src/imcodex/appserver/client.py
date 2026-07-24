@@ -192,6 +192,8 @@ class AppServerClient:
         self._has_been_ready = False
         self._next_request_id = 1
         self._pending_futures: dict[int, tuple[int, asyncio.Future[JsonDict]]] = {}
+        self._active_server_requests: set[tuple[int, str]] = set()
+        self._answered_server_requests: set[tuple[int, str]] = set()
         self._notification_handlers: list[NotificationHandler] = []
         self._server_request_handlers: list[ServerRequestHandler] = []
         self._connection_reset_handlers: list[ConnectionResetHandler] = []
@@ -674,6 +676,9 @@ class AppServerClient:
             if self.connection_epoch == reply_epoch and self._transport is transport:
                 await self._reset_connection()
             raise
+        reply_key = self._server_request_reply_key(reply_epoch, transport_request_id)
+        if reply_key in self._active_server_requests:
+            self._answered_server_requests.add(reply_key)
         return payload
 
     async def reply_error_to_transport_request(
@@ -698,6 +703,9 @@ class AppServerClient:
             if self.connection_epoch == reply_epoch and self._transport is transport:
                 await self._reset_connection()
             raise
+        reply_key = self._server_request_reply_key(reply_epoch, transport_request_id)
+        if reply_key in self._active_server_requests:
+            self._answered_server_requests.add(reply_key)
         return payload
 
     def _reply_transport(self, expected_connection_epoch: int | None) -> AppServerTransport:
@@ -826,6 +834,8 @@ class AppServerClient:
                 raise AppServerError("app-server client is closed")
         self.connection_epoch += 1
         epoch = self.connection_epoch
+        self._active_server_requests.clear()
+        self._answered_server_requests.clear()
         queue: asyncio.Queue[JsonDict] = asyncio.Queue(maxsize=self._notification_queue_size)
         server_request_queue: asyncio.Queue[JsonDict] = asyncio.Queue(
             maxsize=self._server_request_queue_size
@@ -1138,6 +1148,11 @@ class AppServerClient:
                 queue.task_done()
 
     async def _dispatch_one(self, message: JsonDict, epoch: int, *, queue_kind: str) -> None:
+        reply_key = None
+        if "id" in message and "method" in message:
+            reply_key = self._server_request_reply_key(epoch, message["id"])
+            self._active_server_requests.add(reply_key)
+            self._answered_server_requests.discard(reply_key)
         try:
             await self._dispatch(message, epoch)
         except Exception as exc:
@@ -1148,6 +1163,68 @@ class AppServerClient:
                 message=str(exc),
                 data={"error_type": type(exc).__name__, "queue": queue_kind},
             )
+            if (
+                reply_key is None
+                or reply_key in self._answered_server_requests
+            ):
+                return
+            try:
+                await self._reply_internal_error_to_server_request(message, epoch)
+            except Exception as reply_exc:
+                emit_event(
+                    component="appserver.client",
+                    event="appserver.server_request.error_reply.failed",
+                    level="ERROR",
+                    message=str(reply_exc) or "Failed to reject server request",
+                    data={
+                        "connection_epoch": epoch,
+                        "error_type": type(reply_exc).__name__,
+                        "method": str(message["method"]),
+                    },
+                )
+        finally:
+            if reply_key is not None:
+                self._active_server_requests.discard(reply_key)
+                self._answered_server_requests.discard(reply_key)
+
+    async def _reply_internal_error_to_server_request(
+        self,
+        message: JsonDict,
+        epoch: int,
+    ) -> None:
+        transport = self._reply_transport(epoch)
+        payload: JsonDict = {
+            "id": message["id"],
+            "error": {
+                "code": -32603,
+                "message": "Internal error",
+                "data": {"method": str(message["method"])},
+            },
+        }
+        try:
+            await self._send_json(payload, transport=transport)
+        except Exception:
+            if self.connection_epoch == epoch and self._transport is transport:
+                await self._reset_connection()
+            raise
+        reply_key = self._server_request_reply_key(epoch, message["id"])
+        if reply_key in self._active_server_requests:
+            self._answered_server_requests.add(reply_key)
+
+    @staticmethod
+    def _server_request_reply_key(
+        epoch: int,
+        transport_request_id: object,
+    ) -> tuple[int, str]:
+        return (
+            epoch,
+            json.dumps(
+                transport_request_id,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
 
     @staticmethod
     def _uses_server_request_lane(message: JsonDict) -> bool:
@@ -1325,6 +1402,8 @@ class AppServerClient:
         self._verified_shared_filesystem_epoch = None
         self._initialize_result = None
         self._ready_health = {}
+        self._active_server_requests.clear()
+        self._answered_server_requests.clear()
         self.connection_mode = "disconnected"
         await self._supervisor.stop()
         if notify_handlers and reset_epoch > 0:

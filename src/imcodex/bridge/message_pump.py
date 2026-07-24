@@ -15,7 +15,7 @@ class TurnBuffer:
     deltas: list[str] = field(default_factory=list)
     command_summaries: list[str] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
-    emitted_progress_texts: set[str] = field(default_factory=set)
+    completed_item_ids: set[str] = field(default_factory=set)
     final_text: str = ""
     final_visible: bool = False
     artifacts: list[OutboundArtifact] = field(default_factory=list)
@@ -35,7 +35,6 @@ class MessagePump:
         buffer.deltas.clear()
         buffer.command_summaries.clear()
         buffer.changed_files.clear()
-        buffer.emitted_progress_texts.clear()
         buffer.final_text = ""
         buffer.final_visible = False
         buffer.artifacts.clear()
@@ -56,10 +55,24 @@ class MessagePump:
         if not emit_progress or buffer.final_visible or not delta:
             return None
         return self._emit_progress(
-            buffer,
             delta,
             message_type="item/agentMessage/delta",
         )
+
+    def claim_completed_item(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        item_id: str,
+    ) -> bool:
+        if not item_id:
+            return True
+        buffer = self._buffer(thread_id, turn_id)
+        if item_id in buffer.completed_item_ids:
+            return False
+        buffer.completed_item_ids.add(item_id)
+        return True
 
     def record_agent_message(
         self,
@@ -69,8 +82,10 @@ class MessagePump:
         phase: str | None,
         text: str,
         emit_commentary: bool,
+        item_id: str = "",
     ) -> OutboundMessage | None:
         buffer = self._buffer(thread_id, turn_id)
+        metadata = self._native_item_metadata(item_id=item_id, phase=phase)
         if phase == "final_answer":
             if not text.strip():
                 # Do not mark a blank item as visibly delivered. A later
@@ -84,7 +99,7 @@ class MessagePump:
                 conversation_id="",
                 message_type="agentMessage",
                 text=self._with_artifact_errors(text, buffer),
-                metadata={"phase": "final_answer"},
+                metadata=metadata,
                 artifacts=tuple(buffer.artifacts),
             )
         if phase is None:
@@ -93,18 +108,16 @@ class MessagePump:
             if not text or not emit_commentary or buffer.final_visible:
                 return None
             return self._emit_progress(
-                buffer,
                 text,
                 message_type="agentMessage",
-                metadata={},
+                metadata=metadata,
             )
         if not text or not emit_commentary or buffer.final_visible:
             return None
         return self._emit_progress(
-            buffer,
             text,
             message_type="agentMessage",
-            metadata={"phase": phase},
+            metadata=metadata,
         )
 
     def record_command(
@@ -114,6 +127,7 @@ class MessagePump:
         turn_id: str,
         command: str,
         emit_progress: bool,
+        item_id: str = "",
     ) -> OutboundMessage | None:
         buffer = self._buffer(thread_id, turn_id)
         text = f"Executed `{command}`"
@@ -121,9 +135,9 @@ class MessagePump:
         if not emit_progress or buffer.final_visible:
             return None
         return self._emit_progress(
-            buffer,
             text,
             message_type="commandExecution",
+            metadata=self._native_item_metadata(item_id=item_id),
         )
 
     def record_file_change(
@@ -133,6 +147,7 @@ class MessagePump:
         turn_id: str,
         paths: list[str],
         emit_progress: bool,
+        item_id: str = "",
     ) -> OutboundMessage | None:
         buffer = self._buffer(thread_id, turn_id)
         buffer.changed_files.extend(paths)
@@ -141,9 +156,9 @@ class MessagePump:
         lines = ["Changed files:"]
         lines.extend(f"- {path}" for path in paths)
         return self._emit_progress(
-            buffer,
             "\n".join(lines),
             message_type="fileChange",
+            metadata=self._native_item_metadata(item_id=item_id),
         )
 
     def record_artifacts(
@@ -210,8 +225,23 @@ class MessagePump:
             artifacts=tuple(buffer.artifacts),
         )
 
-    def discard_turn(self, *, thread_id: str, turn_id: str) -> None:
-        self._turns.pop((thread_id, turn_id), None)
+    def discard_turn(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+    ) -> tuple[OutboundArtifact, ...]:
+        buffer = self._turns.pop((thread_id, turn_id), None)
+        return () if buffer is None else tuple(buffer.artifacts)
+
+    def buffered_artifacts(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+    ) -> tuple[OutboundArtifact, ...]:
+        buffer = self._turns.get((thread_id, turn_id))
+        return () if buffer is None else tuple(buffer.artifacts)
 
     def active_artifact_paths(self) -> set[str]:
         return {
@@ -281,17 +311,13 @@ class MessagePump:
             self._turns[key] = buffer
         return buffer
 
+    @staticmethod
     def _emit_progress(
-        self,
-        buffer: TurnBuffer,
         text: str,
         *,
         message_type: str,
         metadata: dict | None = None,
-    ) -> OutboundMessage | None:
-        if text in buffer.emitted_progress_texts:
-            return None
-        buffer.emitted_progress_texts.add(text)
+    ) -> OutboundMessage:
         return OutboundMessage(
             channel_id="",
             conversation_id="",
@@ -299,6 +325,15 @@ class MessagePump:
             text=text,
             metadata={} if metadata is None else metadata,
         )
+
+    @staticmethod
+    def _native_item_metadata(*, item_id: str, phase: str | None = None) -> dict:
+        metadata = {}
+        if item_id:
+            metadata["native_item_id"] = item_id
+        if phase is not None:
+            metadata["phase"] = phase
+        return metadata
 
     @staticmethod
     def _with_artifact_errors(text: str, buffer: TurnBuffer) -> str:

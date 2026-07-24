@@ -57,6 +57,7 @@ class ConversationStore(
         self._terminal_delivery_watches: dict[tuple[str, str], TerminalDeliveryWatch] = {}
         self._pending_terminal_deliveries: dict[str, PendingTerminalDelivery] = {}
         self._acknowledged_terminal_deliveries: dict[str, tuple[str, str]] = {}
+        self._standalone_delivery_outcomes: dict[str, dict] = {}
         self._next_terminal_delivery_sequence = 0
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
@@ -614,6 +615,15 @@ class ConversationStore(
                     "delivery_id": delivery_id,
                     "thread_id": terminal_key[0],
                     "turn_id": terminal_key[1],
+                    **(
+                        {
+                            "outcome": self._standalone_delivery_outcomes[
+                                delivery_id
+                            ]
+                        }
+                        if delivery_id in self._standalone_delivery_outcomes
+                        else {}
+                    ),
                 }
                 for delivery_id, terminal_key
                 in self._acknowledged_terminal_deliveries.items()
@@ -716,11 +726,18 @@ class ConversationStore(
             thread_id = str(item.get("thread_id") or "")
             turn_id = str(item.get("turn_id") or "")
             message = item.get("message")
-            if not thread_id or not turn_id or (message is not None and not isinstance(message, dict)):
+            if (
+                bool(thread_id) != bool(turn_id)
+                or (message is not None and not isinstance(message, dict))
+            ):
                 raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
             if message is None:
                 # State written before watches and projected deliveries were
                 # split used an empty outbox entry as the turn watch.
+                if not thread_id:
+                    raise RuntimeError(
+                        f"Invalid pending terminal delivery entry: {self.state_path}"
+                    )
                 self._terminal_delivery_watches[(thread_id, turn_id)] = TerminalDeliveryWatch(
                     thread_id=thread_id,
                     turn_id=turn_id,
@@ -762,13 +779,26 @@ class ConversationStore(
             delivery_id = str(item.get("delivery_id") or "")
             thread_id = str(item.get("thread_id") or "")
             turn_id = str(item.get("turn_id") or "")
-            if not delivery_id or not thread_id or not turn_id:
+            if not delivery_id or bool(thread_id) != bool(turn_id):
                 raise RuntimeError(
                     f"Invalid acknowledged terminal delivery entry: {self.state_path}"
                 )
-            if (thread_id, turn_id) not in self._terminal_delivery_watches:
+            if (
+                thread_id
+                and (thread_id, turn_id) not in self._terminal_delivery_watches
+            ):
                 continue
             self._acknowledged_terminal_deliveries[delivery_id] = (
                 thread_id,
                 turn_id,
             )
+            outcome = item.get("outcome")
+            if not thread_id and outcome is not None:
+                if not isinstance(outcome, dict):
+                    raise RuntimeError(
+                        f"Invalid acknowledged terminal delivery entry: {self.state_path}"
+                    )
+                self._standalone_delivery_outcomes[delivery_id] = copy.deepcopy(
+                    outcome
+                )
+        self._prune_standalone_delivery_acknowledgements()

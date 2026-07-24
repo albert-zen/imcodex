@@ -60,6 +60,8 @@ components:
       - tests/test_commands.py
       - tests/test_settings.py
       - tests/test_projection*.py
+      - tests/test_outbound_artifacts.py
+      - tests/test_store.py
       - tests/test_service_e2e.py
     docs:
       - docs/design.md
@@ -105,6 +107,7 @@ components:
       - src/imcodex/composition.py
       - src/imcodex/config.py
       - src/imcodex/debug_harness/**
+      - src/imcodex/delivery_api.py
       - src/imcodex/logging_utils.py
       - src/imcodex/main.py
       - src/imcodex/observability/**
@@ -115,6 +118,8 @@ components:
       - tests/test_admin_*.py
       - tests/test_application.py
       - tests/test_architecture.py
+      - tests/test_channels_cli.py
+      - tests/test_delivery_api.py
       - tests/test_main.py
       - tests/test_observability.py
       - tests/test_restart_executor.py
@@ -183,6 +188,7 @@ layers:
       - src/imcodex/admin/**
       - src/imcodex/application.py
       - src/imcodex/composition.py
+      - src/imcodex/delivery_api.py
       - src/imcodex/debug_harness/**
       - src/imcodex/main.py
       - src/imcodex/ops.py

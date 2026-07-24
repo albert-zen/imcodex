@@ -5,6 +5,9 @@ import copy
 from .models import PendingTerminalDelivery, TerminalDeliveryWatch
 
 
+_STANDALONE_DELIVERY_ACK_LIMIT = 512
+
+
 class TerminalDeliveryStoreMixin:
     """Persist native recovery watches and the independent IM delivery outbox."""
 
@@ -74,6 +77,15 @@ class TerminalDeliveryStoreMixin:
             )
         ]
 
+    def find_delivery_id_with_prefix(self, prefix: str) -> str | None:
+        for delivery_id in self._pending_terminal_deliveries:
+            if delivery_id.startswith(prefix):
+                return delivery_id
+        for delivery_id in self._acknowledged_terminal_deliveries:
+            if delivery_id.startswith(prefix):
+                return delivery_id
+        return None
+
     def update_terminal_delivery_message(
         self,
         delivery_id: str,
@@ -107,14 +119,40 @@ class TerminalDeliveryStoreMixin:
         pending = self._pending_terminal_deliveries.pop(delivery_id, None)
         if pending is None:
             return
+        if (pending.thread_id, pending.turn_id) == ("", ""):
+            metadata = pending.message.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            self._standalone_delivery_outcomes[delivery_id] = copy.deepcopy(
+                {
+                    key: metadata[key]
+                    for key in ("artifact_receipts", "artifact_failures")
+                    if key in metadata
+                }
+            )
         self._acknowledged_terminal_deliveries[delivery_id] = (
             pending.thread_id,
             pending.turn_id,
         )
+        self._prune_standalone_delivery_acknowledgements()
         self._save()
+
+    def _prune_standalone_delivery_acknowledgements(self) -> None:
+        standalone_ids = [
+            delivery_id
+            for delivery_id, terminal_key
+            in self._acknowledged_terminal_deliveries.items()
+            if terminal_key == ("", "")
+        ]
+        for delivery_id in standalone_ids[:-_STANDALONE_DELIVERY_ACK_LIMIT]:
+            self._acknowledged_terminal_deliveries.pop(delivery_id, None)
+            self._standalone_delivery_outcomes.pop(delivery_id, None)
 
     def is_terminal_delivery_acknowledged(self, delivery_id: str) -> bool:
         return delivery_id in self._acknowledged_terminal_deliveries
+
+    def get_standalone_delivery_outcome(self, delivery_id: str) -> dict | None:
+        outcome = self._standalone_delivery_outcomes.get(delivery_id)
+        return None if outcome is None else copy.deepcopy(outcome)
 
     def has_acknowledged_terminal_delivery(
         self,

@@ -451,9 +451,13 @@ while preserving artifacts still buffered by active native turns.
 Every configured outbound channel consumes that same artifact contract. QQ,
 Telegram, Feishu/Lark, and Weixin project images and files into their native
 attachment APIs; the generic outbound webhook projects artifact messages as a
-multipart payload. If an adapter reports a later failure, the bridge records
-its in-memory per-artifact progress back to the durable message, then retries
-only the remaining tail; terminal text is sent last. A process crash between a
+multipart payload. Adapters with per-artifact platform APIs use one batch-
+delivery contract: a successful artifact records a receipt, a retryable
+failure leaves that artifact and the unattempted suffix pending, and a
+permanent failure becomes a visible notice without blocking later artifacts.
+The generic multipart webhook is batch-atomic and preserves the complete
+message on retry. The bridge records available progress back to the durable
+message, and terminal text is sent last. A process crash between a
 platform acceptance and that checkpoint remains at-least-once unless the
 platform supports the adapter's stable delivery identity. A
 permanent platform or validation rejection becomes a visible failure notice;
@@ -662,7 +666,9 @@ Behavior:
 - reasoning-effort changes are written to native Codex config
 - choices and descriptions come from `model/list[].supportedReasoningEfforts`
 - the model's `defaultReasoningEffort` is identified in the command output
-- if native model metadata is unavailable, the bridge may expose a compatibility list instead
+- if the native model catalog, active-model match, or reasoning metadata is
+  unavailable, the bridge exposes no synthetic choices; only `/think default`
+  remains available to clear an existing override
 - a non-default effort is rejected when the selected native model does not advertise it
 - config changes reload the native user-config stack and apply as defaults to new threads;
   existing and resumed native threads retain their persisted thread settings
@@ -907,7 +913,13 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
 - Unsupported attachments fail visibly and never become arbitrary local paths.
 - Explicit delivery enters the running bridge over its loopback-only current-
   instance endpoint and reuses configured access policy, staging, adapters,
-  multiplex routing, retry identity, and outbound artifact behavior.
+  multiplex routing, retry identity, durable outbox, and outbound artifact
+  behavior. The HTTP route does not call a channel sink directly.
 - Explicit delivery always names its channel and conversation and returns a
-  machine-readable overall/per-artifact receipt. It does not infer a remote
-  destination or create a second channel runtime.
+  machine-readable overall/per-artifact receipt. A transient channel failure
+  returns `queued` after durable staging and is retried by the same outbox used
+  for projected native output. Reusing the same delivery ID and payload returns
+  the persisted final receipt, including per-artifact failures, across a bridge
+  restart; reusing the ID for different content or a different destination is
+  rejected. It does not infer a remote destination or create a second channel
+  runtime.

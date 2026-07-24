@@ -86,6 +86,42 @@ def test_store_keeps_acknowledged_delivery_until_turn_watch_is_consumed(
     assert not completed.is_terminal_delivery_acknowledged("answer-1")
 
 
+def test_store_reloads_standalone_pending_and_acknowledged_deliveries(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
+    store.stage_terminal_delivery(
+        delivery_id="standalone-1",
+        thread_id="",
+        turn_id="",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "tool_delivery",
+            "text": "Standalone message",
+            "metadata": {
+                "delivery_id": "standalone-1",
+                "source": "channels.send",
+            },
+        },
+    )
+
+    pending = ConversationStore(clock=lambda: 8.0, state_path=state_path)
+
+    assert [
+        (item.delivery_id, item.thread_id, item.turn_id)
+        for item in pending.list_pending_terminal_deliveries()
+    ] == [("standalone-1", "", "")]
+
+    pending.complete_terminal_delivery("standalone-1")
+    acknowledged = ConversationStore(clock=lambda: 9.0, state_path=state_path)
+
+    assert acknowledged.list_pending_terminal_deliveries() == []
+    assert acknowledged.is_terminal_delivery_acknowledged("standalone-1")
+    assert acknowledged.get_standalone_delivery_outcome("standalone-1") == {}
+
+
 def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 7.0, state_path=state_path)

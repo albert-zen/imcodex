@@ -6,14 +6,14 @@ from pathlib import Path
 import re
 from typing import Any, Awaitable, Callable
 
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..observability.runtime import emit_event, mark_channel_health
 from .access import ChannelAccessPolicy
 from .artifacts import (
+    ArtifactDeliveryReceipt,
     PermanentArtifactDeliveryError,
-    append_artifact_failures,
+    deliver_artifact_batch,
     read_managed_artifact,
-    record_artifact_delivery,
     stable_artifact_identity,
 )
 from .base import BaseChannelAdapter
@@ -309,9 +309,8 @@ class WeixinChannelAdapter(BaseChannelAdapter):
         if not context_token:
             raise RuntimeError("Weixin cannot send before this user has supplied an active context token.")
         delivery_id = str(message.metadata.get("delivery_id") or "").strip()
-        artifact_failures: list[str] = []
-        original_artifacts = list(message.artifacts)
-        for index, artifact in enumerate(original_artifacts):
+
+        async def send_artifact(artifact: OutboundArtifact) -> ArtifactDeliveryReceipt:
             try:
                 _source, content = await read_managed_artifact(
                     artifact,
@@ -326,37 +325,22 @@ class WeixinChannelAdapter(BaseChannelAdapter):
                     context_token=context_token,
                     client_id=(f"imcodex-artifact-{identity[:32]}" if identity else None),
                 )
-            except PermanentArtifactDeliveryError as exc:
-                artifact_failures.append(f"{artifact.filename}: {exc}")
             except ILinkError as exc:
                 if exc.code == STALE_TOKEN_CODE:
                     self._mark_stale_token()
-                    append_artifact_failures(message, artifact_failures)
-                    message.artifacts = original_artifacts[index:]
                     raise
                 if exc.code in {413, 415, 422}:
-                    artifact_failures.append(
-                        f"{artifact.filename}: Weixin rejected the upload"
-                    )
-                else:
-                    append_artifact_failures(message, artifact_failures)
-                    message.artifacts = original_artifacts[index:]
-                    raise
-            except Exception:
-                append_artifact_failures(message, artifact_failures)
-                message.artifacts = original_artifacts[index:]
+                    raise PermanentArtifactDeliveryError(
+                        "Weixin rejected the upload"
+                    ) from exc
                 raise
-            else:
-                record_artifact_delivery(
-                    message,
-                    artifact,
-                    delivery_identity=(
-                        f"imcodex-artifact-{identity[:32]}" if identity else ""
-                    ),
+            return ArtifactDeliveryReceipt(
+                delivery_identity=(
+                    f"imcodex-artifact-{identity[:32]}" if identity else ""
                 )
-                message.artifacts = original_artifacts[index + 1 :]
-        message.artifacts = []
-        append_artifact_failures(message, artifact_failures)
+            )
+
+        await deliver_artifact_batch(message, send_artifact)
         if not message.text.strip():
             return
         for index, chunk in enumerate(split_text(message.text, limit=WEIXIN_TEXT_LIMIT)):
@@ -371,6 +355,11 @@ class WeixinChannelAdapter(BaseChannelAdapter):
                 if exc.code == STALE_TOKEN_CODE:
                     self._mark_stale_token()
                 raise
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        """Reject malformed routes before they enter the durable retry outbox."""
+
+        self._parse_conversation_id(message.conversation_id)
 
     async def _run_forever(self) -> None:
         transport = self._transport

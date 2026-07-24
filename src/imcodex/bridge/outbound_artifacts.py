@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+from functools import wraps
 import hashlib
 import mimetypes
 import os
 from pathlib import Path
 import re
 import secrets
+from threading import RLock
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -23,12 +25,38 @@ _MAX_FILE_BYTES = 25 * 1024 * 1024
 _MAX_SPOOL_BYTES = 256 * 1024 * 1024
 
 
+def _serialized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _serialized_stage(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            previous_leases = set(self._leased_paths)
+            try:
+                return method(self, *args, **kwargs)
+            except BaseException:
+                self._leased_paths.intersection_update(previous_leases)
+                raise
+
+    return wrapped
+
+
 class OutboundArtifactStager:
     """Copies explicit native outputs into a private, content-addressed spool."""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
+        self._lock = RLock()
+        self._leased_paths: set[str] = set()
 
+    @_serialized_stage
     def stage_native_item(self, item: dict, *, cwd: str = "") -> tuple[OutboundArtifact, ...]:
         item_type = str(item.get("type") or "")
         if item_type == "imageGeneration":
@@ -63,6 +91,7 @@ class OutboundArtifactStager:
                     )
         return tuple(artifacts)
 
+    @_serialized_stage
     def stage_upload(
         self,
         content: bytes,
@@ -96,6 +125,7 @@ class OutboundArtifactStager:
             unique=True,
         )
 
+    @_serialized_stage
     def stage_markdown_links(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
         artifacts: list[OutboundArtifact] = []
         for match in _MARKDOWN_LINK.finditer(text):
@@ -245,7 +275,7 @@ class OutboundArtifactStager:
                 temporary.unlink(missing_ok=True)
         if os.name != "nt":
             os.chmod(target, 0o600)
-        return OutboundArtifact(
+        artifact = OutboundArtifact(
             kind="image" if kind == "image" else "file",
             local_path=str(target.resolve()),
             content_type=content_type,
@@ -253,13 +283,23 @@ class OutboundArtifactStager:
             size_bytes=len(content),
             sha256=digest,
         )
+        self._leased_paths.add(artifact.local_path)
+        return artifact
 
+    @_serialized
+    def release(self, artifacts) -> None:
+        for artifact in artifacts:
+            path = str(getattr(artifact, "local_path", artifact) or "")
+            if path:
+                self._leased_paths.discard(path)
+
+    @_serialized
     def cleanup_unreferenced(self, referenced_paths: set[str]) -> None:
         """Remove stale spool entries at startup while preserving durable outbox refs."""
         if not self.root.exists():
             return
         referenced: set[Path] = set()
-        for value in referenced_paths:
+        for value in {*referenced_paths, *self._leased_paths}:
             try:
                 candidate = Path(value).resolve(strict=False)
                 candidate.relative_to(self.root.resolve())

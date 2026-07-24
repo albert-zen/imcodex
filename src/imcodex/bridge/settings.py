@@ -66,8 +66,6 @@ def render_reasoning_effort(payload: dict) -> str:
     else:
         lines.append("- No configurable effort advertised by this model")
     lines.append("- /think default")
-    if payload.get("reasoningOptionsSource") == "fallback":
-        lines.extend(["", "Using compatibility effort choices because the native model metadata was unavailable."])
     lines.extend(["", "This is the configured default; an already-loaded thread may retain its native settings."])
     return "\n".join(lines)
 

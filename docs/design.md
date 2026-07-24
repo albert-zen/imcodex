@@ -188,8 +188,8 @@ transport facts, not different ownership modes, and the bridge cannot observe a
 meaningful difference between the old `dedicated-ws` and `shared-ws` labels.
 The target URL is therefore the canonical configuration.
 
-Terminal IM delivery is the one restart boundary that needs a durable bridge
-checkpoint. While a bound native turn is running, the checkpoint stores only
+Outbound IM delivery is the one restart boundary that needs a durable bridge
+checkpoint. While a bound native turn is running, the Turn watch stores only
 its thread/turn identity and means “this IM route is still owed a terminal
 result”; it does not say whether the turn is active. Rehydration asks native
 Codex for that status. Once projected, the checkpoint also carries the exact
@@ -197,7 +197,12 @@ outbound message and stable delivery ID until the channel sink accepts it.
 This outbox is delivery state, not a copy of native turn history, and ownership
 moves with the conversation-to-thread binding until projection. Once staged,
 the message keeps its exact IM route and survives native binding cleanup until
-the sink accepts it.
+the sink accepts it. Explicit standalone channel delivery enters this same
+service-owned outbox and managed artifact spool; its HTTP/tool boundary never
+calls a channel sink directly or creates a parallel retry runtime. A bounded
+standalone acknowledgement retains the final per-artifact delivery outcome so
+an idempotent replay, including after restart, returns the original receipt
+rather than inferring success from the message-level acknowledgement.
 
 Native lifecycle, visible answer projection, and IM delivery have different
 granularities and must not share one implicit terminal flag. A
@@ -245,8 +250,14 @@ Structured agent-sent artifacts are part of this delivery state, not native
 thread state. The bridge stages only explicit native output references into a
 private content-addressed spool; it does not scan a workspace or infer files
 from file-change events. Channel adapters translate those artifacts into their
-platform-native upload/send operations. Text remains the existing outbound
-message projection and is not wrapped in a second Markdown message type.
+platform-native upload/send operations. Per-artifact channel APIs use one
+shared batch checkpoint contract: confirmed artifacts record receipts,
+retryable failures preserve the failed artifact plus the unattempted suffix,
+and permanent failures become visible notices without blocking later
+artifacts. A generic multipart webhook remains batch-atomic because its
+transport accepts one message envelope; retry therefore preserves the whole
+batch. Text remains the existing outbound message projection and is not
+wrapped in a second Markdown message type.
 
 Every new input to an already bound thread crosses a native resume/reconcile
 barrier first. This makes the exact native `threadId` authoritative after work

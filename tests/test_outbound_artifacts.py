@@ -5,11 +5,13 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 import os
+import threading
 
 import pytest
 from PIL import Image
 
 from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
+from imcodex.models import OutboundArtifact
 
 
 def _png() -> bytes:
@@ -109,3 +111,47 @@ def test_stager_startup_cleanup_preserves_durable_references(tmp_path: Path) -> 
 
     assert preserved.exists()
     assert not stale.exists()
+
+
+def test_cleanup_cannot_delete_artifact_while_stage_result_is_being_handed_off(
+    tmp_path: Path,
+) -> None:
+    stager = OutboundArtifactStager(tmp_path / "spool")
+    staged = threading.Event()
+    release_stage = threading.Event()
+    original = stager._stage_bytes
+    result: list[OutboundArtifact] = []
+
+    def paused_stage_bytes(*args, **kwargs):
+        artifact = original(*args, **kwargs)
+        staged.set()
+        assert release_stage.wait(timeout=5)
+        return artifact
+
+    stager._stage_bytes = paused_stage_bytes  # type: ignore[method-assign]
+    stage_thread = threading.Thread(
+        target=lambda: result.append(
+            stager.stage_upload(
+                b"# durable\n",
+                kind="file",
+                content_type="text/markdown",
+                filename="durable.md",
+            )
+        )
+    )
+    cleanup_thread = threading.Thread(
+        target=lambda: stager.cleanup_unreferenced(set())
+    )
+
+    stage_thread.start()
+    assert staged.wait(timeout=5)
+    cleanup_thread.start()
+    assert cleanup_thread.is_alive()
+    release_stage.set()
+    stage_thread.join(timeout=5)
+    cleanup_thread.join(timeout=5)
+
+    assert not stage_thread.is_alive()
+    assert not cleanup_thread.is_alive()
+    assert len(result) == 1
+    assert Path(result[0].local_path).read_bytes() == b"# durable\n"

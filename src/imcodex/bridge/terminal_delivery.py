@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import asdict
+import hashlib
+import json
 
 from ..models import OutboundMessage, TerminalDeliveryIdentity
 from ..observability.message_trace import text_sha256
@@ -16,6 +19,8 @@ class TerminalDeliveryMixin:
         self._terminal_delivery_retry_task: asyncio.Task[None] | None = None
         self._terminal_delivery_closed = False
         self._terminal_delivery_ack_persistence_pending = False
+        self._outbound_artifact_stage_lock = asyncio.Lock()
+        self._active_standalone_artifact_paths: set[str] = set()
 
     async def _close_terminal_delivery(self) -> None:
         self._terminal_delivery_closed = True
@@ -24,6 +29,168 @@ class TerminalDeliveryMixin:
         if retry_task is not None:
             retry_task.cancel()
             await asyncio.gather(retry_task, return_exceptions=True)
+
+    def can_deliver_outbound(self, channel_id: str) -> bool:
+        can_deliver = getattr(self.outbound_sink, "can_deliver", None)
+        return bool(callable(can_deliver) and can_deliver(channel_id))
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        validate = getattr(self.outbound_sink, "validate_message", None)
+        if callable(validate):
+            validate(message)
+
+    async def stage_outbound_upload(
+        self,
+        content: bytes,
+        *,
+        kind: str,
+        content_type: str,
+        filename: str,
+    ):
+        """Stage an explicit tool upload in the bridge-owned durable spool."""
+
+        stager = getattr(self.projector, "artifact_stager", None)
+        stage_upload = getattr(stager, "stage_upload", None)
+        if not callable(stage_upload):
+            raise RuntimeError("Outbound artifact staging is unavailable.")
+        async with self._outbound_artifact_stage_lock:
+            worker = asyncio.create_task(
+                asyncio.to_thread(
+                    stage_upload,
+                    content,
+                    kind=kind,
+                    content_type=content_type,
+                    filename=filename,
+                )
+            )
+            try:
+                artifact = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                while not worker.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(worker)
+                artifact = None
+                if not worker.cancelled():
+                    with contextlib.suppress(Exception):
+                        artifact = worker.result()
+                if artifact is not None:
+                    release = getattr(stager, "release", None)
+                    if callable(release):
+                        release((artifact,))
+                await self._cleanup_outbound_artifact_spool_locked()
+                raise
+            self._active_standalone_artifact_paths.add(artifact.local_path)
+            release = getattr(stager, "release", None)
+            if callable(release):
+                release((artifact,))
+            return artifact
+
+    async def discard_outbound_uploads(self, artifacts) -> None:
+        async with self._outbound_artifact_stage_lock:
+            for artifact in artifacts:
+                self._active_standalone_artifact_paths.discard(
+                    str(getattr(artifact, "local_path", "") or "")
+                )
+            release = getattr(
+                getattr(self.projector, "artifact_stager", None),
+                "release",
+                None,
+            )
+            if callable(release):
+                release(artifacts)
+        await self._cleanup_outbound_artifact_spool()
+
+    async def _release_outbound_artifact_leases(self, artifacts) -> None:
+        async with self._outbound_artifact_stage_lock:
+            release = getattr(
+                getattr(self.projector, "artifact_stager", None),
+                "release",
+                None,
+            )
+            if callable(release):
+                release(artifacts)
+
+    async def deliver_outbound_message(
+        self,
+        message: OutboundMessage,
+    ) -> tuple[list[OutboundMessage], bool, bool]:
+        """Submit a standalone message through the shared durable IM outbox."""
+
+        delivery_id = str(message.metadata.get("delivery_id") or "").strip()
+        if not delivery_id:
+            raise ValueError("delivery_id is required for durable outbound delivery")
+        prefix = self._standalone_delivery_prefix(delivery_id)
+        internal_delivery_id = f"{prefix}{self._standalone_payload_digest(message)}"
+        artifact_paths = {
+            artifact.local_path for artifact in message.artifacts if artifact.local_path
+        }
+        try:
+            async with self._terminal_projection_lock:
+                existing = self.store.find_delivery_id_with_prefix(prefix)
+                if existing is not None and existing != internal_delivery_id:
+                    raise ValueError(
+                        "delivery_id was already used for different content or destination"
+                    )
+                message.metadata["delivery_id"] = internal_delivery_id
+                message.metadata["external_delivery_id"] = delivery_id
+                if self.store.is_terminal_delivery_acknowledged(
+                    internal_delivery_id
+                ):
+                    outcome = self.store.get_standalone_delivery_outcome(
+                        internal_delivery_id
+                    )
+                    if outcome is not None:
+                        message.metadata.update(outcome)
+                        message.artifacts = []
+                        return [message], True, True
+                    message.metadata["artifact_outcome_unknown"] = True
+                    return [message], True, True
+                return await self._deliver_terminal_message(
+                    TerminalDeliveryIdentity(
+                        delivery_id=internal_delivery_id,
+                        thread_id="",
+                        turn_id="",
+                    ),
+                    message,
+                )
+        finally:
+            async with self._outbound_artifact_stage_lock:
+                self._active_standalone_artifact_paths.difference_update(
+                    artifact_paths
+                )
+            await self._cleanup_outbound_artifact_spool()
+            message.metadata["delivery_id"] = delivery_id
+
+    @staticmethod
+    def _standalone_delivery_prefix(delivery_id: str) -> str:
+        digest = hashlib.sha256(delivery_id.encode("utf-8")).hexdigest()
+        return f"imcodex:standalone:{digest}:"
+
+    @staticmethod
+    def _standalone_payload_digest(message: OutboundMessage) -> str:
+        payload = {
+            "channel_id": message.channel_id,
+            "conversation_id": message.conversation_id,
+            "message_type": message.message_type,
+            "text": message.text,
+            "artifacts": [
+                {
+                    "kind": artifact.kind,
+                    "content_type": artifact.content_type,
+                    "filename": artifact.filename,
+                    "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                }
+                for artifact in message.artifacts
+            ],
+        }
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     async def _deliver_terminal_message(
         self,
@@ -37,15 +204,19 @@ class TerminalDeliveryMixin:
         if existing_delivery_id and existing_delivery_id != delivery_id:
             raise ValueError("terminal delivery identity does not match message metadata")
         message.metadata["delivery_id"] = delivery_id
-        prepare = getattr(self.outbound_sink, "prepare_durable_message", None)
-        if callable(prepare):
-            prepare(message)
-        pending = self.store.stage_terminal_delivery(
-            delivery_id=delivery_id,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            message=asdict(message),
-        )
+        leased_artifacts = tuple(message.artifacts)
+        try:
+            prepare = getattr(self.outbound_sink, "prepare_durable_message", None)
+            if callable(prepare):
+                prepare(message)
+            pending = self.store.stage_terminal_delivery(
+                delivery_id=delivery_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                message=asdict(message),
+            )
+        finally:
+            await self._release_outbound_artifact_leases(leased_artifacts)
         if pending.message is not None:
             message = OutboundMessage(**pending.message)
         try:
@@ -128,6 +299,11 @@ class TerminalDeliveryMixin:
             )
             self._schedule_terminal_delivery_retry()
             return [message], False, True
+        if not thread_id:
+            self.store.update_terminal_delivery_message(
+                delivery_id,
+                asdict(message),
+            )
         self.store.complete_terminal_delivery(delivery_id)
         ack_persisted = await self._flush_terminal_delivery_ack(
             thread_id=thread_id,
@@ -135,7 +311,7 @@ class TerminalDeliveryMixin:
             message=message,
         )
         if ack_persisted:
-            self._cleanup_outbound_artifact_spool()
+            await self._cleanup_outbound_artifact_spool()
         emit_event(
             component="bridge",
             event="bridge.terminal_delivery.succeeded",
@@ -262,6 +438,11 @@ class TerminalDeliveryMixin:
                     )
                     blocked_routes.add(route)
                     continue
+                if not pending.thread_id:
+                    self.store.update_terminal_delivery_message(
+                        pending.delivery_id,
+                        asdict(message),
+                    )
                 self.store.complete_terminal_delivery(pending.delivery_id)
                 state_changed = True
                 self._remember_terminal_delivery(pending.delivery_id)
@@ -298,7 +479,7 @@ class TerminalDeliveryMixin:
                     )
                     self._schedule_terminal_delivery_retry()
                 else:
-                    self._cleanup_outbound_artifact_spool()
+                    await self._cleanup_outbound_artifact_spool()
         return delivered_any
 
     def _is_terminal_route_head(
@@ -379,23 +560,34 @@ class TerminalDeliveryMixin:
             )
             return False
         self._terminal_delivery_ack_persistence_pending = False
-        self._cleanup_outbound_artifact_spool()
+        await self._cleanup_outbound_artifact_spool()
         return True
 
-    def _cleanup_outbound_artifact_spool(self) -> None:
+    async def _cleanup_outbound_artifact_spool(self) -> None:
+        async with self._outbound_artifact_stage_lock:
+            await self._cleanup_outbound_artifact_spool_locked()
+
+    async def _cleanup_outbound_artifact_spool_locked(self) -> None:
         stager = getattr(self.projector, "artifact_stager", None)
         cleanup = getattr(stager, "cleanup_unreferenced", None)
         if not callable(cleanup):
             return
         referenced = self.store.referenced_terminal_artifact_paths()
-        active_paths = getattr(self.projector.message_pump, "active_artifact_paths", None)
+        active_paths = getattr(
+            self.projector.message_pump,
+            "active_artifact_paths",
+            None,
+        )
         if callable(active_paths):
             referenced.update(active_paths())
         referenced.update(
             getattr(self, "_active_recovery_artifact_paths", set())
         )
+        referenced.update(
+            getattr(self, "_active_standalone_artifact_paths", set())
+        )
         try:
-            cleanup(referenced)
+            await asyncio.to_thread(cleanup, referenced)
         except OSError as exc:
             emit_event(
                 component="bridge",
