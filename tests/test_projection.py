@@ -370,6 +370,120 @@ def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path
     assert Path(final.artifacts[0].local_path).is_relative_to(tmp_path / "outbound-media")
 
 
+def test_projector_only_infers_images_from_final_answer_local_links(tmp_path) -> None:
+    from PIL import Image
+
+    notes_path = tmp_path / "testing.md"
+    notes_path.write_text("# Tests\n", encoding="utf-8")
+    image_path = tmp_path / "preview.png"
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    projector = MessageProjector(
+        artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
+    )
+
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": (
+                        f"[testing.md]({notes_path})\n"
+                        f"[preview]({image_path})"
+                    ),
+                },
+            },
+        },
+        store,
+    )
+
+    assert final is not None
+    assert [artifact.filename for artifact in final.artifacts] == ["preview.png"]
+    assert final.artifacts[0].kind == "image"
+
+
+def test_recovered_final_answer_only_infers_images_from_local_links(tmp_path) -> None:
+    from PIL import Image
+
+    notes_path = tmp_path / "testing.md"
+    notes_path.write_text("# Tests\n", encoding="utf-8")
+    image_path = tmp_path / "preview.png"
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    projector = MessageProjector(
+        artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
+    )
+
+    messages = projector.project_recovered_turn(
+        thread_id="thr_1",
+        turn={
+            "id": "turn_1",
+            "status": "completed",
+            "items": [
+                {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": (
+                        f"[testing.md]({notes_path})\n"
+                        f"![preview]({image_path})"
+                    ),
+                }
+            ],
+        },
+        store=store,
+    )
+
+    assert len(messages) == 1
+    assert [artifact.filename for artifact in messages[0].artifacts] == [
+        "preview.png"
+    ]
+    assert messages[0].artifacts[0].kind == "image"
+
+
+def test_malformed_markdown_image_does_not_drop_final_answer(tmp_path) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "broken.png"
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
+    image_path.write_bytes(image_path.read_bytes()[:-8])
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    projector = MessageProjector(
+        artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
+    )
+
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": f"Analysis is complete.\n\n[preview]({image_path})",
+                },
+            },
+        },
+        store,
+    )
+
+    assert final is not None
+    assert final.text.startswith("Analysis is complete.")
+    assert "Attachment delivery unavailable:" in final.text
+    assert "output artifact is not a valid image" in final.text
+    assert final.artifacts == []
+
+
 def test_projector_releases_staged_artifact_when_turn_buffer_is_discarded(
     tmp_path,
 ) -> None:

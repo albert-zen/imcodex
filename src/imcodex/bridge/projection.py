@@ -242,7 +242,7 @@ class MessageProjector:
             try:
                 artifacts = self.artifact_stager.stage_native_item(item, cwd=cwd)
                 if item_type == "agentMessage" and item.get("phase") == "final_answer":
-                    artifacts += self.artifact_stager.stage_markdown_links(
+                    artifacts += self.artifact_stager.stage_markdown_images(
                         str(item.get("text") or ""),
                         cwd=cwd,
                     )
@@ -301,7 +301,7 @@ class MessageProjector:
                 artifacts.extend(self.artifact_stager.stage_native_item(item, cwd=cwd))
                 if item.get("type") == "agentMessage" and item.get("phase") == "final_answer":
                     artifacts.extend(
-                        self.artifact_stager.stage_markdown_links(
+                        self.artifact_stager.stage_markdown_images(
                             str(item.get("text") or ""),
                             cwd=cwd,
                         )
@@ -341,7 +341,7 @@ class MessageProjector:
             if self.artifact_stager is not None:
                 try:
                     pending_artifacts.extend(
-                        self.artifact_stager.stage_markdown_links(
+                        self.artifact_stager.stage_markdown_images(
                             str(item.get("text") or ""),
                             cwd=cwd,
                         )

@@ -13,13 +13,19 @@ from threading import RLock
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from ..models import OutboundArtifact
 
 
 _MARKDOWN_LINK = re.compile(r"(!?)\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+['\"][^'\"]*['\"])?\)")
 _DATA_IMAGE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
+# Keep ordinary-link inference deterministic across host MIME databases. These
+# are common raster formats that channel image APIs can preview; Pillow still
+# validates the actual bytes before anything is staged.
+_MARKDOWN_IMAGE_SUFFIXES = frozenset(
+    {".gif", ".jpe", ".jfif", ".jpeg", ".jpg", ".png", ".webp"}
+)
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _MAX_SPOOL_BYTES = 256 * 1024 * 1024
@@ -126,7 +132,15 @@ class OutboundArtifactStager:
         )
 
     @_serialized_stage
-    def stage_markdown_links(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
+    def stage_markdown_images(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
+        """Stage local images referenced by final-answer Markdown.
+
+        Ordinary local links are navigation aids in native Codex surfaces, not
+        an instruction to send the target file to an IM channel. Embedded image
+        syntax remains an explicit image reference, and ordinary links whose
+        target has an image media type retain the existing image-preview
+        behavior.
+        """
         artifacts: list[OutboundArtifact] = []
         for match in _MARKDOWN_LINK.finditer(text):
             target = unquote(match.group(2) or match.group(3) or "").strip()
@@ -143,11 +157,16 @@ class OutboundArtifactStager:
             candidate = Path(target)
             if not candidate.is_absolute():
                 candidate = Path(cwd) / candidate
-            kind = "image" if match.group(1) == "!" else "file"
+            embedded_image = match.group(1) == "!"
+            if (
+                not embedded_image
+                and candidate.suffix.casefold() not in _MARKDOWN_IMAGE_SUFFIXES
+            ):
+                continue
             artifacts.append(
                 self._stage_local(
                     candidate,
-                    kind=kind,
+                    kind="image",
                     workspace_root=cwd,
                 )
             )
@@ -228,7 +247,7 @@ class OutboundArtifactStager:
                 with Image.open(BytesIO(content)) as image:
                     image.verify()
                     detected = Image.MIME.get(image.format or "")
-            except (UnidentifiedImageError, OSError) as exc:
+            except Exception as exc:
                 raise ValueError("output artifact is not a valid image") from exc
             if detected:
                 content_type = detected

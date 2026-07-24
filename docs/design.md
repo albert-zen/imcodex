@@ -249,9 +249,12 @@ the watch is consumed.
 Structured agent-sent artifacts are part of this delivery state, not native
 thread state. The bridge stages only explicit native output references into a
 private content-addressed spool; it does not scan a workspace or infer files
-from file-change events. Channel adapters translate those artifacts into their
-platform-native upload/send operations. Per-artifact channel APIs use one
-shared batch checkpoint contract: confirmed artifacts record receipts,
+from file-change events. Final-answer references to local images retain
+automatic preview delivery, but an ordinary Markdown link to a non-image file
+is only native-surface navigation; generic files require structured native
+output or explicit standalone delivery. Channel adapters translate artifacts
+into their platform-native upload/send operations. Per-artifact channel APIs
+use one shared batch checkpoint contract: confirmed artifacts record receipts,
 retryable failures preserve the failed artifact plus the unattempted suffix,
 and permanent failures become visible notices without blocking later
 artifacts. A generic multipart webhook remains batch-atomic because its

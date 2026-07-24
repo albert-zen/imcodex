@@ -42,15 +42,79 @@ def test_stager_materializes_dynamic_tool_image_data_url(tmp_path: Path) -> None
     assert artifacts[0].sha256 == hashlib.sha256(content).hexdigest()
 
 
-def test_stager_rejects_markdown_file_outside_native_workspace(tmp_path: Path) -> None:
+def test_stager_ignores_ordinary_markdown_file_links(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "secret.txt"
     outside.write_text("secret", encoding="utf-8")
     stager = OutboundArtifactStager(tmp_path / "spool")
 
+    artifacts = stager.stage_markdown_images(
+        f"[secret]({outside})",
+        cwd=str(workspace),
+    )
+
+    assert artifacts == ()
+
+
+def test_stager_preserves_ordinary_markdown_links_to_images(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image_path = workspace / "preview.png"
+    image_path.write_bytes(_png())
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    artifacts = stager.stage_markdown_images(
+        f"[preview]({image_path})",
+        cwd=str(workspace),
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0].kind == "image"
+    assert artifacts[0].filename == "preview.png"
+
+
+def test_stager_recognizes_jfif_without_host_mime_database(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image_path = workspace / "preview.jfif"
+    Image.new("RGB", (2, 2), (4, 5, 6)).save(image_path, format="JPEG")
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    artifacts = stager.stage_markdown_images(
+        f"[preview]({image_path})",
+        cwd=str(workspace),
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0].kind == "image"
+    assert artifacts[0].content_type == "image/jpeg"
+
+
+def test_stager_ignores_host_mime_image_false_positives(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    drawing_path = workspace / "drawing.dwg"
+    drawing_path.write_bytes(b"not a raster image")
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    artifacts = stager.stage_markdown_images(
+        f"[drawing]({drawing_path})",
+        cwd=str(workspace),
+    )
+
+    assert artifacts == ()
+
+
+def test_stager_rejects_markdown_image_outside_native_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(_png())
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
     with pytest.raises(ValueError, match="outside the native workspace"):
-        stager.stage_markdown_links(f"[secret]({outside})", cwd=str(workspace))
+        stager.stage_markdown_images(f"![secret]({outside})", cwd=str(workspace))
 
 
 def test_stager_refuses_preexisting_content_address_collision(tmp_path: Path) -> None:
