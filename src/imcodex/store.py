@@ -56,6 +56,7 @@ class ConversationStore(
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
         self._terminal_delivery_watches: dict[tuple[str, str], TerminalDeliveryWatch] = {}
         self._pending_terminal_deliveries: dict[str, PendingTerminalDelivery] = {}
+        self._acknowledged_terminal_deliveries: dict[str, tuple[str, str]] = {}
         self._next_terminal_delivery_sequence = 0
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
@@ -608,6 +609,15 @@ class ConversationStore(
                 }
                 for pending in self._pending_terminal_deliveries.values()
             ],
+            "acknowledged_terminal_deliveries": [
+                {
+                    "delivery_id": delivery_id,
+                    "thread_id": terminal_key[0],
+                    "turn_id": terminal_key[1],
+                }
+                for delivery_id, terminal_key
+                in self._acknowledged_terminal_deliveries.items()
+            ],
         }
         with self._revision_lock:
             self._next_state_revision += 1
@@ -735,4 +745,30 @@ class ConversationStore(
                 message=copy.deepcopy(message),
                 created_at=float(item.get("created_at") or 0.0),
                 sequence=sequence,
+            )
+        acknowledged_terminal_deliveries = payload.get(
+            "acknowledged_terminal_deliveries",
+            [],
+        )
+        if not isinstance(acknowledged_terminal_deliveries, list):
+            raise RuntimeError(
+                f"Invalid acknowledged terminal delivery state: {self.state_path}"
+            )
+        for item in acknowledged_terminal_deliveries:
+            if not isinstance(item, dict):
+                raise RuntimeError(
+                    f"Invalid acknowledged terminal delivery entry: {self.state_path}"
+                )
+            delivery_id = str(item.get("delivery_id") or "")
+            thread_id = str(item.get("thread_id") or "")
+            turn_id = str(item.get("turn_id") or "")
+            if not delivery_id or not thread_id or not turn_id:
+                raise RuntimeError(
+                    f"Invalid acknowledged terminal delivery entry: {self.state_path}"
+                )
+            if (thread_id, turn_id) not in self._terminal_delivery_watches:
+                continue
+            self._acknowledged_terminal_deliveries[delivery_id] = (
+                thread_id,
+                turn_id,
             )

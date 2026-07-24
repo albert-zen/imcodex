@@ -24,7 +24,7 @@ def test_artifact_identity_survives_partial_delivery_tail_retry() -> None:
     message = OutboundMessage(
         channel_id="feishu",
         conversation_id="chat:1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="done",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[first, second],

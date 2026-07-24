@@ -841,7 +841,7 @@ async def test_feishu_sends_chunked_thread_replies() -> None:
         OutboundMessage(
             channel_id="feishu",
             conversation_id="chat:oc_1:thread:omt_root",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="a" * 3501,
             metadata={"reply_to_message_id": "om_1"},
         )
@@ -875,7 +875,7 @@ async def test_feishu_sends_staged_image_before_terminal_text(tmp_path: Path) ->
     message = OutboundMessage(
         channel_id="feishu",
         conversation_id="chat:oc_1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1", "reply_to_message_id": "om_1"},
         artifacts=[
@@ -934,7 +934,7 @@ async def test_feishu_keeps_upload_failed_artifact_pending(tmp_path: Path) -> No
     message = OutboundMessage(
         channel_id="feishu",
         conversation_id="chat:oc_1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[artifact],
@@ -975,7 +975,7 @@ async def test_feishu_reports_permanent_upload_rejection(tmp_path: Path) -> None
     message = OutboundMessage(
         channel_id="feishu",
         conversation_id="chat:oc_1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -1032,7 +1032,7 @@ async def test_feishu_keeps_prior_permanent_failure_when_later_upload_retries(
     message = OutboundMessage(
         channel_id="feishu",
         conversation_id="chat:oc_1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -1071,7 +1071,7 @@ async def test_feishu_async_topic_output_uses_persisted_message_id_not_thread_id
         OutboundMessage(
             channel_id="feishu",
             conversation_id="chat:oc_1:thread:omt_root",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="done",
         )
     )
@@ -1091,7 +1091,7 @@ async def test_feishu_topic_output_fails_without_persisted_reply_message() -> No
             OutboundMessage(
                 channel_id="feishu",
                 conversation_id="chat:oc_1:thread:omt_root",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="done",
             )
         )
@@ -1110,7 +1110,7 @@ async def test_feishu_surfaces_outbound_rejection() -> None:
             OutboundMessage(
                 channel_id="feishu",
                 conversation_id="chat:oc_1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="done",
             )
         )

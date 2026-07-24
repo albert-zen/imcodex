@@ -34,7 +34,8 @@ def test_projector_renders_question_request_with_question_details() -> None:
     )
 
     assert message is not None
-    assert message.message_type == "question_request"
+    assert message.message_type == "item/tool/requestUserInput"
+    assert message.metadata["request_kind"] == "question"
     assert "color" in message.text
     assert "Favorite color?" in message.text
     assert "/answer native-request-abcdef color=value" in message.text
@@ -63,7 +64,8 @@ def test_projector_renders_approval_request_with_command_details() -> None:
     )
 
     assert message is not None
-    assert message.message_type == "approval_request"
+    assert message.message_type == "item/commandExecution/requestApproval"
+    assert message.metadata["request_kind"] == "approval"
     assert "git status" in message.text
     assert r"D:\work\alpha" in message.text
     assert "Inspect repo state" in message.text
@@ -109,7 +111,8 @@ def test_projector_suppresses_late_tool_progress_after_final_answer() -> None:
     )
 
     assert final_message is not None
-    assert final_message.message_type == "turn_result"
+    assert final_message.message_type == "agentMessage"
+    assert final_message.metadata["phase"] == "final_answer"
     assert late_tool is None
 
 
@@ -161,7 +164,8 @@ def test_projector_reopens_commentary_when_native_work_starts_after_final_answer
     assert final_message is not None
     assert resumed is True
     assert commentary is not None
-    assert commentary.message_type == "turn_progress"
+    assert commentary.message_type == "agentMessage"
+    assert commentary.metadata["phase"] == "commentary"
     assert commentary.text == "Continuing after the queued steer."
 
 
@@ -187,8 +191,7 @@ def test_projector_labels_plan_updates_as_distinct_progress() -> None:
     )
 
     assert message is not None
-    assert message.message_type == "turn_progress"
-    assert message.metadata["progress_kind"] == "plan"
+    assert message.message_type == "turn/plan/updated"
     assert message.text == (
         "[Plan update]\n"
         "Checking delivery recovery.\n"
@@ -351,7 +354,8 @@ def test_projector_uses_buffered_deltas_as_terminal_fallback() -> None:
     )
 
     assert final is not None
-    assert final.message_type == "turn_result"
+    assert final.message_type == "turn/completed"
+    assert final.metadata["status"] == "completed"
     assert final.text == "hello world"
 
 
@@ -488,7 +492,7 @@ def test_projector_emits_turn_goal_updates() -> None:
     )
 
     assert message is not None
-    assert message.message_type == "status"
+    assert message.message_type == "thread/goal/updated"
     assert message.text == "Goal complete: Finish the migration"
 
 
@@ -517,7 +521,7 @@ def test_projector_suppresses_command_goal_updates_to_avoid_echoing_goal_command
     assert message is None
 
 
-def test_projector_preserves_changed_files_in_failed_turn_result() -> None:
+def test_projector_preserves_changed_files_in_failed_turn_completion() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
     store.bind_thread("qq", "conv-1", "thr_1")
@@ -663,7 +667,8 @@ def test_projector_emits_terminal_result_for_early_failed_turn() -> None:
     )
 
     assert final is not None
-    assert final.message_type == "turn_result"
+    assert final.message_type == "turn/completed"
+    assert final.metadata["status"] == "failed"
     assert final.text == "Turn failed."
 
 

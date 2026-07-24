@@ -4,7 +4,7 @@ import json
 
 from ..appserver import normalize_appserver_message
 from ..models import OutboundMessage
-from .message_pump import MessagePump
+from .message_pump import EMPTY_COMPLETED_TURN_TEXT, MessagePump
 
 
 class MessageProjector:
@@ -65,7 +65,7 @@ class MessageProjector:
                 OutboundMessage(
                     channel_id="",
                     conversation_id="",
-                    message_type="status",
+                    message_type=event.method,
                     text=self._render_goal_event(event.payload),
                 ),
             )
@@ -88,7 +88,7 @@ class MessageProjector:
                 OutboundMessage(
                     channel_id="",
                     conversation_id="",
-                    message_type="status",
+                    message_type=event.method,
                     text=self._render_system_event(event),
                 ),
             )
@@ -101,9 +101,8 @@ class MessageProjector:
                 OutboundMessage(
                     channel_id="",
                     conversation_id="",
-                    message_type="turn_progress",
+                    message_type=event.method,
                     text=self._render_plan_update(event.payload),
-                    metadata={"progress_kind": "plan"},
                 ),
             )
         if event.kind == "diff_updated":
@@ -115,7 +114,7 @@ class MessageProjector:
                 OutboundMessage(
                     channel_id="",
                     conversation_id="",
-                    message_type="turn_progress",
+                    message_type=event.method,
                     text=self._render_diff_update(event.payload),
                 ),
             )
@@ -160,27 +159,51 @@ class MessageProjector:
             turn_id=turn_id,
         )
 
-    def project_recovered_turn(self, *, thread_id: str, turn: dict, store) -> OutboundMessage | None:
+    def project_recovered_turn(
+        self,
+        *,
+        thread_id: str,
+        turn: dict,
+        store,
+    ) -> list[OutboundMessage]:
         turn_id = str(turn.get("id") or turn.get("turnId") or "")
         status_value = turn.get("status")
         if isinstance(status_value, dict):
             status_value = status_value.get("type") or status_value.get("status")
         status = str(status_value or "failed")
         items = turn.get("items")
+        item_list = [
+            item for item in items if isinstance(item, dict)
+        ] if isinstance(items, list) else []
+        final_messages = self._project_recovered_final_answers(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            status=status,
+            items=item_list,
+            store=store,
+        )
+        if final_messages:
+            self.message_pump.discard_turn(thread_id=thread_id, turn_id=turn_id)
+            return [
+                attached
+                for message in final_messages
+                if (attached := self._attach_to_thread(thread_id, store, message)) is not None
+            ]
         artifacts, artifact_errors = self._collect_recovered_artifacts(
             thread_id,
-            [item for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+            item_list,
             store,
         )
         message = self.message_pump.recover_turn(
             thread_id=thread_id,
             turn_id=turn_id,
             status=status,
-            items=[item for item in items if isinstance(item, dict)] if isinstance(items, list) else [],
+            items=item_list,
             artifacts=artifacts,
             artifact_errors=artifact_errors,
         )
-        return self._attach_to_thread(thread_id, store, message)
+        attached = self._attach_to_thread(thread_id, store, message)
+        return [] if attached is None else [attached]
 
     def _capture_item_completed(self, params: dict, store) -> OutboundMessage | None:
         item = params.get("item") or {}
@@ -259,6 +282,114 @@ class MessageProjector:
         deduplicated = {artifact.local_path: artifact for artifact in artifacts}
         return tuple(deduplicated.values()), tuple(dict.fromkeys(errors))
 
+    def _project_recovered_final_answers(
+        self,
+        *,
+        thread_id: str,
+        turn_id: str,
+        status: str,
+        items: list[dict],
+        store,
+    ) -> list[OutboundMessage]:
+        cwd = self._thread_cwd(thread_id, store)
+        pending_artifacts = []
+        pending_errors: list[str] = []
+        messages: list[OutboundMessage] = []
+        for item in items:
+            if self.artifact_stager is not None:
+                try:
+                    pending_artifacts.extend(
+                        self.artifact_stager.stage_native_item(item, cwd=cwd)
+                    )
+                except (OSError, ValueError) as exc:
+                    pending_errors.append(str(exc))
+            if not (
+                item.get("type") == "agentMessage"
+                and item.get("phase") == "final_answer"
+                and str(item.get("text") or "").strip()
+            ):
+                continue
+            if self.artifact_stager is not None:
+                try:
+                    pending_artifacts.extend(
+                        self.artifact_stager.stage_markdown_links(
+                            str(item.get("text") or ""),
+                            cwd=cwd,
+                        )
+                    )
+                except (OSError, ValueError) as exc:
+                    pending_errors.append(str(exc))
+            deduplicated = {
+                artifact.local_path: artifact
+                for artifact in pending_artifacts
+            }
+            text = str(item.get("text") or "")
+            if pending_errors:
+                notice = "\n".join(
+                    f"- {error}" for error in dict.fromkeys(pending_errors)
+                )
+                text = "\n\n".join(
+                    part
+                    for part in (
+                        text,
+                        f"Attachment delivery unavailable:\n{notice}",
+                    )
+                    if part
+                )
+            metadata = {
+                "phase": "final_answer",
+                "status": status,
+                "recovered": True,
+            }
+            item_id = str(item.get("id") or item.get("itemId") or "")
+            if item_id:
+                metadata["native_item_id"] = item_id
+            messages.append(
+                OutboundMessage(
+                    channel_id="",
+                    conversation_id="",
+                    message_type="agentMessage",
+                    text=text,
+                    metadata=metadata,
+                    artifacts=tuple(deduplicated.values()),
+                )
+            )
+            pending_artifacts = []
+            pending_errors = []
+        if messages and (pending_artifacts or pending_errors):
+            normalized_status = status.strip().lower()
+            if normalized_status == "completed":
+                text = EMPTY_COMPLETED_TURN_TEXT
+            elif normalized_status == "interrupted":
+                text = "Turn interrupted."
+            else:
+                text = "Turn failed."
+            if pending_errors:
+                notice = "\n".join(
+                    f"- {error}" for error in dict.fromkeys(pending_errors)
+                )
+                text = "\n\n".join(
+                    (
+                        text,
+                        f"Attachment delivery unavailable:\n{notice}",
+                    )
+                )
+            deduplicated = {
+                artifact.local_path: artifact
+                for artifact in pending_artifacts
+            }
+            messages.append(
+                OutboundMessage(
+                    channel_id="",
+                    conversation_id="",
+                    message_type="turn/completed",
+                    text=text,
+                    metadata={"status": status, "recovered": True},
+                    artifacts=tuple(deduplicated.values()),
+                )
+            )
+        return messages
+
     @staticmethod
     def _thread_cwd(thread_id: str, store) -> str:
         snapshot = store.get_thread_snapshot(thread_id)
@@ -299,7 +430,14 @@ class MessageProjector:
                 first_question_id = str(questions[0].get("id") or "key")
             lines.append(f"Reply with /answer {route.request_id} {first_question_id}=value")
             text = "\n".join(lines)
-            return OutboundMessage(channel_id="", conversation_id="", message_type="question_request", text=text, request_id=route.request_id)
+            return OutboundMessage(
+                channel_id="",
+                conversation_id="",
+                message_type=route.request_method,
+                text=text,
+                request_id=route.request_id,
+                metadata={"request_kind": "question"},
+            )
         lines = [
             f"[request {handle}] Approval needed.",
             f"Native request id: {route.request_id}",
@@ -323,7 +461,14 @@ class MessageProjector:
         lines.append("Use /approve to allow, /deny to reject, or send a new message to cancel and continue.")
         lines.append(f"Target one request with /approve {handle}, /deny {handle}, or /cancel {handle}.")
         text = "\n".join(lines)
-        return OutboundMessage(channel_id="", conversation_id="", message_type="approval_request", text=text, request_id=route.request_id)
+        return OutboundMessage(
+            channel_id="",
+            conversation_id="",
+            message_type=route.request_method,
+            text=text,
+            request_id=route.request_id,
+            metadata={"request_kind": "approval"},
+        )
 
     def _show_commentary(self, thread_id: str, store) -> bool:
         binding = store.find_binding_by_thread_id(thread_id)

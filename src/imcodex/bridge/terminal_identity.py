@@ -76,7 +76,7 @@ def event_message_identity(
     event,
     message: OutboundMessage | None,
 ) -> TerminalDeliveryIdentity | None:
-    if message is None or message.message_type != "turn_result":
+    if message is None or event_terminal_identity(event) is None:
         return None
     terminal_key = event_terminal_key(event)
     if terminal_key is None:
@@ -98,56 +98,61 @@ def message_identity(
     )
 
 
-def recovered_turn_identity(
+def recovered_turn_identities(
     *,
     thread_id: str,
     turn: dict,
-) -> TerminalDeliveryIdentity | None:
+    include_turn_fallback: bool = False,
+) -> list[TerminalDeliveryIdentity]:
     turn_id = str(turn.get("id") or turn.get("turnId") or "")
     if not thread_id or not turn_id:
-        return None
-    item = recovered_turn_final_item(turn)
-    item_id = terminal_item_key(item) if item is not None else ""
-    delivery_id = (
-        stable_terminal_item_delivery_id(
-            thread_id=thread_id,
-            turn_id=turn_id,
-            item_id=item_id,
-        )
-        if item_id
-        else stable_terminal_turn_delivery_id(
+        return []
+    final_items = recovered_turn_final_items(turn)
+    identities = [
+        TerminalDeliveryIdentity(
+            delivery_id=stable_terminal_item_delivery_id(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                item_id=terminal_item_key(item),
+            ),
             thread_id=thread_id,
             turn_id=turn_id,
         )
-    )
-    return TerminalDeliveryIdentity(
-        delivery_id=delivery_id,
-        thread_id=thread_id,
-        turn_id=turn_id,
-    )
+        for item in final_items
+    ]
+    delivery_ids = [identity.delivery_id for identity in identities]
+    if len(set(delivery_ids)) != len(delivery_ids):
+        raise ValueError(
+            "recovered native answer items have no distinct stable identity"
+        )
+    if include_turn_fallback or not final_items:
+        identities.append(
+            TerminalDeliveryIdentity(
+                delivery_id=stable_terminal_turn_delivery_id(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                ),
+                thread_id=thread_id,
+                turn_id=turn_id,
+            )
+        )
+    return identities
 
 
-def recovered_turn_final_item_id(turn: dict) -> str:
-    item = recovered_turn_final_item(turn)
-    if item is None:
-        return ""
-    return str(item.get("id") or item.get("itemId") or "")
-
-
-def recovered_turn_final_item(turn: dict) -> dict | None:
+def recovered_turn_final_items(turn: dict) -> list[dict]:
     items = turn.get("items")
     if not isinstance(items, list):
-        return None
-    for item in reversed(items):
-        if not isinstance(item, dict):
-            continue
+        return []
+    return [
+        item
+        for item in items
         if (
-            item.get("type") == "agentMessage"
+            isinstance(item, dict)
+            and item.get("type") == "agentMessage"
             and item.get("phase") == "final_answer"
             and str(item.get("text") or "").strip()
-        ):
-            return item
-    return None
+        )
+    ]
 
 
 def terminal_item_key(item: dict, *, fallback_item_id=None) -> str:

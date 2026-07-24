@@ -535,10 +535,15 @@ native projections so callback retries remain safe to deduplicate.
 {
   "channel_id": "wecom-gateway",
   "conversation_id": "conv-1",
-  "message_type": "turn_result",
+  "message_type": "agentMessage",
   "text": "...",
   "request_id": null,
-  "metadata": {"delivery_id": "imcodex:native:..."}
+  "metadata": {
+    "delivery_id": "imcodex:native:...",
+    "native_method": "item/completed",
+    "native_item_type": "agentMessage",
+    "phase": "final_answer"
+  }
 }
 ```
 

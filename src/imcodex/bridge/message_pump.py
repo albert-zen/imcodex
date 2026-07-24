@@ -55,7 +55,11 @@ class MessagePump:
             buffer.deltas.append(delta)
         if not emit_progress or buffer.final_visible or not delta:
             return None
-        return self._emit_progress(buffer, delta)
+        return self._emit_progress(
+            buffer,
+            delta,
+            message_type="item/agentMessage/delta",
+        )
 
     def record_agent_message(
         self,
@@ -78,8 +82,9 @@ class MessagePump:
             return OutboundMessage(
                 channel_id="",
                 conversation_id="",
-                message_type="turn_result",
+                message_type="agentMessage",
                 text=self._with_artifact_errors(text, buffer),
+                metadata={"phase": "final_answer"},
                 artifacts=tuple(buffer.artifacts),
             )
         if phase is None:
@@ -87,10 +92,20 @@ class MessagePump:
                 buffer.final_text = text
             if not text or not emit_commentary or buffer.final_visible:
                 return None
-            return self._emit_progress(buffer, text)
+            return self._emit_progress(
+                buffer,
+                text,
+                message_type="agentMessage",
+                metadata={},
+            )
         if not text or not emit_commentary or buffer.final_visible:
             return None
-        return self._emit_progress(buffer, text)
+        return self._emit_progress(
+            buffer,
+            text,
+            message_type="agentMessage",
+            metadata={"phase": phase},
+        )
 
     def record_command(
         self,
@@ -105,7 +120,11 @@ class MessagePump:
         buffer.command_summaries.append(text)
         if not emit_progress or buffer.final_visible:
             return None
-        return self._emit_progress(buffer, text)
+        return self._emit_progress(
+            buffer,
+            text,
+            message_type="commandExecution",
+        )
 
     def record_file_change(
         self,
@@ -121,7 +140,11 @@ class MessagePump:
             return None
         lines = ["Changed files:"]
         lines.extend(f"- {path}" for path in paths)
-        return self._emit_progress(buffer, "\n".join(lines))
+        return self._emit_progress(
+            buffer,
+            "\n".join(lines),
+            message_type="fileChange",
+        )
 
     def record_artifacts(
         self,
@@ -148,11 +171,18 @@ class MessagePump:
                 return OutboundMessage(
                     channel_id="",
                     conversation_id="",
-                    message_type="turn_result",
+                    message_type="turn/completed",
                     text=EMPTY_COMPLETED_TURN_TEXT,
+                    metadata={"status": status},
                 )
             text = "Turn interrupted." if status == "interrupted" else "Turn failed."
-            return OutboundMessage(channel_id="", conversation_id="", message_type="turn_result", text=text)
+            return OutboundMessage(
+                channel_id="",
+                conversation_id="",
+                message_type="turn/completed",
+                text=text,
+                metadata={"status": status},
+            )
         if status == "completed" and buffer.final_visible:
             return None
         final_text = buffer.final_text or "".join(buffer.deltas)
@@ -174,8 +204,9 @@ class MessagePump:
         return OutboundMessage(
             channel_id="",
             conversation_id="",
-            message_type="turn_result",
+            message_type="turn/completed",
             text=self._with_artifact_errors(text, buffer),
+            metadata={"status": status},
             artifacts=tuple(buffer.artifacts),
         )
 
@@ -200,19 +231,17 @@ class MessagePump:
         artifact_errors: tuple[str, ...] = (),
     ) -> OutboundMessage | None:
         buffer = self._turns.pop((thread_id, turn_id), None)
-        final_text = ""
         changed_files: list[str] = []
         for item in items:
             item_type = str(item.get("type") or "")
-            if item_type == "agentMessage" and str(item.get("text") or "").strip():
-                final_text = str(item.get("text") or "")
-            elif item_type == "fileChange":
+            if item_type == "fileChange":
                 changed_files.extend(
                     str(change.get("path"))
                     for change in item.get("changes", [])
                     if isinstance(change, dict) and change.get("path")
                 )
-        if not final_text and buffer is not None:
+        final_text = ""
+        if buffer is not None:
             final_text = buffer.final_text or "".join(buffer.deltas)
         if buffer is not None:
             changed_files.extend(buffer.changed_files)
@@ -238,8 +267,9 @@ class MessagePump:
         return OutboundMessage(
             channel_id="",
             conversation_id="",
-            message_type="turn_result",
+            message_type="turn/completed",
             text=text,
+            metadata={"status": status, "recovered": True},
             artifacts=artifacts,
         )
 
@@ -251,11 +281,24 @@ class MessagePump:
             self._turns[key] = buffer
         return buffer
 
-    def _emit_progress(self, buffer: TurnBuffer, text: str) -> OutboundMessage | None:
+    def _emit_progress(
+        self,
+        buffer: TurnBuffer,
+        text: str,
+        *,
+        message_type: str,
+        metadata: dict | None = None,
+    ) -> OutboundMessage | None:
         if text in buffer.emitted_progress_texts:
             return None
         buffer.emitted_progress_texts.add(text)
-        return OutboundMessage(channel_id="", conversation_id="", message_type="turn_progress", text=text)
+        return OutboundMessage(
+            channel_id="",
+            conversation_id="",
+            message_type=message_type,
+            text=text,
+            metadata={} if metadata is None else metadata,
+        )
 
     @staticmethod
     def _with_artifact_errors(text: str, buffer: TurnBuffer) -> str:

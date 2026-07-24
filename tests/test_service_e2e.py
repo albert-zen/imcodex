@@ -15,6 +15,7 @@ from imcodex.appserver.thread_dynamic_tools import (
 from imcodex.bridge import BridgeService, CommandRouter, MessageProjector
 from imcodex.bridge.inbound import render_inbound_input
 from imcodex.bridge.message_pump import EMPTY_COMPLETED_TURN_TEXT
+from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.bridge.terminal_identity import stable_terminal_turn_delivery_id
 from imcodex.bridge.thread_views import ThreadViewMixin
 from imcodex.channels import MultiplexOutboundSink
@@ -1620,11 +1621,91 @@ async def test_connection_ready_delivers_terminal_result_completed_during_discon
 
     await client.initialize()
 
-    recovered = [message for message in sink.messages if message.message_type == "turn_result"]
+    recovered = [
+        message
+        for message in sink.messages
+        if (
+            message.message_type == "agentMessage"
+            and message.metadata.get("phase") == "final_answer"
+        )
+    ]
     assert [message.text for message in recovered] == ["Finished while the bridge was offline."]
     assert recovered[0].metadata["delivery_id"].startswith("imcodex:native:")
     assert ("thr_1", "turn_1") not in service.projector.message_pump._turns
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_does_not_repeat_an_acknowledged_answer_or_add_empty_fallback(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    notification = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "thr_1",
+            "turnId": "turn_1",
+            "item": {
+                "id": "answer_1",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "Already delivered.",
+            },
+        },
+    }
+    first_store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    first_store.bind_thread("qq", "conv-1", "thr_1")
+    first_store.note_active_turn("thr_1", "turn_1", "inProgress")
+    first_sink = CapturingSink()
+    first_process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    first_client, first_service = _build_service(
+        first_store,
+        first_process,
+        first_sink,
+    )
+
+    await first_service.handle_notification(notification)
+    await first_store.flush_pending_writes()
+
+    assert [message.text for message in first_sink.messages] == [
+        "Already delivered."
+    ]
+    await first_service.close()
+    await first_client.close()
+
+    reloaded_store = ConversationStore(clock=lambda: 2.0, state_path=state_path)
+    second_sink = CapturingSink()
+    second_process = ScriptedProcess(
+        {"initialize": [{"id": 1, "result": {"ok": True}}]}
+    )
+    second_client, second_service = _build_service(
+        reloaded_store,
+        second_process,
+        second_sink,
+    )
+
+    replayed = await second_service.handle_notification(notification)
+    completed = await second_service.handle_notification(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turn": {"id": "turn_1", "status": "completed"},
+            },
+        }
+    )
+
+    assert replayed == []
+    assert completed == []
+    assert second_sink.messages == []
+    assert reloaded_store.list_terminal_delivery_watches("thr_1") == []
+    assert not reloaded_store.is_terminal_delivery_acknowledged(
+        first_sink.messages[0].metadata["delivery_id"]
+    )
+    await second_service.close()
+    await second_client.close()
 
 
 @pytest.mark.asyncio
@@ -1679,9 +1760,225 @@ async def test_recovered_terminal_result_remains_retryable_until_delivery_succee
 
     await client.initialize()
     assert [message.text for message in sink.messages] == ["Recovered after retry."]
+    assert sink.messages[0].message_type == "agentMessage"
+    assert sink.messages[0].metadata["phase"] == "final_answer"
+    assert sink.messages[0].metadata["native_item_type"] == "agentMessage"
+    assert "native_item_id" not in sink.messages[0].metadata
     assert sink.attempted_delivery_ids[0] == sink.attempted_delivery_ids[1]
     assert ("thr_1", "turn_1") not in service._pending_recovered_turns
     assert store.list_pending_terminal_deliveries() == []
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_recovery_delivers_each_final_answer_around_later_commentary() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    async def recover_failed_turn() -> dict:
+        return {
+            "summary": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+            "recoveredTurns": [
+                {
+                    "threadId": "thr_1",
+                    "turn": {
+                        "id": "turn_1",
+                        "status": "failed",
+                        "items": [
+                            {
+                                "id": "answer_1",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Native final answer.",
+                            },
+                            {
+                                "id": "commentary_2",
+                                "type": "agentMessage",
+                                "phase": "commentary",
+                                "text": "Later commentary.",
+                            },
+                            {
+                                "id": "answer_3",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Second native final answer.",
+                            },
+                        ],
+                    },
+                }
+            ],
+            "discardedTurns": [],
+        }
+
+    service.backend.rehydrate_bound_threads = recover_failed_turn  # type: ignore[method-assign]
+
+    await service.handle_connection_ready(1)
+
+    assert [message.text for message in sink.messages] == [
+        "Native final answer.",
+        "Second native final answer.",
+    ]
+    assert [message.message_type for message in sink.messages] == [
+        "agentMessage",
+        "agentMessage",
+    ]
+    assert [message.metadata["native_item_id"] for message in sink.messages] == [
+        "answer_1",
+        "answer_3",
+    ]
+    assert {
+        message.metadata["native_item_type"] for message in sink.messages
+    } == {"agentMessage"}
+    assert {message.metadata["phase"] for message in sink.messages} == {
+        "final_answer"
+    }
+    assert {message.metadata["status"] for message in sink.messages} == {"failed"}
+    assert len(
+        {message.metadata["delivery_id"] for message in sink.messages}
+    ) == 2
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_recovery_delivers_artifacts_after_the_last_answer(
+    tmp_path,
+) -> None:
+    from PIL import Image
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    generated = workspace / "recovered.png"
+    Image.new("RGB", (2, 2), (1, 2, 3)).save(generated)
+
+    class ArtifactCheckingSink(CapturingSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self.artifacts_existed_at_send: list[bool] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.artifacts_existed_at_send.append(
+                all(os.path.exists(artifact.local_path) for artifact in message.artifacts)
+            )
+            await super().send_message(message)
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd(
+        "qq",
+        "conv-1",
+        "thr_1",
+        str(workspace),
+    )
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = ArtifactCheckingSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    service.projector.artifact_stager = OutboundArtifactStager(
+        tmp_path / "outbound-media"
+    )
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    async def recover_failed_turn() -> dict:
+        return {
+            "summary": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+            "recoveredTurns": [
+                {
+                    "threadId": "thr_1",
+                    "turn": {
+                        "id": "turn_1",
+                        "status": "failed",
+                        "items": [
+                            {
+                                "id": "answer_1",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Answer before continued work.",
+                            },
+                            {
+                                "id": "image_2",
+                                "type": "imageGeneration",
+                                "savedPath": str(generated),
+                            },
+                        ],
+                    },
+                }
+            ],
+            "discardedTurns": [],
+        }
+
+    service.backend.rehydrate_bound_threads = recover_failed_turn  # type: ignore[method-assign]
+
+    await service.handle_connection_ready(1)
+
+    assert [message.message_type for message in sink.messages] == [
+        "agentMessage",
+        "turn/completed",
+    ]
+    assert sink.messages[1].text == "Turn failed."
+    assert [artifact.filename for artifact in sink.messages[1].artifacts] == [
+        "recovered.png"
+    ]
+    assert sink.artifacts_existed_at_send == [True, True]
+    assert len(
+        {message.metadata["delivery_id"] for message in sink.messages}
+    ) == 2
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_recovery_fails_explicitly_for_colliding_no_id_answers() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    sink = CapturingSink()
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    client, service = _build_service(store, process, sink)
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    async def recover_ambiguous_turn() -> dict:
+        return {
+            "summary": {"total": 1, "succeeded": 1, "failed": 0, "unverified": 0},
+            "recoveredTurns": [
+                {
+                    "threadId": "thr_1",
+                    "turn": {
+                        "id": "turn_1",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Same answer.",
+                            },
+                            {
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Same answer.",
+                            },
+                        ],
+                    },
+                }
+            ],
+            "discardedTurns": [],
+        }
+
+    service.backend.rehydrate_bound_threads = recover_ambiguous_turn  # type: ignore[method-assign]
+
+    result = await service.handle_connection_ready(1)
+
+    assert result is not None
+    assert result["status"] == "degraded"
+    assert result["rehydration"]["deliveryFailed"] == 1
+    assert sink.messages == []
+    assert ("thr_1", "turn_1") in service._pending_recovered_turns
+    assert store.list_terminal_delivery_watches("thr_1")
+    await service.close()
     await client.close()
 
 
@@ -1700,10 +1997,13 @@ async def test_recovery_health_is_degraded_while_terminal_delivery_is_pending() 
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "agentMessage",
             "text": "Still owed",
             "request_id": None,
-            "metadata": {"delivery_id": "imcodex:native:terminal-1"},
+            "metadata": {
+                "delivery_id": "imcodex:native:terminal-1",
+                "phase": "final_answer",
+            },
         },
     )
     process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
@@ -1826,10 +2126,13 @@ async def test_staged_terminal_delivery_retries_after_native_binding_is_cleared(
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "agentMessage",
             "text": "Native thread is gone, but this result is still owed.",
             "request_id": None,
-            "metadata": {"delivery_id": "imcodex:native:terminal-1"},
+            "metadata": {
+                "delivery_id": "imcodex:native:terminal-1",
+                "phase": "final_answer",
+            },
         },
     )
     store.clear_thread_binding("qq", "conv-1")
@@ -1872,9 +2175,12 @@ async def test_terminal_outbox_failure_blocks_only_the_same_im_destination() -> 
             message={
                 "channel_id": "qq",
                 "conversation_id": conversation_id,
-                "message_type": "turn_result",
+                "message_type": "agentMessage",
                 "text": delivery_id,
-                "metadata": {"delivery_id": delivery_id},
+                "metadata": {
+                    "delivery_id": delivery_id,
+                    "phase": "final_answer",
+                },
             },
         )
     sink = FailFirstConversationSink()
@@ -1912,7 +2218,7 @@ async def test_replayed_terminal_notification_cannot_overwrite_staged_outbox() -
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Exact final answer",
             "request_id": None,
             "metadata": {
@@ -1959,8 +2265,9 @@ async def test_initial_terminal_failure_persists_partial_artifact_progress() -> 
     message = OutboundMessage(
         channel_id="qq",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="agentMessage",
         text="Two images.",
+        metadata={"phase": "final_answer"},
         artifacts=[
             OutboundArtifact("image", "first.png", "image/png", "first.png", 1, "a"),
             OutboundArtifact("image", "second.png", "image/png", "second.png", 1, "b"),
@@ -1994,10 +2301,13 @@ async def test_stdio_connection_ready_drains_persisted_terminal_outbox() -> None
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "agentMessage",
             "text": "Staged before stdio restart",
             "request_id": None,
-            "metadata": {"delivery_id": "imcodex:native:terminal-1"},
+            "metadata": {
+                "delivery_id": "imcodex:native:terminal-1",
+                "phase": "final_answer",
+            },
         },
     )
     sink = CapturingSink()
@@ -2089,7 +2399,7 @@ async def test_permission_request_is_projected_and_approve_grants_requested_perm
         }
     )
 
-    assert projected[0].message_type == "approval_request"
+    assert projected[0].message_type == "item/permissions/requestApproval"
     assert "Permissions:" in projected[0].text
     assert "fileSystem" in projected[0].text
 
@@ -2898,10 +3208,28 @@ async def test_native_work_after_final_resumes_live_output_for_the_same_turn() -
     final_delivery_ids = [
         str(message.metadata.get("delivery_id") or "")
         for message in sink.messages
-        if message.message_type == "turn_result"
+        if (
+            message.message_type == "agentMessage"
+            and message.metadata.get("phase") == "final_answer"
+        )
     ]
     assert len(final_delivery_ids) == 2
     assert final_delivery_ids[0] != final_delivery_ids[1]
+    final_messages = [
+        message
+        for message in sink.messages
+        if message.metadata.get("phase") == "final_answer"
+    ]
+    assert [message.message_type for message in final_messages] == [
+        "agentMessage",
+        "agentMessage",
+    ]
+    assert {
+        message.metadata.get("native_method") for message in final_messages
+    } == {"item/completed"}
+    assert {
+        message.metadata.get("native_item_type") for message in final_messages
+    } == {"agentMessage"}
     assert store.list_pending_terminal_deliveries() == []
     await service.close()
     await client.close()
@@ -6166,7 +6494,7 @@ async def test_full_handoff_gate_preserves_native_server_request(
     await asyncio.wait_for(request_task, timeout=1)
 
     assert sink.messages[0].text == "Buffered progress"
-    assert sink.messages[1].message_type == "approval_request"
+    assert sink.messages[1].message_type == "item/commandExecution/requestApproval"
     assert [route.request_id for route in store.list_pending_requests("qq", "conv-1")] == ["91"]
     await client.close()
 
@@ -6318,7 +6646,7 @@ async def test_handoff_retries_buffered_approval_before_rejecting_native_request
             self.attempted_delivery_ids = []
 
         async def send_message(self, message: OutboundMessage) -> None:
-            if message.message_type == "approval_request":
+            if message.message_type == "item/commandExecution/requestApproval":
                 self.attempted_delivery_ids.append(str(message.metadata.get("delivery_id") or ""))
                 if len(self.attempted_delivery_ids) == 1:
                     raise OSError("approval delivery unavailable")
@@ -6355,7 +6683,9 @@ async def test_handoff_retries_buffered_approval_before_rejecting_native_request
         succeeded=True,
     )
 
-    assert [message.message_type for message in sink.messages] == ["approval_request"]
+    assert [message.message_type for message in sink.messages] == [
+        "item/commandExecution/requestApproval"
+    ]
     assert len(sink.attempted_delivery_ids) == 2
     assert sink.attempted_delivery_ids[0] == sink.attempted_delivery_ids[1]
     assert store.list_pending_requests("qq", "conv-1")
@@ -6404,7 +6734,9 @@ async def test_server_request_retry_stops_after_ambiguous_send_is_resolved(
 
     assert projected == []
     assert sink.attempts == 1
-    assert [message.message_type for message in sink.messages] == ["approval_request"]
+    assert [message.message_type for message in sink.messages] == [
+        "item/commandExecution/requestApproval"
+    ]
     assert store.list_native_appserver_events()[-1].outcome == "resolved"
     assert not any(payload.get("id") == 91 for payload in process.inputs)
     await client.close()
@@ -6539,7 +6871,7 @@ async def test_handoff_preserves_wire_order_across_notification_and_request_lane
 
     assert sink.messages[0].text.startswith("[System] Switched to Running work.")
     assert sink.messages[1].text == "Wire-first progress"
-    assert sink.messages[2].message_type == "approval_request"
+    assert sink.messages[2].message_type == "item/commandExecution/requestApproval"
     await client.close()
 
 

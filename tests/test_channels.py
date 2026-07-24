@@ -1154,7 +1154,7 @@ def test_webhook_releases_handoff_output_after_notice_reaches_outbound_sink() ->
                     OutboundMessage(
                         channel_id=inbound.channel_id,
                         conversation_id=inbound.conversation_id,
-                        message_type="turn_progress",
+                        message_type="agentMessage",
                         text="Buffered live output",
                     )
                 )
@@ -1452,7 +1452,7 @@ async def test_qq_adapter_sends_markdown_messages_by_default() -> None:
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="**Accepted**",
                 metadata={"reply_to_message_id": "msg-1", "reply_to_seen_at": 100.0},
             )
@@ -1499,7 +1499,7 @@ async def test_qq_adapter_uploads_native_image_before_final_text(tmp_path: Path)
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="The image is attached.",
                 metadata={"delivery_id": "terminal-1"},
                 artifacts=(
@@ -1562,7 +1562,7 @@ async def test_qq_adapter_reports_permanent_artifact_upload_rejection(tmp_path: 
         message = OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="The image is attached.",
                 artifacts=[
                     OutboundArtifact(
@@ -1614,7 +1614,7 @@ async def test_qq_adapter_keeps_only_unfinished_artifacts_after_transient_failur
     message = OutboundMessage(
         channel_id="qq",
         conversation_id="c2c:user-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Two images.",
         artifacts=[
             OutboundArtifact(
@@ -1674,7 +1674,7 @@ def test_qq_artifact_delivery_identity_is_stable_after_suffix_retry(tmp_path: Pa
     message = OutboundMessage(
         channel_id="qq",
         conversation_id="c2c:user-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Two images.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[artifact],
@@ -1718,7 +1718,7 @@ async def test_qq_adapter_rejects_same_size_artifact_mutation(tmp_path: Path) ->
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="The image is attached.",
                 artifacts=[
                     OutboundArtifact(
@@ -1756,7 +1756,7 @@ def test_qq_durable_preparation_reports_unsupported_group_file(tmp_path: Path) -
     message = OutboundMessage(
         channel_id="qq",
         conversation_id="group:group-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Here is the report.",
         artifacts=[
             OutboundArtifact(
@@ -1801,7 +1801,7 @@ async def test_qq_adapter_sends_plain_text_messages_when_disabled() -> None:
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="**Accepted**",
             )
         )
@@ -1847,7 +1847,7 @@ async def test_qq_adapter_uses_proactive_delivery_after_group_reply_window_expir
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Long-running result",
             )
         )
@@ -1881,7 +1881,7 @@ async def test_qq_adapter_rejects_stale_explicit_passive_reply_metadata() -> Non
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Delayed cached result",
                 metadata={"reply_to_message_id": "msg-1", "reply_to_seen_at": 100.0},
             )
@@ -1902,7 +1902,7 @@ async def test_qq_delivery_retry_reuses_platform_identity_across_restart() -> No
     outbound = OutboundMessage(
         channel_id="qq",
         conversation_id="group:group-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Recovered result",
         metadata={"delivery_id": "imcodex:native:terminal-1"},
     )
@@ -1978,7 +1978,7 @@ async def test_qq_plain_text_fallback_duplicate_acknowledges_stable_delivery() -
     outbound = OutboundMessage(
         channel_id="qq",
         conversation_id="group:group-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="**Recovered result**",
         metadata={
             "delivery_id": "imcodex:native:terminal-fallback",
@@ -2037,7 +2037,7 @@ async def test_qq_adapter_retries_plain_text_when_markdown_send_fails(
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="**Accepted**",
                 metadata={"reply_to_message_id": "msg-1", "reply_to_seen_at": 100.0},
             )
@@ -2086,7 +2086,7 @@ async def test_qq_adapter_does_not_retry_plain_text_for_server_errors() -> None:
                 OutboundMessage(
                     channel_id="qq",
                     conversation_id="group:group-1",
-                    message_type="turn_result",
+                    message_type="turn/completed",
                     text="**Accepted**",
                 )
             )
@@ -2106,7 +2106,7 @@ async def test_qq_adapter_delegates_standardized_inbound_message_to_middleware()
                 OutboundMessage(
                     channel_id="qq",
                     conversation_id=inbound.conversation_id,
-                    message_type="turn_result",
+                    message_type="turn/completed",
                     text="Accepted",
                     metadata={"reply_to_message_id": reply_to_message_id} if reply_to_message_id else {},
                 )
@@ -2139,7 +2139,7 @@ async def test_qq_adapter_delegates_standardized_inbound_message_to_middleware()
     assert sent
     assert middleware.seen
     assert middleware.seen[0].text == "hello"
-    assert sent[0].message_type == "turn_result"
+    assert sent[0].message_type == "turn/completed"
     assert sent[0].metadata["reply_to_message_id"] == "msg-1"
 
 

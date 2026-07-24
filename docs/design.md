@@ -208,6 +208,14 @@ the same Turn emit another item after a visible answer and later emit another
 `final_answer`, so the message pump may reopen presentation state without
 changing native Turn truth.
 
+Native projection keeps the original Codex discriminator. Agent output uses
+`agentMessage` with its native `phase`; plan and diff notifications use their
+native methods; goal, status, warning, and native request notifications keep
+their native methods; command and file items use their native item types;
+completion fallbacks use `turn/completed`. IM presentation classes such as
+“progress”, “result”, “approval”, or “status” may be derived at a UI boundary,
+but they are not persisted or used as bridge lifecycle truth.
+
 The durable outbox must use the identity of the unit actually being delivered.
 A Turn-level watch is sufficient to recover a completion that happened while
 the bridge was offline, but each projected answer item needs an item/segment
@@ -218,6 +226,20 @@ answer segments for one IM destination drain in projection order; a failure in
 one destination does not block outbox progress for a different destination.
 That order is an explicit durable outbox sequence, not an assumption about
 dictionary iteration order or wall-clock timestamp uniqueness.
+
+Snapshot recovery enumerates every nonblank native `final_answer` item in
+native order. Explicit artifacts produced after the last answer segment are
+owned by a separate `turn/completed` fallback so they do not silently disappear
+or change an earlier item's delivery identity. If native data omits item IDs
+and two answer items are otherwise indistinguishable, recovery stays degraded
+and retains its watch instead of conflating the two deliveries.
+
+After a sink acknowledges an answer segment, the bridge retains only its
+delivery identity alongside the Turn watch until native Turn completion. This
+small receipt prevents a restart between answer acknowledgement and
+`turn/completed` from replaying the answer or inventing an empty completion
+fallback. It is IM delivery truth, not native Turn state, and is removed when
+the watch is consumed.
 
 Structured agent-sent artifacts are part of this delivery state, not native
 thread state. The bridge stages only explicit native output references into a

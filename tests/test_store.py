@@ -34,6 +34,7 @@ async def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert payload["pending_requests"] == []
     assert "native_thread_tool_thread_ids" not in payload
     assert payload["pending_terminal_deliveries"] == []
+    assert payload["acknowledged_terminal_deliveries"] == []
 
     reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
     assert reloaded.get_binding("qq", "conv-1").thread_id == "thr_1"
@@ -54,6 +55,37 @@ def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_t
     ]
 
 
+def test_store_keeps_acknowledged_delivery_until_turn_watch_is_consumed(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.note_active_turn("thr_1", "turn_1", "inProgress")
+    store.stage_terminal_delivery(
+        delivery_id="answer-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "agentMessage",
+            "text": "Delivered answer",
+            "metadata": {"delivery_id": "answer-1", "phase": "final_answer"},
+        },
+    )
+    store.complete_terminal_delivery("answer-1")
+
+    reloaded = ConversationStore(clock=lambda: 8.0, state_path=state_path)
+
+    assert reloaded.is_terminal_delivery_acknowledged("answer-1")
+    assert reloaded.has_acknowledged_terminal_delivery("thr_1", "turn_1")
+    reloaded.discard_terminal_watch("thr_1", "turn_1")
+
+    completed = ConversationStore(clock=lambda: 9.0, state_path=state_path)
+    assert not completed.is_terminal_delivery_acknowledged("answer-1")
+
+
 def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
@@ -65,7 +97,7 @@ def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> 
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Recovered result",
             "request_id": None,
             "metadata": {"delivery_id": "stable-1"},
@@ -84,7 +116,7 @@ def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> 
         message={
             "channel_id": "qq",
             "conversation_id": "different-route",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Replayed fallback",
             "request_id": None,
             "metadata": {"delivery_id": "different"},
@@ -120,7 +152,7 @@ def test_store_keeps_multiple_delivery_segments_for_the_same_native_turn() -> No
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "First answer",
             "metadata": {"delivery_id": "answer-1"},
         },
@@ -132,7 +164,7 @@ def test_store_keeps_multiple_delivery_segments_for_the_same_native_turn() -> No
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Second answer",
             "metadata": {"delivery_id": "answer-2"},
         },
@@ -172,7 +204,7 @@ def test_store_loads_legacy_turn_keyed_delivery_state_into_separate_layers(tmp_p
                         "message": {
                             "channel_id": "qq",
                             "conversation_id": "conv-1",
-                            "message_type": "turn_result",
+                            "message_type": "turn/completed",
                             "text": "Still owed",
                             "metadata": {"delivery_id": "legacy-delivery"},
                         },
@@ -216,7 +248,7 @@ def test_clearing_stale_binding_preserves_staged_delivery_but_drops_unprojected_
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Already projected",
             "request_id": None,
             "metadata": {},
@@ -243,7 +275,7 @@ def test_discard_terminal_watch_never_removes_staged_message() -> None:
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Owed",
             "request_id": None,
             "metadata": {},

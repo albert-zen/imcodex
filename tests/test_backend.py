@@ -1222,7 +1222,7 @@ async def test_interrupt_never_consumes_already_staged_terminal_delivery() -> No
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Final result already projected",
             "request_id": None,
             "metadata": {"delivery_id": "stable-1"},
@@ -1371,7 +1371,7 @@ async def test_stale_native_thread_keeps_already_staged_terminal_delivery() -> N
         message={
             "channel_id": "qq",
             "conversation_id": "conv-1",
-            "message_type": "turn_result",
+            "message_type": "turn/completed",
             "text": "Still deliver this",
             "request_id": None,
             "metadata": {"delivery_id": "stable-1"},

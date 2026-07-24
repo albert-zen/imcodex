@@ -805,6 +805,24 @@ For asynchronous Codex output, the product may also emit:
 - tool-call messages
 - final turn result messages
 
+These are presentation descriptions, not bridge message types. Native
+projections preserve Codex discriminators:
+
+- `agentMessage` with `metadata.phase=commentary`
+- `agentMessage` with `metadata.phase=final_answer`
+- `turn/plan/updated`
+- `turn/diff/updated`
+- native thread, warning, and server-request methods such as
+  `thread/status/changed`, `configWarning`, and
+  `item/commandExecution/requestApproval`
+- `commandExecution`
+- `fileChange`
+- `turn/completed` for completion fallbacks
+
+The bridge MUST NOT replace these with its own progress/result lifecycle
+taxonomy. Channels that need a visual category derive it from the native
+method, item type, and phase.
+
 ## Codex Output Projection
 
 During a normal Codex run, the bridge should be prepared to receive all native Codex output and classify it before deciding what to show.

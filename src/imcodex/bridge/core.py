@@ -15,6 +15,7 @@ from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
 from .inbound import render_inbound_input
+from .message_pump import EMPTY_COMPLETED_TURN_TEXT
 from .native_events import (
     clamp_native_events_limit,
     record_native_appserver_journal,
@@ -40,9 +41,8 @@ from .terminal_identity import (
     event_message_identity,
     event_terminal_identity,
     event_terminal_key,
-    message_identity,
-    recovered_turn_final_item_id,
-    recovered_turn_identity,
+    recovered_turn_final_items,
+    recovered_turn_identities,
     stable_terminal_item_delivery_id,
     stable_terminal_turn_delivery_id,
     terminal_item_key,
@@ -116,6 +116,7 @@ class BridgeService(
         # confirms delivery; the bounded delivered map closes the race between
         # queued terminal notifications and a concurrent resume response.
         self._pending_recovered_turns: dict[tuple[str, str], dict] = {}
+        self._active_recovery_artifact_paths: set[str] = set()
         self._recent_terminal_deliveries: dict[str, None] = {}
         self._recent_completed_turns: dict[tuple[str, str], None] = {}
         self._init_terminal_delivery()
@@ -768,6 +769,17 @@ class BridgeService(
                         if replay_prepared
                         else self.projector.project_notification(notification, self.store)
                     )
+                if (
+                    event.kind == "turn_completed"
+                    and message is not None
+                    and terminal_key_for_event is not None
+                    and message.message_type == "turn/completed"
+                    and message.text == EMPTY_COMPLETED_TURN_TEXT
+                    and self.store.has_acknowledged_terminal_delivery(
+                        *terminal_key_for_event
+                    )
+                ):
+                    message = None
                 if not replay_prepared:
                     self._attach_delivery_id(
                         message,
@@ -1036,76 +1048,83 @@ class BridgeService(
                 self.projector.discard_recovered_turn(thread_id=thread_id, turn_id=turn_id)
                 self._pending_recovered_turns.pop(terminal_key, None)
                 continue
+            recovery_artifact_paths: set[str] = set()
             try:
                 async with self._terminal_projection_lock:
-                    identity = recovered_turn_identity(
-                        thread_id=thread_id,
-                        turn=turn,
-                    )
-                    if (
-                        identity is not None
-                        and self._terminal_delivery_is_known(identity.delivery_id)
-                    ):
-                        self.store.discard_terminal_watch(thread_id, turn_id)
-                        self.projector.discard_recovered_turn(
-                            thread_id=thread_id,
-                            turn_id=turn_id,
-                        )
-                        self._pending_recovered_turns.pop(terminal_key, None)
-                        continue
-                    message = self.projector.project_recovered_turn(
+                    messages = self.projector.project_recovered_turn(
                         thread_id=thread_id,
                         turn=turn,
                         store=self.store,
                     )
-                    if message is None:
+                    recovery_artifact_paths = {
+                        artifact.local_path
+                        for message in messages
+                        for artifact in message.artifacts
+                    }
+                    self._active_recovery_artifact_paths.update(
+                        recovery_artifact_paths
+                    )
+                    identities = recovered_turn_identities(
+                        thread_id=thread_id,
+                        turn=turn,
+                        include_turn_fallback=any(
+                            message.message_type == "turn/completed"
+                            for message in messages
+                        ),
+                    )
+                    if not messages or len(messages) != len(identities):
                         delivery_failed += 1
                         emit_event(
                             component="bridge",
                             event="bridge.thread_rehydrate.empty_terminal",
                             level="ERROR",
-                            message="Recovered terminal turn did not produce a deliverable message",
-                            data={"thread_id": thread_id, "turn_id": turn_id},
+                            message=(
+                                "Recovered terminal turn did not produce one "
+                                "deliverable message per native answer segment"
+                            ),
+                            data={
+                                "thread_id": thread_id,
+                                "turn_id": turn_id,
+                                "message_count": len(messages),
+                                "identity_count": len(identities),
+                            },
                         )
                         continue
-                    self._attach_delivery_id(
-                        message,
-                        {
-                            "method": "bridge/terminalTurn",
-                            "params": {"threadId": thread_id, "turnId": turn_id},
-                        },
-                        namespace="terminal",
-                        terminal_key=terminal_key,
-                    )
-                    if identity is not None:
+                    final_items = recovered_turn_final_items(turn)
+                    all_accounted_for = True
+                    final_index = 0
+                    for identity, message in zip(identities, messages, strict=True):
+                        if self._terminal_delivery_is_known(identity.delivery_id):
+                            if message.message_type == "agentMessage":
+                                final_index += 1
+                            continue
                         message.metadata["delivery_id"] = identity.delivery_id
-                        native_item_id = recovered_turn_final_item_id(turn)
-                        if native_item_id:
-                            message.metadata["native_item_id"] = native_item_id
-                    else:
-                        identity = message_identity(
-                            terminal_key,
-                            message,
+                        if message.message_type == "agentMessage":
+                            item = final_items[final_index]
+                            final_index += 1
+                            native_item_id = str(
+                                item.get("id") or item.get("itemId") or ""
+                            )
+                            message.metadata["native_method"] = "item/completed"
+                            message.metadata["native_item_type"] = "agentMessage"
+                            message.metadata["phase"] = "final_answer"
+                            if native_item_id:
+                                message.metadata["native_item_id"] = native_item_id
+                            else:
+                                message.metadata.pop("native_item_id", None)
+                        else:
+                            message.metadata["native_method"] = "turn/completed"
+                        _, delivered, durable = await asyncio.wait_for(
+                            self._deliver_terminal_message(identity, message),
+                            timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
                         )
-                    if identity is None:
-                        delivery_failed += 1
-                        emit_event(
-                            component="bridge",
-                            event="bridge.thread_rehydrate.missing_delivery_identity",
-                            level="ERROR",
-                            message="Recovered terminal turn had no stable delivery identity",
-                            data={"thread_id": thread_id, "turn_id": turn_id},
-                        )
-                        continue
-                    _, delivered, durable = await asyncio.wait_for(
-                        self._deliver_terminal_message(identity, message),
-                        timeout=_RECOVERY_DELIVERY_TIMEOUT_S,
-                    )
-                    self._pending_recovered_turns.pop(terminal_key, None)
-                    if durable:
+                        if delivered:
+                            self._remember_terminal_delivery(identity.delivery_id)
+                        if not durable:
+                            all_accounted_for = False
+                    if all_accounted_for:
                         self.store.discard_terminal_watch(thread_id, turn_id)
-                    if delivered:
-                        self._remember_terminal_delivery(identity.delivery_id)
+                        self._pending_recovered_turns.pop(terminal_key, None)
             except Exception as exc:
                 delivery_failed += 1
                 emit_event(
@@ -1119,6 +1138,11 @@ class BridgeService(
                         "error_type": type(exc).__name__,
                     },
                 )
+            finally:
+                self._active_recovery_artifact_paths.difference_update(
+                    recovery_artifact_paths
+                )
+                self._cleanup_outbound_artifact_spool()
         if delivery_failed:
             summary["deliveryFailed"] = delivery_failed
         await self._deliver_pending_terminal_once()
@@ -1178,6 +1202,8 @@ class BridgeService(
     def _terminal_delivery_is_known(self, delivery_id: str) -> bool:
         if delivery_id in self._recent_terminal_deliveries:
             return True
+        if self.store.is_terminal_delivery_acknowledged(delivery_id):
+            return True
         return any(
             pending.delivery_id == delivery_id
             for pending in self.store.list_pending_terminal_deliveries()
@@ -1211,21 +1237,43 @@ class BridgeService(
             item = params.get("item")
             item = item if isinstance(item, dict) else {}
             item_id = str(item.get("id") or params.get("itemId") or "")
-            item_key = terminal_item_key(item, fallback_item_id=params.get("itemId"))
-            if message is not None:
-                message.metadata["delivery_id"] = stable_terminal_item_delivery_id(
-                    thread_id=terminal_key[0],
-                    turn_id=terminal_key[1],
-                    item_id=item_key,
+            is_final_answer = (
+                item.get("type") == "agentMessage"
+                and item.get("phase") == "final_answer"
+                and str(item.get("text") or "").strip()
+            )
+            if message is not None and is_final_answer:
+                item_key = terminal_item_key(
+                    item,
+                    fallback_item_id=params.get("itemId"),
                 )
+                message.metadata["delivery_id"] = (
+                    stable_terminal_item_delivery_id(
+                        thread_id=terminal_key[0],
+                        turn_id=terminal_key[1],
+                        item_id=item_key,
+                    )
+                )
+            else:
+                self._attach_native_delivery_id(
+                    message,
+                    native_message,
+                    namespace=namespace,
+                )
+            if message is not None:
+                message.metadata["native_method"] = "item/completed"
+                message.metadata["native_item_type"] = str(item.get("type") or "")
                 if item_id:
                     message.metadata["native_item_id"] = item_id
+                if item.get("phase") is not None:
+                    message.metadata["phase"] = str(item.get("phase"))
             return
         if message is not None:
             message.metadata["delivery_id"] = stable_terminal_turn_delivery_id(
                 thread_id=terminal_key[0],
                 turn_id=terminal_key[1],
             )
+            message.metadata["native_method"] = "turn/completed"
 
     def _remember_terminal_delivery(self, delivery_id: str) -> None:
         self._recent_terminal_deliveries.pop(delivery_id, None)

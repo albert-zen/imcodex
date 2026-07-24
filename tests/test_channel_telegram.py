@@ -555,7 +555,7 @@ async def test_telegram_sends_chunked_topic_reply() -> None:
             OutboundMessage(
                 channel_id="telegram",
                 conversation_id="chat:-1001:topic:77",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="a" * 4001,
                 metadata={"reply_to_message_id": "9"},
             )
@@ -602,7 +602,7 @@ async def test_telegram_retries_rate_limit_with_server_delay() -> None:
             OutboundMessage(
                 channel_id="telegram",
                 conversation_id="chat:42",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="done",
             )
         )
@@ -811,7 +811,7 @@ async def test_telegram_does_not_retry_ambiguous_send_failure() -> None:
                 OutboundMessage(
                     channel_id="telegram",
                     conversation_id="chat:42",
-                    message_type="turn_result",
+                    message_type="turn/completed",
                     text="done",
                 )
             )
@@ -839,7 +839,7 @@ async def test_telegram_sends_staged_image_before_terminal_text(tmp_path: Path) 
         message = OutboundMessage(
             channel_id="telegram",
             conversation_id="chat:-1001:topic:77",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="Rendered preview.",
             metadata={"reply_to_message_id": "42"},
             artifacts=[
@@ -893,7 +893,7 @@ async def test_telegram_preserves_artifact_across_permission_recovery(tmp_path: 
     message = OutboundMessage(
         channel_id="telegram",
         conversation_id="chat:123",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[artifact],

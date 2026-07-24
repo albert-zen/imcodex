@@ -104,11 +104,38 @@ class TerminalDeliveryStoreMixin:
         self._save()
 
     def complete_terminal_delivery(self, delivery_id: str) -> None:
-        if self._pending_terminal_deliveries.pop(delivery_id, None) is not None:
-            self._save()
+        pending = self._pending_terminal_deliveries.pop(delivery_id, None)
+        if pending is None:
+            return
+        self._acknowledged_terminal_deliveries[delivery_id] = (
+            pending.thread_id,
+            pending.turn_id,
+        )
+        self._save()
+
+    def is_terminal_delivery_acknowledged(self, delivery_id: str) -> bool:
+        return delivery_id in self._acknowledged_terminal_deliveries
+
+    def has_acknowledged_terminal_delivery(
+        self,
+        thread_id: str,
+        turn_id: str,
+    ) -> bool:
+        return (thread_id, turn_id) in self._acknowledged_terminal_deliveries.values()
 
     def discard_terminal_watch(self, thread_id: str, turn_id: str) -> None:
-        if self._terminal_delivery_watches.pop((thread_id, turn_id), None) is not None:
+        removed = self._terminal_delivery_watches.pop((thread_id, turn_id), None)
+        acknowledged = {
+            delivery_id: terminal_key
+            for delivery_id, terminal_key
+            in self._acknowledged_terminal_deliveries.items()
+            if terminal_key != (thread_id, turn_id)
+        }
+        if (
+            removed is not None
+            or len(acknowledged) != len(self._acknowledged_terminal_deliveries)
+        ):
+            self._acknowledged_terminal_deliveries = acknowledged
             self._save()
 
     def _remove_terminal_deliveries_for_thread(
@@ -127,4 +154,10 @@ class TerminalDeliveryStoreMixin:
             for delivery_id, pending in self._pending_terminal_deliveries.items()
             if pending.thread_id != thread_id
             or preserve_staged
+        }
+        self._acknowledged_terminal_deliveries = {
+            delivery_id: terminal_key
+            for delivery_id, terminal_key
+            in self._acknowledged_terminal_deliveries.items()
+            if terminal_key[0] != thread_id
         }

@@ -189,7 +189,7 @@ async def test_channel_middleware_dispatches_to_service_and_sets_reply_metadata(
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
             )
         ]
@@ -232,7 +232,7 @@ async def test_channel_middleware_emits_correlated_message_trace_events(
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="group:group-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
             )
         ]
@@ -397,7 +397,7 @@ async def test_channel_middleware_materializes_lazily_after_dedup_and_not_on_rep
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
             )
         ]
@@ -467,7 +467,7 @@ async def test_channel_middleware_finalizes_duplicate_resources_before_delivery(
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
             )
         ]
@@ -607,7 +607,7 @@ async def test_channel_middleware_retries_dirty_commit_without_reexecuting_servi
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
             )
         ]
@@ -657,7 +657,7 @@ async def test_channel_middleware_sanitizes_cached_metadata_before_persisting(
             OutboundMessage(
                 channel_id="qq",
                 conversation_id="c2c:user-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Done",
                 metadata={"unsupported": object(), "not_finite": float("nan")},
             )
@@ -704,7 +704,7 @@ async def test_channel_middleware_explicitly_reports_evicted_cached_reply() -> N
                     OutboundMessage(
                         channel_id="qq",
                         conversation_id="c2c:user-1",
-                        message_type="turn_result",
+                        message_type="turn/completed",
                         text=f"result-{index}",
                     )
                 )
@@ -879,7 +879,7 @@ async def test_async_dedupe_fsync_does_not_block_normal_state_save(
         OutboundMessage(
             channel_id="qq",
             conversation_id="conv-1",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="Done",
         )
     )
@@ -967,7 +967,7 @@ async def test_cancelled_failed_dedupe_write_remains_retryable(tmp_path) -> None
         OutboundMessage(
             channel_id="qq",
             conversation_id="conv-1",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="Done",
         )
     )

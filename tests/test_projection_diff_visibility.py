@@ -25,7 +25,7 @@ def test_diff_update_visible_when_toolcalls_are_shown() -> None:
     message = projector.project_notification(_diff_update(), store)
 
     assert message is not None
-    assert message.message_type == "turn_progress"
+    assert message.message_type == "turn/diff/updated"
     assert "Diff updated." in message.text
     assert "src/imcodex/bridge/core.py" in message.text
 

@@ -198,6 +198,12 @@ The watch is not delivery identity and the outbox is not native Turn truth. One
 native Turn may produce multiple visible answer segments, each with its own
 stable delivery identity, acknowledgement, and retry lifecycle.
 
+Projected native output also preserves native protocol semantics instead of
+introducing a parallel progress/result taxonomy. The outbound envelope may add
+IM routing and delivery metadata, but its native discriminator remains the
+Codex method or item type, with item phase retained as metadata. Bridge-created
+status, command, and error messages remain explicitly bridge-owned.
+
 ### Runtime-only state
 
 The following should be runtime-only and rebuildable:

@@ -275,7 +275,7 @@ def test_outbound_gate_rechecks_persisted_sender_against_current_policy() -> Non
     message = OutboundMessage(
         channel_id="test",
         conversation_id="chat:1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="done",
     )
 

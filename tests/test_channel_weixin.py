@@ -483,7 +483,7 @@ async def test_weixin_sends_chunked_text_with_persisted_context(tmp_path: Path) 
         OutboundMessage(
             channel_id="weixin",
             conversation_id="user:owner@im.wechat",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="a" * 4001,
         )
     )
@@ -505,7 +505,7 @@ async def test_weixin_uses_stable_delivery_id_for_chunk_retries(tmp_path: Path) 
         OutboundMessage(
             channel_id="weixin",
             conversation_id="user:owner@im.wechat",
-            message_type="turn_result",
+            message_type="turn/completed",
             text="a" * 4001,
             metadata={"delivery_id": "imcodex:stable"},
         )
@@ -535,7 +535,7 @@ async def test_weixin_sends_staged_image_before_terminal_text(tmp_path: Path) ->
     message = OutboundMessage(
         channel_id="weixin",
         conversation_id="user:owner@im.wechat",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -604,7 +604,7 @@ async def test_weixin_preserves_artifact_across_permission_recovery(tmp_path: Pa
     message = OutboundMessage(
         channel_id="weixin",
         conversation_id="user:owner@im.wechat",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Rendered preview.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[artifact],
@@ -631,7 +631,7 @@ async def test_weixin_refuses_outbound_without_context_token(tmp_path: Path) -> 
             OutboundMessage(
                 channel_id="weixin",
                 conversation_id="user:owner@im.wechat",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="done",
             )
         )

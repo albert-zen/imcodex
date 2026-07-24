@@ -391,6 +391,9 @@ class TerminalDeliveryMixin:
         active_paths = getattr(self.projector.message_pump, "active_artifact_paths", None)
         if callable(active_paths):
             referenced.update(active_paths())
+        referenced.update(
+            getattr(self, "_active_recovery_artifact_paths", set())
+        )
         try:
             cleanup(referenced)
         except OSError as exc:

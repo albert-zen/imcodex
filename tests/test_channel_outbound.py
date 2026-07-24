@@ -29,7 +29,7 @@ async def test_webhook_outbound_sink_sends_contract_and_surfaces_http_failure() 
                 OutboundMessage(
                     channel_id="gateway",
                     conversation_id="conv-1",
-                    message_type="turn_result",
+                    message_type="turn/completed",
                     text="done",
                     request_id="req-1",
                     metadata={"trace_id": "trace-1"},
@@ -39,7 +39,7 @@ async def test_webhook_outbound_sink_sends_contract_and_surfaces_http_failure() 
     assert json.loads(requests[0].content) == {
         "channel_id": "gateway",
         "conversation_id": "conv-1",
-        "message_type": "turn_result",
+        "message_type": "turn/completed",
         "text": "done",
         "request_id": "req-1",
         "metadata": {"trace_id": "trace-1"},
@@ -73,7 +73,7 @@ async def test_webhook_outbound_sink_retries_with_stable_delivery_id() -> None:
             OutboundMessage(
                 channel_id="gateway",
                 conversation_id="conv-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="done",
                 metadata={"delivery_id": "imcodex:native:stable"},
             )
@@ -111,7 +111,7 @@ async def test_webhook_outbound_sink_sends_artifacts_as_multipart(tmp_path: Path
             OutboundMessage(
                 channel_id="gateway",
                 conversation_id="conv-1",
-                message_type="turn_result",
+                message_type="turn/completed",
                 text="Rendered preview.",
                 metadata={"delivery_id": "terminal-1"},
                 artifacts=[
@@ -147,7 +147,7 @@ async def test_webhook_converts_missing_artifact_to_visible_notice(tmp_path: Pat
     message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Done.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -195,7 +195,7 @@ async def test_webhook_converts_permanent_multipart_rejection_to_notice(
     message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Done.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -243,7 +243,7 @@ async def test_webhook_removes_rejected_artifact_before_failed_notice_retry(
     message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="Done.",
         metadata={"delivery_id": "terminal-1"},
         artifacts=[
@@ -311,13 +311,13 @@ async def test_multiplex_outbound_sink_prefers_exact_channel_adapter() -> None:
     telegram_message = OutboundMessage(
         channel_id="telegram",
         conversation_id="chat:42",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="telegram",
     )
     gateway_message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="gateway",
     )
 
@@ -334,7 +334,7 @@ def test_multiplex_delegates_durable_message_preparation_to_channel() -> None:
             message.metadata["platform_identity"] = "pinned"
 
     sink = MultiplexOutboundSink(channel_sinks={"qq": Sink()})
-    message = OutboundMessage("qq", "group:1", "turn_result", "Done")
+    message = OutboundMessage("qq", "group:1", "turn/completed", "Done")
 
     sink.prepare_durable_message(message)
 
@@ -356,7 +356,7 @@ async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> 
     message = OutboundMessage(
         channel_id="telegram",
         conversation_id="chat:42",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="must not leak",
     )
 
@@ -373,7 +373,7 @@ async def test_multiplex_rejects_delivery_without_any_matching_sink() -> None:
     message = OutboundMessage(
         channel_id="gateway",
         conversation_id="conv-1",
-        message_type="turn_result",
+        message_type="turn/completed",
         text="must not disappear",
     )
 
