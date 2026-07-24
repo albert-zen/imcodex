@@ -138,6 +138,12 @@ Python 3.13 and runs the full `python -m pytest` regression suite on both
 Ubuntu and native Windows. Platform-specific tests must be capability-gated so
 Git Bash on Windows does not make POSIX launchers or Unix sockets look native.
 
+The full regression includes the offline system contract suite under
+`tests/e2e`. That suite keeps real channel adapters and the real bridge/App
+Server client path while replacing external platform endpoints and native
+model execution with deterministic protocol doubles. See
+[Testing](testing.md) for its coverage matrix and extension rules.
+
 CI also runs an advisory AgentKit check. Its isolated job installs the
 repository's `agentkit` optional dependency and invokes the resulting console
 script directly; the repository launcher remains the required entry point for
