@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from imcodex.channels_cli import _send
+from imcodex.channels_cli import _send, _settings_from_bridge_root, run_channels_cli
 
 
 def test_channels_send_posts_workspace_artifact_to_running_bridge(
@@ -88,3 +88,130 @@ def test_channels_send_rejects_artifact_outside_current_workspace(
 
     assert status == 2
     assert json.loads(output[0])["status"] == "invalid"
+
+
+def test_channels_send_current_posts_source_thread_without_explicit_route(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    current = run_dir / "current"
+    current.mkdir(parents=True)
+    (current / "health.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "instance-1",
+                "http": {"listening": True, "host": "127.0.0.1", "port": 8123},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (current / "delivery-token").write_text("delivery-secret\n", encoding="utf-8")
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "status": "delivered",
+                "delivery_id": "stable-current",
+                "channel_id": "qq",
+                "conversation_id": "c2c:user",
+            },
+        )
+
+    monkeypatch.setattr("imcodex.channels_cli.httpx.post", fake_post)
+    output: list[str] = []
+
+    status = _send(
+        SimpleNamespace(run_dir=run_dir),
+        channel_id="",
+        conversation_id="",
+        source_thread_id="thread-current",
+        text_value="done",
+        artifact_values=[],
+        delivery_id="stable-current",
+        output=output.append,
+    )
+
+    assert status == 0
+    payload = json.loads(captured["data"]["payload"])
+    assert payload["source_thread_id"] == "thread-current"
+    assert "channel_id" not in payload
+    assert "conversation_id" not in payload
+    assert json.loads(output[0])["channel_id"] == "qq"
+
+
+def test_channels_send_current_reads_native_thread_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "thread-current")
+    captured = {}
+
+    def fake_send(_settings, **kwargs):
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("imcodex.channels_cli._send", fake_send)
+
+    status = run_channels_cli(
+        ["send", "--current", "--text", "done"],
+        settings=SimpleNamespace(),
+        output=lambda _value: None,
+    )
+
+    assert status == 0
+    assert captured["source_thread_id"] == "thread-current"
+    assert captured["channel_id"] == ""
+    assert captured["conversation_id"] == ""
+
+
+def test_channels_send_current_fails_without_native_thread_environment(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    output: list[str] = []
+
+    status = run_channels_cli(
+        ["send", "--current", "--text", "done"],
+        settings=SimpleNamespace(),
+        output=output.append,
+    )
+
+    assert status == 2
+    assert "CODEX_THREAD_ID is unavailable" in json.loads(output[0])["error"]
+
+
+def test_send_settings_load_from_bridge_root_without_changing_artifact_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    (bridge_root / ".env").write_text("IMCODEX_RUN_DIR=.runtime\n", encoding="utf-8")
+    artifact_root = tmp_path / "workspace"
+    artifact_root.mkdir()
+    monkeypatch.chdir(artifact_root)
+
+    settings = _settings_from_bridge_root(str(bridge_root))
+
+    assert Path.cwd() == artifact_root
+    assert settings.run_dir == bridge_root / ".runtime"
+
+
+def test_repo_send_launchers_select_current_route() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    shell = (repo_root / "scripts" / "imcodex-send").read_text(encoding="utf-8")
+    windows = (repo_root / "scripts" / "imcodex-send.cmd").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--current" in shell
+    assert '--bridge-root "${repo_root}"' in shell
+    assert '"$@"' in shell
+    assert "--current" in windows
+    assert '--bridge-root "%REPO_ROOT%"' in windows
+    assert "%*" in windows

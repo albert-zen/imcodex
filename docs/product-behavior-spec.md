@@ -473,6 +473,13 @@ native messages occur after the inbound HTTP exchange. If no outbound callback
 can route that generic channel, `/pick` and `/history` fail explicitly rather
 than switching into an undeliverable live stream.
 
+An Agent can explicitly send files back through `scripts/imcodex-send`. The
+launcher supplies the current native thread identity, while the running bridge
+resolves its latest IM binding at delivery time and returns a machine-readable
+receipt. Agents do not need App IDs, bot secrets, openids, or raw conversation
+IDs. Re-picking a thread from another IM conversation moves the route used by
+later script calls; an unbound thread fails explicitly.
+
 If no thread browser is active, `/next` and `/prev` should return a user-facing error telling the user to run `/threads` first. A numeric `/pick` without browser context is treated as a direct text query rather than a page index.
 
 ### `/history [N] [--page P]`

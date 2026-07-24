@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
+from imcodex.bridge.terminal_delivery import TerminalDeliveryMixin
 from imcodex.channels.artifacts import (
     append_artifact_failures,
     record_artifact_delivery,
@@ -20,6 +21,7 @@ from imcodex.delivery_api import (
     DELIVERY_TOKEN_HEADER,
     install_delivery_route,
 )
+from imcodex.store import ConversationStore
 
 
 class Sink:
@@ -93,9 +95,18 @@ class DeliveryService:
     def __init__(self, tmp_path: Path, sink: Sink) -> None:
         self.sink = sink
         self.stager = OutboundArtifactStager(tmp_path / "outbound-media")
+        self.routes = {"thread-current": ("telegram", "chat:current")}
 
     def can_deliver_outbound(self, channel_id: str) -> bool:
         return self.sink.can_deliver(channel_id)
+
+    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
+        try:
+            return self.routes[source_thread_id]
+        except KeyError:
+            raise ValueError(
+                "The current Codex thread is not attached to an IM conversation."
+            ) from None
 
     def validate_outbound_message(self, message) -> None:
         return None
@@ -293,6 +304,97 @@ def test_delivery_endpoint_accepts_plain_text_form(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "delivered"
     assert sink.messages[0].text == "done"
+
+
+def test_delivery_endpoint_resolves_current_thread_route_at_request_time(
+    tmp_path: Path,
+) -> None:
+    sink = Sink()
+    service = DeliveryService(tmp_path, sink)
+    app = _app(tmp_path, sink, delivery_service=service)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    service.routes["thread-current"] = ("telegram", "chat:latest")
+    response = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={
+            "payload": (
+                '{"source_thread_id":"thread-current",'
+                '"text":"done","delivery_id":"stable-current"}'
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "delivered"
+    assert response.json()["channel_id"] == "telegram"
+    assert response.json()["conversation_id"] == "chat:latest"
+    assert sink.messages[0].channel_id == "telegram"
+    assert sink.messages[0].conversation_id == "chat:latest"
+    assert sink.messages[0].metadata["source"] == "channels.send.current"
+
+
+def test_delivery_endpoint_rejects_current_thread_without_im_binding(
+    tmp_path: Path,
+) -> None:
+    sink = Sink()
+    app = _app(tmp_path, sink)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    response = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={
+            "payload": (
+                '{"source_thread_id":"thread-unbound",'
+                '"text":"done","delivery_id":"stable-unbound"}'
+            )
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["status"] == "rejected"
+    assert "not attached to an IM conversation" in response.json()["error"]
+    assert sink.messages == []
+
+
+def test_current_route_resolver_follows_latest_cross_channel_binding() -> None:
+    class RouteResolver(TerminalDeliveryMixin):
+        pass
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "old-conversation", "thread-current")
+    store.bind_thread("telegram", "latest-conversation", "thread-current")
+    resolver = RouteResolver()
+    resolver.store = store
+
+    assert resolver.resolve_outbound_route("thread-current") == (
+        "telegram",
+        "latest-conversation",
+    )
+
+
+def test_delivery_endpoint_rejects_ambiguous_current_and_explicit_route(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path, Sink())
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    response = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={
+            "payload": (
+                '{"source_thread_id":"thread-current",'
+                '"channel_id":"telegram","conversation_id":"chat:1",'
+                '"text":"done","delivery_id":"stable-ambiguous"}'
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert "cannot be combined" in response.json()["detail"]
 
 
 def test_delivery_endpoint_reports_durably_queued_message(tmp_path: Path) -> None:

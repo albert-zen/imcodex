@@ -204,6 +204,13 @@ standalone acknowledgement retains the final per-artifact delivery outcome so
 an idempotent replay, including after restart, returns the original receipt
 rather than inferring success from the message-level acknowledgement.
 
+The Agent-facing repository launcher identifies only the current native thread.
+The running bridge resolves that thread's latest movable IM binding immediately
+before standalone delivery. Route authority therefore remains in the bridge:
+the launcher does not parse persisted state, copy conversation IDs, or bind a
+native thread permanently to one bot. Explicit channel/conversation targeting
+remains available as a lower-level operator interface.
+
 Native lifecycle, visible answer projection, and IM delivery have different
 granularities and must not share one implicit terminal flag. A
 `final_answer` agent-message item closes one visible answer segment; it does

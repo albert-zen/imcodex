@@ -38,9 +38,15 @@ behind an over-general message class.
   and a private per-process credential. The running bridge uses its existing
   channel adapters and multiplex sink; the command never starts a second
   polling runtime.
-- Callers must name a channel and conversation. The bridge applies the current
-  access policy and returns a JSON receipt with overall and per-artifact state,
-  platform identity when available, and stable delivery identity.
+- Agents use the repository launcher `scripts/imcodex-send` (or
+  `scripts\imcodex-send.cmd` on Windows). It submits the native
+  `CODEX_THREAD_ID`; the running bridge resolves that thread's latest IM
+  binding at request time. The launcher does not parse bridge state, receive
+  bot credentials, or persist a thread-to-bot assignment.
+- Operators may name a channel and conversation explicitly. The bridge applies
+  the current access policy to both explicit and current-thread delivery and
+  returns a JSON receipt with overall and per-artifact state, platform identity
+  when available, and stable delivery identity.
 - A caller-generated delivery ID is propagated to adapters. Platforms without
   an idempotency primitive can still duplicate after an ambiguous acceptance;
   receipts report such failures as unconfirmed rather than claiming success.

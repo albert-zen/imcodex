@@ -637,7 +637,27 @@ remain `images`.
 
 ## Explicit Agent Delivery
 
-An agent or operator can send through the already-running bridge:
+An Agent running in a thread reached through IMCodex sends back to that
+thread's current IM source with the repository launcher:
+
+```bash
+scripts/imcodex-send \
+  --text "Analysis complete." \
+  --artifact reports/result.md
+```
+
+On Windows use `scripts\imcodex-send.cmd`. The launcher preserves the Agent's
+working directory for artifact-path validation, reads `CODEX_THREAD_ID`, and
+submits it to the authenticated local delivery endpoint. The running bridge,
+not the launcher, resolves the latest `channel_id` and `conversation_id`.
+Picking the same thread from another IM conversation moves its binding, so a
+later invocation follows the new route. A thread that has never been opened or
+picked through IMCodex fails explicitly instead of guessing a destination.
+
+The launcher can send up to four `--artifact` values. Paths must be regular
+non-symlink files under the Agent's current working directory.
+
+An operator can still target a route explicitly with the lower-level command:
 
 ```bash
 python -m imcodex channels send \

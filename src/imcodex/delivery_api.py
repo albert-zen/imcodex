@@ -164,16 +164,32 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "Delivery payload must be an object.")
         channel_id = str(payload.get("channel_id") or "").strip()
         conversation_id = str(payload.get("conversation_id") or "").strip()
+        source_thread_id = str(payload.get("source_thread_id") or "").strip()
         text = str(payload.get("text") or "")
         delivery_id = str(payload.get("delivery_id") or "").strip()
         manifest = payload.get("artifacts") or []
         uploads = form.getlist("artifacts")
-        if not channel_id or not conversation_id or not delivery_id:
+        explicit_route = bool(channel_id or conversation_id)
+        if bool(channel_id) != bool(conversation_id):
             await _raise_form_error(
                 form,
                 422,
-                "channel_id, conversation_id, and delivery_id are required.",
+                "channel_id and conversation_id must be provided together.",
             )
+        if source_thread_id and explicit_route:
+            await _raise_form_error(
+                form,
+                422,
+                "source_thread_id cannot be combined with an explicit channel route.",
+            )
+        if not source_thread_id and not explicit_route:
+            await _raise_form_error(
+                form,
+                422,
+                "source_thread_id or an explicit channel route is required.",
+            )
+        if not delivery_id:
+            await _raise_form_error(form, 422, "delivery_id is required.")
         if not isinstance(manifest, list) or len(manifest) != len(uploads):
             await _raise_form_error(
                 form,
@@ -186,6 +202,7 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "artifacts must be uploaded files.")
         service = runtime.service
         can_deliver = getattr(service, "can_deliver_outbound", None)
+        resolve_route = getattr(service, "resolve_outbound_route", None)
         validate_message = getattr(service, "validate_outbound_message", None)
         stage_upload = getattr(service, "stage_outbound_upload", None)
         discard_uploads = getattr(service, "discard_outbound_uploads", None)
@@ -196,8 +213,32 @@ def install_delivery_route(
             or not callable(stage_upload)
             or not callable(discard_uploads)
             or not callable(deliver_message)
-            or not can_deliver(channel_id)
         ):
+            await _raise_form_error(form, 404, "Configured channel is unavailable.")
+        if source_thread_id:
+            if not callable(resolve_route):
+                await _raise_form_error(
+                    form,
+                    503,
+                    "Current-thread route resolution is unavailable.",
+                )
+            try:
+                channel_id, conversation_id = resolve_route(source_thread_id)
+            except ValueError as exc:
+                await _close_form_uploads(form)
+                return JSONResponse(
+                    {
+                        "delivery_id": delivery_id,
+                        "channel_id": "",
+                        "conversation_id": "",
+                        "status": "rejected",
+                        "text_status": "rejected",
+                        "artifacts": [],
+                        "error": str(exc),
+                    },
+                    status_code=409,
+                )
+        if not can_deliver(channel_id):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
 
         artifacts: list[OutboundArtifact] = []
@@ -235,7 +276,14 @@ def install_delivery_route(
                 conversation_id=conversation_id,
                 message_type="tool_delivery",
                 text=text,
-                metadata={"delivery_id": delivery_id, "source": "channels.send"},
+                metadata={
+                    "delivery_id": delivery_id,
+                    "source": (
+                        "channels.send.current"
+                        if source_thread_id
+                        else "channels.send"
+                    ),
+                },
                 artifacts=list(artifacts),
             )
             try:
@@ -313,10 +361,14 @@ async def _bounded_request_stream(
 
 
 async def _raise_form_error(form, status_code: int, detail: str) -> None:
+    await _close_form_uploads(form)
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+async def _close_form_uploads(form) -> None:
     for _name, value in form.multi_items():
         if isinstance(value, UploadFile):
             await value.close()
-    raise HTTPException(status_code=status_code, detail=detail)
 
 
 def _authorize_local_instance(

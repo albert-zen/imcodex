@@ -101,3 +101,20 @@ Dependency direction is one-way:
 
 <!-- agentkit:agents-section -->
 This repository uses AgentKit to keep agent-led changes tied to durable intent, checks, review, and closeout. Do not depend on a global `agentkit` command: use the repository launcher (`scripts/agentkit` on macOS/Linux, `scripts\agentkit.cmd` on Windows), which runs AgentKit through the selected Python module with safe-path isolation. For implementation, documentation edits, hook/plugin updates, or any repository-changing task, start with `scripts/agentkit start --task "..."`, use `scripts/agentkit check` plus `scripts/agentkit status` or `scripts/agentkit remind` while working, and finish with `scripts/agentkit close`. For read-only exploration, codebase orientation, or answering questions without edits, do not create an AgentKit task unless the work becomes long-running or the human asks for lifecycle tracking. For the full operating guide, read the AgentKit plugin skill.
+
+### Sending Files Back To IM
+
+When a user asks an Agent running from this repository to send a generated file
+back to the current IM conversation, use:
+
+```bash
+scripts/imcodex-send --artifact path/to/file --text "Optional message"
+```
+
+On Windows use `scripts\imcodex-send.cmd`. The launcher submits the current
+`CODEX_THREAD_ID` to the already-running bridge, which resolves the thread's
+latest movable IM binding at delivery time. Do not parse `state.json`, copy raw
+conversation IDs, read bot secrets, or substitute a Markdown link for an
+explicitly requested attachment. If the thread has not been opened or picked
+from IMCodex, report the script's unbound-thread error instead of guessing a
+destination.

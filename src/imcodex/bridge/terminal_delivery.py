@@ -34,6 +34,18 @@ class TerminalDeliveryMixin:
         can_deliver = getattr(self.outbound_sink, "can_deliver", None)
         return bool(callable(can_deliver) and can_deliver(channel_id))
 
+    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
+        """Resolve the latest movable IM binding for a native Codex thread."""
+
+        thread_id = str(source_thread_id or "").strip()
+        binding = self.store.find_binding_by_thread_id(thread_id) if thread_id else None
+        if binding is None:
+            raise ValueError(
+                "The current Codex thread is not attached to an IM conversation. "
+                "Open or pick it from IMCodex, then retry."
+            )
+        return binding.channel_id, binding.conversation_id
+
     def validate_outbound_message(self, message: OutboundMessage) -> None:
         validate = getattr(self.outbound_sink, "validate_message", None)
         if callable(validate):

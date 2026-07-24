@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import json
 import mimetypes
+import os
 from pathlib import Path
 from typing import Callable
 import uuid
@@ -41,8 +42,14 @@ def build_channels_parser() -> argparse.ArgumentParser:
         "send",
         help="Send text and artifacts through the running local bridge.",
     )
-    send.add_argument("--channel", required=True)
-    send.add_argument("--conversation", required=True)
+    send.add_argument("--channel", default="")
+    send.add_argument("--conversation", default="")
+    send.add_argument(
+        "--current",
+        action="store_true",
+        help="Send to the latest IM route attached to the current CODEX_THREAD_ID.",
+    )
+    send.add_argument("--bridge-root", default="", help=argparse.SUPPRESS)
     send.add_argument("--text", default="")
     send.add_argument("--artifact", action="append", default=[])
     send.add_argument("--delivery-id", default="")
@@ -66,20 +73,67 @@ def run_channels_cli(
     input_func: Callable[[str], str] = input,
 ) -> int:
     args = build_channels_parser().parse_args(argv)
-    settings = settings or Settings.from_env()
     command = args.command or "list"
+    if settings is None:
+        settings = (
+            _settings_from_bridge_root(args.bridge_root)
+            if command == "send" and args.bridge_root
+            else Settings.from_env()
+        )
     if command == "list":
         return _list_channels(settings, output=output)
     if command == "doctor":
         return _doctor(settings, output=output)
     if command == "send":
+        channel_id = str(args.channel or "").strip()
+        conversation_id = str(args.conversation or "").strip()
+        source_thread_id = ""
+        if args.current:
+            if channel_id or conversation_id:
+                output(
+                    json.dumps(
+                        {
+                            "status": "invalid",
+                            "error": "--current cannot be combined with --channel or --conversation.",
+                        }
+                    )
+                )
+                return 2
+            source_thread_id = os.environ.get("CODEX_THREAD_ID", "").strip()
+            if not source_thread_id:
+                output(
+                    json.dumps(
+                        {
+                            "status": "invalid",
+                            "error": (
+                                "CODEX_THREAD_ID is unavailable; run this from a Codex thread "
+                                "or provide --channel and --conversation."
+                            ),
+                        }
+                    )
+                )
+                return 2
+        elif not channel_id or not conversation_id:
+            output(
+                json.dumps(
+                    {
+                        "status": "invalid",
+                        "error": (
+                            "Provide both --channel and --conversation, or use --current "
+                            "inside a Codex thread."
+                        ),
+                    }
+                )
+            )
+            return 2
         return _send(
             settings,
-            channel_id=args.channel,
-            conversation_id=args.conversation,
+            channel_id=channel_id,
+            conversation_id=conversation_id,
             text_value=args.text,
             artifact_values=args.artifact,
             delivery_id=args.delivery_id,
+            source_thread_id=source_thread_id,
             output=output,
         )
     if command == "login":
@@ -122,6 +176,21 @@ def run_channels_cli(
         )
         return 0
     return 2
+
+
+def _settings_from_bridge_root(bridge_root: str) -> Settings:
+    root = Path(bridge_root).expanduser().resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("IMCodex bridge root is not a directory")
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(root)
+        settings = Settings.from_env()
+    finally:
+        os.chdir(previous_cwd)
+    if not settings.run_dir.is_absolute():
+        settings.run_dir = (root / settings.run_dir).resolve()
+    return settings
 
 
 def _list_channels(settings: Settings, *, output: Callable[[str], object]) -> int:
@@ -196,8 +265,32 @@ def _send(
     text_value: str,
     artifact_values: list[str],
     delivery_id: str,
+    source_thread_id: str = "",
     output: Callable[[str], object],
 ) -> int:
+    channel_id = channel_id.strip()
+    conversation_id = conversation_id.strip()
+    source_thread_id = source_thread_id.strip()
+    if source_thread_id and (channel_id or conversation_id):
+        output(
+            json.dumps(
+                {
+                    "status": "invalid",
+                    "error": "Current-thread delivery cannot include an explicit channel route.",
+                }
+            )
+        )
+        return 2
+    if not source_thread_id and (not channel_id or not conversation_id):
+        output(
+            json.dumps(
+                {
+                    "status": "invalid",
+                    "error": "Delivery requires a current thread or an explicit channel route.",
+                }
+            )
+        )
+        return 2
     if len(artifact_values) > MAX_DELIVERY_ARTIFACTS:
         output(json.dumps({"status": "invalid", "error": "At most 4 artifacts are supported."}))
         return 2
@@ -229,12 +322,15 @@ def _send(
     try:
         target, instance_id, delivery_token = _running_bridge_target(settings)
         payload = {
-            "channel_id": channel_id,
-            "conversation_id": conversation_id,
             "text": text_value,
             "delivery_id": delivery_id.strip() or f"imcodex-tool:{uuid.uuid4().hex}",
             "artifacts": manifest,
         }
+        if source_thread_id:
+            payload["source_thread_id"] = source_thread_id
+        else:
+            payload["channel_id"] = channel_id
+            payload["conversation_id"] = conversation_id
         response = httpx.post(
             f"{target}{DELIVERY_PATH}",
             headers={
