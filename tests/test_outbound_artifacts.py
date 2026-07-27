@@ -57,7 +57,7 @@ def test_stager_ignores_ordinary_markdown_file_links(tmp_path: Path) -> None:
     assert artifacts == ()
 
 
-def test_stager_preserves_ordinary_markdown_links_to_images(tmp_path: Path) -> None:
+def test_stager_ignores_ordinary_markdown_links_to_images(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     image_path = workspace / "preview.png"
@@ -69,9 +69,7 @@ def test_stager_preserves_ordinary_markdown_links_to_images(tmp_path: Path) -> N
         cwd=str(workspace),
     )
 
-    assert len(artifacts) == 1
-    assert artifacts[0].kind == "image"
-    assert artifacts[0].filename == "preview.png"
+    assert artifacts == ()
 
 
 def test_stager_recognizes_jfif_without_host_mime_database(tmp_path: Path) -> None:
@@ -82,7 +80,7 @@ def test_stager_recognizes_jfif_without_host_mime_database(tmp_path: Path) -> No
     stager = OutboundArtifactStager(tmp_path / "spool")
 
     artifacts = stager.stage_markdown_images(
-        f"[preview]({image_path})",
+        f"![preview]({image_path})",
         cwd=str(workspace),
     )
 
@@ -106,15 +104,41 @@ def test_stager_ignores_host_mime_image_false_positives(tmp_path: Path) -> None:
     assert artifacts == ()
 
 
-def test_stager_rejects_markdown_image_outside_native_workspace(tmp_path: Path) -> None:
+def test_stager_accepts_explicit_markdown_image_outside_native_workspace(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "secret.png"
     outside.write_bytes(_png())
     stager = OutboundArtifactStager(tmp_path / "spool")
 
-    with pytest.raises(ValueError, match="outside the native workspace"):
-        stager.stage_markdown_images(f"![secret]({outside})", cwd=str(workspace))
+    artifacts = stager.stage_markdown_images(
+        f"![preview]({outside})",
+        cwd=str(workspace),
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0].filename == "secret.png"
+    assert Path(artifacts[0].local_path).read_bytes() == _png()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```markdown\n![example](/Users/xxx/secret.png)\n```",
+        "~~~\n![example](/Users/xxx/secret.png)\n~~~",
+        "Use `![example](/Users/xxx/secret.png)` to embed an image.",
+        r"\![example](/Users/xxx/secret.png)",
+    ],
+)
+def test_stager_ignores_markdown_image_syntax_that_is_not_an_image_node(
+    tmp_path: Path,
+    text: str,
+) -> None:
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    assert stager.stage_markdown_images(text, cwd=str(tmp_path)) == ()
 
 
 def test_stager_refuses_preexisting_content_address_collision(tmp_path: Path) -> None:

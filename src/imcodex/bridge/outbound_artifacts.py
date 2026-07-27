@@ -20,12 +20,7 @@ from ..models import OutboundArtifact
 
 _MARKDOWN_LINK = re.compile(r"(!?)\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+['\"][^'\"]*['\"])?\)")
 _DATA_IMAGE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
-# Keep ordinary-link inference deterministic across host MIME databases. These
-# are common raster formats that channel image APIs can preview; Pillow still
-# validates the actual bytes before anything is staged.
-_MARKDOWN_IMAGE_SUFFIXES = frozenset(
-    {".gif", ".jpe", ".jfif", ".jpeg", ".jpg", ".png", ".webp"}
-)
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _MAX_SPOOL_BYTES = 256 * 1024 * 1024
@@ -72,7 +67,6 @@ class OutboundArtifactStager:
                     self._stage_local(
                         saved_path,
                         kind="image",
-                        workspace_root=cwd,
                     ),
                 )
             return ()
@@ -92,7 +86,6 @@ class OutboundArtifactStager:
                         self._stage_local(
                             self._file_url_path(parsed),
                             kind="image",
-                            workspace_root=cwd,
                         )
                     )
         return tuple(artifacts)
@@ -135,14 +128,17 @@ class OutboundArtifactStager:
     def stage_markdown_images(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
         """Stage local images referenced by final-answer Markdown.
 
-        Ordinary local links are navigation aids in native Codex surfaces, not
-        an instruction to send the target file to an IM channel. Embedded image
-        syntax remains an explicit image reference, and ordinary links whose
-        target has an image media type retain the existing image-preview
-        behavior.
+        Only actual image nodes outside Markdown code spans are delivery
+        instructions. Ordinary links and image-looking examples inside code
+        remain text. An explicit image may point at a native temporary output
+        outside the thread workspace; Pillow still validates its bytes before
+        the bridge stages it.
         """
         artifacts: list[OutboundArtifact] = []
-        for match in _MARKDOWN_LINK.finditer(text):
+        markdown = _mask_markdown_code(text)
+        for match in _MARKDOWN_LINK.finditer(markdown):
+            if match.group(1) != "!" or _is_escaped(markdown, match.start()):
+                continue
             target = unquote(match.group(2) or match.group(3) or "").strip()
             parsed = urlparse(target)
             windows_absolute = len(target) >= 3 and target[1] == ":" and target[2] in {"/", "\\"}
@@ -156,18 +152,13 @@ class OutboundArtifactStager:
                 target = parsed.path
             candidate = Path(target)
             if not candidate.is_absolute():
+                if not cwd:
+                    raise ValueError("local output link has no native workspace root")
                 candidate = Path(cwd) / candidate
-            embedded_image = match.group(1) == "!"
-            if (
-                not embedded_image
-                and candidate.suffix.casefold() not in _MARKDOWN_IMAGE_SUFFIXES
-            ):
-                continue
             artifacts.append(
                 self._stage_local(
                     candidate,
                     kind="image",
-                    workspace_root=cwd,
                 )
             )
         return tuple(artifacts)
@@ -206,18 +197,10 @@ class OutboundArtifactStager:
         path: str | Path,
         *,
         kind: str,
-        workspace_root: str = "",
     ) -> OutboundArtifact:
         source = Path(path).expanduser().resolve(strict=True)
         if not source.is_file():
             raise ValueError(f"output artifact is not a regular file: {source.name}")
-        if not workspace_root:
-            raise ValueError("local output link has no native workspace root")
-        root = Path(workspace_root).expanduser().resolve(strict=True)
-        try:
-            source.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("local output link is outside the native workspace") from exc
         size = source.stat().st_size
         limit = _MAX_IMAGE_BYTES if kind == "image" else _MAX_FILE_BYTES
         if size > limit:
@@ -353,3 +336,81 @@ class OutboundArtifactStager:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+def _mask_markdown_code(text: str) -> str:
+    """Blank fenced and inline code while preserving source offsets."""
+
+    masked = [False] * len(text)
+    fence_char = ""
+    fence_size = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        match = _FENCE_OPEN.match(body)
+        if fence_char:
+            masked[offset : offset + len(line)] = [True] * len(line)
+            if match is not None:
+                marker = match.group(1)
+                suffix = match.group(2)
+                if (
+                    marker[0] == fence_char
+                    and len(marker) >= fence_size
+                    and not suffix.strip()
+                ):
+                    fence_char = ""
+                    fence_size = 0
+        elif match is not None:
+            marker = match.group(1)
+            suffix = match.group(2)
+            if marker[0] != "`" or "`" not in suffix:
+                fence_char = marker[0]
+                fence_size = len(marker)
+                masked[offset : offset + len(line)] = [True] * len(line)
+        offset += len(line)
+
+    index = 0
+    while index < len(text):
+        if masked[index] or text[index] != "`":
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(text) and not masked[run_end] and text[run_end] == "`":
+            run_end += 1
+        run_size = run_end - index
+        cursor = run_end
+        closing_end = -1
+        while cursor < len(text):
+            if masked[cursor] or text[cursor] != "`":
+                cursor += 1
+                continue
+            candidate_end = cursor + 1
+            while (
+                candidate_end < len(text)
+                and not masked[candidate_end]
+                and text[candidate_end] == "`"
+            ):
+                candidate_end += 1
+            if candidate_end - cursor == run_size:
+                closing_end = candidate_end
+                break
+            cursor = candidate_end
+        if closing_end < 0:
+            index = run_end
+            continue
+        masked[index:closing_end] = [True] * (closing_end - index)
+        index = closing_end
+
+    return "".join(
+        " " if hidden else char
+        for char, hidden in zip(text, masked, strict=True)
+    )
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1

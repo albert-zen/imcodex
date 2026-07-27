@@ -319,11 +319,13 @@ def test_projector_labels_plan_updates_as_distinct_progress() -> None:
 
 def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path) -> None:
     image_path = tmp_path / "generated.png"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     from PIL import Image
 
     Image.new("RGB", (2, 2), (1, 2, 3)).save(image_path)
     store = ConversationStore(clock=lambda: 1.0)
-    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(workspace))
     store.note_active_turn("thr_1", "turn_1", "inProgress")
     projector = MessageProjector(
         artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
@@ -370,7 +372,7 @@ def test_projector_preserves_native_generated_image_on_terminal_message(tmp_path
     assert Path(final.artifacts[0].local_path).is_relative_to(tmp_path / "outbound-media")
 
 
-def test_projector_only_infers_images_from_final_answer_local_links(tmp_path) -> None:
+def test_projector_only_infers_explicit_images_from_final_answer(tmp_path) -> None:
     from PIL import Image
 
     notes_path = tmp_path / "testing.md"
@@ -395,7 +397,7 @@ def test_projector_only_infers_images_from_final_answer_local_links(tmp_path) ->
                     "phase": "final_answer",
                     "text": (
                         f"[testing.md]({notes_path})\n"
-                        f"[preview]({image_path})"
+                        f"![preview]({image_path})"
                     ),
                 },
             },
@@ -408,7 +410,37 @@ def test_projector_only_infers_images_from_final_answer_local_links(tmp_path) ->
     assert final.artifacts[0].kind == "image"
 
 
-def test_recovered_final_answer_only_infers_images_from_local_links(tmp_path) -> None:
+def test_projector_does_not_treat_markdown_example_as_image_output(tmp_path) -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", str(tmp_path))
+    projector = MessageProjector(
+        artifact_stager=OutboundArtifactStager(tmp_path / "outbound-media")
+    )
+    text = "Example:\n\n```markdown\n![image](/Users/xxx/secret.png)\n```"
+
+    final = projector.project_notification(
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "thr_1",
+                "turnId": "turn_1",
+                "item": {
+                    "id": "answer_1",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": text,
+                },
+            },
+        },
+        store,
+    )
+
+    assert final is not None
+    assert final.text == text
+    assert final.artifacts == []
+
+
+def test_recovered_final_answer_only_infers_explicit_images(tmp_path) -> None:
     from PIL import Image
 
     notes_path = tmp_path / "testing.md"
@@ -470,7 +502,7 @@ def test_malformed_markdown_image_does_not_drop_final_answer(tmp_path) -> None:
                     "id": "answer_1",
                     "type": "agentMessage",
                     "phase": "final_answer",
-                    "text": f"Analysis is complete.\n\n[preview]({image_path})",
+                    "text": f"Analysis is complete.\n\n![preview]({image_path})",
                 },
             },
         },

@@ -65,29 +65,54 @@ def test_channels_send_posts_workspace_artifact_to_running_bridge(
     assert json.loads(output[0])["status"] == "delivered"
 
 
-def test_channels_send_rejects_artifact_outside_current_workspace(
+def test_channels_send_accepts_explicit_artifact_outside_current_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    run_dir = tmp_path / "run"
+    current = run_dir / "current"
+    current.mkdir(parents=True)
+    (current / "health.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "instance-1",
+                "http": {"listening": True, "host": "127.0.0.1", "port": 8123},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (current / "delivery-token").write_text("delivery-secret\n", encoding="utf-8")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "secret.md"
     outside.write_text("secret", encoding="utf-8")
     monkeypatch.chdir(workspace)
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"status": "delivered", "delivery_id": "outside-1"},
+        )
+
+    monkeypatch.setattr("imcodex.channels_cli.httpx.post", fake_post)
     output: list[str] = []
 
     status = _send(
-        SimpleNamespace(run_dir=tmp_path / "run"),
+        SimpleNamespace(run_dir=run_dir),
         channel_id="telegram",
         conversation_id="chat:1",
         text_value="",
         artifact_values=[str(outside)],
-        delivery_id="",
+        delivery_id="outside-1",
         output=output.append,
     )
 
-    assert status == 2
-    assert json.loads(output[0])["status"] == "invalid"
+    assert status == 0
+    assert captured["files"][0][1][0] == "secret.md"
+    assert captured["files"][0][1][1] == b"secret"
 
 
 def test_channels_send_current_posts_source_thread_without_explicit_route(

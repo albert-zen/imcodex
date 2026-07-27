@@ -177,13 +177,15 @@ delivered as platform files. Artifacts are sent before the terminal text, and
 there is no channel-specific feature switch.
 
 Only validated files copied into the private
-`IMCODEX_DATA_DIR/outbound-media` spool are eligible. When an adapter returns a
-failure, the durable retry retains only the artifacts not yet accepted. QQ and
-Weixin derive stable platform delivery identities, and Feishu supplies a stable
-SDK UUID. Telegram has no equivalent client idempotency key: it does not retry
-an ambiguous upload inside the adapter, but the durable outbox may replay it
-after an ambiguous live failure or a process exit before the bridge checkpoints
-progress.
+`IMCODEX_DATA_DIR/outbound-media` spool are eligible. Explicit Markdown image
+nodes and structured native image outputs may originate outside the thread
+workspace, but are copied into that spool before channel delivery. When an
+adapter returns a failure, the durable retry retains only the artifacts not yet
+accepted. QQ and Weixin derive stable platform delivery identities, and Feishu
+supplies a stable SDK UUID. Telegram has no equivalent client idempotency key:
+it does not retry an ambiguous upload inside the adapter, but the durable outbox
+may replay it after an ambiguous live failure or a process exit before the
+bridge checkpoints progress.
 
 The generic outbound webhook uses JSON for text-only messages. A message with
 artifacts uses `multipart/form-data`: the `payload` field contains the normal
@@ -647,15 +649,17 @@ scripts/imcodex-send \
 ```
 
 On Windows use `scripts\imcodex-send.cmd`. The launcher preserves the Agent's
-working directory for artifact-path validation, reads `CODEX_THREAD_ID`, and
+working directory for relative artifact paths, reads `CODEX_THREAD_ID`, and
 submits it to the authenticated local delivery endpoint. The running bridge,
 not the launcher, resolves the latest `channel_id` and `conversation_id`.
 Picking the same thread from another IM conversation moves its binding, so a
 later invocation follows the new route. A thread that has never been opened or
 picked through IMCodex fails explicitly instead of guessing a destination.
 
-The launcher can send up to four `--artifact` values. Paths must be regular
-non-symlink files under the Agent's current working directory.
+The launcher can send up to four `--artifact` values. Paths must be readable
+regular non-symlink files. Because invoking the launcher is an explicit
+delivery instruction, absolute paths outside the Agent's current working
+directory are accepted.
 
 An operator can still target a route explicitly with the lower-level command:
 

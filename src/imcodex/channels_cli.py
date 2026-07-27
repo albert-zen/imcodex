@@ -294,7 +294,6 @@ def _send(
     if len(artifact_values) > MAX_DELIVERY_ARTIFACTS:
         output(json.dumps({"status": "invalid", "error": "At most 4 artifacts are supported."}))
         return 2
-    root = Path.cwd().resolve()
     uploads = []
     manifest = []
     try:
@@ -303,9 +302,8 @@ def _send(
             if candidate.is_symlink():
                 raise ValueError(f"Artifact path must not be a symlink: {candidate.name}")
             path = candidate.resolve(strict=True)
-            path.relative_to(root)
             if not path.is_file() or path.is_symlink():
-                raise ValueError(f"Artifact is not a regular workspace file: {path.name}")
+                raise ValueError(f"Artifact is not a regular file: {path.name}")
             content = path.read_bytes()
             content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
             kind = "image" if content_type.startswith("image/") else "file"

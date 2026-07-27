@@ -439,15 +439,16 @@ blank channel no-op as successful delivery.
 
 Native image/file outputs are carried as structured artifacts on that same
 terminal message, not as a bridge-defined message type. Explicit native image
-content blocks, image-generation `savedPath` values, and final Markdown image
-references inside the native workspace are copied into a private
+content blocks, image-generation `savedPath` values, and explicit final
+Markdown image nodes outside code spans are copied into a private
 content-addressed spool with type and size validation before the terminal
-outbox is staged. An ordinary Markdown link to a non-image local file remains a
-navigation reference and MUST NOT implicitly send that file to an IM channel;
-generic files require structured native output or the explicit standalone
-delivery path. A rejected image artifact adds a visible failure notice; an
-arbitrary local image path outside the native workspace is never sent. The
-spool is capped at 256 MiB, and startup cleanup removes entries that are not
+outbox is staged. Ordinary Markdown links remain navigation references and
+MUST NOT implicitly send their targets to an IM channel; generic files require
+structured native output or the explicit standalone delivery path. Image-like
+examples inside fenced or inline code are text, not delivery instructions.
+Explicit images and standalone delivery may use readable regular files outside
+the native workspace. A rejected image artifact adds a visible failure notice.
+The spool is capped at 256 MiB, and startup cleanup removes entries that are not
 referenced by the durable terminal outbox. Reference-aware cleanup also runs
 after a durable delivery acknowledgement, while preserving artifacts still
 buffered by active native turns.

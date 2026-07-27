@@ -256,9 +256,10 @@ the watch is consumed.
 Structured agent-sent artifacts are part of this delivery state, not native
 thread state. The bridge stages only explicit native output references into a
 private content-addressed spool; it does not scan a workspace or infer files
-from file-change events. Final-answer references to local images retain
-automatic preview delivery, but an ordinary Markdown link to a non-image file
-is only native-surface navigation; generic files require structured native
+from file-change events. Explicit final-answer Markdown image nodes outside
+fenced and inline code retain automatic preview delivery, including native
+temporary outputs outside the thread workspace. Ordinary Markdown links are
+only native-surface navigation; generic files require structured native
 output or explicit standalone delivery. Channel adapters translate artifacts
 into their platform-native upload/send operations. Per-artifact channel APIs
 use one shared batch checkpoint contract: confirmed artifacts record receipts,
