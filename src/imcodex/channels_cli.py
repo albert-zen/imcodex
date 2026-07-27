@@ -47,7 +47,10 @@ def build_channels_parser() -> argparse.ArgumentParser:
     send.add_argument(
         "--current",
         action="store_true",
-        help="Send to the latest IM route attached to the current CODEX_THREAD_ID.",
+        help=(
+            "Send to the IM recipient remembered for the current CODEX_THREAD_ID, "
+            "even after that recipient switches threads."
+        ),
     )
     send.add_argument("--bridge-root", default="", help=argparse.SUPPRESS)
     send.add_argument("--text", default="")

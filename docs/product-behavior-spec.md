@@ -476,10 +476,12 @@ than switching into an undeliverable live stream.
 
 An Agent can explicitly send files back through `scripts/imcodex-send`. The
 launcher supplies the current native thread identity, while the running bridge
-resolves its latest IM binding at delivery time and returns a machine-readable
-receipt. Agents do not need App IDs, bot secrets, openids, or raw conversation
-IDs. Re-picking a thread from another IM conversation moves the route used by
-later script calls; an unbound thread fails explicitly.
+resolves the last IM recipient that explicitly selected it and returns a
+machine-readable receipt. Agents do not need App IDs, bot secrets, openids, or
+raw conversation IDs. Switching that recipient to another thread does not
+invalidate the older task; selecting the original thread from another IM
+conversation moves the route used by later script calls. A thread never
+selected from IM fails explicitly.
 
 If no thread browser is active, `/next` and `/prev` should return a user-facing error telling the user to run `/threads` first. A numeric `/pick` without browser context is treated as a direct text query rather than a page index.
 
@@ -927,11 +929,15 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
   instance endpoint and reuses configured access policy, staging, adapters,
   multiplex routing, retry identity, durable outbox, and outbound artifact
   behavior. The HTTP route does not call a channel sink directly.
-- Explicit delivery always names its channel and conversation and returns a
-  machine-readable overall/per-artifact receipt. A transient channel failure
-  returns `queued` after durable staging and is retried by the same outbox used
-  for projected native output. Reusing the same delivery ID and payload returns
-  the persisted final receipt, including per-artifact failures, across a bridge
-  restart; reusing the ID for different content or a different destination is
-  rejected. It does not infer a remote destination or create a second channel
-  runtime.
+- Agent-facing standalone delivery forwards native `CODEX_THREAD_ID` and
+  resolves the last IM recipient that explicitly selected that thread. The
+  remembered route survives the recipient switching to another thread; an
+  explicit selection of the same thread from another recipient moves it.
+  The lower-level operator interface may instead name its channel and
+  conversation explicitly. Both return a machine-readable
+  overall/per-artifact receipt. A transient channel failure returns `queued`
+  after durable staging and is retried by the same outbox used for projected
+  native output. Reusing the same delivery ID and payload returns the persisted
+  final receipt, including per-artifact failures, across a bridge restart;
+  reusing the ID for different content or a different destination is rejected.
+  Neither path creates a second channel runtime.

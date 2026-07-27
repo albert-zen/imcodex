@@ -111,10 +111,10 @@ back to the current IM conversation, use:
 scripts/imcodex-send --artifact path/to/file --text "Optional message"
 ```
 
-On Windows use `scripts\imcodex-send.cmd`. The launcher submits the current
-`CODEX_THREAD_ID` to the already-running bridge, which resolves the thread's
-latest movable IM binding at delivery time. Do not parse `state.json`, copy raw
-conversation IDs, read bot secrets, or substitute a Markdown link for an
-explicitly requested attachment. If the thread has not been opened or picked
-from IMCodex, report the script's unbound-thread error instead of guessing a
-destination.
+On Windows use `scripts\imcodex-send.cmd`. The launcher submits to the
+already-running bridge with the native `CODEX_THREAD_ID`. The bridge remembers
+the last IM recipient that explicitly selected that thread, so the task can
+still deliver after the user switches to another thread. Do not parse
+`state.json`, copy raw conversation IDs, read bot secrets, or substitute a
+Markdown link for an explicitly requested attachment. Selecting the same
+thread from another IM conversation moves its remembered recipient.

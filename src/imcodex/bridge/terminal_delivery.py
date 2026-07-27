@@ -35,16 +35,20 @@ class TerminalDeliveryMixin:
         return bool(callable(can_deliver) and can_deliver(channel_id))
 
     def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        """Resolve the latest movable IM binding for a native Codex thread."""
+        """Resolve the movable IM recipient remembered for a native thread."""
 
         thread_id = str(source_thread_id or "").strip()
-        binding = self.store.find_binding_by_thread_id(thread_id) if thread_id else None
-        if binding is None:
+        route = (
+            self.store.find_recipient_route_by_thread_id(thread_id)
+            if thread_id
+            else None
+        )
+        if route is None:
             raise ValueError(
-                "The current Codex thread is not attached to an IM conversation. "
-                "Open or pick it from IMCodex, then retry."
+                "This Codex thread has not been selected from an IM conversation. "
+                "Open or pick it from IMCodex once, then retry."
             )
-        return binding.channel_id, binding.conversation_id
+        return route
 
     def validate_outbound_message(self, message: OutboundMessage) -> None:
         validate = getattr(self.outbound_sink, "validate_message", None)

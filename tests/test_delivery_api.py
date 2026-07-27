@@ -105,7 +105,7 @@ class DeliveryService:
             return self.routes[source_thread_id]
         except KeyError:
             raise ValueError(
-                "The current Codex thread is not attached to an IM conversation."
+                "This Codex thread has not been selected from an IM conversation."
             ) from None
 
     def validate_outbound_message(self, message) -> None:
@@ -355,11 +355,11 @@ def test_delivery_endpoint_rejects_current_thread_without_im_binding(
 
     assert response.status_code == 409
     assert response.json()["status"] == "rejected"
-    assert "not attached to an IM conversation" in response.json()["error"]
+    assert "has not been selected from an IM conversation" in response.json()["error"]
     assert sink.messages == []
 
 
-def test_current_route_resolver_follows_latest_cross_channel_binding() -> None:
+def test_current_route_resolver_follows_latest_cross_channel_selection() -> None:
     class RouteResolver(TerminalDeliveryMixin):
         pass
 
@@ -373,6 +373,21 @@ def test_current_route_resolver_follows_latest_cross_channel_binding() -> None:
         "telegram",
         "latest-conversation",
     )
+
+
+def test_current_route_resolver_survives_switching_threads_in_one_conversation() -> None:
+    class RouteResolver(TerminalDeliveryMixin):
+        pass
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "recipient", "thread-a")
+    store.bind_thread("qq", "recipient", "thread-b")
+    resolver = RouteResolver()
+    resolver.store = store
+
+    assert store.find_binding_by_thread_id("thread-a") is None
+    assert resolver.resolve_outbound_route("thread-a") == ("qq", "recipient")
+    assert resolver.resolve_outbound_route("thread-b") == ("qq", "recipient")
 
 
 def test_delivery_endpoint_rejects_ambiguous_current_and_explicit_route(

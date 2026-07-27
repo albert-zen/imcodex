@@ -170,7 +170,6 @@ def test_channels_send_current_posts_source_thread_without_explicit_route(
 
 
 def test_channels_send_current_reads_native_thread_environment(
-    tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-current")

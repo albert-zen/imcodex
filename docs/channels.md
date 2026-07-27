@@ -639,8 +639,8 @@ remain `images`.
 
 ## Explicit Agent Delivery
 
-An Agent running in a thread reached through IMCodex sends back to that
-thread's current IM source with the repository launcher:
+An Agent sends back to the IM recipient remembered for its native Codex thread
+with the repository launcher:
 
 ```bash
 scripts/imcodex-send \
@@ -649,12 +649,14 @@ scripts/imcodex-send \
 ```
 
 On Windows use `scripts\imcodex-send.cmd`. The launcher preserves the Agent's
-working directory for relative artifact paths, reads `CODEX_THREAD_ID`, and
-submits it to the authenticated local delivery endpoint. The running bridge,
-not the launcher, resolves the latest `channel_id` and `conversation_id`.
-Picking the same thread from another IM conversation moves its binding, so a
-later invocation follows the new route. A thread that has never been opened or
-picked through IMCodex fails explicitly instead of guessing a destination.
+working directory for relative artifact paths and submits to the authenticated
+local delivery endpoint. The launcher forwards native `CODEX_THREAD_ID`; the
+running bridge, not the launcher, resolves the last `channel_id` and
+`conversation_id` that explicitly selected that thread. Switching the
+conversation to another thread does not invalidate an older task, so parallel
+tasks retain their own recipients. Selecting the same native thread from
+another IM conversation intentionally moves its remembered route. A thread
+that has never been selected from IM fails explicitly instead of guessing.
 
 The launcher can send up to four `--artifact` values. Paths must be readable
 regular non-symlink files. Because invoking the launcher is an explicit

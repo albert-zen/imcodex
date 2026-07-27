@@ -408,6 +408,53 @@ def test_binding_a_thread_moves_ownership_to_latest_conversation() -> None:
     assert binding.conversation_id == "new-conv"
 
 
+def test_switching_threads_keeps_each_threads_last_recipient_route() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+
+    store.bind_thread("qq", "conv-1", "thr_a")
+    store.bind_thread("qq", "conv-1", "thr_b")
+
+    assert store.find_binding_by_thread_id("thr_a") is None
+    assert store.find_recipient_route_by_thread_id("thr_a") == ("qq", "conv-1")
+    assert store.find_recipient_route_by_thread_id("thr_b") == ("qq", "conv-1")
+
+
+def test_inactive_thread_recipient_route_persists_after_switch(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+
+    store.bind_thread("qq", "conv-1", "thr_a")
+    store.bind_thread("qq", "conv-1", "thr_b")
+
+    reloaded = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+    assert reloaded.find_binding_by_thread_id("thr_a") is None
+    assert reloaded.find_recipient_route_by_thread_id("thr_a") == ("qq", "conv-1")
+    assert reloaded.find_recipient_route_by_thread_id("thr_b") == ("qq", "conv-1")
+
+
+def test_legacy_current_binding_seeds_thread_recipient_route(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "bindings": [
+                    {
+                        "channel_id": "qq",
+                        "conversation_id": "conv-1",
+                        "thread_id": "thr_1",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
+
+    assert store.find_recipient_route_by_thread_id("thr_1") == ("qq", "conv-1")
+
+
 def test_binding_a_thread_moves_pending_requests_to_latest_conversation() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "old-conv", "thr_1")

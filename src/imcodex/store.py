@@ -53,6 +53,7 @@ class ConversationStore(
         self.state_path = Path(state_path) if state_path else None
         journal_limit = max(1, int(native_event_journal_limit))
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
+        self._thread_recipient_routes: dict[str, tuple[str, str]] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
         self._terminal_delivery_watches: dict[tuple[str, str], TerminalDeliveryWatch] = {}
         self._pending_terminal_deliveries: dict[str, PendingTerminalDelivery] = {}
@@ -96,6 +97,14 @@ class ConversationStore(
                 return binding
         return None
 
+    def find_recipient_route_by_thread_id(
+        self,
+        thread_id: str,
+    ) -> tuple[str, str] | None:
+        """Return the last IM recipient that explicitly selected a native thread."""
+
+        return self._thread_recipient_routes.get(str(thread_id or "").strip())
+
     def set_bootstrap_cwd(self, channel_id: str, conversation_id: str, cwd: str) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.bootstrap_cwd = cwd
@@ -116,6 +125,7 @@ class ConversationStore(
         binding = self.get_binding(channel_id, conversation_id)
         previous_thread_id = binding.thread_id
         binding.thread_id = thread_id
+        self._thread_recipient_routes[thread_id] = (channel_id, conversation_id)
         if previous_thread_id and previous_thread_id != thread_id:
             self._remove_terminal_deliveries_for_thread(
                 previous_thread_id,
@@ -590,6 +600,14 @@ class ConversationStore(
                 or binding.show_system is not False
                 or binding.reply_context
             ],
+            "thread_recipient_routes": [
+                {
+                    "thread_id": thread_id,
+                    "channel_id": route[0],
+                    "conversation_id": route[1],
+                }
+                for thread_id, route in sorted(self._thread_recipient_routes.items())
+            ],
             "pending_requests": [],
             "terminal_delivery_watches": [
                 {
@@ -702,6 +720,35 @@ class ConversationStore(
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
+        thread_recipient_routes = payload.get("thread_recipient_routes", [])
+        if not isinstance(thread_recipient_routes, list):
+            raise RuntimeError(
+                f"Invalid thread recipient routes state: {self.state_path}"
+            )
+        for item in thread_recipient_routes:
+            if not isinstance(item, dict):
+                raise RuntimeError(
+                    f"Invalid thread recipient route entry: {self.state_path}"
+                )
+            thread_id = str(item.get("thread_id") or "").strip()
+            channel_id = str(item.get("channel_id") or "").strip()
+            conversation_id = str(item.get("conversation_id") or "").strip()
+            if not thread_id or not channel_id or not conversation_id:
+                raise RuntimeError(
+                    f"Invalid thread recipient route entry: {self.state_path}"
+                )
+            self._thread_recipient_routes[thread_id] = (
+                channel_id,
+                conversation_id,
+            )
+        # State written before standalone delivery routes existed can derive
+        # the only truthful route available from its current bindings.
+        for binding in self._bindings.values():
+            if binding.thread_id:
+                self._thread_recipient_routes[binding.thread_id] = (
+                    binding.channel_id,
+                    binding.conversation_id,
+                )
         terminal_delivery_watches = payload.get("terminal_delivery_watches", [])
         if not isinstance(terminal_delivery_watches, list):
             raise RuntimeError(f"Invalid terminal delivery watch state: {self.state_path}")

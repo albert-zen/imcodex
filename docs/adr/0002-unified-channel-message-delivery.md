@@ -40,11 +40,13 @@ behind an over-general message class.
   polling runtime.
 - Agents use the repository launcher `scripts/imcodex-send` (or
   `scripts\imcodex-send.cmd` on Windows). It submits the native
-  `CODEX_THREAD_ID`; the running bridge resolves that thread's latest IM
-  binding at request time. The launcher does not parse bridge state, receive
-  bot credentials, or persist a thread-to-bot assignment.
+  `CODEX_THREAD_ID`; the running bridge resolves the last IM recipient that
+  explicitly selected that thread. The remembered route survives that
+  conversation switching to another thread and moves when the same thread is
+  explicitly selected from another conversation. The launcher does not parse
+  bridge state, receive bot credentials, or persist an independent route.
 - Operators may name a channel and conversation explicitly. The bridge applies
-  the current access policy to both explicit and current-thread delivery and
+  the current access policy to both explicit and implicit-current delivery and
   returns a JSON receipt with overall and per-artifact state, platform identity
   when available, and stable delivery identity.
 - A caller-generated delivery ID is propagated to adapters. Platforms without
