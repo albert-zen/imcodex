@@ -100,7 +100,28 @@ Dependency direction is one-way:
 ### AgentKit
 
 <!-- agentkit:agents-section -->
-This repository uses AgentKit to keep agent-led changes tied to durable intent, checks, review, and closeout. Do not depend on a global `agentkit` command: use the repository launcher (`scripts/agentkit` on macOS/Linux, `scripts\agentkit.cmd` on Windows), which runs AgentKit through the selected Python module with safe-path isolation. For implementation, documentation edits, hook/plugin updates, or any repository-changing task, start with `scripts/agentkit start --task "..."`, use `scripts/agentkit check` plus `scripts/agentkit status` or `scripts/agentkit remind` while working, and finish with `scripts/agentkit close`. For read-only exploration, codebase orientation, or answering questions without edits, do not create an AgentKit task unless the work becomes long-running or the human asks for lifecycle tracking. For the full operating guide, read the AgentKit plugin skill.
+This repository uses AgentKit to keep substantial agent-led changes tied to
+durable intent, checks, review, and closeout. Use it for changes that affect
+architecture, public behavior, state or data models, security boundaries,
+cross-component workflows, hooks/plugins, or otherwise need durable design and
+review context.
+
+AgentKit is optional for small, self-contained, low-risk edits with an obvious
+owner and a focused verification path, such as a local launcher fallback,
+test-only maintenance, or wording that does not change product meaning. Do not
+start a lifecycle merely because a file changes. If a small task grows beyond
+those boundaries, start AgentKit before continuing.
+
+When AgentKit is warranted, do not depend on a global `agentkit` command: use
+the repository launcher (`scripts/agentkit` on macOS/Linux,
+`scripts\agentkit.cmd` on Windows), which runs AgentKit through the selected
+Python module with safe-path isolation. Start with
+`scripts/agentkit start --task "..."`, use `scripts/agentkit check` plus
+`scripts/agentkit status` or `scripts/agentkit remind` while working, and
+finish with `scripts/agentkit close`. For read-only exploration, codebase
+orientation, or answering questions without edits, do not create an AgentKit
+task unless the work becomes long-running or the human asks for lifecycle
+tracking. For the full operating guide, read the AgentKit plugin skill.
 
 ### Sending Files Back To IM
 
