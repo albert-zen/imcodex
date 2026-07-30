@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from imcodex.channels_cli import _send, _settings_from_bridge_root, run_channels_cli
 
@@ -238,4 +242,44 @@ def test_repo_send_launchers_select_current_route() -> None:
     assert '"$@"' in shell
     assert "--current" in windows
     assert '--bridge-root "%REPO_ROOT%"' in windows
+    assert "if defined IMCODEX_PYTHON" in windows
+    assert 'else if exist "%REPO_ROOT%\\.venv\\Scripts\\python.exe"' in windows
+    assert "else if defined CONDA_PREFIX" in windows
+    assert "where python" in windows
     assert "%*" in windows
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher behavior")
+def test_windows_send_launcher_prefers_configured_imcodex_python(tmp_path: Path) -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    repo_root = tmp_path / "repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+    launcher = scripts_dir / "imcodex-send.cmd"
+    shutil.copy2(source_root / "scripts" / "imcodex-send.cmd", launcher)
+    capture_path = tmp_path / "python-arguments.txt"
+    fake_python = tmp_path / "configured-python.cmd"
+    fake_python.write_text(
+        "@echo off\n"
+        "> \"%IMCODEX_TEST_CAPTURE%\" echo %*\n"
+        "exit /b 0\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["IMCODEX_PYTHON"] = str(fake_python)
+    environment["IMCODEX_TEST_CAPTURE"] = str(capture_path)
+    environment.pop("CONDA_PREFIX", None)
+
+    completed = subprocess.run(
+        [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(launcher), "--text", "done"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    arguments = capture_path.read_text(encoding="utf-8").strip()
+    assert arguments.startswith("-m imcodex channels send --current --bridge-root")
+    assert arguments.endswith("--text done")

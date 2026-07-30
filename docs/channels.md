@@ -657,6 +657,8 @@ conversation to another thread does not invalidate an older task, so parallel
 tasks retain their own recipients. Selecting the same native thread from
 another IM conversation intentionally moves its remembered route. A thread
 that has never been selected from IM fails explicitly instead of guessing.
+The Windows launcher selects `IMCODEX_PYTHON` first, then the repository
+`.venv`, the active Conda environment, and finally `python` on `PATH`.
 
 The launcher can send up to four `--artifact` values. Paths must be readable
 regular non-symlink files. Because invoking the launcher is an explicit
