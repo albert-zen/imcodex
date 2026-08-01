@@ -1,10 +1,11 @@
 # IM Agent SDK migration baseline
 
-Status: baseline complete; experimental migration in progress on a provisional stacked SDK dependency
+Status: baseline complete; experimental migration ready against a merged SDK revision
 
 This document records the unchanged IMCodex baseline for the experimental
 consumer migration to `im-agent-sdk`. It also proposes an ownership map for
 review before code moves. It is intentionally not an SDK dependency decision.
+The tracked implementation work is [Issue #28](https://github.com/albert-zen/imcodex/issues/28).
 
 ## Baseline identity
 
@@ -35,33 +36,35 @@ These are deliberately different facts:
    new temporary repository showed 14 commits in the candidate integration
    range. The candidate docs and public package surface were inspected from
    that independently fetched tree, not from a developer SDK worktree.
-2. **Merged SDK base.** The first formal merge input was
+2. **Historical merged SDK base.** The first formal merge input was
    `c91fe8c35d714b4a325523a3240ad56163a90e65`, the PR #21 merge commit on
    `main`. It was independently fetched once by full SHA and once through
-   `refs/heads/main`; both resolved to the same object. It remains the base of
-   the provisional SDK follow-up below, not the dependency selected for this
-   experiment.
-3. **Provisional stacked IMCodex dependency.** The experimental branch now
-   pins `im-agent-sdk[appserver,channels]` to the immutable full head commit
+   `refs/heads/main`; both resolved to the same object. It was the base of the
+   first consumer experiment, not the dependency now selected.
+3. **Historical provisional dependency.** The first experiment pinned
+   `im-agent-sdk[appserver,channels]` to the immutable head commit
    `66d1d91628799c6c9328e239cfe352976a4702fd` of SDK PR #22,
    [fix(appserver): harden native input outcomes](https://github.com/albert-zen/im-agent-sdk/pull/22).
-   This is an unmerged, reviewable cross-repository development dependency for
-   the App Server input-correctness blocker: steer dispatch-unknown handling,
-   opt-in Codex continuation with native TOCTOU reconciliation, local-image
-   epoch wiring, and explicit generic-file unsupported behavior. It is neither
-   a floating branch reference nor a local clone/worktree dependency.
-
-   If PR #22 changes, IMCodex must update this exact full SHA deliberately and
-   rerun dependency installation plus the affected baseline/parity evidence.
-   Before this IMCodex Draft PR can be treated as a production-ready change,
-   the provisional SHA must be replaced by the resulting SDK `main` merge
-   commit (or an explicitly released SDK version) and the full baseline matrix
-   rerun. SDK PR #22 remains independently reviewed and merge-controlled.
+   The rejected client-only trial below remains useful historical evidence,
+   but this unmerged SHA is no longer the selected dependency.
+4. **Current merged SDK dependency.** The branch now pins the immutable SDK
+   `main` commit `b20317d5d410185a25f6446db6bc7ee035fd1ff1`, after merged PRs
+   [#22](https://github.com/albert-zen/im-agent-sdk/pull/22),
+   [#27](https://github.com/albert-zen/im-agent-sdk/pull/27), and
+   [#29](https://github.com/albert-zen/im-agent-sdk/pull/29). This revision
+   includes correlation-safe active-Turn continuation, bounded event fan-out
+   with explicit recovery gaps and App Server ordered handoff, and the
+   redacted diagnostics/health surface required by the consumer migration.
 
 The dependency is expressed as a PEP 508 direct Git reference in
 `pyproject.toml`; it neither reads nor depends on any developer SDK worktree.
-`python -m pip install -e ".[dev]"` resolved that remote Git object at the
-full SHA before the experimental cutover checks below ran.
+Every dependency update must resolve the remote full SHA and rerun the affected
+baseline and parity evidence before runtime cutover code is accepted.
+
+A fresh temporary environment resolved that direct reference to
+`b20317d5d410185a25f6446db6bc7ee035fd1ff1`, built both packages, installed the
+declared extras, and imported `imagent`. The full behavioral baseline remains a
+gate for the implementation work rather than for publishing this handoff branch.
 
 ## Verification results
 
