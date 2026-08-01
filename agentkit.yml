@@ -132,6 +132,7 @@ components:
       - docs/workflow.md
       - docs/startup.md
       - docs/architecture/dependency-rules.md
+      - docs/im-agent-sdk-migration-baseline.md
     required_docs:
       - design
       - workflow

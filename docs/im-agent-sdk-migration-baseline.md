@@ -1,6 +1,6 @@
 # IM Agent SDK migration baseline
 
-Status: baseline complete; dependency adoption and implementation paused
+Status: baseline complete; experimental migration in progress on a provisional stacked SDK dependency
 
 This document records the unchanged IMCodex baseline for the experimental
 consumer migration to `im-agent-sdk`. It also proposes an ownership map for
@@ -22,7 +22,7 @@ source, dependency metadata, state, or product configuration changed before
 the baseline commands ran. The production `main` worktree was not switched or
 modified.
 
-## Candidate SDK verification versus formal dependency
+## Candidate SDK verification versus selected dependency
 
 These are deliberately different facts:
 
@@ -35,14 +35,33 @@ These are deliberately different facts:
    new temporary repository showed 14 commits in the candidate integration
    range. The candidate docs and public package surface were inspected from
    that independently fetched tree, not from a developer SDK worktree.
-2. **Formal IMCodex dependency.** There is none yet. `e659833` was a candidate
-   verification input and must not be committed as the final IMCodex pin. The
-   migration waits for the merged SDK `main` commit or an explicitly selected
-   released version. At that point the dependency must use the full immutable
-   commit (or an equivalently reproducible lock), and this document must be
-   updated with the final identity and verification result.
+2. **Merged SDK base.** The first formal merge input was
+   `c91fe8c35d714b4a325523a3240ad56163a90e65`, the PR #21 merge commit on
+   `main`. It was independently fetched once by full SHA and once through
+   `refs/heads/main`; both resolved to the same object. It remains the base of
+   the provisional SDK follow-up below, not the dependency selected for this
+   experiment.
+3. **Provisional stacked IMCodex dependency.** The experimental branch now
+   pins `im-agent-sdk[appserver,channels]` to the immutable full head commit
+   `66d1d91628799c6c9328e239cfe352976a4702fd` of SDK PR #22,
+   [fix(appserver): harden native input outcomes](https://github.com/albert-zen/im-agent-sdk/pull/22).
+   This is an unmerged, reviewable cross-repository development dependency for
+   the App Server input-correctness blocker: steer dispatch-unknown handling,
+   opt-in Codex continuation with native TOCTOU reconciliation, local-image
+   epoch wiring, and explicit generic-file unsupported behavior. It is neither
+   a floating branch reference nor a local clone/worktree dependency.
 
-No IMCodex dependency or lock file currently references `im-agent-sdk`.
+   If PR #22 changes, IMCodex must update this exact full SHA deliberately and
+   rerun dependency installation plus the affected baseline/parity evidence.
+   Before this IMCodex Draft PR can be treated as a production-ready change,
+   the provisional SHA must be replaced by the resulting SDK `main` merge
+   commit (or an explicitly released SDK version) and the full baseline matrix
+   rerun. SDK PR #22 remains independently reviewed and merge-controlled.
+
+The dependency is expressed as a PEP 508 direct Git reference in
+`pyproject.toml`; it neither reads nor depends on any developer SDK worktree.
+`python -m pip install -e ".[dev]"` resolved that remote Git object at the
+full SHA before the experimental cutover checks below ran.
 
 ## Verification results
 
@@ -74,6 +93,35 @@ The 35 skips are capability/platform gates rather than hidden failures. On
 this native Windows host they primarily cover Unix sockets, POSIX mode bits,
 POSIX process states, and Bash/POSIX launcher cases. Windows-only command-line,
 DACL, junction, launcher, and core-manager cases ran.
+
+### Rejected client-only composition trial
+
+After pinning SDK PR #22 at `66d1d91628799c6c9328e239cfe352976a4702fd`, a
+client-only composition trial constructed the SDK `AppServerClient`,
+`AppServerSupervisor`, and retry policy directly. The repeated full suite
+result was:
+
+```text
+1171 passed, 35 skipped, 1 warning in 256.77s
+```
+
+The focused composition/native parity set also passed:
+
+```text
+356 passed, 8 skipped, 1 warning in 17.62s
+```
+
+It covers runtime/application lifecycle, backend command and thread behavior,
+App Server transport/client behavior, and service end-to-end flows, but it did
+not prove the new client against the legacy raw-notification handoff path.
+
+A clean-context review rejected the trial before commit: SDK dispatch metadata
+does not satisfy IMCodex's existing wire-order gate; SDK diagnostics are not
+wired into IMCodex `health.json`/event UX; and the new SDK unknown-input
+outcome cannot safely pass through the legacy backend's retry/recovery path.
+The product composition therefore remains on its existing client until a real
+SDK Gateway/Application cutover can preserve those semantics. No compatibility
+subclass, field-name translation, or catch-and-retry shim is authorized.
 
 ### Compile, type, lint, and format facts
 
@@ -203,6 +251,16 @@ runtime or policy authority.
 | Repository tests and conformance | SDK test kit plus IMCodex product tests | Use SDK contract tests for shared seams and retain the baseline matrix for consumer behavior, topology, commands, trust, and Windows smoke. |
 
 ### Expected duplicate-removal targets
+
+#### Current experimental cutover status
+
+No production App Server client deletion or replacement is accepted yet. The
+legacy `src/imcodex/appserver/client.py` remains production-constructed until
+SDK Gateway/Application composition has demonstrated wire-order, native
+unknown-input recovery, and observability parity. Its bounded dispatch
+behavior remains evidence for the later SDK queue/projection admission
+decision. This is a tracked blocker, not permission for an indefinite shim or
+for copying IMCodex semantics into SDK Core.
 
 After parity, the reusable implementations already transferred to the SDK
 should disappear from IMCodex rather than remain as indefinite shims:
