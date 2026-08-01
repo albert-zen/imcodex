@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.116.1",
     "httpx>=0.28.0",
+    "im-agent-sdk[appserver,channels] @ git+https://github.com/albert-zen/im-agent-sdk.git@66d1d91628799c6c9328e239cfe352976a4702fd",
     "Pillow>=12.3.0,<13.0.0",
     "pydantic>=2.11.0",
     "pycryptodome>=3.23.0,<4.0.0",
