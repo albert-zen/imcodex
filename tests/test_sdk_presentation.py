@@ -3,15 +3,27 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
 from imagent.applications import (
     AppServerArtifactCandidate,
     AppServerArtifactSourceKind,
     AppServerPresentationContext,
     AppServerPresentationItem,
 )
-from imagent.contracts import AgentMessage, AttachmentContent, MessageRole, TextContent, ThreadRef
+from imagent.contracts import (
+    AgentMessage,
+    AttachmentContent,
+    ConversationRef,
+    MessageRole,
+    OutboundMessage,
+    TextContent,
+    ThreadRef,
+)
 
-from imcodex.bridge.sdk_presentation import ImcodexAppServerPresentation
+from imcodex.bridge.sdk_presentation import (
+    ImcodexAppServerPresentation,
+    ImcodexOutboundPresentation,
+)
 from imcodex.models import OutboundArtifact
 
 
@@ -26,6 +38,10 @@ class FakeStore:
 
     def find_binding_by_thread_id(self, thread_id):
         del thread_id
+        return self.binding
+
+    def get_binding(self, channel_id, conversation_id):
+        del channel_id, conversation_id
         return self.binding
 
     def get_thread_snapshot(self, thread_id):
@@ -120,21 +136,18 @@ def test_artifact_candidate_is_attached_to_the_next_final_answer() -> None:
     assert presentation.present_turn_terminal(_context(), "completed") is None
 
 
-def test_visibility_and_terminal_delta_fallback_remain_product_policy() -> None:
+def test_application_presentation_defers_visibility_and_keeps_terminal_fallback() -> None:
     presentation = ImcodexAppServerPresentation(
         store=FakeStore(show_commentary=False, show_toolcalls=False, show_system=False),
         artifact_stager=FakeStager(),
     )
 
-    assert (
-        presentation.present_completed_item(
-            _context(),
-            _item(phase="commentary"),
-            _message(),
-        )
-        is None
-    )
-    assert presentation.present_live_message(_context(), _message(kind="plan_updated")) is None
+    assert presentation.present_completed_item(
+        _context(),
+        _item(phase="commentary"),
+        _message(),
+    ) is not None
+    assert presentation.present_live_message(_context(), _message(kind="plan_updated")) is not None
     presentation.observe_delta(_context(), "partial answer")
 
     fallback = presentation.present_turn_terminal(_context(), "interrupted")
@@ -143,6 +156,31 @@ def test_visibility_and_terminal_delta_fallback_remain_product_policy() -> None:
     text = fallback.content[0]
     assert isinstance(text, TextContent)
     assert text.text == "Turn interrupted.\npartial answer"
+
+
+@pytest.mark.asyncio
+async def test_outbound_visibility_is_applied_per_destination() -> None:
+    store = FakeStore(show_commentary=False, show_toolcalls=True, show_system=False)
+    presentation = ImcodexOutboundPresentation(store=store)
+    conversation = ConversationRef("telegram", "chat-1")
+
+    def outbound(kind: str, *, phase: str = "") -> OutboundMessage:
+        return OutboundMessage(
+            delivery_id=f"delivery-{kind}-{phase}",
+            conversation_ref=conversation,
+            content=(TextContent("message"),),
+            created_at=datetime.now(UTC),
+            metadata={
+                "native_application": "appserver",
+                "native_item_kind": kind,
+                "phase": phase,
+            },
+        )
+
+    assert await presentation.present(outbound("plan_updated")) is None
+    assert await presentation.present(outbound("command_execution")) is not None
+    final = outbound("agent_message", phase="final_answer")
+    assert await presentation.present(final) is final
 
 
 def test_authoritative_and_live_buffers_do_not_cross_contaminate() -> None:

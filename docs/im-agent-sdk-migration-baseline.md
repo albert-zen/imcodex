@@ -425,7 +425,7 @@ Issue [im-agent-sdk#31](https://github.com/albert-zen/im-agent-sdk/issues/31)
 and Draft PR [im-agent-sdk#32](https://github.com/albert-zen/im-agent-sdk/pull/32)
 provide the consumer-safe projection and Channel diagnostics seams identified
 by this baseline. IMCodex provisionally pins immutable review commit
-`092c00452f7e6377ad38fc72f4c1f1d89f367ea2`; this is deliberately not a claim
+`330c4b03dc4ea156b85220fd6679d7324dbe8272`; this is deliberately not a claim
 that SDK main has accepted the change. The final migration must either advance
 to the merged immutable SDK main commit or retain the reviewed commit explicitly
 in the Draft IMCodex PR.
@@ -443,3 +443,18 @@ hook keeps native artifact candidates in the single ordered Application
 event/history path while letting IMCodex validate and materialize them into its
 own managed spool. It does not move spool durability, retry, cleanup, or
 visibility policy into SDK Core.
+
+Issue [im-agent-sdk#34](https://github.com/albert-zen/im-agent-sdk/issues/34)
+adds the complementary Gateway boundary: destination-specific presentation
+runs only after a concrete Conversation route is selected. Suppression is a
+completed, idempotent display decision, while delivery identity and destination
+remain immutable. This prevents one observer's visibility preferences from
+filtering every observer of the same native Thread.
+
+IMCodex renders the SDK's redacted diagnostics snapshot into an `sdk` section
+of its existing health file. The product runtime owns sampling and the overall
+`healthy`/`degraded` operator status; the snapshot remains explicitly
+non-authoritative and contains no native conversation, thread, turn, request,
+or credential identity. Gateway startup/shutdown replaces the former manual
+ordering of App Server and channel lifecycle once the composition cutover is
+enabled.

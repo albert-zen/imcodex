@@ -6,7 +6,14 @@ from pathlib import Path
 from threading import RLock
 
 from imagent.applications import AppServerPresentationContext, AppServerPresentationItem
-from imagent.contracts import AgentMessage, AttachmentContent, LocalPath, MessageRole, TextContent
+from imagent.contracts import (
+    AgentMessage,
+    AttachmentContent,
+    LocalPath,
+    MessageRole,
+    OutboundMessage,
+    TextContent,
+)
 
 from ..models import OutboundArtifact
 from .message_pump import EMPTY_COMPLETED_TURN_TEXT
@@ -65,7 +72,7 @@ class ImcodexAppServerPresentation:
                 if remaining > 0:
                     buffer.changed_files.extend(item.changed_paths[:remaining])
 
-            if default_message is None or not self._item_visible(context, item):
+            if default_message is None:
                 return None
             if item.item_kind != "agentmessage" or item.phase != "final_answer":
                 return default_message
@@ -76,13 +83,8 @@ class ImcodexAppServerPresentation:
         context: AppServerPresentationContext,
         message: AgentMessage,
     ) -> AgentMessage | None:
-        kind = str(message.metadata.get("native_item_kind") or "")
-        binding = self._binding(context)
-        if kind == "plan_updated":
-            return message if self._flag(binding, "show_commentary", True) else None
-        if kind == "diff_updated":
-            return message if self._flag(binding, "show_toolcalls", False) else None
-        return message if self._flag(binding, "show_system", False) else None
+        del context
+        return message
 
     def observe_delta(self, context: AppServerPresentationContext, delta: str) -> None:
         if not delta:
@@ -222,25 +224,6 @@ class ImcodexAppServerPresentation:
             text = "\n".join(buffer.command_summaries)
         return text or EMPTY_COMPLETED_TURN_TEXT
 
-    def _item_visible(
-        self,
-        context: AppServerPresentationContext,
-        item: AppServerPresentationItem,
-    ) -> bool:
-        binding = self._binding(context)
-        if item.item_kind == "agentmessage":
-            return item.phase == "final_answer" or self._flag(binding, "show_commentary", True)
-        if item.item_kind in {"commandexecution", "filechange"}:
-            return self._flag(binding, "show_toolcalls", False)
-        return False
-
-    def _binding(self, context: AppServerPresentationContext):
-        return self.store.find_binding_by_thread_id(context.thread_ref.native_thread_id)
-
-    @staticmethod
-    def _flag(binding, name: str, default: bool) -> bool:
-        return bool(getattr(binding, name, default))
-
     def _thread_cwd(self, thread_id: str) -> str:
         snapshot = self.store.get_thread_snapshot(thread_id)
         if snapshot is not None and snapshot.cwd:
@@ -258,3 +241,30 @@ class ImcodexAppServerPresentation:
             context.thread_ref.native_thread_id,
             context.turn_id,
         )
+
+
+class ImcodexOutboundPresentation:
+    """Apply IMCodex visibility only after Gateway resolves a destination."""
+
+    def __init__(self, *, store) -> None:
+        self.store = store
+
+    async def present(self, message: OutboundMessage) -> OutboundMessage | None:
+        metadata = message.metadata
+        if metadata.get("native_application") not in {"appserver", "codex", "zen"}:
+            return message
+        kind = str(metadata.get("native_item_kind") or "")
+        phase = str(metadata.get("phase") or "")
+        if kind == "agent_message" and phase == "final_answer":
+            return message
+        binding = self.store.get_binding(
+            message.conversation_ref.channel_instance_id,
+            message.conversation_ref.native_conversation_id,
+        )
+        if kind in {"agent_message", "plan_updated"}:
+            visible = bool(getattr(binding, "show_commentary", True))
+        elif kind in {"command_execution", "file_change", "diff_updated"}:
+            visible = bool(getattr(binding, "show_toolcalls", False))
+        else:
+            visible = bool(getattr(binding, "show_system", False))
+        return message if visible else None
