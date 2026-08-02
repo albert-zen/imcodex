@@ -32,6 +32,10 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         self.store = store
         self.service_name = service_name
         self.thread_dynamic_tools = copy.deepcopy(thread_dynamic_tools)
+        # A native thread has no resumable rollout until its first turn starts.
+        # Keep that transient fact process-local so the first input can use the
+        # live connection instead of asking Codex to resume nonexistent history.
+        self._unpersisted_thread_ids: set[str] = set()
 
     def prefers_native_recovery(self) -> bool:
         preserves_server_state = getattr(self.client, "preserves_server_state", None)

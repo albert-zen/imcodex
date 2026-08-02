@@ -39,6 +39,9 @@ class CodexThreadBackendMixin:
         return False
 
     async def create_new_thread(self, channel_id: str, conversation_id: str) -> str:
+        previous = self.store.get_binding(channel_id, conversation_id)
+        if previous.thread_id:
+            self._unpersisted_thread_ids.discard(previous.thread_id)
         self.store.clear_thread_binding(channel_id, conversation_id)
         return await self.ensure_thread(channel_id, conversation_id)
 
@@ -60,6 +63,7 @@ class CodexThreadBackendMixin:
                     "Codex resumed a different thread; refusing an inexact continuation"
                 )
             self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+            self._unpersisted_thread_ids.discard(snapshot.thread_id)
             self._reconcile_native_active_turn(result.get("thread") or {}, snapshot)
             if (
                 str(snapshot.status or "").strip().lower() in ACTIVE_THREAD_STATUSES
@@ -79,6 +83,7 @@ class CodexThreadBackendMixin:
         )
         snapshot = self._remember_snapshot(result.get("thread") or {})
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self._unpersisted_thread_ids.add(snapshot.thread_id)
         return snapshot.thread_id
 
     def _new_thread_dynamic_tool_params(self) -> dict[str, object]:
@@ -397,6 +402,7 @@ class CodexThreadBackendMixin:
         if binding.thread_id is not None:
             can_resume = callable(getattr(self.client, "resume_thread", None))
             thread_id = binding.thread_id
+            is_unpersisted = thread_id in self._unpersisted_thread_ids
             active = self.store.get_active_turn(thread_id)
             attempted_steer = active is not None and active[1] == "inProgress"
 
@@ -404,7 +410,7 @@ class CodexThreadBackendMixin:
             # already observed. Resuming first can race with a just-created
             # rollout and, across clients, can replace useful live state with a
             # persisted snapshot before native turn/steer gets a chance.
-            if not attempted_steer and can_resume:
+            if not attempted_steer and can_resume and not is_unpersisted:
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(
                     expected_local_image_epoch
@@ -416,7 +422,7 @@ class CodexThreadBackendMixin:
                     expected_local_image_epoch=expected_local_image_epoch,
                 )
             except AppServerError as exc:
-                if not can_resume or not self._requires_thread_resume(exc):
+                if is_unpersisted or not can_resume or not self._requires_thread_resume(exc):
                     raise
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(
@@ -598,6 +604,7 @@ class CodexThreadBackendMixin:
         if expected_local_image_epoch is not None:
             start_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
         result = await self.client.start_turn(**start_kwargs)
+        self._unpersisted_thread_ids.discard(thread_id)
         turn = result.get("turn") or {}
         turn_id = str(turn.get("id") or "")
         status = str(turn.get("status") or "inProgress")

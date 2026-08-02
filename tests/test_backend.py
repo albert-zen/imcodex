@@ -780,7 +780,7 @@ async def test_resolve_thread_selector_rejects_ambiguous_label_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_text_reconciles_fresh_thread_before_first_input() -> None:
+async def test_submit_text_starts_first_turn_without_resuming_fresh_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
     client = NewThreadClient()
@@ -795,9 +795,7 @@ async def test_submit_text_reconciles_fresh_thread_before_first_input() -> None:
     assert client.start_thread_calls == [
         {"cwd": r"D:\desktop\imcodex", "service_name": "imcodex-test"},
     ]
-    assert client.resume_calls == [
-        {"thread_id": "thr_new", "service_name": "imcodex-test"}
-    ]
+    assert client.resume_calls == []
     assert client.start_turn_calls == [
         {
             "thread_id": "thr_new",
@@ -805,6 +803,18 @@ async def test_submit_text_reconciles_fresh_thread_before_first_input() -> None:
             "summary": "concise",
         }
     ]
+
+    store.clear_active_turn("thr_new")
+    await backend.submit_text("qq", "conv-1", "again")
+
+    assert client.resume_calls == [
+        {"thread_id": "thr_new", "service_name": "imcodex-test"}
+    ]
+    assert client.start_turn_calls[-1] == {
+        "thread_id": "thr_new",
+        "input_items": [{"type": "text", "text": "again"}],
+        "summary": "concise",
+    }
 @pytest.mark.asyncio
 async def test_new_thread_receives_configured_dynamic_tools() -> None:
     store = ConversationStore(clock=lambda: 1.0)
