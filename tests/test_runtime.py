@@ -530,7 +530,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         app_server_reconnect_jitter_fraction=0.15,
     )
     runtime = build_runtime(settings, settings_source="environment")
-    runtime.client.initialize = lambda: __import__("asyncio").sleep(0)
+    runtime.client.connect = lambda: __import__("asyncio").sleep(0)
     runtime.client.close = lambda: __import__("asyncio").sleep(0)
 
     await runtime.start()

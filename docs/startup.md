@@ -8,6 +8,10 @@ From the repository root:
 
 Normal operation connects the bridge to one external App Server target. The
 explicit `stdio://` bridge-child target remains available for compatibility.
+The bridge process starts one SDK Gateway, which owns the Codex Application,
+enabled native Channel lifecycles, projection recovery, and delivery
+coordination. IMCodex keeps the platform launchers, process topology, HTTP
+operator surface, restart snapshot, and health-file presentation.
 
 Install the standalone Codex CLI first and keep `codex` on `PATH`, or set
 `IMCODEX_CODEX_BIN` to that standalone executable. IMCodex deliberately does
@@ -59,6 +63,10 @@ enabled channel, run:
 ```powershell
 python -m imcodex channels doctor
 ```
+
+Managed restart preflight calls each SDK native Channel's side-effect-free
+configuration validator before replacing the running process. It does not open
+provider connections or start background workers.
 
 Optional environment controls:
 

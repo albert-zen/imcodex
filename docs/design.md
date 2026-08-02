@@ -20,6 +20,15 @@ The intended runtime has five practical surfaces:
 - a loopback-only configuration presentation under `imcodex.admin`
 - a thin composition/runtime shell that wires them together
 
+The default composition is now an `im-agent-sdk` Gateway with the SDK Codex
+Application and native Channel adapters. IMCodex supplies only product
+controller/presentation policies, generic webhook namespace adaptation,
+configuration, launch topology, health rendering, and a temporary command
+compatibility facade. Gateway bindings, projection/recovery, request
+correlation, delivery planning, and delivery submission identity are SDK
+owned. The compatibility facade must shrink as each product-command boundary
+reaches parity; it is not a second long-term runtime.
+
 `imcodex.admin` belongs to the runtime/composition side of the architecture. It
 projects native settings without owning them and manages only the explicit
 bridge/channel configuration schema; lower layers do not depend on it.

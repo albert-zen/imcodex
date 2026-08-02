@@ -70,6 +70,12 @@ authority.
 - should not become a new business layer
 - lower layers must not import `imcodex.admin`
 
+The SDK Gateway/Application/Channel graph is constructed only in the runtime
+composition root. Product bridge policies may depend on SDK contracts and
+ports, but still must not import concrete `imcodex.channels`; channel-specific
+fallback facts are injected by composition. Native Codex truth remains behind
+the SDK Application rather than being copied into a new IMCodex state layer.
+
 ## Existing Test Enforcement
 
 Repository tests already enforce the core one-way rules in

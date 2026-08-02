@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import runpy
 from types import SimpleNamespace
 
 from imcodex.main import run
@@ -56,3 +57,12 @@ def test_main_exposes_uvicorn_graceful_shutdown_callback(monkeypatch) -> None:
     )
     assert observed["ran"] is True
     assert observed["server"].should_exit is True
+
+
+def test_module_entrypoint_does_not_restart_inside_spawned_child(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr("imcodex.main.run", lambda: calls.append("run"))
+
+    runpy.run_module("imcodex", run_name="__mp_main__")
+
+    assert calls == []

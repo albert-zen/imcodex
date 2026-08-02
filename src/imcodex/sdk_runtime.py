@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 from imagent.diagnostics import (
     ConnectionDiagnosticFacts,
@@ -16,6 +16,7 @@ from .runtime import OBSERVABILITY_IO_TIMEOUT_S
 
 
 SDK_HEALTH_REFRESH_SECONDS = 1.0
+SDK_MAINTENANCE_SECONDS = 2.0
 
 
 @dataclass(slots=True)
@@ -24,8 +25,15 @@ class SdkRuntime:
 
     gateway: object
     state: object
+    client: object | None = None
+    service: object | None = None
+    managed_channels: list[object] = field(default_factory=list)
     observability: object | None = None
+    resources: tuple[object, ...] = ()
+    prepare: Callable[[], Awaitable[None]] | None = None
+    maintenance: Callable[[], Awaitable[object]] | None = None
     _health_task: asyncio.Task[None] | None = None
+    _maintenance_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         try:
@@ -36,7 +44,15 @@ class SdkRuntime:
                     component="bridge",
                     event="bridge.starting",
                 )
+            if self.prepare is not None:
+                await self.prepare()
             await self.gateway.start()
+            if self.maintenance is not None:
+                await self.maintenance()
+                self._maintenance_task = asyncio.create_task(
+                    self._maintenance_loop(),
+                    name="imcodex-sdk-maintenance",
+                )
             if self.observability is not None:
                 self._observe(mark_http_health, listening=True)
                 self._publish_sdk_health()
@@ -52,10 +68,11 @@ class SdkRuntime:
                 await self._flush_observability()
         except BaseException as exc:
             await self._cancel_health_task()
+            await self._cancel_maintenance_task()
             with contextlib.suppress(BaseException):
                 await self.gateway.stop()
             with contextlib.suppress(BaseException):
-                await self._close_state()
+                await self._close_owned_resources()
             if self.observability is not None:
                 self._observe(self.observability.update_health, status="unhealthy")
                 self._observe(
@@ -78,7 +95,8 @@ class SdkRuntime:
                 event="bridge.stopping",
             )
         await self._cancel_health_task()
-        for operation in (self.gateway.stop, self._close_state):
+        await self._cancel_maintenance_task()
+        for operation in (self.gateway.stop, self._close_owned_resources):
             try:
                 await operation()
             except asyncio.CancelledError:
@@ -102,6 +120,15 @@ class SdkRuntime:
             await asyncio.sleep(SDK_HEALTH_REFRESH_SECONDS)
             self._publish_sdk_health()
 
+    async def _maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(SDK_MAINTENANCE_SECONDS)
+            try:
+                await self.maintenance()
+            except Exception:
+                if self.observability is not None:
+                    self._observe(self.observability.update_health, status="degraded")
+
     def _publish_sdk_health(self) -> None:
         try:
             snapshot = self.gateway.diagnostics_snapshot()
@@ -124,12 +151,27 @@ class SdkRuntime:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    async def _close_state(self) -> None:
-        close = getattr(self.state, "close", None)
-        if callable(close):
-            result = close()
-            if asyncio.iscoroutine(result):
-                await result
+    async def _cancel_maintenance_task(self) -> None:
+        task = self._maintenance_task
+        self._maintenance_task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def _close_owned_resources(self) -> None:
+        for resource in (*self.resources, self.state):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+            flush = getattr(resource, "flush_pending_writes", None)
+            if callable(flush):
+                result = flush()
+                if asyncio.iscoroutine(result):
+                    await result
 
     async def _flush_observability(self) -> None:
         flush = getattr(self.observability, "flush", None)

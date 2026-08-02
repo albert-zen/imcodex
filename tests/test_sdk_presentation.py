@@ -24,11 +24,13 @@ from imcodex.bridge.sdk_presentation import (
     ImcodexAppServerPresentation,
     ImcodexOutboundPresentation,
 )
+from imcodex.webhook_namespace import encode_webhook_conversation
 from imcodex.models import OutboundArtifact
 
 
 class FakeStore:
     def __init__(self, **visibility) -> None:
+        self.binding_reads = []
         self.binding = SimpleNamespace(
             bootstrap_cwd="/repo",
             show_commentary=visibility.get("show_commentary", True),
@@ -41,7 +43,7 @@ class FakeStore:
         return self.binding
 
     def get_binding(self, channel_id, conversation_id):
-        del channel_id, conversation_id
+        self.binding_reads.append((channel_id, conversation_id))
         return self.binding
 
     def get_thread_snapshot(self, thread_id):
@@ -181,6 +183,28 @@ async def test_outbound_visibility_is_applied_per_destination() -> None:
     assert await presentation.present(outbound("command_execution")) is not None
     final = outbound("agent_message", phase="final_answer")
     assert await presentation.present(final) is final
+
+
+@pytest.mark.asyncio
+async def test_webhook_visibility_reads_original_product_namespace() -> None:
+    store = FakeStore(show_commentary=False)
+    presentation = ImcodexOutboundPresentation(store=store)
+    message = OutboundMessage(
+        delivery_id="delivery-webhook",
+        conversation_ref=ConversationRef(
+            "webhook",
+            encode_webhook_conversation("custom-a", "room/1"),
+        ),
+        content=(TextContent("plan"),),
+        created_at=datetime.now(UTC),
+        metadata={
+            "native_application": "appserver",
+            "native_item_kind": "plan_updated",
+        },
+    )
+
+    assert await presentation.present(message) is None
+    assert store.binding_reads == [("custom-a", "room/1")]
 
 
 def test_authoritative_and_live_buffers_do_not_cross_contaminate() -> None:

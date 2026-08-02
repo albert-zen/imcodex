@@ -425,7 +425,7 @@ Issue [im-agent-sdk#31](https://github.com/albert-zen/im-agent-sdk/issues/31)
 and Draft PR [im-agent-sdk#32](https://github.com/albert-zen/im-agent-sdk/pull/32)
 provide the consumer-safe projection and Channel diagnostics seams identified
 by this baseline. IMCodex provisionally pins immutable review commit
-`330c4b03dc4ea156b85220fd6679d7324dbe8272`; this is deliberately not a claim
+`7df2447dd66586a6f149d3bb42fb18532c2e38b1`; this is deliberately not a claim
 that SDK main has accepted the change. The final migration must either advance
 to the merged immutable SDK main commit or retain the reviewed commit explicitly
 in the Draft IMCodex PR.
@@ -434,8 +434,8 @@ The SDK change preserves normalized message Metadata through Gateway delivery,
 routes live-only `message.created` observations without advancing authoritative
 completion checkpoints, keeps additional Application presentation opt-in, and
 adds redacted Channel lifecycle facts to the SDK diagnostics snapshot. IMCodex
-continues to own visibility defaults, health-file/operator rendering, durable
-artifact spool/outbox policy, launch topology, and Full Access behavior.
+continues to own visibility defaults, health-file/operator rendering, managed
+artifact spool/lifetime policy, launch topology, and Full Access behavior.
 
 Follow-up [im-agent-sdk#33](https://github.com/albert-zen/im-agent-sdk/issues/33)
 is implemented by the same Draft PR and pin. Its typed App Server presentation
@@ -450,11 +450,26 @@ runs only after a concrete Conversation route is selected. Suppression is a
 completed, idempotent display decision, while delivery identity and destination
 remain immutable. This prevents one observer's visibility preferences from
 filtering every observer of the same native Thread.
+The policy sees SDK-reserved live/authoritative and checkpoint facts only for
+the duration of presentation; SDK strips them before durable delivery planning
+so an unchanged delivery ID keeps an unchanged submission fingerprint.
+
+Issue [im-agent-sdk#40](https://github.com/albert-zen/im-agent-sdk/issues/40)
+adds a once-per-logical-delivery outcome observer. IMCodex uses it only to
+release consumer-owned transient artifact leases after all SDK segments and
+retries finish; the observer owns no outbox content and cannot rewrite a
+delivery result. Issue
+[im-agent-sdk#43](https://github.com/albert-zen/im-agent-sdk/issues/43) exposes
+side-effect-free native Channel configuration validation for the existing
+Windows-safe restart preflight.
 
 IMCodex renders the SDK's redacted diagnostics snapshot into an `sdk` section
 of its existing health file. The product runtime owns sampling and the overall
 `healthy`/`degraded` operator status; the snapshot remains explicitly
 non-authoritative and contains no native conversation, thread, turn, request,
 or credential identity. Gateway startup/shutdown replaces the former manual
-ordering of App Server and channel lifecycle once the composition cutover is
-enabled.
+ordering of App Server and channel lifecycle. The default `build_runtime()` is
+now cut over to this SDK composition. The remaining product `BridgeService`
+instance is restricted to commands, bootstrap cwd/Full Access compatibility,
+and staging helpers while those product boundaries are migrated; it does not
+subscribe to App Server events or own normal projection/delivery lifecycle.

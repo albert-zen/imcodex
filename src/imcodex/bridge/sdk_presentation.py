@@ -14,8 +14,16 @@ from imagent.contracts import (
     OutboundMessage,
     TextContent,
 )
+from imagent.outbound_presentation import (
+    PROJECTION_ORIGIN_AUTHORITATIVE,
+    PROJECTION_ORIGIN_METADATA_KEY,
+)
 
 from ..models import OutboundArtifact
+from ..webhook_namespace import (
+    WEBHOOK_CHANNEL_INSTANCE_ID,
+    decode_webhook_conversation,
+)
 from .message_pump import EMPTY_COMPLETED_TURN_TEXT
 
 
@@ -246,21 +254,33 @@ class ImcodexAppServerPresentation:
 class ImcodexOutboundPresentation:
     """Apply IMCodex visibility only after Gateway resolves a destination."""
 
-    def __init__(self, *, store) -> None:
+    def __init__(self, *, store, migration_state=None) -> None:
         self.store = store
+        self.migration_state = migration_state
 
     async def present(self, message: OutboundMessage) -> OutboundMessage | None:
         metadata = message.metadata
+        channel_id, conversation_id = self._product_route(message)
+        cutoff = (
+            self.migration_state.cutoff(channel_id, conversation_id)
+            if self.migration_state is not None
+            else None
+        )
+        origin = str(metadata.get(PROJECTION_ORIGIN_METADATA_KEY) or "")
+        if cutoff is not None:
+            if (
+                origin == PROJECTION_ORIGIN_AUTHORITATIVE
+                and message.created_at.timestamp() <= cutoff
+            ):
+                return None
+            self.migration_state.clear(channel_id, conversation_id)
         if metadata.get("native_application") not in {"appserver", "codex", "zen"}:
             return message
         kind = str(metadata.get("native_item_kind") or "")
         phase = str(metadata.get("phase") or "")
         if kind == "agent_message" and phase == "final_answer":
             return message
-        binding = self.store.get_binding(
-            message.conversation_ref.channel_instance_id,
-            message.conversation_ref.native_conversation_id,
-        )
+        binding = self.store.get_binding(channel_id, conversation_id)
         if kind in {"agent_message", "plan_updated"}:
             visible = bool(getattr(binding, "show_commentary", True))
         elif kind in {"command_execution", "file_change", "diff_updated"}:
@@ -268,3 +288,10 @@ class ImcodexOutboundPresentation:
         else:
             visible = bool(getattr(binding, "show_system", False))
         return message if visible else None
+
+    @staticmethod
+    def _product_route(message: OutboundMessage) -> tuple[str, str]:
+        conversation = message.conversation_ref
+        if conversation.channel_instance_id == WEBHOOK_CHANNEL_INSTANCE_ID:
+            return decode_webhook_conversation(conversation.native_conversation_id)
+        return conversation.channel_instance_id, conversation.native_conversation_id

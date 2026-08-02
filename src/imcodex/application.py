@@ -20,12 +20,13 @@ from .observability.health import (
     BRIDGE_SHUTDOWN_PATH,
 )
 from .runtime import AppRuntime
+from .sdk_runtime import SdkRuntime
 
 
 def create_application(
     *,
     settings=None,
-    runtime: AppRuntime | None = None,
+    runtime: AppRuntime | SdkRuntime | None = None,
     admin_config_store=None,
     settings_source: SettingsSource | None = None,
 ):
