@@ -14,6 +14,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from PIL import Image
+from imagent.applications import AppServerArtifactCandidate, AppServerArtifactSourceKind
 
 from ..models import OutboundArtifact
 
@@ -56,6 +57,26 @@ class OutboundArtifactStager:
         self.root = Path(root)
         self._lock = RLock()
         self._leased_paths: set[str] = set()
+
+    @_serialized_stage
+    def stage_appserver_candidate(
+        self,
+        candidate: AppServerArtifactCandidate,
+    ) -> OutboundArtifact:
+        """Validate and stage one SDK-normalized, still-untrusted native candidate."""
+
+        if candidate.media_kind != "image":
+            raise ValueError("unsupported App Server artifact media kind")
+        if candidate.source_kind is AppServerArtifactSourceKind.LOCAL_PATH:
+            return self._stage_local(candidate.value, kind="image")
+        if candidate.source_kind is AppServerArtifactSourceKind.FILE_URL:
+            parsed = urlparse(candidate.value)
+            if parsed.scheme != "file":
+                raise ValueError("App Server file candidate must use a file URL")
+            return self._stage_local(self._file_url_path(parsed), kind="image")
+        if candidate.source_kind is AppServerArtifactSourceKind.DATA_URL:
+            return self._stage_data_image(candidate.value, filename_hint="image")
+        raise ValueError("unsupported App Server artifact source kind")
 
     @_serialized_stage
     def stage_native_item(self, item: dict, *, cwd: str = "") -> tuple[OutboundArtifact, ...]:

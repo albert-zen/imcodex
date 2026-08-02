@@ -418,3 +418,28 @@ baseline and passes:
 The final branch may be pushed only as
 `codex/im-agent-sdk-refactor`, and the final pull request must remain Draft.
 Nothing in this baseline authorizes merging.
+
+## Implementation input after SDK boundary review
+
+Issue [im-agent-sdk#31](https://github.com/albert-zen/im-agent-sdk/issues/31)
+and Draft PR [im-agent-sdk#32](https://github.com/albert-zen/im-agent-sdk/pull/32)
+provide the consumer-safe projection and Channel diagnostics seams identified
+by this baseline. IMCodex provisionally pins immutable review commit
+`092c00452f7e6377ad38fc72f4c1f1d89f367ea2`; this is deliberately not a claim
+that SDK main has accepted the change. The final migration must either advance
+to the merged immutable SDK main commit or retain the reviewed commit explicitly
+in the Draft IMCodex PR.
+
+The SDK change preserves normalized message Metadata through Gateway delivery,
+routes live-only `message.created` observations without advancing authoritative
+completion checkpoints, keeps additional Application presentation opt-in, and
+adds redacted Channel lifecycle facts to the SDK diagnostics snapshot. IMCodex
+continues to own visibility defaults, health-file/operator rendering, durable
+artifact spool/outbox policy, launch topology, and Full Access behavior.
+
+Follow-up [im-agent-sdk#33](https://github.com/albert-zen/im-agent-sdk/issues/33)
+is implemented by the same Draft PR and pin. Its typed App Server presentation
+hook keeps native artifact candidates in the single ordered Application
+event/history path while letting IMCodex validate and materialize them into its
+own managed spool. It does not move spool durability, retry, cleanup, or
+visibility policy into SDK Core.

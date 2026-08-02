@@ -9,6 +9,7 @@ import threading
 
 import pytest
 from PIL import Image
+from imagent.applications import AppServerArtifactCandidate, AppServerArtifactSourceKind
 
 from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.models import OutboundArtifact
@@ -40,6 +41,23 @@ def test_stager_materializes_dynamic_tool_image_data_url(tmp_path: Path) -> None
     assert Path(artifacts[0].local_path).read_bytes() == content
     assert artifacts[0].content_type == "image/png"
     assert artifacts[0].sha256 == hashlib.sha256(content).hexdigest()
+
+
+def test_stager_materializes_typed_sdk_artifact_candidate(tmp_path: Path) -> None:
+    content = _png()
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    artifact = stager.stage_appserver_candidate(
+        AppServerArtifactCandidate(
+            candidate_id="tool-1:image:0",
+            media_kind="image",
+            source_kind=AppServerArtifactSourceKind.DATA_URL,
+            value="data:image/png;base64," + base64.b64encode(content).decode("ascii"),
+        )
+    )
+
+    assert Path(artifact.local_path).read_bytes() == content
+    assert artifact.sha256 == hashlib.sha256(content).hexdigest()
 
 
 def test_stager_ignores_ordinary_markdown_file_links(tmp_path: Path) -> None:
