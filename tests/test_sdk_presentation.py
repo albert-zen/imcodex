@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import base64
-from io import BytesIO
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +23,7 @@ from imagent.applications import (
 from imagent.contracts import (
     AttachmentContent,
     ConversationRef,
+    LocalPath,
     OutboundMessage,
     TextContent,
     ThreadRef,
@@ -69,6 +70,39 @@ class FakeStager:
             size_bytes=3,
             sha256="abc123",
         )
+
+
+class FakeArtifactLedger:
+    def __init__(self) -> None:
+        self.tracked = []
+        self.released = []
+
+    def track_attempt(self, attempt_id, paths) -> None:
+        self.tracked.append((attempt_id, tuple(paths)))
+
+    def release_untracked(self, paths) -> None:
+        self.released.append(tuple(paths))
+
+
+class OverflowStager:
+    def __init__(self) -> None:
+        self.count = 0
+        self.released = []
+
+    def stage_appserver_candidate(self, candidate):
+        del candidate
+        self.count += 1
+        return OutboundArtifact(
+            kind="file",
+            local_path=f"/spool/output-{self.count}.txt",
+            content_type="text/plain",
+            filename=f"output-{self.count}.txt",
+            size_bytes=1,
+            sha256=f"sha-{self.count}",
+        )
+
+    def release(self, artifacts) -> None:
+        self.released.extend(artifact.local_path for artifact in artifacts)
 
 
 def _item(
@@ -198,6 +232,30 @@ async def test_authoritative_a1_replay_recreates_content_addressed_artifact(
 
 
 @pytest.mark.asyncio
+async def test_a1_candidate_overflow_releases_the_failed_staging_lease() -> None:
+    stager = OverflowStager()
+    materializer = ImcodexArtifactMaterializer(artifact_stager=stager)
+
+    with pytest.raises(ValueError, match="only 4 outbound artifacts"):
+        await materializer.materialize_completed_item(
+            _item(
+                kind=AppServerCompletedItemKind.DYNAMIC_TOOL_CALL,
+                phase=AppServerCompletedItemPhase.NONE,
+                candidates=(_candidate(),) * 5,
+            )
+        )
+
+    assert stager.released == [
+        "/spool/output-1.txt",
+        "/spool/output-2.txt",
+        "/spool/output-3.txt",
+        "/spool/output-4.txt",
+        "/spool/output-5.txt",
+    ]
+    assert await materializer.materialize_turn_terminal(_terminal()) is None
+
+
+@pytest.mark.asyncio
 async def test_live_activity_presenter_uses_only_typed_bounded_facts() -> None:
     presenter = ImcodexCodexLiveActivityPresenter()
     output = await presenter.present_live_activity(
@@ -229,6 +287,93 @@ async def test_outbound_visibility_is_applied_per_destination() -> None:
     assert await presentation.present(_outbound("command_execution"), live) is not None
     final = _outbound("agent_message", phase="final_answer")
     assert await presentation.present(final, live) is final
+
+
+@pytest.mark.asyncio
+async def test_pinned_sdk_recovery_metadata_keeps_final_and_artifact_fallback_visible() -> (
+    None
+):
+    presentation = ImcodexOutboundPresentation(store=FakeStore(show_system=False))
+    context = OutboundPresentationContext(ProjectionPresentationOrigin.AUTHORITATIVE)
+    final = OutboundMessage(
+        delivery_id="delivery-final",
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        content=(TextContent("Recovered answer"),),
+        created_at=datetime.now(UTC),
+        metadata={"native_application": "codex", "phase": "final_answer"},
+    )
+    artifact = OutboundMessage(
+        delivery_id="delivery-artifact-fallback",
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        content=(
+            AttachmentContent(
+                attachment_id="artifact-1",
+                media_type="text/plain",
+                source=LocalPath("/spool/result.txt"),
+            ),
+        ),
+        created_at=datetime.now(UTC),
+        metadata={
+            "native_application": "codex",
+            "kind": "artifact_terminal_fallback",
+        },
+    )
+
+    assert await presentation.present(final, context) is final
+    assert await presentation.present(artifact, context) is artifact
+
+
+@pytest.mark.asyncio
+async def test_pinned_sdk_live_completed_metadata_obeys_commentary_visibility() -> None:
+    presentation = ImcodexOutboundPresentation(store=FakeStore(show_commentary=False))
+    message = OutboundMessage(
+        delivery_id="delivery-live-commentary",
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        content=(TextContent("Live commentary"),),
+        created_at=datetime.now(UTC),
+        metadata={"native_method": "item/completed", "phase": "commentary"},
+    )
+
+    assert (
+        await presentation.present(
+            message,
+            OutboundPresentationContext(ProjectionPresentationOrigin.LIVE_ONLY),
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_a1_artifact_lease_is_tracked_or_released_by_o1() -> None:
+    ledger = FakeArtifactLedger()
+    visible = ImcodexOutboundPresentation(
+        store=FakeStore(show_toolcalls=True), artifact_ledger=ledger
+    )
+    suppressed = ImcodexOutboundPresentation(
+        store=FakeStore(show_toolcalls=False), artifact_ledger=ledger
+    )
+    message = OutboundMessage(
+        delivery_id="delivery-artifact",
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        content=(
+            AttachmentContent(
+                attachment_id="artifact-1",
+                media_type="text/plain",
+                source=LocalPath("/spool/result.txt"),
+            ),
+        ),
+        created_at=datetime.now(UTC),
+        metadata={
+            "native_application": "codex",
+            "native_item_kind": "command_execution",
+        },
+    )
+    context = OutboundPresentationContext(ProjectionPresentationOrigin.LIVE_ONLY)
+
+    assert await visible.present(message, context) is message
+    assert await suppressed.present(message, context) is None
+    assert ledger.tracked == [("delivery-artifact", ("/spool/result.txt",))]
+    assert ledger.released == []
 
 
 @pytest.mark.asyncio

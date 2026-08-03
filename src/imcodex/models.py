@@ -18,47 +18,8 @@ class ConversationBinding:
 
 
 @dataclass(slots=True)
-class PendingNativeRequestRoute:
-    request_id: str
-    request_handle: str | None
-    channel_id: str
-    conversation_id: str
-    thread_id: str | None
-    turn_id: str | None
-    kind: str
-    request_method: str | None
-    transport_request_id: str | int | None = None
-    connection_epoch: int = 0
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class TerminalDeliveryWatch:
-    """A native turn that must be reconciled after transport recovery."""
-
-    thread_id: str
-    turn_id: str
-    created_at: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class TerminalDeliveryIdentity:
-    """Stable identity and native context for one projected IM message."""
-
-    delivery_id: str
-    thread_id: str
-    turn_id: str
-
-
-@dataclass(slots=True)
-class PendingTerminalDelivery:
-    """One projected IM message that remains owed to its destination.
-
-    A native turn may produce more than one answer segment. ``delivery_id`` is
-    therefore the durable identity; ``thread_id`` and ``turn_id`` are optional
-    native context, not the outbox key. Standalone channel delivery leaves both
-    empty.
-    """
+class LegacyPendingDeliveryEvidence:
+    """Read-only evidence imported from the retired product outbox."""
 
     delivery_id: str
     thread_id: str

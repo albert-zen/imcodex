@@ -711,28 +711,6 @@ class ImcodexCommandPolicy(
                 else {},
             )
             return [self._message(message, "command_result", self._render_json(result))]
-        elif response.action == "native.respond":
-            try:
-                await self.backend.reply_to_server_request(
-                    response.request_id or "", response.payload or {}
-                )
-            except (AppServerError, KeyError) as exc:
-                return await self._request_reply_failure(
-                    message, response.request_id, response.action, exc
-                )
-        elif response.action == "native.error":
-            payload = response.payload or {}
-            try:
-                await self.backend.reply_error_to_server_request(
-                    response.request_id or "",
-                    code=int(payload.get("code") or 0),
-                    message=str(payload.get("message") or ""),
-                    data=payload.get("data"),
-                )
-            except (AppServerError, KeyError) as exc:
-                return await self._request_reply_failure(
-                    message, response.request_id, response.action, exc
-                )
         message_type = self._command_message_type(response.action)
         return [
             self._message(
@@ -785,8 +763,6 @@ class ImcodexCommandPolicy(
             "goal.clear",
             "config.write",
             "config.batch",
-            "native.respond",
-            "native.error",
             "threads.exit",
             "approval.accept",
             "approval.deny",
@@ -803,70 +779,6 @@ class ImcodexCommandPolicy(
         if action in {"thread.read.none", "turn.stop.none"}:
             return "command_result"
         return "command_result"
-
-    async def _request_reply_failure(
-        self,
-        inbound: InboundMessage,
-        request_id: str | None,
-        action: str,
-        error: AppServerError | KeyError,
-    ) -> list[OutboundMessage]:
-        if self._is_expired_server_request_error(error):
-            route = self.store.match_pending_request(
-                inbound.channel_id,
-                inbound.conversation_id,
-                request_id,
-            )
-            if route is not None and route.thread_id and route.turn_id:
-                active = self.store.get_active_turn(route.thread_id)
-                if active is not None and active[0] == route.turn_id:
-                    try:
-                        await self.backend.interrupt_active_turn(
-                            inbound.channel_id, inbound.conversation_id
-                        )
-                    except AppServerError:
-                        return [
-                            self._message(
-                                inbound,
-                                "status",
-                                f"Request {request_id} is out of sync with Codex and the active turn could not be stopped automatically. Try /stop.",
-                                request_id=request_id,
-                            )
-                        ]
-                    self.store.remove_pending_request(request_id or "")
-                    return [
-                        self._message(
-                            inbound,
-                            "status",
-                            f"Request {request_id} is out of sync with Codex. I stopped the active turn so you can continue.",
-                            request_id=request_id,
-                        )
-                    ]
-            self.store.remove_pending_request(request_id or "")
-            return [
-                self._message(
-                    inbound,
-                    "status",
-                    f"Request {request_id} is no longer pending.",
-                    request_id=request_id,
-                )
-            ]
-        verb = "approval" if action.startswith("approval.") else "answer"
-        return [
-            self._message(
-                inbound,
-                "status",
-                f"Request {request_id} {verb} could not be sent to Codex right now. Try again.",
-                request_id=request_id,
-            )
-        ]
-
-    def _is_expired_server_request_error(
-        self, error: AppServerError | KeyError
-    ) -> bool:
-        if isinstance(error, KeyError):
-            return True
-        return "unknown pending request" in str(error).lower()
 
     def _render_onboarding(self) -> str:
         return "\n".join(

@@ -157,9 +157,9 @@ or endless queue retries.
 Validation uses a maintained decoder and bounded pixel load after the download;
 a file-header signature by itself is not a valid image, and animation is
 rejected rather than validating only its first frame. Media preparation is
-lazy under the existing per-conversation middleware lock so a committed stable
-message replay is deduplicated before network or filesystem side effects,
-without a second media-specific dedup store.
+lazy after the SDK Gateway grants admission for the stable inbound message.
+Committed replay is resolved by SDK idempotency before media work, without a
+second media-specific dedup store.
 
 Because native `localImage` contains a path rather than image bytes, image input
 requires the bridge and App Server to share a filesystem namespace. Supporting
@@ -193,6 +193,8 @@ Outbound IM idempotency, projection checkpoints, retry, and recovery belong to
 the SDK Gateway. IMCodex keeps no second Turn watch, message pump, or delivery
 outbox. The one-time legacy migration may drain already-persisted terminal
 deliveries from older releases, but new work is never written to that format.
+The old callable runtime and writable outbox/active-Turn APIs are removed; the
+consumer store exposes only read-and-consume migration evidence.
 Explicit standalone delivery enters SDK proactive delivery; its HTTP/tool
 boundary never calls a Channel sink directly or creates a parallel retry
 runtime.
@@ -251,4 +253,5 @@ See also:
 
 - [Product Behavior Spec](product-behavior-spec.md)
 - [System Constraints Spec](system-constraints-spec.md)
-- [ADR 0001](adr/0001-native-thin-bridge.md)
+- [SDK Migration Baseline](im-agent-sdk-migration-baseline.md)
+- [ADR 0001](adr/0001-native-thin-bridge.md) (superseded historical context)

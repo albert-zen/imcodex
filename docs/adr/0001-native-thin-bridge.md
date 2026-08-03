@@ -1,7 +1,14 @@
 # ADR 0001: Native-First Thin Bridge Architecture
 
-- Status: Accepted
+- Status: Superseded
 - Date: 2026-04-14
+
+This ADR is retained as historical context for the native-first direction. Its
+IMCodex-owned message pump, terminal watch/outbox, request routing, and runtime
+composition were superseded by the accepted `im-agent-sdk` ADR 0006, 0007,
+0012, 0014, and 0015 contracts and by the repository's
+[SDK migration baseline](../im-agent-sdk-migration-baseline.md). The baseline
+and current component documents are authoritative where this record differs.
 
 ## Context
 
@@ -192,7 +199,12 @@ The persisted bridge state should contain only:
 - standalone messages explicitly submitted to an IM destination, using that
   same outbound outbox rather than a second delivery path
 
-Terminal recovery state has two deliberately separate granularities:
+The following terminal-recovery design is historical and is not part of the
+current runtime. The SDK now owns projection checkpoints, outbound
+idempotency, planning, and retry convergence; IMCodex MUST NOT restore a
+terminal watch or durable projected-output outbox.
+
+The superseded design had two deliberately separate granularities:
 
 - a Turn-level watch records only that native state must be reconciled after a
   disconnect
@@ -286,11 +298,16 @@ The bridge should prefer native `requestId` over synthetic ticket systems.
 
 If IM usability requires a compact handle, it may exist only as a presentation aid, not as the underlying source of truth.
 
-Preferred interaction model:
+The superseded interaction model was:
 
 - `/approve`, `/deny`, and `/cancel` without an id act on all pending approvals in the current conversation
 - when multiple approvals are pending, the user may target a native request id or a short prefix derived from it
 - a normal text message while approvals are pending should cancel them before continuing with the new input
+
+The current SDK-composed product permits an omitted id only when exactly one
+presented request is pending. Multiple pending requests require a unique
+handle prefix; the handle remains bounded presentation state, never request
+truth.
 
 ## Message Pump
 

@@ -7,14 +7,14 @@ from typing import Any, Awaitable, Callable
 
 from imagent.diagnostics import (
     ConnectionDiagnosticFacts,
+    ConnectionDiagnosticState,
     DiagnosticsSnapshot,
     QueueDiagnosticFacts,
 )
 
 from .observability.runtime import mark_http_health
-from .runtime import OBSERVABILITY_IO_TIMEOUT_S
 
-
+OBSERVABILITY_IO_TIMEOUT_S = 4.0
 SDK_HEALTH_REFRESH_SECONDS = 1.0
 SDK_MAINTENANCE_SECONDS = 2.0
 
@@ -34,6 +34,7 @@ class SdkRuntime:
     maintenance: Callable[[], Awaitable[object]] | None = None
     _health_task: asyncio.Task[None] | None = None
     _maintenance_task: asyncio.Task[None] | None = None
+    _maintenance_failure: str | None = None
 
     async def start(self) -> None:
         try:
@@ -123,23 +124,45 @@ class SdkRuntime:
     async def _maintenance_loop(self) -> None:
         while True:
             await asyncio.sleep(SDK_MAINTENANCE_SECONDS)
-            try:
-                await self.maintenance()
-            except Exception:
-                if self.observability is not None:
-                    self._observe(self.observability.update_health, status="degraded")
+            await self._run_maintenance_once()
+
+    async def _run_maintenance_once(self) -> None:
+        try:
+            await self.maintenance()
+        except Exception as exc:
+            failure = str(exc)[:500] or type(exc).__name__
+            if failure != self._maintenance_failure and self.observability is not None:
+                self._observe(
+                    self.observability.emit_event,
+                    component="bridge",
+                    event="bridge.maintenance_failed",
+                    level="ERROR",
+                    message=failure,
+                )
+            self._maintenance_failure = failure
+        else:
+            self._maintenance_failure = None
 
     def _publish_sdk_health(self) -> None:
         try:
             snapshot = self.gateway.diagnostics_snapshot()
             payload = sdk_health_payload(snapshot)
+            payload["maintenance"] = {
+                "status": "degraded" if self._maintenance_failure else "healthy",
+                "error": self._maintenance_failure,
+            }
         except Exception:
             self._observe(self.observability.update_health, status="degraded")
             return
         self._observe(
             self.observability.update_health,
-            status=_sdk_health_status(snapshot),
+            status=(
+                "degraded"
+                if self._maintenance_failure
+                else _sdk_health_status(snapshot)
+            ),
             sdk=payload,
+            appserver=_appserver_health(snapshot, client=self.client),
         )
 
     async def _cancel_health_task(self) -> None:
@@ -245,14 +268,68 @@ def _sdk_health_status(snapshot: DiagnosticsSnapshot) -> str:
         item.connection for item in (*snapshot.applications, *snapshot.channels)
     )
     degraded = (
-        projection.degraded_count
+        not snapshot.gateway.accepting_inbound
+        or snapshot.gateway.starting
+        or projection.degraded_count
         or projection.delivery_failure_count
         or projection.event_overflow_count
         or projection.request_recovery_degraded_count
         or projection.recovery_gap_count
-        or any(connection.worker_degraded for connection in connections if connection)
+        or any(
+            connection.worker_degraded
+            or connection.state is not ConnectionDiagnosticState.READY
+            for connection in connections
+            if connection
+        )
     )
     return "degraded" if degraded else "healthy"
+
+
+def _appserver_health(snapshot: DiagnosticsSnapshot, *, client=None) -> dict[str, Any]:
+    application = next(
+        (item for item in snapshot.applications if item.kind in {"codex", "appserver"}),
+        snapshot.applications[0] if snapshot.applications else None,
+    )
+    connection = application.connection if application is not None else None
+    state = (
+        connection.state
+        if connection is not None
+        else ConnectionDiagnosticState.DISCONNECTED
+    )
+    status = "connected" if state is ConnectionDiagnosticState.READY else state.value
+    topology: dict[str, Any] = {}
+    provider = getattr(client, "connection_facts", None)
+    if callable(provider):
+        facts = provider()
+        topology = {
+            key: facts[key]
+            for key in (
+                "connected",
+                "ready",
+                "status",
+                "mode",
+                "ownership",
+                "transport",
+                "endpoint",
+                "reconnect_enabled",
+                "local_image_paths",
+                "connection_epoch",
+            )
+            if key in facts
+        }
+    return {
+        **{
+            "mode": "sdk-application",
+            "ownership": "sdk-application",
+            "transport": "sdk-owned",
+            "endpoint": "(redacted by SDK diagnostics)",
+        },
+        "connected": state is ConnectionDiagnosticState.READY,
+        "ready": state is ConnectionDiagnosticState.READY,
+        "status": status,
+        "connection_epoch": connection.connection_epoch if connection else 0,
+        **topology,
+    }
 
 
 def _queue_payload(queue: QueueDiagnosticFacts) -> dict[str, Any]:
@@ -264,7 +341,9 @@ def _queue_payload(queue: QueueDiagnosticFacts) -> dict[str, Any]:
     }
 
 
-def _connection_payload(connection: ConnectionDiagnosticFacts | None) -> dict[str, Any] | None:
+def _connection_payload(
+    connection: ConnectionDiagnosticFacts | None,
+) -> dict[str, Any] | None:
     if connection is None:
         return None
     return {

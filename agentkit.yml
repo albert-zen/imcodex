@@ -118,7 +118,6 @@ components:
       - src/imcodex/observability/**
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
       - src/imcodex/sdk_runtime.py
       - src/imcodex/sdk_composition.py
       - src/imcodex/sdk_migration.py
@@ -206,7 +205,6 @@ layers:
       - src/imcodex/main.py
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
       - src/imcodex/sdk_runtime.py
       - src/imcodex/sdk_composition.py
       - src/imcodex/sdk_migration.py
@@ -257,11 +255,3 @@ maintainability:
       max_classes: 8
       mode: warn
       guidance: "Bridge state should stay intentionally small. Growth here is a signal to re-check whether state really belongs outside native Codex."
-    - name: debug-harness-scenarios
-      paths:
-        - src/imcodex/debug_harness/scenarios.py
-      max_lines: 425
-      max_functions: 25
-      max_classes: 6
-      mode: warn
-      guidance: "Scenario runners should stay small and evidence-oriented. Prefer extracting reusable probes or assertions before adding many more scenarios."

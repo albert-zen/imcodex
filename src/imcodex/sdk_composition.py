@@ -62,10 +62,12 @@ class SdkComposition:
         await self.service.delivery_service.artifact_ledger.reconcile(self.state)
 
     async def recover_legacy_deliveries(self) -> int:
-        return await recover_legacy_deliveries(
+        completed = await recover_legacy_deliveries(
             product_store=self.product_store,
             delivery_service=self.service.delivery_service,
         )
+        self.service.delivery_service.artifact_ledger.cleanup()
+        return completed
 
 
 def build_sdk_composition(settings) -> SdkComposition:
@@ -195,6 +197,7 @@ def build_sdk_composition(settings) -> SdkComposition:
             ),
             outbound_presentation=ImcodexOutboundPresentation(
                 store=product_store,
+                artifact_ledger=artifact_ledger,
             ),
         ),
         delivery_authorizer=delivery_authorizer,

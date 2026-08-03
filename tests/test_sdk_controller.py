@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 from imagent.contracts import (
     ApplicationRef,
+    ApprovalRequest,
     BindConversationToThread,
+    ContractError,
     ConversationBinding,
     ConversationBound,
     ConversationRef,
+    GatewayOperationFailed,
     GatewayOperationType,
     InboundMessage,
+    RequestChoice,
+    RequestRef,
     TextContent,
     ThreadRef,
 )
@@ -42,8 +46,9 @@ class Backend:
 
     async def ensure_thread(self, channel_id, conversation_id) -> str:
         self.ensure_calls += 1
-        self.store.binding.thread_id = "thread-created"
-        return "thread-created"
+        if self.store.binding.thread_id is None:
+            self.store.binding.thread_id = "thread-created"
+        return self.store.binding.thread_id
 
 
 class Service:
@@ -92,6 +97,21 @@ class Actions:
         )
 
 
+class RequestFailureActions(Actions):
+    def __init__(self, code: str) -> None:
+        super().__init__()
+        self.code = code
+
+    async def execute_gateway(self, operation):
+        self.operations.append(operation)
+        return GatewayOperationFailed(
+            operation_id=operation.operation_id,
+            type=operation.type,
+            error=ContractError(self.code, f"request failed: {self.code}"),
+            completed_at=datetime.now(UTC),
+        )
+
+
 def _inbound(text: str) -> InboundMessage:
     return InboundMessage(
         message_id="message-1",
@@ -105,7 +125,9 @@ def _inbound(text: str) -> InboundMessage:
 @pytest.mark.asyncio
 async def test_onboarding_is_consumed_by_product_controller() -> None:
     service = Service(Store())
-    controller = ImcodexController(service=service, request_presenter=ImcodexRequestPresenter())
+    controller = ImcodexController(
+        service=service, request_presenter=ImcodexRequestPresenter()
+    )
 
     outputs = await controller.handle(_inbound("hello"), Actions())
 
@@ -117,7 +139,9 @@ async def test_onboarding_is_consumed_by_product_controller() -> None:
 @pytest.mark.asyncio
 async def test_first_input_prepares_product_cwd_thread_then_passes_to_gateway() -> None:
     service = Service(Store(cwd="/repo"))
-    controller = ImcodexController(service=service, request_presenter=ImcodexRequestPresenter())
+    controller = ImcodexController(
+        service=service, request_presenter=ImcodexRequestPresenter()
+    )
     actions = Actions()
 
     outputs = await controller.handle(_inbound("hello"), actions)
@@ -129,9 +153,34 @@ async def test_first_input_prepares_product_cwd_thread_then_passes_to_gateway() 
 
 
 @pytest.mark.asyncio
+async def test_input_repairs_a_crash_diverged_sdk_binding_before_dispatch() -> None:
+    service = Service(Store(cwd="/repo", thread_id="thread-product"))
+    controller = ImcodexController(
+        service=service, request_presenter=ImcodexRequestPresenter()
+    )
+    actions = Actions(
+        ConversationBinding(
+            conversation_ref=ConversationRef("telegram", "chat-1"),
+            application_ref=ApplicationRef("codex-main"),
+            thread_ref=ThreadRef("codex-main", "thread-sdk-old"),
+            revision=4,
+        )
+    )
+
+    outputs = await controller.handle(_inbound("hello"), actions)
+
+    assert outputs is None
+    assert service.backend.ensure_calls == 1
+    assert actions.operations[0].expected_revision == 4
+    assert actions.operations[0].thread_ref == ThreadRef("codex-main", "thread-product")
+
+
+@pytest.mark.asyncio
 async def test_slash_command_stays_product_owned_and_syncs_binding() -> None:
     service = Service(Store(cwd="/repo", thread_id="thread-new"))
-    controller = ImcodexController(service=service, request_presenter=ImcodexRequestPresenter())
+    controller = ImcodexController(
+        service=service, request_presenter=ImcodexRequestPresenter()
+    )
     actions = Actions(
         ConversationBinding(
             conversation_ref=ConversationRef("telegram", "chat-1"),
@@ -175,3 +224,54 @@ async def test_generic_webhook_controller_uses_original_product_namespace() -> N
     assert outputs is not None
     assert service.handled[0].channel_id == "custom-a"
     assert service.handled[0].conversation_id == "room/1"
+
+
+def _present_approval(presenter: ImcodexRequestPresenter) -> ApprovalRequest:
+    request = ApprovalRequest(
+        request_ref=RequestRef(ApplicationRef("codex-main"), "request-approval"),
+        thread_ref=ThreadRef("codex-main", "thread-1"),
+        turn_id="turn-1",
+        prompt="Run?",
+        choices=(RequestChoice("accept", "Approve"), RequestChoice("decline", "Deny")),
+    )
+    presenter.present_request(
+        request,
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        delivery_id="delivery-request",
+        reply_to_message_id="message-0",
+    )
+    return request
+
+
+@pytest.mark.asyncio
+async def test_terminal_stale_approval_handle_cannot_block_replayed_input() -> None:
+    presenter = ImcodexRequestPresenter()
+    _present_approval(presenter)
+    service = Service(Store())
+    controller = ImcodexController(service=service, request_presenter=presenter)
+
+    outputs = await controller.handle(
+        _inbound("hello"), RequestFailureActions("request_stale")
+    )
+
+    assert outputs is not None
+    assert service.handled
+    assert presenter.approvals(ConversationRef("telegram", "chat-1")) == ()
+
+
+@pytest.mark.asyncio
+async def test_transient_approval_cancel_failure_retains_handle_and_blocks_input() -> (
+    None
+):
+    presenter = ImcodexRequestPresenter()
+    request = _present_approval(presenter)
+    service = Service(Store())
+    controller = ImcodexController(service=service, request_presenter=presenter)
+
+    with pytest.raises(RuntimeError, match="adapter_failure"):
+        await controller.handle(
+            _inbound("hello"), RequestFailureActions("adapter_failure")
+        )
+
+    assert service.handled == []
+    assert presenter.approvals(ConversationRef("telegram", "chat-1")) == (request,)

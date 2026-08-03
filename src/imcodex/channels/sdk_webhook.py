@@ -49,7 +49,9 @@ class SdkWebhookChannel:
         self._on_message = None
         self._on_operation = None
         self._on_admission = None
-        self._pending: dict[tuple[ConversationRef, str], list[OutboundMessage]] = {}
+        self._pending: dict[
+            tuple[ConversationRef, str], tuple[list[OutboundMessage], set[str]]
+        ] = {}
         self._pending_lock = asyncio.Lock()
 
     async def start(self, on_message, on_operation, on_admission=None) -> None:
@@ -99,7 +101,7 @@ class SdkWebhookChannel:
             async with self._pending_lock:
                 duplicate_pending = key in self._pending
                 if not duplicate_pending:
-                    self._pending[key] = responses
+                    self._pending[key] = (responses, set())
                     owns_pending = True
             if duplicate_pending:
                 if admission is not None:
@@ -125,7 +127,8 @@ class SdkWebhookChannel:
         finally:
             if owns_pending:
                 async with self._pending_lock:
-                    if self._pending.get(key) is responses:
+                    slot = self._pending.get(key)
+                    if slot is not None and slot[0] is responses:
                         self._pending.pop(key, None)
 
     async def send(self, message: SdkOutboundMessage) -> DeliveryReceipt:
@@ -134,10 +137,12 @@ class SdkWebhookChannel:
         )
         legacy = self._to_product_outbound(message, channel_id, conversation_id)
         async with self._pending_lock:
-            pending = self._pending.get(
+            slot = self._pending.get(
                 (message.conversation_ref, str(message.reply_to or ""))
             )
-            if pending is not None:
+            pending = slot[0] if slot is not None else None
+            if slot is not None and message.delivery_id not in slot[1]:
+                slot[1].add(message.delivery_id)
                 pending.append(legacy)
         if self.outbound_sink is not None and channel_id not in BUILTIN_CHANNEL_IDS:
             await self.outbound_sink.send_message(legacy)

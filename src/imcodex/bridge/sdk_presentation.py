@@ -91,11 +91,22 @@ class ImcodexArtifactMaterializer:
     ) -> ApplicationArtifactMaterialization | None:
         with self._lock:
             buffer = self._buffer(facts)
-            for candidate in facts.artifact_candidates:
-                self._record_artifact(
-                    buffer,
-                    self.artifact_stager.stage_appserver_candidate(candidate),
+            original = list(buffer.artifacts)
+            original_paths = {artifact.local_path for artifact in original}
+            staged: list[OutboundArtifact] = []
+            try:
+                for candidate in facts.artifact_candidates:
+                    artifact = self.artifact_stager.stage_appserver_candidate(candidate)
+                    staged.append(artifact)
+                    self._record_artifact(buffer, artifact)
+            except BaseException:
+                buffer.artifacts = original
+                self.artifact_stager.release(
+                    artifact
+                    for artifact in staged
+                    if artifact.local_path not in original_paths
                 )
+                raise
             if facts.phase is not AppServerCompletedItemPhase.FINAL_ANSWER:
                 return None
             return self._take_materialization(buffer)
@@ -171,8 +182,9 @@ class ImcodexArtifactMaterializer:
 class ImcodexOutboundPresentation:
     """Apply IMCodex visibility only after Gateway resolves a destination."""
 
-    def __init__(self, *, store) -> None:
+    def __init__(self, *, store, artifact_ledger=None) -> None:
         self.store = store
+        self.artifact_ledger = artifact_ledger
 
     async def present(
         self,
@@ -182,20 +194,45 @@ class ImcodexOutboundPresentation:
         metadata = message.metadata
         channel_id, conversation_id = self._product_route(message)
         del context
-        if metadata.get("native_application") not in {"appserver", "codex", "zen"}:
-            return message
+        native_application = metadata.get("native_application")
+        native_method = str(metadata.get("native_method") or "")
+        if (
+            native_application not in {"appserver", "codex", "zen"}
+            and native_method != "item/completed"
+        ):
+            return self._track_artifacts(message)
         kind = str(metadata.get("native_item_kind") or metadata.get("kind") or "")
         phase = str(metadata.get("phase") or "")
-        if kind == "agent_message" and phase == "final_answer":
-            return message
+        if phase == "final_answer" or kind in {
+            "artifact_materialization",
+            "artifact_terminal_fallback",
+        }:
+            return self._track_artifacts(message)
         binding = self.store.get_binding(channel_id, conversation_id)
-        if kind in {"agent_message", "plan_updated"}:
+        if phase == "commentary" or kind in {"agent_message", "plan_updated"}:
             visible = bool(getattr(binding, "show_commentary", True))
         elif kind in {"command_execution", "file_change", "diff_updated"}:
             visible = bool(getattr(binding, "show_toolcalls", False))
         else:
             visible = bool(getattr(binding, "show_system", False))
-        return message if visible else None
+        if visible:
+            return self._track_artifacts(message)
+        return None
+
+    def _track_artifacts(self, message: OutboundMessage) -> OutboundMessage:
+        paths = self._artifact_paths(message)
+        if self.artifact_ledger is not None and paths:
+            self.artifact_ledger.track_attempt(message.delivery_id, paths)
+        return message
+
+    @staticmethod
+    def _artifact_paths(message: OutboundMessage) -> tuple[str, ...]:
+        return tuple(
+            item.source.path
+            for item in message.content
+            if isinstance(item, AttachmentContent)
+            and isinstance(item.source, LocalPath)
+        )
 
     @staticmethod
     def _product_route(message: OutboundMessage) -> tuple[str, str]:

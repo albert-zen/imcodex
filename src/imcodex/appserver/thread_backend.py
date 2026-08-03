@@ -5,20 +5,14 @@ import re
 
 from imagent.applications.appserver_client import AppServerError
 
-from ..models import InboundAttachment, NativeThreadSnapshot
-from ..observability.runtime import emit_event
+from ..models import NativeThreadSnapshot
 from .backend_types import (
     ACTIVE_THREAD_STATUSES,
     StaleThreadBindingError,
     ThreadListResult,
     ThreadSelectionError,
-    TurnSubmission,
 )
 
-_TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
-_IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
-_ATTACHMENT_ONLY_DISPLAY_TEXT = "[Attachment]"
-_ATTACHMENTS_DISPLAY_TEXT = "[Attachments]"
 _THREAD_LIST_BATCH_SIZE = 100
 
 
@@ -65,15 +59,6 @@ class CodexThreadBackendMixin:
                 channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
             )
             self._unpersisted_thread_ids.discard(snapshot.thread_id)
-            self._reconcile_native_active_turn(result.get("thread") or {}, snapshot)
-            if (
-                str(snapshot.status or "").strip().lower() in ACTIVE_THREAD_STATUSES
-                and self.store.get_active_turn(snapshot.thread_id) is None
-            ):
-                raise AppServerError(
-                    "Codex reports this thread as active but did not expose its active turn; "
-                    "refusing to start a competing turn"
-                )
             return snapshot.thread_id
         if binding.bootstrap_cwd is None:
             raise KeyError("No working directory selected for thread session")
@@ -118,7 +103,6 @@ class CodexThreadBackendMixin:
         self.store.bind_thread_with_cwd(
             channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
         )
-        self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
 
     async def resolve_thread_selector(
@@ -278,7 +262,6 @@ class CodexThreadBackendMixin:
         if not isinstance(payload, dict):
             return None
         snapshot = self._remember_snapshot(payload)
-        self._reconcile_native_active_turn(payload, snapshot)
         return snapshot
 
     async def read_thread_history(
@@ -396,258 +379,6 @@ class CodexThreadBackendMixin:
         thread_id = await self.ensure_thread(channel_id, conversation_id)
         return await self.client.clear_thread_goal(thread_id)
 
-    async def submit_input(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        text: str,
-        attachments: tuple[InboundAttachment, ...] = (),
-    ) -> TurnSubmission:
-        if attachments and not self.supports_local_image_paths():
-            raise AppServerError(
-                "configured App Server cannot read bridge-local attachment paths"
-            )
-        expected_local_image_epoch: int | None = None
-        if attachments:
-            epoch_capability = getattr(self.client, "local_image_paths_epoch", None)
-            if callable(epoch_capability):
-                expected_local_image_epoch = epoch_capability()
-                if expected_local_image_epoch is None:
-                    initialize = getattr(self.client, "initialize", None)
-                    if callable(initialize):
-                        await initialize()
-                        expected_local_image_epoch = epoch_capability()
-                    if expected_local_image_epoch is None:
-                        raise AppServerError(
-                            "configured App Server cannot read bridge-local attachment paths for this connection"
-                        )
-        input_items = self._native_user_input(text, attachments)
-        binding = self.store.get_binding(channel_id, conversation_id)
-        if binding.thread_id is not None:
-            can_resume = callable(getattr(self.client, "resume_thread", None))
-            thread_id = binding.thread_id
-            is_unpersisted = thread_id in self._unpersisted_thread_ids
-            active = self.store.get_active_turn(thread_id)
-            attempted_steer = active is not None and active[1] == "inProgress"
-
-            # Keep the live App Server connection authoritative for a Turn we
-            # already observed. Resuming first can race with a just-created
-            # rollout and, across clients, can replace useful live state with a
-            # persisted snapshot before native turn/steer gets a chance.
-            if not attempted_steer and can_resume and not is_unpersisted:
-                thread_id = await self.ensure_thread(channel_id, conversation_id)
-                expected_local_image_epoch = self._refresh_local_image_epoch(
-                    expected_local_image_epoch
-                )
-            try:
-                return await self._submit_to_reconciled_thread(
-                    thread_id,
-                    input_items,
-                    expected_local_image_epoch=expected_local_image_epoch,
-                )
-            except AppServerError as exc:
-                if (
-                    is_unpersisted
-                    or not can_resume
-                    or not self._requires_thread_resume(exc)
-                ):
-                    raise
-                thread_id = await self.ensure_thread(channel_id, conversation_id)
-                expected_local_image_epoch = self._refresh_local_image_epoch(
-                    expected_local_image_epoch
-                )
-                # Native uses the same invalid-request class for both stale and
-                # temporarily non-steerable Turns. If resume still exposes an
-                # active Turn, preserve the authoritative steer rejection rather
-                # than risking a competing turn/start.
-                if (
-                    attempted_steer
-                    and self.store.get_active_turn(thread_id) is not None
-                ):
-                    raise exc
-                return await self._submit_to_reconciled_thread(
-                    thread_id,
-                    input_items,
-                    expected_local_image_epoch=expected_local_image_epoch,
-                )
-        thread_id = await self.ensure_thread(channel_id, conversation_id)
-        expected_local_image_epoch = self._refresh_local_image_epoch(
-            expected_local_image_epoch
-        )
-        return await self._start_turn(
-            thread_id,
-            input_items,
-            expected_local_image_epoch=expected_local_image_epoch,
-        )
-
-    def _refresh_local_image_epoch(self, current: int | None) -> int | None:
-        if current is None:
-            return None
-        capability = getattr(self.client, "local_image_paths_epoch", None)
-        if not callable(capability):
-            return current
-        refreshed = capability()
-        if refreshed is None:
-            raise AppServerError(
-                "configured App Server cannot read bridge-local attachment paths for this connection"
-            )
-        return int(refreshed)
-
-    async def _submit_to_reconciled_thread(
-        self,
-        thread_id: str,
-        input_items: list[dict[str, object]],
-        *,
-        expected_local_image_epoch: int | None,
-    ) -> TurnSubmission:
-        active = self.store.get_active_turn(thread_id)
-        if active is not None and active[1] == "inProgress":
-            try:
-                steer_kwargs: dict[str, object] = {"input_items": input_items}
-                if expected_local_image_epoch is not None:
-                    steer_kwargs["expected_local_image_epoch"] = (
-                        expected_local_image_epoch
-                    )
-                await self.client.steer_turn(thread_id, active[0], **steer_kwargs)
-            except AppServerError as exc:
-                if not self._is_stale_turn_error(exc):
-                    raise
-                if callable(getattr(self.client, "resume_thread", None)):
-                    raise
-                self.store.clear_active_turn(thread_id)
-            else:
-                return TurnSubmission(
-                    kind="steer", thread_id=thread_id, turn_id=active[0]
-                )
-        return await self._start_turn(
-            thread_id,
-            input_items,
-            expected_local_image_epoch=expected_local_image_epoch,
-        )
-
-    async def submit_text(
-        self, channel_id: str, conversation_id: str, text: str
-    ) -> TurnSubmission:
-        return await self.submit_input(channel_id, conversation_id, text)
-
-    @staticmethod
-    def _native_user_input(
-        text: str,
-        attachments: tuple[InboundAttachment, ...],
-    ) -> list[dict[str, object]]:
-        input_items: list[dict[str, object]] = []
-        file_attachments = tuple(item for item in attachments if item.kind == "file")
-        durable_text = CodexThreadBackendMixin._with_file_attachment_manifest(
-            text,
-            file_attachments,
-        )
-        if durable_text.strip():
-            input_items.append({"type": "text", "text": durable_text})
-        elif attachments:
-            # Codex App currently omits user messages whose native input has no
-            # text item, even when localImage items are present. Keep the image
-            # native while adding the smallest visible cross-surface caption.
-            display_text = (
-                _IMAGE_ONLY_DISPLAY_TEXT
-                if all(item.kind == "image" for item in attachments)
-                else _ATTACHMENT_ONLY_DISPLAY_TEXT
-            )
-            input_items.append({"type": "text", "text": display_text})
-        for attachment in attachments:
-            if attachment.kind == "image":
-                input_items.append(
-                    {"type": "localImage", "path": attachment.local_path}
-                )
-            elif attachment.kind == "file":
-                # Generic files have no native Codex input item. Their durable
-                # text manifest gives the agent a stable path it can read with
-                # native filesystem tools and survives thread history rebuilds.
-                continue
-            else:
-                raise ValueError(
-                    f"unsupported inbound attachment kind: {attachment.kind}"
-                )
-        if not input_items:
-            raise ValueError("inbound message has no supported input")
-        return input_items
-
-    @staticmethod
-    def _with_file_attachment_manifest(
-        text: str,
-        attachments: tuple[InboundAttachment, ...],
-    ) -> str:
-        if not attachments:
-            return text
-        header = (
-            _ATTACHMENT_ONLY_DISPLAY_TEXT
-            if len(attachments) == 1
-            else _ATTACHMENTS_DISPLAY_TEXT
-        )
-        lines = [header]
-        for attachment in attachments:
-            path = str(attachment.local_path)
-            if not path or any(
-                ord(character) < 32 or ord(character) == 127 for character in path
-            ):
-                raise ValueError(
-                    "inbound attachment path contains unsupported control characters"
-                )
-            lines.extend(
-                (
-                    f"- {CodexThreadBackendMixin._safe_attachment_filename(attachment)}",
-                    f"  Path: {path}",
-                )
-            )
-        manifest = "\n".join(lines)
-        if not text.strip():
-            return manifest
-        if text.endswith(_ATTACHMENT_ONLY_DISPLAY_TEXT):
-            prefix = text[: -len(_ATTACHMENT_ONLY_DISPLAY_TEXT)]
-            if not prefix or prefix.endswith("\n"):
-                return f"{prefix}{manifest}"
-        if text.endswith("\n\n"):
-            separator = ""
-        elif text.endswith("\n"):
-            separator = "\n"
-        else:
-            separator = "\n\n"
-        return f"{text}{separator}{manifest}"
-
-    @staticmethod
-    def _safe_attachment_filename(attachment: InboundAttachment) -> str:
-        candidate = str(attachment.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-        candidate = "".join(
-            character
-            for character in candidate
-            if character >= " " and character != "\x7f"
-        ).strip(" .")
-        if candidate:
-            return candidate[:120]
-        fallback = str(attachment.local_path).replace("\\", "/").rsplit("/", 1)[-1]
-        return fallback[:120] or "attachment"
-
-    async def _start_turn(
-        self,
-        thread_id: str,
-        input_items: list[dict[str, object]],
-        *,
-        expected_local_image_epoch: int | None = None,
-    ) -> TurnSubmission:
-        start_kwargs: dict[str, object] = {
-            "thread_id": thread_id,
-            "input_items": input_items,
-            "summary": "concise",
-        }
-        if expected_local_image_epoch is not None:
-            start_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
-        result = await self.client.start_turn(**start_kwargs)
-        self._unpersisted_thread_ids.discard(thread_id)
-        turn = result.get("turn") or {}
-        turn_id = str(turn.get("id") or "")
-        status = str(turn.get("status") or "inProgress")
-        self.store.note_active_turn(thread_id, turn_id, status)
-        return TurnSubmission(kind="start", thread_id=thread_id, turn_id=turn_id)
-
     async def interrupt_active_turn(
         self, channel_id: str, conversation_id: str
     ) -> bool:
@@ -672,212 +403,8 @@ class CodexThreadBackendMixin:
         except AppServerError as exc:
             if not self._is_stale_turn_error(exc):
                 raise
-            self.store.clear_active_turn(thread_id)
             return False
-        self.store.clear_active_turn(thread_id)
         return True
-
-    async def rehydrate_bound_threads(self) -> dict:
-        summary = {"total": 0, "succeeded": 0, "failed": 0, "unverified": 0}
-        recovered_turns: list[dict] = []
-        discarded_turns: list[dict[str, str]] = []
-        for binding in self.store.iter_bindings():
-            if not binding.thread_id:
-                continue
-            summary["total"] += 1
-            cached_active = self.store.get_active_turn(binding.thread_id)
-            if cached_active is not None:
-                # Cached turn state is not authoritative across a transport
-                # epoch. Clear it before resume so a replayed native request
-                # cannot be rejected as belonging to a different local turn.
-                self.store.clear_active_turn(binding.thread_id)
-            emit_event(
-                component="appserver.backend",
-                event="bridge.thread_rehydrate.started",
-                message="Rehydrating bound thread",
-                data={
-                    "channel_id": binding.channel_id,
-                    "conversation_id": binding.conversation_id,
-                    "thread_id": binding.thread_id,
-                },
-            )
-            try:
-                resume = getattr(
-                    self.client,
-                    "resume_thread_for_recovery",
-                    self.client.resume_thread,
-                )
-                result = await resume(
-                    thread_id=binding.thread_id,
-                    service_name=self.service_name,
-                )
-            except AppServerError as exc:
-                summary["failed"] += 1
-                failed_thread_id = binding.thread_id
-                stale_thread = self._is_stale_thread_error(exc)
-                had_active_turn = cached_active is not None
-                if cached_active is not None:
-                    discarded_turns.append(
-                        {"threadId": failed_thread_id, "turnId": cached_active[0]}
-                    )
-                if stale_thread:
-                    self.store.clear_thread_binding(
-                        binding.channel_id, binding.conversation_id
-                    )
-                emit_event(
-                    component="appserver.backend",
-                    event="bridge.thread_rehydrate.failed",
-                    level="WARNING",
-                    message=str(exc),
-                    data={
-                        "channel_id": binding.channel_id,
-                        "conversation_id": binding.conversation_id,
-                        "thread_id": failed_thread_id,
-                        "error_type": type(exc).__name__,
-                        "cleared_active_turn": had_active_turn,
-                    },
-                )
-                continue
-            payload = result.get("thread")
-            if not isinstance(payload, dict):
-                summary["unverified"] += 1
-                had_active_turn = cached_active is not None
-                if cached_active is not None:
-                    discarded_turns.append(
-                        {"threadId": binding.thread_id, "turnId": cached_active[0]}
-                    )
-                emit_event(
-                    component="appserver.backend",
-                    event="bridge.thread_rehydrate.empty",
-                    level="WARNING",
-                    message="Thread resume returned no thread payload",
-                    data={
-                        "channel_id": binding.channel_id,
-                        "conversation_id": binding.conversation_id,
-                        "thread_id": binding.thread_id,
-                        "cleared_active_turn": had_active_turn,
-                    },
-                )
-                continue
-            returned_thread_id = str(payload.get("id") or payload.get("threadId") or "")
-            native_thread_status = self._native_status(payload.get("status"))
-            if returned_thread_id != binding.thread_id or native_thread_status is None:
-                summary["unverified"] += 1
-                had_active_turn = cached_active is not None
-                if cached_active is not None:
-                    discarded_turns.append(
-                        {"threadId": binding.thread_id, "turnId": cached_active[0]}
-                    )
-                emit_event(
-                    component="appserver.backend",
-                    event="bridge.thread_rehydrate.unverified",
-                    level="WARNING",
-                    message="Thread resume returned unverifiable native state",
-                    data={
-                        "channel_id": binding.channel_id,
-                        "conversation_id": binding.conversation_id,
-                        "thread_id": binding.thread_id,
-                        "returned_thread_id": returned_thread_id,
-                        "has_native_status": native_thread_status is not None,
-                        "cleared_active_turn": had_active_turn,
-                    },
-                )
-                continue
-            snapshot = self._remember_snapshot(payload)
-            self.store.bind_thread_with_cwd(
-                binding.channel_id,
-                binding.conversation_id,
-                snapshot.thread_id,
-                snapshot.cwd,
-            )
-            native_active = self._native_active_turn(payload)
-            native_thread_is_active = (
-                native_thread_status.strip().lower() in ACTIVE_THREAD_STATUSES
-            )
-            if native_thread_is_active and native_active is None:
-                summary["unverified"] += 1
-                if cached_active is not None:
-                    discarded_turns.append(
-                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
-                    )
-                emit_event(
-                    component="appserver.backend",
-                    event="bridge.thread_rehydrate.active_turn_unverified",
-                    level="WARNING",
-                    message="Active native thread did not expose a verifiable active turn",
-                    data={
-                        "channel_id": binding.channel_id,
-                        "conversation_id": binding.conversation_id,
-                        "thread_id": snapshot.thread_id,
-                    },
-                )
-                continue
-            if native_active is not None:
-                if cached_active is not None and cached_active[0] != native_active[0]:
-                    self.store.suppress_turn(snapshot.thread_id, cached_active[0])
-                    discarded_turns.append(
-                        {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
-                    )
-                self.store.note_active_turn(
-                    snapshot.thread_id, native_active[0], native_active[1]
-                )
-            # Resume may synchronously replay item/turn notifications before
-            # returning the thread snapshot. Re-read the watch set so a turn
-            # already completed through that live path is not recovered and
-            # projected a second time from the snapshot.
-            recovery_turn_ids = {
-                watch.turn_id
-                for watch in self.store.list_terminal_delivery_watches(
-                    snapshot.thread_id
-                )
-            }
-            if native_active is not None:
-                recovery_turn_ids.discard(native_active[0])
-            recovery_unverified = False
-            for recovery_turn_id in recovery_turn_ids:
-                terminal_turn = self._turn_by_id(payload, recovery_turn_id)
-                if terminal_turn is None or not self._turn_is_terminal(terminal_turn):
-                    summary["unverified"] += 1
-                    recovery_unverified = True
-                    discarded_turns.append(
-                        {"threadId": snapshot.thread_id, "turnId": recovery_turn_id}
-                    )
-                    emit_event(
-                        component="appserver.backend",
-                        event="bridge.thread_rehydrate.delivery_turn_unverified",
-                        level="WARNING",
-                        message="Native resume did not verify a pending terminal delivery turn",
-                        data={
-                            "channel_id": binding.channel_id,
-                            "conversation_id": binding.conversation_id,
-                            "thread_id": snapshot.thread_id,
-                            "turn_id": recovery_turn_id,
-                        },
-                    )
-                    continue
-                self.store.suppress_turn(snapshot.thread_id, recovery_turn_id)
-                recovered_turns.append(
-                    {"threadId": snapshot.thread_id, "turn": terminal_turn}
-                )
-            if recovery_unverified:
-                continue
-            emit_event(
-                component="appserver.backend",
-                event="bridge.thread_rehydrate.succeeded",
-                message="Rehydrated bound thread",
-                data={
-                    "channel_id": binding.channel_id,
-                    "conversation_id": binding.conversation_id,
-                    "thread_id": snapshot.thread_id,
-                    "cwd": snapshot.cwd,
-                },
-            )
-            summary["succeeded"] += 1
-        return {
-            "summary": summary,
-            "recoveredTurns": recovered_turns,
-            "discardedTurns": discarded_turns,
-        }
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = self._native_status(payload.get("status"))
@@ -935,35 +462,6 @@ class CodexThreadBackendMixin:
             ):
                 return turn_id, status
         return None
-
-    def _reconcile_native_active_turn(
-        self,
-        payload: dict,
-        snapshot: NativeThreadSnapshot,
-    ) -> None:
-        native_active = self._native_active_turn(payload)
-        if native_active is not None:
-            self.store.note_active_turn(
-                snapshot.thread_id, native_active[0], native_active[1]
-            )
-        elif str(snapshot.status or "").strip().lower() not in ACTIVE_THREAD_STATUSES:
-            self.store.clear_active_turn(snapshot.thread_id)
-
-    def _turn_by_id(self, payload: dict, turn_id: str) -> dict | None:
-        turns = payload.get("turns")
-        if not isinstance(turns, list):
-            return None
-        for turn in reversed(turns):
-            if not isinstance(turn, dict):
-                continue
-            candidate = str(turn.get("id") or turn.get("turnId") or "")
-            if candidate == turn_id:
-                return turn
-        return None
-
-    def _turn_is_terminal(self, turn: dict) -> bool:
-        status = self._native_status(turn.get("status"))
-        return status is not None and status.strip().lower() in _TERMINAL_TURN_STATUSES
 
     def _native_status(self, value: object) -> str | None:
         if isinstance(value, dict):

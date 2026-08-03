@@ -400,17 +400,18 @@ class OutboundArtifactLeaseLedger:
         self.state_path = Path(state_path)
         self._lock = RLock()
         self._submissions: dict[str, tuple[str, ...]] = self._load()
+        self._attempts: dict[str, tuple[str, ...]] = {}
 
     async def stage_upload(self, content: bytes, **kwargs) -> OutboundArtifact:
         return await asyncio.to_thread(self.stager.stage_upload, content, **kwargs)
 
-    def transfer(self, delivery_id: str, artifacts) -> None:
+    def transfer(self, delivery_id: str, artifacts) -> bool:
         identity = str(delivery_id or "").strip()
         if not identity:
             raise ValueError("artifact delivery requires a stable delivery_id")
         paths = tuple(sorted({str(artifact.local_path) for artifact in artifacts}))
         if not paths:
-            return
+            return False
         submission_id = derive_delivery_submission_id(
             DeliverySubmissionOrigin.EXTERNAL,
             self.PRINCIPAL_ID,
@@ -422,8 +423,28 @@ class OutboundArtifactLeaseLedger:
                 raise ValueError("delivery_id is already bound to different artifacts")
             if existing is None and len(self._submissions) >= self.MAX_SUBMISSIONS:
                 raise ValueError("outbound artifact lease ledger is full")
+            if existing is not None:
+                return False
             self._submissions[submission_id] = paths
             self._save()
+            return True
+
+    def track_attempt(self, attempt_id: str, paths) -> None:
+        """Hold A1 files until the matching logical SDK attempt reports O2."""
+
+        identity = str(attempt_id or "").strip()
+        normalized = tuple(sorted({str(path) for path in paths if str(path)}))
+        if not identity or not normalized:
+            return
+        with self._lock:
+            existing = self._attempts.get(identity)
+            if existing is not None and existing != normalized:
+                raise ValueError(
+                    "delivery attempt is already bound to different artifacts"
+                )
+            if existing is None and len(self._attempts) >= self.MAX_SUBMISSIONS:
+                raise ValueError("outbound artifact attempt ledger is full")
+            self._attempts[identity] = normalized
 
     def discard_request(self, artifacts) -> None:
         with self._lock:
@@ -439,15 +460,25 @@ class OutboundArtifactLeaseLedger:
     def complete_attempt(self, attempt_id: str, paths) -> None:
         normalized = {str(path) for path in paths}
         with self._lock:
+            durable = attempt_id in self._submissions
             leased = self._submissions.get(attempt_id)
+            if leased is None:
+                leased = self._attempts.get(attempt_id)
             if leased is None:
                 return
             remaining = tuple(path for path in leased if path not in normalized)
             if remaining:
-                self._submissions[attempt_id] = remaining
+                if durable:
+                    self._submissions[attempt_id] = remaining
+                else:
+                    self._attempts[attempt_id] = remaining
             else:
-                del self._submissions[attempt_id]
-            self._save()
+                if durable:
+                    del self._submissions[attempt_id]
+                else:
+                    del self._attempts[attempt_id]
+            if durable:
+                self._save()
         self.stager.release(normalized)
         self.cleanup()
 
@@ -484,11 +515,15 @@ class OutboundArtifactLeaseLedger:
 
     def referenced_paths(self) -> set[str]:
         with self._lock:
-            return {path for paths in self._submissions.values() for path in paths}
+            return {
+                path
+                for paths in (*self._submissions.values(), *self._attempts.values())
+                for path in paths
+            }
 
     def cleanup(self) -> None:
         self.stager.cleanup_unreferenced(
-            self.product_store.referenced_terminal_artifact_paths()
+            self.product_store.referenced_legacy_artifact_paths()
             | self.referenced_paths()
         )
 

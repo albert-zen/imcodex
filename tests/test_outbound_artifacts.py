@@ -270,7 +270,7 @@ def test_lease_ledger_preserves_transferred_artifact_across_restart(
 ) -> None:
     class ProductStore:
         @staticmethod
-        def referenced_terminal_artifact_paths() -> set[str]:
+        def referenced_legacy_artifact_paths() -> set[str]:
             return set()
 
     spool = tmp_path / "spool"
@@ -308,7 +308,7 @@ def test_lease_ledger_preserves_transferred_artifact_across_restart(
 def test_lease_ledger_replay_requires_same_artifacts(tmp_path: Path) -> None:
     class ProductStore:
         @staticmethod
-        def referenced_terminal_artifact_paths() -> set[str]:
+        def referenced_legacy_artifact_paths() -> set[str]:
             return set()
 
     stager = OutboundArtifactStager(tmp_path / "spool")
@@ -357,7 +357,7 @@ async def test_lease_ledger_reconciles_terminal_sdk_submission(tmp_path: Path) -
 
     class ProductStore:
         @staticmethod
-        def referenced_terminal_artifact_paths() -> set[str]:
+        def referenced_legacy_artifact_paths() -> set[str]:
             return set()
 
     stager = OutboundArtifactStager(tmp_path / "spool")
@@ -405,7 +405,7 @@ async def test_lease_ledger_preserves_nonterminal_or_partial_submission(
 
     class ProductStore:
         @staticmethod
-        def referenced_terminal_artifact_paths() -> set[str]:
+        def referenced_legacy_artifact_paths() -> set[str]:
             return set()
 
     stager = OutboundArtifactStager(tmp_path / "spool")

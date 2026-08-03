@@ -11,8 +11,11 @@ It exists to keep the rewrite aligned with the product model and to prevent the 
 
 This document should be read together with:
 
-- [ADR 0001](adr/0001-native-thin-bridge.md)
+- [SDK Migration Baseline](im-agent-sdk-migration-baseline.md)
 - [Product Behavior Spec](product-behavior-spec.md)
+
+[ADR 0001](adr/0001-native-thin-bridge.md) is superseded historical context;
+it is not runtime authority for the SDK-composed implementation.
 
 ## Architecture
 
@@ -366,7 +369,9 @@ Likely causes include:
 If native Codex emits an approval request anyway:
 
 - the bridge MUST surface it using the native request id
-- the bridge MUST support batch approval/deny/cancel without an id
+- the bridge MUST permit approval/deny/cancel without an id only when exactly
+  one presented request is pending; multiple pending requests MUST require a
+  unique handle prefix
 - the bridge MUST support unique-prefix targeting by native request id
 - a plain non-command user message while approvals are pending MUST cancel pending approvals and continue with the new instruction
 
@@ -461,15 +466,18 @@ IMCodex supplies only product policy through the accepted typed seams:
 - default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
 - the websocket client MUST accept legitimate full native thread responses; a bridge-owned frame limit MUST NOT create a permanent reconnect loop for a large `thread/resume` result
 - recovery MAY request a bounded recent-turn page only when the experimental native API is enabled, and MUST retry with the stable request shape when that capability is rejected
-- reconnect and rehydrate logic MUST reconcile native Thread state before
-  trusting any product routing hint
+- reconnect and SDK projection recovery MUST reconcile native Thread state
+  before trusting any product routing hint
 - an established external App Server target MUST reconnect in the background after an unexpected disconnect; a new inbound IM message MUST NOT be the recovery trigger
 - an external connection failure MUST NOT silently spawn or select another App Server; `stdio://` is an explicit bridge-child compatibility target only
 - background reconnect delay MUST be capped and jittered, while retrying until recovery succeeds or bridge shutdown begins
 - connect and initialize work MUST be serialized so that each connection epoch has at most one handshake
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch
-- a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
-- health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
+- a reconnected transport MUST NOT be reported as restored until native
+  initialize completes and SDK Application/Channel diagnostics report ready
+- health MUST report `degraded` when SDK Application/Channel diagnostics,
+  Gateway admission, projection workers, or maintenance cannot verify a ready
+  runtime; IMCodex MUST NOT recreate a separate ready-time rehydration counter
 - IMCodex MUST NOT persist active-Turn authority; any remaining product route is
   a hint only and cannot suppress SDK observation of a different native Turn
 - every ordinary input to an existing binding MUST resume and reconcile the exact native thread before steer/start; a different returned thread ID or an unverifiable active turn MUST fail explicitly rather than create a competing continuation
@@ -495,9 +503,13 @@ IMCodex supplies only product policy through the accepted typed seams:
 - standalone delivery IDs use the SDK delivery-submission identity. IMCodex's
   bounded, crash-safe artifact lease ledger persists paths before submission,
   rejects an ID rebound to different artifacts, retains retryable outcomes,
-  and releases only on a terminal O2 outcome
+  and releases from terminal O2 outcomes or synchronous terminal submission
+  reconciliation; startup reconciles durable terminal SDK records when a
+  best-effort observer was lost
 - one `IMCODEX_DATA_DIR` MUST have one bridge-process owner; overlapping bridge processes sharing it are unsupported, and managed restart MUST remain stop-then-start
-- if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
+- IMCodex MUST NOT keep a local `active_turn` authority or use one for health;
+  active Turn status comes from authoritative native Thread reads and SDK
+  diagnostics
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
 
 Channel image inputs MUST be translated at the App Server boundary into native

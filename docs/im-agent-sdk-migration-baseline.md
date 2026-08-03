@@ -68,6 +68,19 @@ gate for the implementation work rather than for publishing this handoff branch.
 
 ## Verification results
 
+### Current SDK cutover regression
+
+On the final SDK-composed tree, the repository regression completed with
+`549 passed, 18 skipped, 1 warning in 16.82s`; compileall and `git diff
+--check` also passed. The warning remains the third-party
+`StarletteDeprecationWarning` described below. A prior run had two AgentKit
+launcher subprocesses terminated by the host with `SIGKILL`; both the focused
+launcher suite (`7 passed, 1 skipped`) and the unchanged full suite then passed.
+
+The earlier Windows captures below remain the cross-platform pre-cutover
+baseline; they are retained as historical comparison evidence rather than the
+current test count.
+
 ### Repository-defined regression
 
 Command:
@@ -203,8 +216,8 @@ the review evidence and the parity surface to retain after migration.
 | Images and files | SDK native Channel/media suites own built-in transport media; `tests/test_channel_files.py`, `tests/test_outbound_artifacts.py`, and proactive lease tests retain product webhook/spool policy. | pass |
 | Allowlist and access | Stable sender/conversation admission, `any`/`all`/deny-all behavior, rejection before media work, outbound recheck, and health labels are covered by channel foundation, middleware, config, admin, and native channel tests. This is IM admission, not Codex execution permission. | pass |
 | App Server topology and trust | SDK App Server suites own transport/reconnect/dispatch contracts; `tests/test_appserver_target.py`, `tests/test_core_manager.py`, startup tests, and the real Windows smoke cover consumer topology and managed-core trust. | pass, with Unix-only cases skipped on Windows |
-| Observability | Non-blocking event/log/health writers, redacted transport summaries, reconnect/degraded state, runtime lifecycle, and `health.json` are covered by `tests/test_observability.py`, `tests/test_runtime.py`, and the real Windows smoke. | pass |
-| Artifact projection and sending | `tests/test_outbound_artifacts.py`, `tests/test_sdk_presentation.py`, `tests/test_sdk_delivery.py`, `tests/test_delivery_api.py`, and `tests/test_channels_send.py` cover materialization, consumer leases, typed receipts, local credentials, and proactive submission. | pass |
+| Observability | Non-blocking event/log/health writers, redacted transport summaries, reconnect/degraded state, runtime lifecycle, and `health.json` are covered by `tests/test_observability.py`, `tests/test_sdk_runtime.py`, and the real Windows smoke. | pass |
+| Artifact projection and sending | `tests/test_outbound_artifacts.py`, `tests/test_sdk_presentation.py`, `tests/test_sdk_delivery.py`, `tests/test_delivery_api.py`, and `tests/test_channels_send.py` cover materialization, consumer leases, typed receipts, local credentials, and proactive submission. An all-suppressed A1 attempt or lost best-effort O2 observation cannot prove safe clean-process lease release, so startup sweep is the only current recovery. | blocked |
 | Approval and user input | SDK request-runtime suites own native request correlation and response safety; `tests/test_sdk_requests.py`, `tests/test_sdk_controller.py`, and command parser tests cover IMCodex presentation and product commands. | pass |
 | Proactive artifact delivery | The local endpoint and `imcodex-send` use SDK proactive delivery plus the consumer path lease ledger and never expose bot credentials. Stable same-content replay and terminal lease reconciliation pass. SDK `IN_FLIGHT` crash recovery and partial retryable-suffix resumption remain unsupported, so the previous durable-outbox parity claim is not satisfied. | blocked |
 | Contract/schema/architecture | App Server generated-request schema drift and the repository dependency rules are covered by `tests/test_appserver_schema_drift.py` and `tests/test_architecture.py`; the full test suite included both. | pass |
@@ -260,10 +273,14 @@ runtime or policy authority.
 The production graph now constructs the merged SDK Gateway, Codex Application
 client, and native Channels. The reusable consumer copies and their duplicate
 test suites were deleted; there is no client-only compatibility composition.
+The callable legacy `AppRuntime`, its raw App Server subscriptions, and its
+legacy Channel lifecycle tests are deleted. `ConversationStore` has no
+active-Turn cache or old outbox stage/update/ack API; it can only read and
+consume already-persisted delivery evidence during the one-way SDK migration.
 The retained product surfaces are:
 
 - `src/imcodex/config.py`, `admin/`, `application.py`, `composition.py`,
-  `runtime.py`, launchers, core/restart management, and branding;
+  `sdk_runtime.py`, launchers, core/restart management, and branding;
 - generic webhook API/media/outbound composition, channel
   registry/enablement, and Weixin login UX;
 - Codex settings/Full Access commands, explicit rejection of the unavailable
@@ -360,9 +377,37 @@ These are migration review items, not authorization to expand the SDK:
    bounded App Server dispatch, Gateway coordination, and request-presentation
    admission. IMCodex does not add consumer work on the socket read path and
    no longer maintains a second event dispatcher.
+8. **Pre-dispatch product-command crash fencing is not exposed.** The SDK
+   controller runs before the Application input side-effect fence. IMCodex
+   mutating slash commands still call product/native operations from that
+   controller, and a crash after the native mutation but before inbound claim
+   completion can reclaim and repeat the command. The removed generic response
+   cache cannot be restored as a second Channel admission/idempotency path.
+   Closing migration therefore requires an SDK-owned typed operation/fence for
+   these controller effects, or individually proven native idempotency for each
+   command. Until then `/new`, `/fork`, `/compact`, goal/config writes, and raw
+   `/native call` prevent command parity acceptance.
+9. **Best-effort O2 cannot prove clean-process artifact release after observer
+   loss.** IMCodex registers A1 paths by logical destination attempt and O2
+   releases them on terminal outcomes. If the bounded O2 observer rejects,
+   times out, or fails, the SDK exposes no terminal-attempt query that permits
+   safe consumer cleanup; an independent TTL could delete a LocalPath while a
+   slow logical attempt still needs it. The ledger therefore stays bounded at
+   1,024 stable identities, fails explicitly at capacity, and startup sweep
+   recovers leaked process-local attempts. Guaranteed clean-process convergence
+   remains an SDK lifecycle-signal blocker rather than a consumer timer.
+10. **Product thread-selection commands still write the legacy JSON mirror
+    before SDK binding CAS.** Startup conversion and every ordinary input now
+    repair a mismatched SDK binding from that mirror, so a crash cannot leave
+    permanent split routing. It is nevertheless a compatibility mirror, not
+    the desired single owner. `/new`, `/pick`, `/fork`, and `/exit` must execute
+    typed SDK binding/Application operations directly before the
+    [IMCodex migration issue #9](https://github.com/albert-zen/imcodex/issues/9)
+    can close; the
+    JSON thread field can then be removed instead of becoming permanent.
 
 No SDK Core expansion is asserted by this baseline. Proactive `IN_FLIGHT`/
-partial recovery and exact first-upgrade replay fencing are the remaining SDK
+partial recovery, controller-command crash fencing, and exact first-upgrade replay fencing are the remaining SDK
 consumer-acceptance blockers; they cannot be repaired with O2 or a second
 consumer runtime.
 
@@ -455,11 +500,20 @@ through SDK submission. The ledger is persisted before submission, keyed by
 the caller's stable delivery ID, and restored before the startup sweep so a
 process crash cannot delete an attachment required by an SDK retry.
 Request cleanup releases only paths that were not transferred; same-content
-replay reuses the content-addressed path. O2 releases terminal items and keeps
-retryable/unknown/skipped items; startup reconciliation releases submissions
-whose SDK record is terminal when detached O2 did not run. A missing or
+replay reuses the content-addressed path. O2 releases accepted/rejected items
+and keeps retryable/unknown/skipped items inside a partial receipt. A
+whole-attempt terminal `UNKNOWN` releases every path because the SDK will not
+retry it. Startup reconciliation releases submissions whose SDK record is
+terminal when detached O2 did not run. A missing or
 `IN_FLIGHT` SDK record remains leased for caller replay. This ledger is not an
 SDK outbox or transcript.
+
+A1 paths are registered under the concrete destination delivery ID in O1
+before Channel work and released by O2 terminal item facts. O1 suppression
+does not release the shared content-addressed stager lease: O1 has no bounded
+fanout-complete fact, so one suppressed route cannot safely delete a path before
+another route reaches O1/Channel work. All-suppressed materializations are
+therefore reclaimed by startup sweep, not an unsafe product timer.
 
 IMCodex no longer subscribes to or journals raw App Server events. The legacy
 `/native events` spelling remains only to return an explicit unavailable
@@ -487,5 +541,11 @@ acquires the SDK Gateway admission lease, stages media, and transfers exactly
 one normalized message through that lease. It does not retain the former
 consumer-wide channel middleware, response cache, binding idempotency, or
 delivery acknowledgement path. Immediate HTTP replies are captured only by
-the webhook Channel instance; durable admission and outbound identity remain
-SDK Gateway concerns.
+the webhook Channel instance, with an in-flight delivery-ID set preventing a
+sink retry from appending the same immediate body twice; durable admission and
+outbound identity remain SDK Gateway concerns.
+
+The product pending-request store and `/native respond|error` escape paths are
+removed. The bounded `ImcodexRequestPresenter` retains only process-local UX
+handles; SDK claim/correlation state and `RespondToRequest` remain the sole
+request authority.

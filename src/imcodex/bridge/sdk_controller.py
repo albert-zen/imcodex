@@ -10,14 +10,18 @@ from imagent.contracts import (
     ClearConversationThread,
     ConversationBound,
     GatewayOperationFailed,
-    InboundMessage as SdkInboundMessage,
     LocalPath,
-    OutboundMessage as SdkOutboundMessage,
     RequestResponseRouted,
     RespondToRequest,
     TextContent,
     TextFormat,
     ThreadRef,
+)
+from imagent.contracts import (
+    InboundMessage as SdkInboundMessage,
+)
+from imagent.contracts import (
+    OutboundMessage as SdkOutboundMessage,
 )
 
 from ..models import InboundAttachment, InboundMessage, OutboundMessage
@@ -42,7 +46,9 @@ class ImcodexController:
         self.request_presenter = request_presenter
         self.application_instance_id = application_instance_id
 
-    async def handle(self, message: SdkInboundMessage, actions) -> tuple[SdkOutboundMessage, ...] | None:
+    async def handle(
+        self, message: SdkInboundMessage, actions
+    ) -> tuple[SdkOutboundMessage, ...] | None:
         legacy = self._legacy_inbound(message)
         product_binding = self.service.store.get_binding(
             legacy.channel_id,
@@ -50,16 +56,29 @@ class ImcodexController:
         )
         sdk_binding = await actions.get_binding(message.conversation_ref)
 
-        request_output = await self._handle_request_command(message, actions, legacy.text)
+        request_output = await self._handle_request_command(
+            message, actions, legacy.text
+        )
         if request_output is not None:
             return (request_output,)
 
         if not legacy.text.startswith("/"):
             await self._cancel_pending_approvals(message, actions)
-            if product_binding.bootstrap_cwd is None and product_binding.thread_id is None:
+            if (
+                product_binding.bootstrap_cwd is None
+                and product_binding.thread_id is None
+            ):
                 outputs = await self.service.handle_inbound(legacy)
                 return self._sdk_outputs(message, outputs)
-            if sdk_binding is None or sdk_binding.thread_ref is None:
+            sdk_thread_id = (
+                sdk_binding.thread_ref.native_thread_id
+                if sdk_binding is not None and sdk_binding.thread_ref is not None
+                else None
+            )
+            if (
+                product_binding.thread_id is None
+                or sdk_thread_id != product_binding.thread_id
+            ):
                 await self.service.backend.ensure_thread(
                     legacy.channel_id,
                     legacy.conversation_id,
@@ -81,7 +100,9 @@ class ImcodexController:
         command = parts[0][1:]
         try:
             if command == "answer":
-                request, response = self._answer_response(message.conversation_ref, parts[1:])
+                request, response = self._answer_response(
+                    message.conversation_ref, parts[1:]
+                )
             else:
                 token = parts[1] if len(parts) == 2 else None
                 if len(parts) > 2:
@@ -103,9 +124,13 @@ class ImcodexController:
                 )
             )
             if isinstance(result, GatewayOperationFailed):
+                if self._terminal_request_failure(result):
+                    self.request_presenter.resolved(message.conversation_ref, request)
                 raise ValueError(result.error.message)
             if not isinstance(result, RequestResponseRouted):
-                raise RuntimeError("SDK request response returned an incompatible result")
+                raise RuntimeError(
+                    "SDK request response returned an incompatible result"
+                )
             self.request_presenter.resolved(message.conversation_ref, request)
             text = (
                 f"Recorded answer for {request.request_ref.native_request_id}."
@@ -129,7 +154,9 @@ class ImcodexController:
             if not separator or not key or not value:
                 raise ValueError("Usage: /answer <request-id> key=value ...")
             answers.setdefault(key, []).append(value)
-        request = self.request_presenter.match(conversation_ref, token, kind="user_input")
+        request = self.request_presenter.match(
+            conversation_ref, token, kind="user_input"
+        )
         return request, self.request_presenter.user_input_response(
             request,
             {key: tuple(values) for key, values in answers.items()},
@@ -151,8 +178,21 @@ class ImcodexController:
                 )
             )
             if isinstance(result, GatewayOperationFailed):
-                raise RuntimeError(f"Could not cancel pending approval: {result.error.message}")
+                if self._terminal_request_failure(result):
+                    self.request_presenter.resolved(message.conversation_ref, request)
+                    continue
+                raise RuntimeError(
+                    f"Could not cancel pending approval: {result.error.message}"
+                )
             self.request_presenter.resolved(message.conversation_ref, request)
+
+    @staticmethod
+    def _terminal_request_failure(result: GatewayOperationFailed) -> bool:
+        return result.error.code in {
+            "request_duplicate",
+            "request_resolved",
+            "request_stale",
+        }
 
     @staticmethod
     def _text_output(inbound: SdkInboundMessage, text: str) -> SdkOutboundMessage:
@@ -200,9 +240,13 @@ class ImcodexController:
             )
         result = await actions.execute_gateway(operation)
         if isinstance(result, GatewayOperationFailed):
-            raise RuntimeError(f"SDK binding synchronization failed: {result.error.message}")
+            raise RuntimeError(
+                f"SDK binding synchronization failed: {result.error.message}"
+            )
         if not isinstance(result, ConversationBound):
-            raise RuntimeError("SDK binding synchronization returned an incompatible result")
+            raise RuntimeError(
+                "SDK binding synchronization returned an incompatible result"
+            )
 
     @staticmethod
     def _legacy_inbound(message: SdkInboundMessage) -> InboundMessage:
@@ -226,7 +270,8 @@ class ImcodexController:
                 source_message_id=item.attachment_id,
             )
             for item in message.content
-            if isinstance(item, AttachmentContent) and isinstance(item.source, LocalPath)
+            if isinstance(item, AttachmentContent)
+            and isinstance(item.source, LocalPath)
         )
         return InboundMessage(
             channel_id=channel_id,
@@ -273,9 +318,10 @@ class ImcodexController:
         if output.text:
             content.append(TextContent(output.text, TextFormat.MARKDOWN))
         for artifact in output.artifacts:
-            identity = artifact.sha256 or hashlib.sha256(
-                artifact.local_path.encode()
-            ).hexdigest()
+            identity = (
+                artifact.sha256
+                or hashlib.sha256(artifact.local_path.encode()).hexdigest()
+            )
             content.append(
                 AttachmentContent(
                     attachment_id=f"imcodex:artifact:{identity}",

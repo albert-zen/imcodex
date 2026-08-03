@@ -11,6 +11,7 @@ from imagent.contracts import (
     DeliveryItemStatus,
     DeliveryPrincipal,
     DeliveryReceiptStatus,
+    DeliverySegmentStatus,
     DeliverySubmissionState,
     LocalPath,
     TextContent,
@@ -32,31 +33,9 @@ class ImcodexDeliveryOutcomeObserver:
         context: DeliveryOutcomeContext,
         outcome: DeliveryOutcome,
     ) -> None:
-        receipt = outcome.receipt
-        if (
-            receipt is not None
-            and receipt.status is DeliveryReceiptStatus.RETRYABLE_FAILURE
-        ):
-            return
-        attachments = {
-            index: item.source.path
-            for index, item in enumerate(context.message.content)
-            if isinstance(item, AttachmentContent)
-            and isinstance(item.source, LocalPath)
-        }
-        paths = tuple(attachments.values())
-        if receipt is not None and receipt.items:
-            terminal_statuses = {
-                DeliveryItemStatus.ACCEPTED,
-                DeliveryItemStatus.REJECTED,
-            }
-            paths = tuple(
-                attachments[item.content_index]
-                for item in receipt.items
-                if item.content_index in attachments
-                and item.status in terminal_statuses
-            )
-        self.artifact_ledger.complete_attempt(context.message.delivery_id, paths)
+        paths = _terminal_artifact_paths(context.message.content, outcome.receipt)
+        if paths:
+            self.artifact_ledger.complete_attempt(context.message.delivery_id, paths)
 
 
 class ImcodexProactiveDelivery:
@@ -150,22 +129,27 @@ class ImcodexProactiveDelivery:
                 allowed_conversations=(conversation,),
             )
         )
-        self.artifact_ledger.transfer(intent.delivery_id, message.artifacts)
+        created_lease = False
         try:
+            created_lease = self.artifact_ledger.transfer(
+                intent.delivery_id, message.artifacts
+            )
             result = await self.gateway.deliver_proactively(
                 intent,
                 credential=credential,
             )
         except DeliverySubmissionConflict as exc:
-            self.artifact_ledger.complete_delivery(
-                intent.delivery_id,
-                tuple(artifact.local_path for artifact in message.artifacts),
-            )
+            if created_lease:
+                self.artifact_ledger.complete_delivery(
+                    intent.delivery_id,
+                    tuple(artifact.local_path for artifact in message.artifacts),
+                )
             raise ValueError(str(exc)) from None
         finally:
             await self.authorizer.revoke(credential)
 
         self._apply_item_receipts(message, result, text_offset=bool(message.text))
+        self._reconcile_terminal_result(intent.delivery_id, result, intent.content)
         if result.state is DeliverySubmissionState.ACCEPTED:
             return [message], True, True
         if result.state is DeliverySubmissionState.PARTIAL:
@@ -175,6 +159,26 @@ class ImcodexProactiveDelivery:
         if result.state is DeliverySubmissionState.REJECTED:
             raise ValueError(result.error or "delivery was rejected")
         return [message], False, False
+
+    def _reconcile_terminal_result(self, delivery_id: str, result, content) -> None:
+        """Converge leases when an SDK terminal replay does not emit O2 again."""
+
+        for destination in result.destinations:
+            if destination.state in {
+                DeliverySubmissionState.IN_FLIGHT,
+                DeliverySubmissionState.RETRYABLE,
+            }:
+                continue
+            if destination.state is DeliverySubmissionState.PARTIAL and (
+                destination.receipt is None or not destination.receipt.items
+            ):
+                continue
+            paths = _terminal_artifact_paths(
+                content,
+                destination.receipt,
+                submission_state=destination.state,
+            )
+            self.artifact_ledger.complete_delivery(delivery_id, paths)
 
     def _conversation_ref(
         self, channel_id: str, conversation_id: str
@@ -211,3 +215,49 @@ class ImcodexProactiveDelivery:
                 )
         if recorded:
             message.metadata["artifact_receipts"] = recorded
+
+
+def _terminal_artifact_paths(
+    content,
+    receipt,
+    *,
+    submission_state: DeliverySubmissionState | None = None,
+) -> tuple[str, ...]:
+    if (
+        receipt is not None
+        and receipt.status is DeliveryReceiptStatus.RETRYABLE_FAILURE
+    ):
+        return ()
+    attachments = {
+        index: item.source.path
+        for index, item in enumerate(content)
+        if isinstance(item, AttachmentContent) and isinstance(item.source, LocalPath)
+    }
+    if receipt is not None and receipt.status is DeliveryReceiptStatus.UNKNOWN:
+        return tuple(attachments.values())
+    if (
+        receipt is not None
+        and receipt.status is DeliveryReceiptStatus.REJECTED_BY_PLATFORM
+        and not any(
+            item.status is DeliveryItemStatus.ACCEPTED for item in receipt.items
+        )
+        and not any(
+            segment.status is DeliverySegmentStatus.ACCEPTED_BY_PLATFORM
+            for segment in receipt.segments
+        )
+    ):
+        return tuple(attachments.values())
+    if submission_state in {
+        DeliverySubmissionState.ACCEPTED,
+        DeliverySubmissionState.REJECTED,
+        DeliverySubmissionState.UNKNOWN,
+    }:
+        return tuple(attachments.values())
+    if receipt is not None and receipt.items:
+        terminal_statuses = {DeliveryItemStatus.ACCEPTED, DeliveryItemStatus.REJECTED}
+        return tuple(
+            attachments[item.content_index]
+            for item in receipt.items
+            if item.content_index in attachments and item.status in terminal_statuses
+        )
+    return tuple(attachments.values())

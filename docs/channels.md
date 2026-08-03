@@ -147,10 +147,10 @@ user-visible errors and do not block later messages. A 30-second whole-batch
 deadline prevents a slowly dripping source from occupying a conversation
 indefinitely.
 
-Media preparation is lazy inside the middleware's existing per-conversation
-serialization boundary. A committed stable message replay is resolved from the
-normal dedup/reply record before media I/O; there is no media-specific durable
-queue or second dedup authority.
+Media preparation starts only after the SDK Gateway grants admission for the
+stable inbound message. A committed replay is resolved by SDK idempotency
+before media I/O; there is no media-specific durable queue or second dedup
+authority.
 
 `localImage` is a filesystem reference. Image input therefore requires the
 bridge and Codex App Server to see the same absolute spool path. imcodex submits
@@ -225,13 +225,11 @@ the inbound `msg_id`; asynchronous output uses it only while that context is
 still fresh. A long-running or restart-recovered result automatically falls
 back to proactive delivery after the passive window expires, so an old reply
 identifier cannot silently strand the final answer.
-The original receive time is carried with cached reply metadata, so replaying a
-cached response cannot bypass that expiry check. Before a durable terminal
-message enters the outbox, QQ pins whether it is proactive or which `msg_id` it
-replies to, then derives a stable `msg_seq` from the bridge delivery ID. If the
-first HTTP acknowledgement is lost, later inbound traffic or passive-window
-expiry cannot change that retry identity, and QQ can deduplicate the repeated
-`msg_id + msg_seq` instead of presenting a second final answer.
+The original receive time is carried in the Channel reply context, so an SDK
+retry cannot bypass that expiry check. The SDK Coordinator keeps one stable
+logical delivery ID across segment retries; QQ derives its stable `msg_seq`
+from that ID. If the first HTTP acknowledgement is lost, QQ can deduplicate the
+repeated `msg_id + msg_seq` instead of presenting a second final answer.
 
 QQ terminal results may include structured Codex image artifacts. IMCodex
 uploads each staged image through the conversation's `/files` endpoint with
@@ -511,14 +509,12 @@ Use TLS at the reverse proxy; the built-in HTTP server does not terminate TLS.
 The webhook caller is a trusted adapter and chooses `channel_id`, stable sender
 ID, conversation ID, and message ID. Generic callers cannot claim the reserved
 `qq`, `telegram`, `feishu`, or `weixin`
-channel IDs; choose a dedicated namespace such as `wecom-gateway`. The bridge
-persists the most recent 1,024 committed `message_id` values per conversation
-and drops retries in that bounded window. A gateway must retain its own
-longer-term idempotency history when delayed replay is possible. To keep bridge
-state bounded, only the most recent 32 immediate response bodies are retained.
-If an older ID is still inside the dedupe window but its response body has been
-evicted, imcodex returns an explicit `cached_response_expired` error message
-instead of silently acknowledging it with an empty response.
+channel IDs; choose a dedicated namespace such as `wecom-gateway`. SDK Gateway
+admission and idempotency own stable `message_id` deduplication. IMCodex does
+not persist a second response-body cache. The original in-flight HTTP exchange
+captures immediate output; after that exchange closes, a committed replay is
+acknowledged with an empty `messages` list. Gateways that require replayable
+HTTP bodies must retain the canonical outbound callback by `delivery_id`.
 
 The HTTP response contains any immediate command/status messages:
 
@@ -530,8 +526,8 @@ Normal Codex prompts usually finish asynchronously. Set both
 `IMCODEX_OUTBOUND_URL=https://gateway.example/outbound` and a separate
 `IMCODEX_OUTBOUND_WEBHOOK_TOKEN`; imcodex POSTs immediate messages and later
 native results to that URL using this payload. The deterministic
-`metadata.delivery_id` is attached to both replayable immediate replies and
-native projections so callback retries remain safe to deduplicate.
+`metadata.delivery_id` is attached to immediate replies and native projections
+so callback retries remain safe to deduplicate.
 
 ```json
 {
@@ -553,10 +549,10 @@ The gateway must return a 2xx response. Non-2xx responses are surfaced as
 delivery failures instead of being silently treated as sent. It must verify
 `Authorization: Bearer <IMCODEX_OUTBOUND_WEBHOOK_TOKEN>`. Treat this callback
 as the canonical delivery path; the inbound HTTP response also contains a
-convenience copy of immediate messages. Recent committed retries replay the
-cached immediate response and retry failed callback delivery without executing
-the command again. Immediate callbacks are therefore at-least-once while the
-gateway keeps retrying inside the documented cache window. Native projections
+convenience copy of immediate messages. SDK admission/idempotency prevents a
+committed inbound message from executing twice. Sink retries use the same
+delivery ID, and the bounded in-flight HTTP response slot deduplicates that ID
+so a failed callback attempt cannot append a second immediate body. Native projections
 use bounded in-process callback retries, not a second durable bridge outbox; if
 all attempts fail, recover the result from the native Codex thread. Every
 callback retry carries the same deterministic `metadata.delivery_id`, so the
@@ -612,8 +608,8 @@ Tencent's [`openclaw-weixin`](https://github.com/Tencent/openclaw-weixin).
 
 imcodex borrows their proven transport patterns—stable native IDs, long-poll
 cursors, topic routing, bounded retries, and QR login—but does not copy their
-agent/session/plugin runtimes. The existing `BaseChannelAdapter` and middleware
-remain the complete channel-to-bridge boundary.
+agent/session/plugin runtimes. SDK `ChannelAdapter` implementations and Gateway
+admission remain the complete channel-to-Application boundary.
 
 Enterprise WeCom is intentionally not bundled in this release. The current
 official Python AI Bot SDK does not yet expose a fully awaitable authenticated

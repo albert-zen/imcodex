@@ -392,23 +392,13 @@ become a persisted copy of native thread or turn history, and it must not block
 the App Server socket read path. Capacity pressure must preserve native final
 output and approval/input requests rather than silently dropping them. When
 notifications and native approval/input requests use separate dispatch lanes,
-their handoff projection still follows App Server receive order. If delivery
-of the switch notice or requested history fails, buffered native output remains
-behind the durable cached response and is released only after that same inbound
-IM message is retried successfully. While that ordering gate exists, it keeps a
-transient replay copy of the immediate response even if the normal bounded
-response cache is evicted; an expired-cache notice must never release live
-output. After the immediate response succeeds, a failed buffered-output send is
-retried with bounded backoff using the same projected message and delivery ID.
-The backoff interval is capped but retries continue until delivery succeeds or
-the service closes, so a transient outage cannot strand a gate after a fixed
-attempt count. Native approval and question requests use the same projected
-message for retries within their bounded native delivery timeout, then reject
-explicitly if delivery never recovers. Each retry first verifies that the
-native request is still pending, so an approval or answer completed after an
-ambiguous platform send is not presented again as a stale request. The final
-timeout path performs the same pending check before returning a delivery error
-to Codex.
+their handoff projection still follows App Server receive order. Delivery uses
+SDK projection checkpoints, outbound idempotency, and Coordinator retries with
+the same logical delivery ID. A checkpoint advances only after accepted output
+or an idempotently recorded O1 suppression; live-only output never advances it.
+Native approval and question requests use the SDK request claim/correlation
+runtime and its bounded presentation deadline. The product keeps no cached
+response gate, pending-request store, or independent retry scheduler.
 
 Visible answer items and completed-Turn fallback are projected and checkpointed
 by the SDK. A nonblank native `final_answer` item is one visible answer segment,
@@ -434,8 +424,10 @@ caller. SDK submission state remains the delivery/retry authority; IMCodex
 reports partial and unknown outcomes truthfully and does not let O2 rewrite a
 receipt or schedule a retry.
 
-For the generic webhook, the immediate command response is always available in
-the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later
+For the generic webhook, the original in-flight exchange captures an immediate
+command response. A committed retry after that exchange closes returns an empty
+`messages` list; the bridge does not keep a second durable response cache. Live
+handoff and replayable output require `IMCODEX_OUTBOUND_URL`, because later
 native messages occur after the inbound HTTP exchange. If no outbound callback
 can route that generic channel, `/pick` and `/history` fail explicitly rather
 than switching into an undeliverable live stream.
@@ -724,11 +716,10 @@ That approval surface should explain:
 - `deny` rejects the requested action
 - `cancel` cancels the current approval interaction without allowing it
 
-It should also explain the batch behavior:
-
-- `/approve` with no argument approves all currently pending requests in the conversation
-- `/deny` with no argument denies all currently pending requests in the conversation
-- `/cancel` with no argument cancels all currently pending requests in the conversation
+With exactly one presented request, `/approve`, `/deny`, or `/cancel` may omit
+the request ID. When multiple requests are presented, the user must include a
+unique request-ID prefix; IMCodex does not invent a batch response over
+independent SDK claims.
 
 It should explain targeted behavior:
 

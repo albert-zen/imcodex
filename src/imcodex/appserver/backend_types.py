@@ -19,13 +19,6 @@ class ThreadSelectionError(RuntimeError):
 
 
 @dataclass(slots=True)
-class TurnSubmission:
-    kind: str
-    thread_id: str
-    turn_id: str
-
-
-@dataclass(slots=True)
 class ThreadListResult:
     threads: list[NativeThreadSnapshot]
     next_cursor: str | None = None

@@ -9,10 +9,9 @@ The codebase now follows a simple three-layer shape plus a thin wiring root:
 - `imcodex.channels`
   Adapts QQ, Telegram, Feishu/Lark, experimental Tencent iLink Weixin, and the authenticated generic webhook.
 - `imcodex.bridge`
-  Owns IM-only bindings, slash commands, native request routing, and Codex event projection.
+  Owns IM-only product settings, slash commands, and typed SDK extension implementations.
 - `imcodex.appserver`
-  Owns native Codex `app-server` integration for external Unix/TCP endpoints
-  and the explicit bridge-child `stdio` compatibility target.
+  Adds product commands and settings operations around the SDK Codex Application.
 
 Supporting modules:
 
@@ -20,10 +19,10 @@ Supporting modules:
   Builds the runtime graph and wires the three layers together. This is not a fourth business layer; it is the composition root.
 - `imcodex.application`
   Exposes the FastAPI app and lifecycle hooks.
-- `imcodex.runtime`
+- `imcodex.sdk_runtime`
   Runs startup and shutdown for the assembled services.
 - `imcodex.store`
-  Persists only minimal bridge state: conversation bindings, visibility preferences, reply context, and pending native request routes.
+  Persists only product routing/configuration and read-only legacy delivery migration evidence. SDK repositories own bindings, request correlation, projections, checkpoints, idempotency, and delivery submissions.
 
 The dependency direction is intentionally one-way:
 
@@ -186,7 +185,6 @@ Persisted bridge state is intentionally small:
 - `bootstrap_cwd` before a native thread exists
 - visibility preferences
 - channel reply context
-- pending native request routing
 
 ## App Server Target
 
@@ -199,20 +197,13 @@ Server. Configure the target directly:
 - `stdio://`: explicit bridge-child compatibility target
 
 External targets preserve native App Server state across bridge restarts and
-use background reconnect. A restored connection is reported as `degraded`
-when native thread rehydration cannot verify every binding. Native server
-requests such as approvals are isolated from ordinary notification work, and
-bounded dispatch overflow resets the connection so recovery can reconcile
-native state explicitly. Approvals that cannot be delivered to the IM channel
-within a bounded interval are explicitly rejected rather than leaving Codex
-stuck, and a terminal result produced during a disconnect is recovered from the
-native resume payload. A small persistent delivery checkpoint records that a
-bound native turn still owes its IM conversation a terminal result; it is not
-used as active-turn authority. Projected terminal messages enter a durable
-outbox before channel delivery and retry across bridge restarts until the sink
-accepts them. Bound threads are resumed and reconciled by exact native thread
-ID before each new input, so Desktop, CLI, and IMCodex continue the same
-canonical history instead of rebuilding context from displayed messages.
+use the SDK Application's bounded reconnect and recovery paths. The SDK owns
+native request claim/correlation, authoritative Thread projection,
+checkpoints, outbound idempotency, and logical delivery retries. IMCodex does
+not persist a second request runtime, transcript, checkpoint, or delivery
+outbox. Bound threads are resumed by exact native thread ID, so Desktop, CLI,
+and IMCodex continue the same canonical history instead of rebuilding context
+from displayed messages.
 `stdio://` lives and dies with the bridge and never
 acts as an automatic fallback. Legacy `dedicated-ws` and `shared-ws` values are
 accepted as external aliases, and `spawned-stdio` maps to `stdio://`; `auto` is

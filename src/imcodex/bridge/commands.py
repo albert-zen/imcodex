@@ -8,7 +8,6 @@ from pathlib import Path
 
 from ..store import ConversationStore
 
-
 _PERMISSION_MODES = {"default", "read-only", "full-access"}
 _PERSONALITIES = {"none", "friendly", "pragmatic"}
 _MAX_GOAL_OBJECTIVE_CHARS = 4000
@@ -641,58 +640,32 @@ class CommandRouter:
     def _handle_approve(
         self, channel_id: str, conversation_id: str, command: ParsedCommand
     ) -> CommandResponse:
-        return self._handle_resolution(
-            channel_id, conversation_id, command.args, "approval.accept", "accept"
-        )
+        del channel_id, conversation_id, command
+        return self._sdk_request_owned()
 
     def _handle_deny(
         self, channel_id: str, conversation_id: str, command: ParsedCommand
     ) -> CommandResponse:
-        return self._handle_resolution(
-            channel_id, conversation_id, command.args, "approval.deny", "decline"
-        )
+        del channel_id, conversation_id, command
+        return self._sdk_request_owned()
 
     def _handle_cancel(
         self, channel_id: str, conversation_id: str, command: ParsedCommand
     ) -> CommandResponse:
-        return self._handle_resolution(
-            channel_id, conversation_id, command.args, "approval.cancel", "cancel"
-        )
+        del channel_id, conversation_id, command
+        return self._sdk_request_owned()
 
     def _handle_answer(
         self, channel_id: str, conversation_id: str, command: ParsedCommand
     ) -> CommandResponse:
-        if not command.args:
-            return CommandResponse(
-                action="request.answer.invalid",
-                text="Usage: /answer <request-id> key=value ...",
-            )
-        if "=" in command.args[0]:
-            token = None
-            answer_parts = command.args
-        else:
-            token = command.args[0]
-            answer_parts = command.args[1:]
-        if not answer_parts:
-            return CommandResponse(
-                action="request.answer.invalid",
-                text="Usage: /answer <request-id> key=value ...",
-            )
-        try:
-            route = self.store.match_pending_request(
-                channel_id, conversation_id, token, kind="question"
-            )
-        except ValueError as exc:
-            return CommandResponse(action="request.answer.missing", text=str(exc))
-        if route is None:
-            return CommandResponse(
-                action="request.answer.missing", text="Unknown question request."
-            )
+        del channel_id, conversation_id, command
+        return self._sdk_request_owned()
+
+    @staticmethod
+    def _sdk_request_owned() -> CommandResponse:
         return CommandResponse(
-            action="request.answer",
-            text=f"Recorded answer for {route.request_id}.",
-            request_id=route.request_id,
-            answers=self._parse_answers(answer_parts),
+            action="request.sdk_owned",
+            text="Interactive requests are routed by the SDK request presenter.",
         )
 
     def _handle_view(
@@ -943,8 +916,6 @@ class CommandRouter:
                     [
                         "Advanced native commands:",
                         "/native call <method> <json>",
-                        "/native respond <request-id-or-prefix> <json>",
-                        "/native error <request-id-or-prefix> <code> <message> [data-json]",
                         "/native events [filters...]",
                     ]
                 ),
@@ -979,82 +950,6 @@ class CommandRouter:
                 action="native.call",
                 text="",
                 payload={"method": method, "params": params},
-            )
-        if subcommand == "respond":
-            raw = command.raw_args_text[len("respond") :].strip()
-            token, _, payload_text = raw.partition(" ")
-            if not token or not payload_text.strip():
-                return CommandResponse(
-                    action="native.respond.invalid",
-                    text="Usage: /native respond <request-id-or-prefix> <json>",
-                )
-            try:
-                route = self.store.match_pending_request(
-                    channel_id, conversation_id, token
-                )
-            except ValueError as exc:
-                return CommandResponse(action="native.respond.missing", text=str(exc))
-            if route is None:
-                return CommandResponse(
-                    action="native.respond.missing", text="Unknown native request."
-                )
-            try:
-                payload = json.loads(payload_text)
-            except json.JSONDecodeError:
-                return CommandResponse(
-                    action="native.respond.invalid",
-                    text="Native response payload must be valid JSON.",
-                )
-            if not isinstance(payload, dict):
-                return CommandResponse(
-                    action="native.respond.invalid",
-                    text="Native response payload must be a JSON object.",
-                )
-            return CommandResponse(
-                action="native.respond",
-                text=f"Responded to {route.request_id}.",
-                request_id=route.request_id,
-                payload=payload,
-            )
-        if subcommand == "error":
-            if len(command.args) < 4:
-                return CommandResponse(
-                    action="native.error.invalid",
-                    text="Usage: /native error <request-id-or-prefix> <code> <message> [data-json]",
-                )
-            token = command.args[1]
-            try:
-                route = self.store.match_pending_request(
-                    channel_id, conversation_id, token
-                )
-            except ValueError as exc:
-                return CommandResponse(action="native.error.missing", text=str(exc))
-            if route is None:
-                return CommandResponse(
-                    action="native.error.missing", text="Unknown native request."
-                )
-            try:
-                code = int(command.args[2])
-            except ValueError:
-                return CommandResponse(
-                    action="native.error.invalid",
-                    text="Native error code must be an integer.",
-                )
-            message = command.args[3]
-            data = None
-            if len(command.args) > 4:
-                try:
-                    data = json.loads(" ".join(command.args[4:]))
-                except json.JSONDecodeError:
-                    return CommandResponse(
-                        action="native.error.invalid",
-                        text="Native error data must be valid JSON.",
-                    )
-            return CommandResponse(
-                action="native.error",
-                text=f"Returned error for {route.request_id}.",
-                request_id=route.request_id,
-                payload={"code": code, "message": message, "data": data},
             )
         return CommandResponse(action="native.invalid", text="Usage: /native help")
 
@@ -1170,37 +1065,6 @@ class CommandRouter:
             ),
         )
 
-    def _handle_resolution(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        args: list[str],
-        action: str,
-        decision: str,
-    ) -> CommandResponse:
-        token = args[0] if args else None
-        try:
-            routes = self.store.select_pending_requests(
-                channel_id, conversation_id, token, kind="approval"
-            )
-        except ValueError as exc:
-            return CommandResponse(action=f"{action}.missing", text=str(exc))
-        if not routes:
-            return CommandResponse(
-                action=f"{action}.missing", text="Unknown approval request."
-            )
-        request_ids = [route.request_id for route in routes]
-        if len(request_ids) == 1:
-            text = f"Recorded {decision} for {request_ids[0]}."
-        else:
-            text = f"Recorded {decision} for {len(request_ids)} requests."
-        return CommandResponse(
-            action=action,
-            text=text,
-            request_id=request_ids[0] if len(request_ids) == 1 else None,
-            request_ids=request_ids,
-        )
-
     def _handle_visibility_toggle(
         self,
         channel_id: str,
@@ -1241,15 +1105,6 @@ class CommandRouter:
         if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
             return text[1:-1]
         return text
-
-    def _parse_answers(self, pairs: list[str]) -> dict[str, list[str]]:
-        answers: dict[str, list[str]] = {}
-        for pair in pairs:
-            if "=" not in pair:
-                continue
-            key, value = pair.split("=", 1)
-            answers[key] = [part for part in value.split(",") if part]
-        return answers
 
     def _default_playground_path(self) -> Path:
         desktop = Path.home() / "Desktop"

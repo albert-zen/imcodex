@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 
 from imagent.contracts import (
@@ -41,23 +42,37 @@ async def migrate_legacy_gateway_state(
             )
         )
         current = await gateway_state.get(conversation)
+        desired_thread_ref = (
+            ThreadRef(application_instance_id, legacy.thread_id)
+            if legacy.thread_id
+            else None
+        )
         if current is None:
-            thread_ref = (
-                ThreadRef(application_instance_id, legacy.thread_id)
-                if legacy.thread_id
-                else None
-            )
-            await gateway_state.put(
+            current = await gateway_state.put(
                 ConversationBinding(
                     conversation_ref=conversation,
                     application_ref=ApplicationRef(application_instance_id),
-                    thread_ref=thread_ref,
+                    thread_ref=desired_thread_ref,
                     updated_at=datetime.now(UTC),
                 )
             )
             imported += 1
-        else:
-            thread_ref = current.thread_ref
+        elif current.thread_ref != desired_thread_ref:
+            if current.thread_ref is not None:
+                await gateway_state.delete_projection_routes(
+                    current.thread_ref,
+                    conversation_ref=conversation,
+                )
+            current = await gateway_state.put(
+                ConversationBinding(
+                    conversation_ref=conversation,
+                    application_ref=ApplicationRef(application_instance_id),
+                    thread_ref=desired_thread_ref,
+                    updated_at=datetime.now(UTC),
+                ),
+                expected_revision=current.revision,
+            )
+        thread_ref = current.thread_ref
         if thread_ref is None:
             continue
         route = ThreadProjectionRoute(
@@ -74,21 +89,39 @@ async def recover_legacy_deliveries(*, product_store, delivery_service) -> int:
     """Converge the old durable outbox through SDK delivery, then retire entries."""
 
     completed = 0
-    for pending in product_store.list_pending_terminal_deliveries():
-        message = OutboundMessage(**pending.message)
+    for pending in product_store.list_legacy_delivery_evidence():
+        message_payload = copy.deepcopy(pending.message)
+        metadata = message_payload.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata["delivery_id"] = pending.delivery_id
+        message_payload["metadata"] = metadata
+        message = OutboundMessage(**message_payload)
         try:
             (
                 _outbound,
                 delivered,
                 _durable,
             ) = await delivery_service.deliver_outbound_message(message)
-        except Exception:
-            continue
+        except ValueError as exc:
+            raise RuntimeError(
+                f"legacy delivery {pending.delivery_id} cannot migrate: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"legacy delivery {pending.delivery_id} migration attempt failed: {exc}"
+            ) from exc
         if not delivered:
+            if not _durable:
+                raise RuntimeError(
+                    f"legacy delivery {pending.delivery_id} reached a permanent non-delivered outcome"
+                )
             continue
-        product_store.complete_terminal_delivery(pending.delivery_id)
+        try:
+            await product_store.consume_legacy_delivery_evidence(pending.delivery_id)
+        except Exception as exc:
+            raise RuntimeError(
+                f"legacy delivery {pending.delivery_id} evidence commit failed: {exc}"
+            ) from exc
         await delivery_service.discard_outbound_uploads(message.artifacts)
         completed += 1
-    if completed:
-        await product_store.flush_pending_writes()
     return completed

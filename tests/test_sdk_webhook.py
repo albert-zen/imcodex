@@ -18,8 +18,17 @@ class _OutboundSink:
         self.messages.append(message)
 
 
+class _FailOnceSink(_OutboundSink):
+    async def send_message(self, message) -> None:
+        self.messages.append(message)
+        if len(self.messages) == 1:
+            raise RuntimeError("callback failed")
+
+
 @pytest.mark.asyncio
-async def test_webhook_channel_round_trips_dynamic_namespace_and_immediate_reply() -> None:
+async def test_webhook_channel_round_trips_dynamic_namespace_and_immediate_reply() -> (
+    None
+):
     channel = SdkWebhookChannel()
 
     async def on_message(message) -> None:
@@ -74,3 +83,38 @@ async def test_webhook_channel_uses_configured_sink_for_async_output() -> None:
     assert sink.messages[0].channel_id == "custom-a"
     assert sink.messages[0].conversation_id == "room/1"
     assert sink.messages[0].text == "Later"
+
+
+@pytest.mark.asyncio
+async def test_immediate_response_is_deduplicated_across_sink_retry() -> None:
+    sink = _FailOnceSink()
+    channel = SdkWebhookChannel(outbound_sink=sink)
+
+    async def on_message(message) -> None:
+        outbound = SdkOutboundMessage(
+            delivery_id="delivery-retry",
+            conversation_ref=message.conversation_ref,
+            content=(TextContent("Done"),),
+            created_at=datetime.now(UTC),
+            reply_to=message.message_id,
+        )
+        with pytest.raises(RuntimeError, match="callback failed"):
+            await channel.send(outbound)
+        await channel.send(outbound)
+
+    await channel.start(on_message, lambda operation: None)
+    try:
+        outputs = await channel.receive(
+            InboundMessage(
+                channel_id="custom-a",
+                conversation_id="room/1",
+                user_id="user-1",
+                message_id="message-1",
+                text="hello",
+            )
+        )
+    finally:
+        await channel.stop()
+
+    assert [output.metadata["delivery_id"] for output in outputs] == ["delivery-retry"]
+    assert len(sink.messages) == 2

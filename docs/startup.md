@@ -210,19 +210,15 @@ retries until the bridge shuts down, with delay capped by
 `IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`; explicit `stdio://` does not use this
 background loop, and `auto` is rejected. Shutdown cancels any pending retry.
 
-A transport connection is not considered fully restored on its own. Each new
-connection epoch reruns native `initialize`, permission defaults, and bound
-thread rehydration before health reports `appserver.status=connected`. If one or
-more native bindings fail or cannot be verified, the connection remains usable
-but health reports `appserver.status=degraded` with `rehydration` totals instead
-of claiming complete recovery. During recovery, `health.json` reports
-`appserver.status=reconnecting` together with the current retry attempt and
-delay. The App Server health object also reports `ready`, `ownership`,
-`transport`, a credential-safe `endpoint`, `connection_epoch`, and whether
-background reconnect and verified local image paths are enabled. The IM
-`/status` command presents the same
-connection facts and remains useful when a native thread read is temporarily
-unavailable. Recovery does not wait for another IM message. Reconnect delays
+The SDK Application diagnostic controls top-level health and the bounded facts
+under `health.json.sdk.applications`. The compatibility
+`health.json.appserver` object uses the same credential-safe native client facts
+as IM `/status`, including the distinct transport-open `connected` and fully
+initialized `ready` states, topology, endpoint, and `connection_epoch`.
+`connecting`, `reconnecting`, and `disconnected` SDK diagnostic states still
+make top-level health degraded. The IM `/status` command remains useful when
+a native thread read is temporarily unavailable. Recovery does not wait for
+another IM message. Reconnect delays
 must be positive, the maximum must be at least the initial delay, and jitter
 must be between `0` and `1`.
 
@@ -284,9 +280,8 @@ After startup, check `.imcodex-run/current/health.json`:
 - `status` should be `healthy`
 - `http.listening` should be `true`
 - `appserver.connected` should be `true`
-- `appserver.mode` should be `external`
-- `appserver.ownership` should be `external`
-- `appserver.transport` should describe the selected Unix, TCP, or stdio transport
+- `appserver.mode`, `ownership`, and `transport` should match the selected
+  external Unix/TCP or explicit bridge-child stdio target
 - `appserver.connection_epoch` should be at least `1`
 
 Protocol troubleshooting data is written under `.imcodex-run/current/`:

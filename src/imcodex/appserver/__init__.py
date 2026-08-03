@@ -4,7 +4,6 @@ from .backend import (
     CodexBackend,
     StaleThreadBindingError,
     ThreadSelectionError,
-    TurnSubmission,
 )
 
 __all__ = [
@@ -12,5 +11,4 @@ __all__ = [
     "CodexBackend",
     "StaleThreadBindingError",
     "ThreadSelectionError",
-    "TurnSubmission",
 ]

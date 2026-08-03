@@ -15,12 +15,21 @@ from imagent.diagnostics import (
     QueueDiagnosticName,
 )
 
-from imcodex.sdk_runtime import SdkRuntime, sdk_health_payload
+from imcodex.sdk_runtime import (
+    SdkRuntime,
+    _appserver_health,
+    _sdk_health_status,
+    sdk_health_payload,
+)
 
 
-def _snapshot(*, degraded: bool = False) -> DiagnosticsSnapshot:
+def _snapshot(
+    *,
+    degraded: bool = False,
+    application_state: ConnectionDiagnosticState = ConnectionDiagnosticState.READY,
+) -> DiagnosticsSnapshot:
     application_connection = ConnectionDiagnosticFacts(
-        state=ConnectionDiagnosticState.READY,
+        state=application_state,
         connection_epoch=2,
         reconnect_count=1,
         worker_running=True,
@@ -74,6 +83,45 @@ def test_sdk_health_payload_is_redacted_and_operator_friendly() -> None:
     assert payload["applications"]["codex-main"]["connection"]["state"] == "ready"
     assert payload["channels"]["telegram"]["connection"]["reconnect_count"] == 1
     assert payload["projections"]["worker_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        ConnectionDiagnosticState.DISCONNECTED,
+        ConnectionDiagnosticState.CONNECTING,
+        ConnectionDiagnosticState.RECONNECTING,
+    ),
+)
+def test_sdk_health_degrades_non_ready_application_connections(state) -> None:
+    assert _sdk_health_status(_snapshot(application_state=state)) == "degraded"
+    appserver = _appserver_health(_snapshot(application_state=state))
+    assert appserver["connected"] is False
+    assert appserver["status"] == state.value
+
+
+def test_sdk_health_uses_client_topology_and_sdk_connection_state() -> None:
+    class Client:
+        @staticmethod
+        def connection_facts():
+            return {
+                "mode": "external",
+                "ownership": "external",
+                "transport": "unix-websocket",
+                "endpoint": "unix:///safe/app-server.sock",
+                "reconnect_enabled": True,
+                "connected": False,
+                "status": "stale-client-value",
+                "connection_epoch": 99,
+            }
+
+    appserver = _appserver_health(_snapshot(), client=Client())
+
+    assert appserver["mode"] == "external"
+    assert appserver["transport"] == "unix-websocket"
+    assert appserver["connected"] is False
+    assert appserver["status"] == "stale-client-value"
+    assert appserver["connection_epoch"] == 99
 
 
 @pytest.mark.asyncio
@@ -135,4 +183,45 @@ async def test_sdk_runtime_owns_gateway_state_and_health_lifecycle() -> None:
     ]
     assert health[0]["status"] == "degraded"
     assert health[0]["sdk"]["gateway"]["accepting_inbound"] is True
+    assert health[0]["appserver"]["connected"] is True
+    assert health[0]["appserver"]["status"] == "connected"
+    assert health[0]["appserver"]["connection_epoch"] == 2
     assert health[-1] == {"status": "stopped"}
+
+
+@pytest.mark.asyncio
+async def test_maintenance_failure_remains_degraded_and_observable() -> None:
+    health = []
+    events = []
+
+    class Gateway:
+        @staticmethod
+        def diagnostics_snapshot():
+            return _snapshot()
+
+    class Observability:
+        def update_health(self, **changes) -> None:
+            health.append(changes)
+
+        def emit_event(self, **event) -> None:
+            events.append(event)
+
+    async def maintenance():
+        raise RuntimeError("legacy delivery blocked-1 cannot migrate")
+
+    runtime = SdkRuntime(
+        gateway=Gateway(),
+        state=object(),
+        observability=Observability(),
+        maintenance=maintenance,
+    )
+
+    await runtime._run_maintenance_once()
+    runtime._publish_sdk_health()
+
+    assert health[-1]["status"] == "degraded"
+    assert health[-1]["sdk"]["maintenance"] == {
+        "status": "degraded",
+        "error": "legacy delivery blocked-1 cannot migrate",
+    }
+    assert events[0]["event"] == "bridge.maintenance_failed"
