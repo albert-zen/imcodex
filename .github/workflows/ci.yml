@@ -47,6 +47,10 @@ jobs:
           token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install dependencies
+        env:
+          # Let pip's pinned VCS dependency reuse the credential persisted by
+          # the private SDK checkout, including for its temporary git clone.
+          GIT_CONFIG_GLOBAL: ${{ github.workspace }}/.ci/im-agent-sdk/.git/config
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
@@ -84,6 +88,8 @@ jobs:
           token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install minimum multipart-compatible stack
+        env:
+          GIT_CONFIG_GLOBAL: ${{ github.workspace }}/.ci/im-agent-sdk/.git/config
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
@@ -124,6 +130,8 @@ jobs:
         run: npm install --global @openai/codex
 
       - name: Install IMCodex
+        env:
+          GIT_CONFIG_GLOBAL: ${{ github.workspace }}/.ci/im-agent-sdk/.git/config
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
@@ -165,6 +173,8 @@ jobs:
           token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install AgentKit
+        env:
+          GIT_CONFIG_GLOBAL: ${{ github.workspace }}/.ci/im-agent-sdk/.git/config
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
