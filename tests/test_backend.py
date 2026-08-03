@@ -72,7 +72,9 @@ class FakeClient:
         }
 
     async def read_thread(self, thread_id: str):
-        raise AssertionError(f"read_thread should not be called for listed thread {thread_id}")
+        raise AssertionError(
+            f"read_thread should not be called for listed thread {thread_id}"
+        )
 
 
 class NamedClient(FakeClient):
@@ -114,7 +116,9 @@ class NewThreadClient:
         }
 
     async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
-        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
+        self.start_turn_calls.append(
+            {"thread_id": thread_id, "input_items": input_items, **kwargs}
+        )
         return {"turn": {"id": "turn_1", "status": "inProgress"}}
 
 
@@ -126,7 +130,9 @@ class ResumeFallbackClient:
 
     async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
         self._start_attempts += 1
-        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
+        self.start_turn_calls.append(
+            {"thread_id": thread_id, "input_items": input_items, **kwargs}
+        )
         if self._start_attempts == 1:
             raise AppServerError(f"no rollout found for thread id {thread_id}")
         return {"turn": {"id": "turn_2", "status": "inProgress"}}
@@ -153,7 +159,9 @@ class MultimodalClient:
         return True
 
     async def start_turn(self, thread_id: str, *, input_items: list[dict], **kwargs):
-        self.start_turn_calls.append({"thread_id": thread_id, "input_items": input_items, **kwargs})
+        self.start_turn_calls.append(
+            {"thread_id": thread_id, "input_items": input_items, **kwargs}
+        )
         return {"turn": {"id": "turn_2", "status": "inProgress"}}
 
     async def steer_turn(
@@ -183,7 +191,9 @@ class InterruptStaleClient:
 
 
 class RehydrateClient:
-    def __init__(self, *, status: object = "idle", turns: list[dict] | None = None) -> None:
+    def __init__(
+        self, *, status: object = "idle", turns: list[dict] | None = None
+    ) -> None:
         self.resume_calls: list[dict] = []
         self.status = status
         self.turns = turns
@@ -259,7 +269,9 @@ class ThreadOpsClient:
     ],
 )
 def test_prefers_native_recovery_for_websocket_modes(mode: str, expected: bool) -> None:
-    client = type("Client", (), {"connection_mode": mode, "last_connection_mode": "disconnected"})()
+    client = type(
+        "Client", (), {"connection_mode": mode, "last_connection_mode": "disconnected"}
+    )()
     backend = CodexBackend(
         client=client,
         store=ConversationStore(clock=lambda: 1.0),
@@ -342,14 +354,20 @@ async def test_query_threads_sends_native_search_and_limit() -> None:
     )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    result = await backend.query_threads("qq", "conv-1", search_term="native match", limit=6)
+    result = await backend.query_threads(
+        "qq", "conv-1", search_term="native match", limit=6
+    )
 
     assert [thread.thread_id for thread in result.threads] == ["thr_named"]
-    assert client.list_calls == [{"sortKey": "updated_at", "searchTerm": "native match", "limit": 6}]
+    assert client.list_calls == [
+        {"sortKey": "updated_at", "searchTerm": "native match", "limit": 6}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_query_all_threads_exhausts_native_cursors_in_desktop_sized_batches() -> None:
+async def test_query_all_threads_exhausts_native_cursors_in_desktop_sized_batches() -> (
+    None
+):
     class PagedClient(FakeClient):
         async def list_threads(self, **params):
             self.list_calls.append(params)
@@ -367,7 +385,7 @@ async def test_query_all_threads_exhausts_native_cursors_in_desktop_sized_batche
                             "cwd": r"D:\work\beta",
                             "preview": "Beta",
                             "status": "idle",
-                        }
+                        },
                     ],
                     "nextCursor": None,
                 }
@@ -425,14 +443,18 @@ async def test_query_all_threads_rejects_repeated_native_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_page() -> None:
+async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_page() -> (
+    None
+):
     class CursoredClient(NamedClient):
         async def list_threads(self, **params):
             self.list_calls.append(params)
             return {"data": list(self.items), "nextCursor": "cursor-2"}
 
         async def read_thread(self, thread_id: str):
-            raise AssertionError(f"read_thread should not be called for cursored page {thread_id}")
+            raise AssertionError(
+                f"read_thread should not be called for cursored page {thread_id}"
+            )
 
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_bound")
@@ -463,7 +485,9 @@ async def test_query_threads_does_not_inject_bound_thread_into_cursored_native_p
 
 
 @pytest.mark.asyncio
-async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_native_page() -> None:
+async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_native_page() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_bound")
     client = NamedClient(
@@ -493,22 +517,10 @@ async def test_query_threads_does_not_inject_bound_thread_into_full_terminal_nat
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_preserves_existing_tools_without_resume_injection() -> None:
+async def test_attach_thread_does_not_inject_dynamic_tools_on_resume() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = AttachClient()
-    backend = CodexBackend(
-        client=client,
-        store=store,
-        service_name="imcodex-test",
-        thread_dynamic_tools=[
-            {
-                "type": "function",
-                "name": "list_threads",
-                "description": "List threads",
-                "inputSchema": {"type": "object"},
-            }
-        ],
-    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     thread_id = await backend.attach_thread("qq", "conv-1", "thr_attached")
 
@@ -537,7 +549,9 @@ async def test_attach_thread_reconciles_native_active_turn() -> None:
             }
 
     store = ConversationStore(clock=lambda: 1.0)
-    backend = CodexBackend(client=ActiveAttachClient(), store=store, service_name="imcodex-test")
+    backend = CodexBackend(
+        client=ActiveAttachClient(), store=store, service_name="imcodex-test"
+    )
 
     await backend.attach_thread("qq", "conv-1", "thr_running")
 
@@ -557,7 +571,9 @@ async def test_attach_thread_refuses_inexact_native_handoff() -> None:
             }
 
     store = ConversationStore(clock=lambda: 1.0)
-    backend = CodexBackend(client=InexactAttachClient(), store=store, service_name="test")
+    backend = CodexBackend(
+        client=InexactAttachClient(), store=store, service_name="test"
+    )
 
     with pytest.raises(AppServerError, match="inexact handoff"):
         await backend.attach_thread("qq", "conv-1", "thr_requested")
@@ -579,7 +595,9 @@ async def test_attach_thread_refuses_unverifiable_active_handoff() -> None:
             }
 
     store = ConversationStore(clock=lambda: 1.0)
-    backend = CodexBackend(client=UnverifiableAttachClient(), store=store, service_name="test")
+    backend = CodexBackend(
+        client=UnverifiableAttachClient(), store=store, service_name="test"
+    )
 
     with pytest.raises(AppServerError, match="unverifiable handoff"):
         await backend.attach_thread("qq", "conv-1", "thr_running")
@@ -588,7 +606,9 @@ async def test_attach_thread_refuses_unverifiable_active_handoff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_attach_thread_allows_observing_nontransferable_native_interaction() -> None:
+async def test_attach_thread_allows_observing_nontransferable_native_interaction() -> (
+    None
+):
     class PendingInteractionClient:
         async def resume_thread(self, **params):
             return {
@@ -602,7 +622,9 @@ async def test_attach_thread_allows_observing_nontransferable_native_interaction
             }
 
     store = ConversationStore(clock=lambda: 1.0)
-    backend = CodexBackend(client=PendingInteractionClient(), store=store, service_name="test")
+    backend = CodexBackend(
+        client=PendingInteractionClient(), store=store, service_name="test"
+    )
 
     attached = await backend.attach_thread("qq", "conv-1", "thr_running")
 
@@ -661,7 +683,9 @@ async def test_observed_busy_thread_defers_input_acceptance_to_native_steer() ->
 
 
 @pytest.mark.asyncio
-async def test_bound_thread_input_steers_without_experimental_direct_input_hint() -> None:
+async def test_bound_thread_input_steers_without_experimental_direct_input_hint() -> (
+    None
+):
     class StableOnlyClient:
         _experimental_api_enabled = False
 
@@ -723,7 +747,9 @@ async def test_thread_operations_use_active_native_thread() -> None:
         }
     ]
     assert client.fork_calls == ["thr_1"]
-    assert client.rename_calls == [{"thread_id": "thr_forked", "name": "Renamed thread"}]
+    assert client.rename_calls == [
+        {"thread_id": "thr_forked", "name": "Renamed thread"}
+    ]
     assert client.compact_calls == ["thr_forked"]
 
 
@@ -815,41 +841,21 @@ async def test_submit_text_starts_first_turn_without_resuming_fresh_thread() -> 
         "input_items": [{"type": "text", "text": "again"}],
         "summary": "concise",
     }
+
+
 @pytest.mark.asyncio
-async def test_new_thread_receives_configured_dynamic_tools() -> None:
+async def test_new_thread_does_not_advertise_dynamic_tools() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
     client = NewThreadClient()
-    tool_specs = [
-        {
-            "type": "function",
-            "name": "list_threads",
-            "description": "List threads",
-            "inputSchema": {"type": "object"},
-        }
-    ]
-    backend = CodexBackend(
-        client=client,
-        store=store,
-        service_name="imcodex-test",
-        thread_dynamic_tools=tool_specs,
-    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     await backend.create_new_thread("qq", "conv-1")
-    tool_specs[0]["name"] = "mutated"
 
     assert client.start_thread_calls == [
         {
             "cwd": r"D:\desktop\imcodex",
             "service_name": "imcodex-test",
-            "dynamicTools": [
-                {
-                    "type": "function",
-                    "name": "list_threads",
-                    "description": "List threads",
-                    "inputSchema": {"type": "object"},
-                }
-            ],
         }
     ]
 
@@ -1018,7 +1024,9 @@ async def test_submit_input_persists_file_manifest_with_user_caption() -> None:
         filename=r"..\review.pdf",
     )
 
-    await backend.submit_input("telegram", "conv-1", "Review this file  \n", (attachment,))
+    await backend.submit_input(
+        "telegram", "conv-1", "Review this file  \n", (attachment,)
+    )
 
     assert client.start_turn_calls[0]["input_items"] == [
         {
@@ -1121,7 +1129,9 @@ async def test_submit_input_rejects_images_when_client_capability_is_unknown() -
     )
     image = InboundAttachment("image", "image/png", "/tmp/inbound.png", 123)
 
-    with pytest.raises(AppServerError, match="cannot read bridge-local attachment paths"):
+    with pytest.raises(
+        AppServerError, match="cannot read bridge-local attachment paths"
+    ):
         await backend.submit_input("qq", "conv-1", "", (image,))
 
 
@@ -1202,7 +1212,9 @@ async def test_stale_multimodal_steer_falls_back_without_losing_image() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("message", ["unknown thread", "no rollout found for thread id thr_old"])
+@pytest.mark.parametrize(
+    "message", ["unknown thread", "no rollout found for thread id thr_old"]
+)
 async def test_interrupt_turn_treats_stale_thread_errors_as_local_cleanup(
     message: str,
 ) -> None:
@@ -1273,7 +1285,9 @@ async def test_rehydrate_bound_threads_resumes_all_known_bindings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_idle() -> None:
+async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_idle() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
     store.note_active_turn("thr_1", "turn_1", "inProgress")
@@ -1291,14 +1305,18 @@ async def test_rehydrate_bound_threads_clears_active_turn_when_native_thread_is_
 
 
 @pytest.mark.asyncio
-async def test_rehydrate_bound_threads_returns_terminal_turn_completed_during_disconnect() -> None:
+async def test_rehydrate_bound_threads_returns_terminal_turn_completed_during_disconnect() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
     store.note_active_turn("thr_1", "turn_1", "inProgress")
     terminal_turn = {
         "id": "turn_1",
         "status": "completed",
-        "items": [{"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}],
+        "items": [
+            {"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}
+        ],
     }
     client = RehydrateClient(status="idle", turns=[terminal_turn])
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -1315,7 +1333,9 @@ async def test_rehydrate_bound_threads_returns_terminal_turn_completed_during_di
 
 
 @pytest.mark.asyncio
-async def test_rehydrate_recovers_watched_turn_after_full_process_restart(tmp_path) -> None:
+async def test_rehydrate_recovers_watched_turn_after_full_process_restart(
+    tmp_path,
+) -> None:
     state_path = tmp_path / "state.json"
     before_restart = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     before_restart.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\imcodex")
@@ -1326,7 +1346,9 @@ async def test_rehydrate_recovers_watched_turn_after_full_process_restart(tmp_pa
     terminal_turn = {
         "id": "turn_1",
         "status": "completed",
-        "items": [{"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}],
+        "items": [
+            {"type": "agentMessage", "phase": "final_answer", "text": "Recovered"}
+        ],
     }
     client = RehydrateClient(status="idle", turns=[terminal_turn])
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -1341,7 +1363,9 @@ async def test_rehydrate_recovers_watched_turn_after_full_process_restart(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_binding() -> None:
+async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_binding() -> (
+    None
+):
     class FailingRehydrateClient:
         async def resume_thread(self, **_params):
             raise AppServerError("temporarily unavailable")
@@ -1396,7 +1420,9 @@ async def test_stale_native_thread_keeps_already_staged_terminal_delivery() -> N
     await backend.rehydrate_bound_threads()
 
     assert store.get_binding("qq", "conv-1").thread_id is None
-    assert [item.turn_id for item in store.list_pending_terminal_deliveries()] == ["turn_1"]
+    assert [item.turn_id for item in store.list_pending_terminal_deliveries()] == [
+        "turn_1"
+    ]
 
 
 @pytest.mark.asyncio
@@ -1441,7 +1467,9 @@ async def test_rehydrate_unverifiable_payload_discards_cached_active_turn(
 
 
 @pytest.mark.asyncio
-async def test_rehydrate_replaces_cached_turn_with_verified_native_active_turn() -> None:
+async def test_rehydrate_replaces_cached_turn_with_verified_native_active_turn() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     store.note_active_turn("thr_1", "turn_old", "inProgress")
@@ -1514,7 +1542,9 @@ class SettingsClient:
         self.model_calls: list[dict] = []
         self.requirements_calls = 0
 
-    async def read_config(self, *, include_layers: bool = False, cwd: str | None = None):
+    async def read_config(
+        self, *, include_layers: bool = False, cwd: str | None = None
+    ):
         self.read_calls.append({"include_layers": include_layers, "cwd": cwd})
         return {
             "config": dict(self.config),
@@ -1563,7 +1593,9 @@ class SettingsClient:
 
 
 @pytest.mark.asyncio
-async def test_reasoning_options_follow_selected_native_model_and_reload_config_stack() -> None:
+async def test_reasoning_options_follow_selected_native_model_and_reload_config_stack() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-current"},
@@ -1605,7 +1637,9 @@ async def test_reasoning_options_follow_selected_native_model_and_reload_config_
 
 
 @pytest.mark.asyncio
-async def test_reasoning_command_uses_managed_model_and_rejects_managed_effort_write() -> None:
+async def test_reasoning_command_uses_managed_model_and_rejects_managed_effort_write() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-user", "model_reasoning_effort": "low"},
@@ -1636,7 +1670,9 @@ async def test_reasoning_command_uses_managed_model_and_rejects_managed_effort_w
 
 
 @pytest.mark.asyncio
-async def test_global_settings_reads_native_options_without_creating_a_binding() -> None:
+async def test_global_settings_reads_native_options_without_creating_a_binding() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     layers = [
         {
@@ -1685,7 +1721,9 @@ async def test_global_settings_reads_native_options_without_creating_a_binding()
 
 
 @pytest.mark.asyncio
-async def test_global_settings_projects_managed_new_thread_defaults_from_codex() -> None:
+async def test_global_settings_projects_managed_new_thread_defaults_from_codex() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={
@@ -1726,7 +1764,12 @@ async def test_global_settings_projects_managed_new_thread_defaults_from_codex()
         "service_tier": "priority",
         "default_permissions": ":read-only",
     }
-    assert result["managedSettings"] == ["model", "reasoningEffort", "fast", "permissionMode"]
+    assert result["managedSettings"] == [
+        "model",
+        "reasoningEffort",
+        "fast",
+        "permissionMode",
+    ]
     assert result["selectedModel"] == "gpt-managed"
     assert client.model_calls == [{"includeHidden": True}]
 
@@ -1734,7 +1777,9 @@ async def test_global_settings_projects_managed_new_thread_defaults_from_codex()
 @pytest.mark.asyncio
 async def test_global_managed_model_default_cannot_be_overridden() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    client = SettingsClient(requirements={"models": {"newThread": {"model": "gpt-managed"}}})
+    client = SettingsClient(
+        requirements={"models": {"newThread": {"model": "gpt-managed"}}}
+    )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     with pytest.raises(AppServerError, match="model is managed"):
@@ -1748,7 +1793,9 @@ async def test_global_personality_rejects_model_without_native_capability() -> N
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-mini"},
-        models=[{"id": "gpt-mini", "displayName": "GPT Mini", "supportsPersonality": False}],
+        models=[
+            {"id": "gpt-mini", "displayName": "GPT Mini", "supportsPersonality": False}
+        ],
     )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
@@ -1760,7 +1807,9 @@ async def test_global_personality_rejects_model_without_native_capability() -> N
 
 
 @pytest.mark.asyncio
-async def test_personality_feature_requirement_blocks_selection_but_allows_reset() -> None:
+async def test_personality_feature_requirement_blocks_selection_but_allows_reset() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-capable", "personality": "friendly"},
@@ -1775,9 +1824,13 @@ async def test_personality_feature_requirement_blocks_selection_but_allows_reset
     options = await backend.read_personality_options("qq", "conv-1")
     assert options["personalityAvailable"] is False
 
-    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+    with pytest.raises(
+        AppServerError, match="disabled by native Codex feature requirements"
+    ):
         await backend.set_personality("qq", "conv-1", "friendly")
-    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+    with pytest.raises(
+        AppServerError, match="disabled by native Codex feature requirements"
+    ):
         await backend.set_global_preferences({"personality": "friendly"})
 
     await backend.set_global_preferences({"model": "gpt-no-personality"})
@@ -1808,7 +1861,9 @@ async def test_fast_options_use_native_model_default_and_feature_gate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fast_enable_rejects_native_feature_requirement_but_off_remains_available() -> None:
+async def test_fast_enable_rejects_native_feature_requirement_but_off_remains_available() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-fast"},
@@ -1817,7 +1872,9 @@ async def test_fast_enable_rejects_native_feature_requirement_but_off_remains_av
     )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    with pytest.raises(AppServerError, match="disabled by native Codex feature requirements"):
+    with pytest.raises(
+        AppServerError, match="disabled by native Codex feature requirements"
+    ):
         await backend.set_global_fast_mode(True)
     await backend.set_global_fast_mode(False)
 
@@ -1825,7 +1882,9 @@ async def test_fast_enable_rejects_native_feature_requirement_but_off_remains_av
 
 
 @pytest.mark.asyncio
-async def test_global_settings_writes_use_optimistic_user_layer_without_binding() -> None:
+async def test_global_settings_writes_use_optimistic_user_layer_without_binding() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-admin"},
@@ -1857,7 +1916,9 @@ async def test_global_settings_writes_use_optimistic_user_layer_without_binding(
     assert client.requirements_calls == 5
     assert client.batch_calls == [
         {
-            "edits": [{"keyPath": "model", "value": "gpt-admin", "mergeStrategy": "replace"}],
+            "edits": [
+                {"keyPath": "model", "value": "gpt-admin", "mergeStrategy": "replace"}
+            ],
             "reload_user_config": False,
             "expected_version": "user-v9",
             "file_path": "/tmp/codex/config.toml",
@@ -1927,7 +1988,9 @@ async def test_global_settings_writes_use_optimistic_user_layer_without_binding(
 
 
 @pytest.mark.asyncio
-async def test_global_preferences_apply_model_transition_atomically_against_candidate_state() -> None:
+async def test_global_preferences_apply_model_transition_atomically_against_candidate_state() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={
@@ -1979,7 +2042,11 @@ async def test_global_preferences_apply_model_transition_atomically_against_cand
                     "mergeStrategy": "replace",
                 },
                 {"keyPath": "personality", "value": None, "mergeStrategy": "replace"},
-                {"keyPath": "service_tier", "value": "default", "mergeStrategy": "replace"},
+                {
+                    "keyPath": "service_tier",
+                    "value": "default",
+                    "mergeStrategy": "replace",
+                },
             ],
             "reload_user_config": True,
             "expected_version": "user-v11",
@@ -1989,7 +2056,9 @@ async def test_global_preferences_apply_model_transition_atomically_against_cand
 
 
 @pytest.mark.asyncio
-async def test_global_preferences_reject_model_incompatible_with_managed_effort() -> None:
+async def test_global_preferences_reject_model_incompatible_with_managed_effort() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         models=[
@@ -2041,7 +2110,9 @@ async def test_global_fast_mode_disables_with_native_default_tier_only() -> None
 
 
 @pytest.mark.asyncio
-async def test_atomic_preferences_keep_fast_off_available_without_model_catalog() -> None:
+async def test_atomic_preferences_keep_fast_off_available_without_model_catalog() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(config={"service_tier": "priority"}, models=[])
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -2078,7 +2149,9 @@ async def test_global_fast_mode_enable_rejects_unsupported_native_model() -> Non
 @pytest.mark.asyncio
 async def test_conversation_fast_write_validates_the_project_effective_model() -> None:
     class ProjectSettingsClient(SettingsClient):
-        async def read_config(self, *, include_layers: bool = False, cwd: str | None = None):
+        async def read_config(
+            self, *, include_layers: bool = False, cwd: str | None = None
+        ):
             self.read_calls.append({"include_layers": include_layers, "cwd": cwd})
             model = "gpt-project" if cwd == "/tmp/project" else "gpt-global"
             return {"config": {"model": model}, "origins": {}, "layers": None}
@@ -2123,14 +2196,18 @@ async def test_global_reasoning_rejects_effort_not_advertised_by_native_model() 
 
 
 @pytest.mark.asyncio
-async def test_reasoning_write_rejects_effort_not_advertised_by_selected_model() -> None:
+async def test_reasoning_write_rejects_effort_not_advertised_by_selected_model() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         models=[
             {
                 "id": "gpt-default",
                 "isDefault": True,
-                "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "medium", "description": "Balanced"}
+                ],
             }
         ]
     )
@@ -2165,7 +2242,9 @@ async def test_personality_write_reloads_native_config_stack() -> None:
 
 
 @pytest.mark.asyncio
-async def test_permission_bootstrap_seeds_documented_full_access_only_when_unset() -> None:
+async def test_permission_bootstrap_seeds_documented_full_access_only_when_unset() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         layers=[
@@ -2228,7 +2307,9 @@ async def test_permission_bootstrap_preserves_any_existing_native_permission_cho
 
 
 @pytest.mark.asyncio
-async def test_permission_bootstrap_preserves_managed_default_and_restrictions() -> None:
+async def test_permission_bootstrap_preserves_managed_default_and_restrictions() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         requirements={
@@ -2255,7 +2336,9 @@ async def test_permission_bootstrap_preserves_managed_default_and_restrictions()
 
 
 @pytest.mark.asyncio
-async def test_permission_profile_definitions_do_not_count_as_a_selected_permission_mode() -> None:
+async def test_permission_profile_definitions_do_not_count_as_a_selected_permission_mode() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(config={"permissions": {"team": {"sandbox": "read-only"}}})
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -2273,7 +2356,9 @@ class FailingModelCatalogClient(SettingsClient):
 
 
 @pytest.mark.asyncio
-async def test_reasoning_catalog_failure_exposes_no_synthetic_choices_and_allows_reset() -> None:
+async def test_reasoning_catalog_failure_exposes_no_synthetic_choices_and_allows_reset() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = FailingModelCatalogClient(config={"model": "gpt-current"})
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
@@ -2305,7 +2390,9 @@ async def test_reasoning_catalog_failure_exposes_no_synthetic_choices_and_allows
 
 
 @pytest.mark.asyncio
-async def test_reasoning_options_are_unavailable_when_configured_model_is_absent() -> None:
+async def test_reasoning_options_are_unavailable_when_configured_model_is_absent() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-missing"},
@@ -2324,11 +2411,16 @@ async def test_reasoning_options_are_unavailable_when_configured_model_is_absent
     assert options["reasoningEfforts"] == []
     assert options["reasoningOptionsAvailable"] is False
     assert options["reasoningOptionsSource"] == "unavailable"
-    assert options["reasoningOptionsWarning"] == "the active model was not found in the native model catalog"
+    assert (
+        options["reasoningOptionsWarning"]
+        == "the active model was not found in the native model catalog"
+    )
 
 
 @pytest.mark.asyncio
-async def test_reasoning_options_do_not_guess_catalog_first_entry_as_active_model() -> None:
+async def test_reasoning_options_do_not_guess_catalog_first_entry_as_active_model() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         models=[
@@ -2349,7 +2441,9 @@ async def test_reasoning_options_do_not_guess_catalog_first_entry_as_active_mode
 
 
 @pytest.mark.asyncio
-async def test_reasoning_options_are_unavailable_without_native_effort_metadata() -> None:
+async def test_reasoning_options_are_unavailable_without_native_effort_metadata() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-current"},
@@ -2376,7 +2470,9 @@ async def test_reasoning_options_are_unavailable_without_native_effort_metadata(
 
 
 @pytest.mark.asyncio
-async def test_atomic_preferences_reject_non_default_reasoning_without_native_metadata() -> None:
+async def test_atomic_preferences_reject_non_default_reasoning_without_native_metadata() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     client = SettingsClient(
         config={"model": "gpt-current"},
@@ -2384,7 +2480,9 @@ async def test_atomic_preferences_reject_non_default_reasoning_without_native_me
     )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    with pytest.raises(AppServerError, match="does not advertise supportedReasoningEfforts"):
+    with pytest.raises(
+        AppServerError, match="does not advertise supportedReasoningEfforts"
+    ):
         await backend.set_global_preferences({"reasoningEffort": "high"})
 
     await backend.set_global_preferences({"reasoningEffort": None})
@@ -2413,7 +2511,9 @@ class PaginatedModelCatalogClient(SettingsClient):
                     {
                         "id": "gpt-selected",
                         "displayName": "GPT Selected",
-                        "supportedReasoningEfforts": [{"reasoningEffort": "ultra", "description": "Deep"}],
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "ultra", "description": "Deep"}
+                        ],
                         "defaultReasoningEffort": "ultra",
                     }
                 ],
@@ -2423,7 +2523,9 @@ class PaginatedModelCatalogClient(SettingsClient):
             "data": [
                 {
                     "id": "gpt-first",
-                    "supportedReasoningEfforts": [{"reasoningEffort": "medium", "description": "Balanced"}],
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "medium", "description": "Balanced"}
+                    ],
                 }
             ],
             "nextCursor": "page-2",
@@ -2460,7 +2562,9 @@ class RepeatingPermissionCursorClient(SettingsClient):
 @pytest.mark.asyncio
 async def test_permission_profile_catalog_rejects_repeated_pagination_cursor() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    client = RepeatingPermissionCursorClient(config={"default_permissions": ":workspace"})
+    client = RepeatingPermissionCursorClient(
+        config={"default_permissions": ":workspace"}
+    )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
     with pytest.raises(AppServerError, match="repeated pagination cursor"):

@@ -6,24 +6,18 @@ import hashlib
 import json
 import logging
 import os
-from collections import deque
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from threading import Lock, RLock
-import tempfile
-from typing import Callable
 
 from .models import (
     ConversationBinding,
-    NativeAppServerJournalEntry,
     NativeThreadSnapshot,
     PendingNativeRequestRoute,
     PendingTerminalDelivery,
     TerminalDeliveryWatch,
     ThreadBrowserContext,
-)
-from .store_native_events import (
-    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT as _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
-    NativeEventJournalMixin,
 )
 from .store_pending_requests import PendingRequestStoreMixin
 from .store_terminal_deliveries import TerminalDeliveryStoreMixin
@@ -34,28 +28,26 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationStore(
-    NativeEventJournalMixin,
     PendingRequestStoreMixin,
     TerminalDeliveryStoreMixin,
 ):
     INBOUND_DEDUP_WINDOW_S = 2.0
     RECENT_INBOUND_MESSAGE_ID_LIMIT = 1024
     RECENT_INBOUND_RESPONSE_LIMIT = 32
-    DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT = _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT
 
     def __init__(
         self,
         clock: Clock,
         state_path: str | Path | None = None,
-        native_event_journal_limit: int = _DEFAULT_NATIVE_EVENT_JOURNAL_LIMIT,
     ) -> None:
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
-        journal_limit = max(1, int(native_event_journal_limit))
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
         self._thread_recipient_routes: dict[str, tuple[str, str]] = {}
         self._pending_requests: dict[str, PendingNativeRequestRoute] = {}
-        self._terminal_delivery_watches: dict[tuple[str, str], TerminalDeliveryWatch] = {}
+        self._terminal_delivery_watches: dict[
+            tuple[str, str], TerminalDeliveryWatch
+        ] = {}
         self._pending_terminal_deliveries: dict[str, PendingTerminalDelivery] = {}
         self._acknowledged_terminal_deliveries: dict[str, tuple[str, str]] = {}
         self._standalone_delivery_outcomes: dict[str, dict] = {}
@@ -64,8 +56,6 @@ class ConversationStore(
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._active_turns: dict[str, tuple[str, str]] = {}
         self._suppressed_turns: set[tuple[str, str]] = set()
-        self._native_appserver_journal: deque[NativeAppServerJournalEntry] = deque(maxlen=journal_limit)
-        self._native_appserver_journal_sequence = 0
         self._recent_inbound_fingerprints: dict[tuple[str, str], dict[str, float]] = {}
         self._save_lock = RLock()
         self._revision_lock = Lock()
@@ -105,14 +95,18 @@ class ConversationStore(
 
         return self._thread_recipient_routes.get(str(thread_id or "").strip())
 
-    def set_bootstrap_cwd(self, channel_id: str, conversation_id: str, cwd: str) -> ConversationBinding:
+    def set_bootstrap_cwd(
+        self, channel_id: str, conversation_id: str, cwd: str
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.bootstrap_cwd = cwd
         binding.thread_id = None
         self._save()
         return binding
 
-    def bind_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> ConversationBinding:
+    def bind_thread(
+        self, channel_id: str, conversation_id: str, thread_id: str
+    ) -> ConversationBinding:
         for key, existing in self._bindings.items():
             if key == (channel_id, conversation_id):
                 continue
@@ -147,7 +141,9 @@ class ConversationStore(
             self._save()
         return binding
 
-    def clear_thread_binding(self, channel_id: str, conversation_id: str) -> ConversationBinding:
+    def clear_thread_binding(
+        self, channel_id: str, conversation_id: str
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         if binding.thread_id is not None:
             self._remove_terminal_deliveries_for_thread(
@@ -155,12 +151,16 @@ class ConversationStore(
                 preserve_staged=True,
             )
             self._active_turns.pop(binding.thread_id, None)
-            self._suppressed_turns = {key for key in self._suppressed_turns if key[0] != binding.thread_id}
+            self._suppressed_turns = {
+                key for key in self._suppressed_turns if key[0] != binding.thread_id
+            }
         binding.thread_id = None
         self._save()
         return binding
 
-    def note_thread_snapshot(self, snapshot: NativeThreadSnapshot) -> NativeThreadSnapshot:
+    def note_thread_snapshot(
+        self, snapshot: NativeThreadSnapshot
+    ) -> NativeThreadSnapshot:
         self._thread_snapshots[snapshot.thread_id] = snapshot
         return snapshot
 
@@ -242,7 +242,9 @@ class ConversationStore(
             return None
         return context
 
-    def clear_thread_browser_context(self, channel_id: str, conversation_id: str) -> None:
+    def clear_thread_browser_context(
+        self, channel_id: str, conversation_id: str
+    ) -> None:
         self._thread_browser_contexts.pop((channel_id, conversation_id), None)
 
     def note_active_turn(self, thread_id: str, turn_id: str, status: str) -> None:
@@ -271,7 +273,9 @@ class ConversationStore(
     def is_turn_suppressed(self, thread_id: str, turn_id: str) -> bool:
         return (thread_id, turn_id) in self._suppressed_turns
 
-    def set_visibility_profile(self, channel_id: str, conversation_id: str, profile: str) -> ConversationBinding:
+    def set_visibility_profile(
+        self, channel_id: str, conversation_id: str, profile: str
+    ) -> ConversationBinding:
         binding = self.get_binding(channel_id, conversation_id)
         binding.visibility_profile = profile
         if profile == "minimal":
@@ -459,7 +463,9 @@ class ConversationStore(
         recent_ids = [str(item) for item in recent] if isinstance(recent, list) else []
         recent_ids = [item for item in recent_ids if item != message_id]
         recent_ids.append(message_id)
-        binding.reply_context["recent_inbound_message_ids"] = recent_ids[-self.RECENT_INBOUND_MESSAGE_ID_LIMIT :]
+        binding.reply_context["recent_inbound_message_ids"] = recent_ids[
+            -self.RECENT_INBOUND_MESSAGE_ID_LIMIT :
+        ]
         if response_payload is not None:
             responses = binding.reply_context.get("recent_inbound_responses")
             response_map = dict(responses) if isinstance(responses, dict) else {}
@@ -498,12 +504,16 @@ class ConversationStore(
         binding = self._bindings.get(key)
         if message_id and binding is not None:
             recent = binding.reply_context.get("recent_inbound_message_ids")
-            if isinstance(recent, list) and message_id in {str(item) for item in recent}:
+            if isinstance(recent, list) and message_id in {
+                str(item) for item in recent
+            }:
                 return True
         now = self.clock()
         bucket = self._recent_inbound_fingerprints.setdefault(key, {})
         expired = [
-            fingerprint for fingerprint, seen_at in bucket.items() if now - seen_at > self.INBOUND_DEDUP_WINDOW_S
+            fingerprint
+            for fingerprint, seen_at in bucket.items()
+            if now - seen_at > self.INBOUND_DEDUP_WINDOW_S
         ]
         for fingerprint in expired:
             bucket.pop(fingerprint, None)
@@ -524,7 +534,9 @@ class ConversationStore(
             return
         self._queued_state_write = (revision, serialized)
         if self._background_writer_task is None or self._background_writer_task.done():
-            self._background_writer_task = loop.create_task(self._run_background_writer())
+            self._background_writer_task = loop.create_task(
+                self._run_background_writer()
+            )
 
     async def _run_background_writer(self) -> None:
         try:
@@ -537,7 +549,9 @@ class ConversationStore(
                     await self._write_state_async(serialized, revision)
                 except asyncio.CancelledError:
                     if revision > self._current_persisted_revision():
-                        self._background_write_failures[revision] = asyncio.CancelledError()
+                        self._background_write_failures[revision] = (
+                            asyncio.CancelledError()
+                        )
                     raise
                 except BaseException as exc:
                     self._background_write_failures[revision] = exc
@@ -562,7 +576,9 @@ class ConversationStore(
         ]
         if outstanding:
             revision, error = max(outstanding, key=lambda item: item[0])
-            raise RuntimeError(f"Could not persist bridge state revision {revision}") from error
+            raise RuntimeError(
+                f"Could not persist bridge state revision {revision}"
+            ) from error
 
     def _discard_superseded_write_failures(self) -> None:
         persisted_revision = self._current_persisted_revision()
@@ -634,17 +650,12 @@ class ConversationStore(
                     "thread_id": terminal_key[0],
                     "turn_id": terminal_key[1],
                     **(
-                        {
-                            "outcome": self._standalone_delivery_outcomes[
-                                delivery_id
-                            ]
-                        }
+                        {"outcome": self._standalone_delivery_outcomes[delivery_id]}
                         if delivery_id in self._standalone_delivery_outcomes
                         else {}
                     ),
                 }
-                for delivery_id, terminal_key
-                in self._acknowledged_terminal_deliveries.items()
+                for delivery_id, terminal_key in self._acknowledged_terminal_deliveries.items()
             ],
         }
         with self._revision_lock:
@@ -699,20 +710,32 @@ class ConversationStore(
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Could not load bridge state: {self.state_path}") from exc
+            raise RuntimeError(
+                f"Could not load bridge state: {self.state_path}"
+            ) from exc
         if not isinstance(payload, dict) or payload.get("version") != 2:
-            raise RuntimeError(f"Unsupported or invalid bridge state: {self.state_path}")
+            raise RuntimeError(
+                f"Unsupported or invalid bridge state: {self.state_path}"
+            )
         bindings = payload.get("bindings")
         if not isinstance(bindings, list):
             raise RuntimeError(f"Invalid bridge bindings state: {self.state_path}")
         for item in bindings:
-            if not isinstance(item, dict) or "channel_id" not in item or "conversation_id" not in item:
+            if (
+                not isinstance(item, dict)
+                or "channel_id" not in item
+                or "conversation_id" not in item
+            ):
                 raise RuntimeError(f"Invalid bridge binding entry: {self.state_path}")
             binding = ConversationBinding(
                 channel_id=str(item["channel_id"]),
                 conversation_id=str(item["conversation_id"]),
-                thread_id=str(item["thread_id"]) if item.get("thread_id") is not None else None,
-                bootstrap_cwd=str(item["bootstrap_cwd"]) if item.get("bootstrap_cwd") is not None else None,
+                thread_id=str(item["thread_id"])
+                if item.get("thread_id") is not None
+                else None,
+                bootstrap_cwd=str(item["bootstrap_cwd"])
+                if item.get("bootstrap_cwd") is not None
+                else None,
                 visibility_profile=str(item.get("visibility_profile") or "standard"),
                 show_commentary=bool(item.get("show_commentary", True)),
                 show_toolcalls=bool(item.get("show_toolcalls", False)),
@@ -751,33 +774,46 @@ class ConversationStore(
                 )
         terminal_delivery_watches = payload.get("terminal_delivery_watches", [])
         if not isinstance(terminal_delivery_watches, list):
-            raise RuntimeError(f"Invalid terminal delivery watch state: {self.state_path}")
+            raise RuntimeError(
+                f"Invalid terminal delivery watch state: {self.state_path}"
+            )
         for item in terminal_delivery_watches:
             if not isinstance(item, dict):
-                raise RuntimeError(f"Invalid terminal delivery watch entry: {self.state_path}")
+                raise RuntimeError(
+                    f"Invalid terminal delivery watch entry: {self.state_path}"
+                )
             thread_id = str(item.get("thread_id") or "")
             turn_id = str(item.get("turn_id") or "")
             if not thread_id or not turn_id:
-                raise RuntimeError(f"Invalid terminal delivery watch entry: {self.state_path}")
-            self._terminal_delivery_watches[(thread_id, turn_id)] = TerminalDeliveryWatch(
-                thread_id=thread_id,
-                turn_id=turn_id,
-                created_at=float(item.get("created_at") or 0.0),
+                raise RuntimeError(
+                    f"Invalid terminal delivery watch entry: {self.state_path}"
+                )
+            self._terminal_delivery_watches[(thread_id, turn_id)] = (
+                TerminalDeliveryWatch(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    created_at=float(item.get("created_at") or 0.0),
+                )
             )
         pending_terminal_deliveries = payload.get("pending_terminal_deliveries", [])
         if not isinstance(pending_terminal_deliveries, list):
-            raise RuntimeError(f"Invalid pending terminal delivery state: {self.state_path}")
+            raise RuntimeError(
+                f"Invalid pending terminal delivery state: {self.state_path}"
+            )
         for legacy_sequence, item in enumerate(pending_terminal_deliveries, start=1):
             if not isinstance(item, dict):
-                raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
+                raise RuntimeError(
+                    f"Invalid pending terminal delivery entry: {self.state_path}"
+                )
             thread_id = str(item.get("thread_id") or "")
             turn_id = str(item.get("turn_id") or "")
             message = item.get("message")
-            if (
-                bool(thread_id) != bool(turn_id)
-                or (message is not None and not isinstance(message, dict))
+            if bool(thread_id) != bool(turn_id) or (
+                message is not None and not isinstance(message, dict)
             ):
-                raise RuntimeError(f"Invalid pending terminal delivery entry: {self.state_path}")
+                raise RuntimeError(
+                    f"Invalid pending terminal delivery entry: {self.state_path}"
+                )
             if message is None:
                 # State written before watches and projected deliveries were
                 # split used an empty outbox entry as the turn watch.
@@ -785,17 +821,23 @@ class ConversationStore(
                     raise RuntimeError(
                         f"Invalid pending terminal delivery entry: {self.state_path}"
                     )
-                self._terminal_delivery_watches[(thread_id, turn_id)] = TerminalDeliveryWatch(
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    created_at=float(item.get("created_at") or 0.0),
+                self._terminal_delivery_watches[(thread_id, turn_id)] = (
+                    TerminalDeliveryWatch(
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        created_at=float(item.get("created_at") or 0.0),
+                    )
                 )
                 continue
             metadata = message.get("metadata")
             metadata = metadata if isinstance(metadata, dict) else {}
-            delivery_id = str(item.get("delivery_id") or metadata.get("delivery_id") or "")
+            delivery_id = str(
+                item.get("delivery_id") or metadata.get("delivery_id") or ""
+            )
             if not delivery_id:
-                canonical = json.dumps(message, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                canonical = json.dumps(
+                    message, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                )
                 delivery_id = f"imcodex:legacy-terminal:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
             sequence = int(item.get("sequence") or legacy_sequence)
             self._next_terminal_delivery_sequence = max(
@@ -845,7 +887,5 @@ class ConversationStore(
                     raise RuntimeError(
                         f"Invalid acknowledged terminal delivery entry: {self.state_path}"
                     )
-                self._standalone_delivery_outcomes[delivery_id] = copy.deepcopy(
-                    outcome
-                )
+                self._standalone_delivery_outcomes[delivery_id] = copy.deepcopy(outcome)
         self._prune_standalone_delivery_acknowledgements()

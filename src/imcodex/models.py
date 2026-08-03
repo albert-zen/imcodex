@@ -93,23 +93,6 @@ class ThreadBrowserContext:
     expires_at: float = 0.0
 
 
-@dataclass(slots=True)
-class NativeAppServerJournalEntry:
-    sequence: int
-    seen_at: float
-    direction: str
-    method: str
-    category: str
-    kind: str
-    summary: dict[str, Any] = field(default_factory=dict)
-    thread_id: str = ""
-    turn_id: str = ""
-    item_id: str = ""
-    request_id: str | None = None
-    outcome: str | None = None
-    note: str | None = None
-
-
 @dataclass(frozen=True, slots=True)
 class InboundAttachment:
     kind: Literal["image", "file"]
@@ -158,6 +141,7 @@ class OutboundArtifact:
     filename: str
     size_bytes: int
     sha256: str = ""
+    attachment_id: str = ""
 
 
 @dataclass(slots=True)

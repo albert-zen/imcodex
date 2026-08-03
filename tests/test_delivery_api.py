@@ -2,20 +2,19 @@ from __future__ import annotations
 
 import copy
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
-from imcodex.bridge.terminal_delivery import TerminalDeliveryMixin
-from imcodex.channels.artifacts import (
+from imagent.channels.native.artifacts import (
     append_artifact_failures,
     record_artifact_delivery,
     record_artifact_failure,
 )
+
+from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.delivery_api import (
     DELIVERY_PATH,
     DELIVERY_TOKEN_HEADER,
@@ -187,7 +186,9 @@ def _headers(app: FastAPI, *, token: str | None = None) -> dict[str, str]:
     }
 
 
-def test_delivery_endpoint_stages_file_and_returns_machine_receipt(tmp_path: Path) -> None:
+def test_delivery_endpoint_stages_file_and_returns_machine_receipt(
+    tmp_path: Path,
+) -> None:
     sink = Sink()
     app = _app(tmp_path, sink)
     client = TestClient(app, client=("127.0.0.1", 50000))
@@ -360,34 +361,24 @@ def test_delivery_endpoint_rejects_current_thread_without_im_binding(
 
 
 def test_current_route_resolver_follows_latest_cross_channel_selection() -> None:
-    class RouteResolver(TerminalDeliveryMixin):
-        pass
-
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "old-conversation", "thread-current")
     store.bind_thread("telegram", "latest-conversation", "thread-current")
-    resolver = RouteResolver()
-    resolver.store = store
-
-    assert resolver.resolve_outbound_route("thread-current") == (
+    assert store.find_recipient_route_by_thread_id("thread-current") == (
         "telegram",
         "latest-conversation",
     )
 
 
-def test_current_route_resolver_survives_switching_threads_in_one_conversation() -> None:
-    class RouteResolver(TerminalDeliveryMixin):
-        pass
-
+def test_current_route_resolver_survives_switching_threads_in_one_conversation() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "recipient", "thread-a")
     store.bind_thread("qq", "recipient", "thread-b")
-    resolver = RouteResolver()
-    resolver.store = store
-
     assert store.find_binding_by_thread_id("thread-a") is None
-    assert resolver.resolve_outbound_route("thread-a") == ("qq", "recipient")
-    assert resolver.resolve_outbound_route("thread-b") == ("qq", "recipient")
+    assert store.find_recipient_route_by_thread_id("thread-a") == ("qq", "recipient")
+    assert store.find_recipient_route_by_thread_id("thread-b") == ("qq", "recipient")
 
 
 def test_delivery_endpoint_rejects_ambiguous_current_and_explicit_route(
@@ -437,7 +428,9 @@ def test_delivery_endpoint_reports_durably_queued_message(tmp_path: Path) -> Non
     assert response.json()["text_status"] == "queued"
 
 
-def test_delivery_endpoint_rejects_disallowed_route_before_outbox(tmp_path: Path) -> None:
+def test_delivery_endpoint_rejects_disallowed_route_before_outbox(
+    tmp_path: Path,
+) -> None:
     sink = Sink()
     service = RejectingDeliveryService(tmp_path, sink)
     app = _app(tmp_path, sink, delivery_service=service)
@@ -474,7 +467,9 @@ def test_delivery_credential_is_private(tmp_path: Path) -> None:
     app = _app(tmp_path, Sink())
     credential_path = tmp_path / "run" / "current" / "delivery-token"
 
-    assert credential_path.read_text(encoding="utf-8").strip() == app.state.delivery_token
+    assert (
+        credential_path.read_text(encoding="utf-8").strip() == app.state.delivery_token
+    )
     if os.name != "nt":
         assert stat.S_IMODE(credential_path.stat().st_mode) == 0o600
 
@@ -509,8 +504,7 @@ def test_delivery_endpoint_rejects_large_or_excessive_uploads(
             )
         },
         files=[
-            ("artifacts", (f"{index}.txt", b"x", "text/plain"))
-            for index in range(5)
+            ("artifacts", (f"{index}.txt", b"x", "text/plain")) for index in range(5)
         ],
     )
     oversized_text = client.post(

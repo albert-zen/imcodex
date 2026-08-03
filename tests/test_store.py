@@ -40,7 +40,9 @@ async def test_store_persists_only_minimal_native_first_state(tmp_path) -> None:
     assert reloaded.get_binding("qq", "conv-1").thread_id == "thr_1"
 
 
-def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_turn(tmp_path) -> None:
+def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_turn(
+    tmp_path,
+) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 7.0, state_path=state_path)
     store.bind_thread("qq", "conv-1", "thr_1")
@@ -50,9 +52,7 @@ def test_store_persists_terminal_delivery_checkpoint_without_persisting_active_t
 
     assert reloaded.get_active_turn("thr_1") is None
     watches = reloaded.list_terminal_delivery_watches("thr_1")
-    assert [(item.thread_id, item.turn_id) for item in watches] == [
-        ("thr_1", "turn_1")
-    ]
+    assert [(item.thread_id, item.turn_id) for item in watches] == [("thr_1", "turn_1")]
 
 
 def test_store_keeps_acknowledged_delivery_until_turn_watch_is_consumed(
@@ -176,7 +176,12 @@ def test_store_persists_staged_terminal_message_until_delivery_ack(tmp_path) -> 
     )
 
     updated.complete_terminal_delivery("stable-1")
-    assert ConversationStore(clock=lambda: 9.0, state_path=state_path).list_pending_terminal_deliveries() == []
+    assert (
+        ConversationStore(
+            clock=lambda: 9.0, state_path=state_path
+        ).list_pending_terminal_deliveries()
+        == []
+    )
 
 
 def test_store_keeps_multiple_delivery_segments_for_the_same_native_turn() -> None:
@@ -219,7 +224,9 @@ def test_store_keeps_multiple_delivery_segments_for_the_same_native_turn() -> No
     ]
 
 
-def test_store_loads_legacy_turn_keyed_delivery_state_into_separate_layers(tmp_path) -> None:
+def test_store_loads_legacy_turn_keyed_delivery_state_into_separate_layers(
+    tmp_path,
+) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
         json.dumps(
@@ -271,10 +278,14 @@ def test_suppressing_projection_does_not_consume_terminal_delivery_checkpoint() 
     store.suppress_turn("thr_1", "turn_1")
 
     assert store.is_turn_suppressed("thr_1", "turn_1") is True
-    assert [item.turn_id for item in store.list_terminal_delivery_watches()] == ["turn_1"]
+    assert [item.turn_id for item in store.list_terminal_delivery_watches()] == [
+        "turn_1"
+    ]
 
 
-def test_clearing_stale_binding_preserves_staged_delivery_but_drops_unprojected_watch() -> None:
+def test_clearing_stale_binding_preserves_staged_delivery_but_drops_unprojected_watch() -> (
+    None
+):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
     store.stage_terminal_delivery(
@@ -391,7 +402,9 @@ def test_store_bounds_persisted_inbound_dedupe_horizon() -> None:
             text_fingerprint="fingerprint",
         )
 
-    recent = store.get_binding("gateway", "conv-1").reply_context["recent_inbound_message_ids"]
+    recent = store.get_binding("gateway", "conv-1").reply_context[
+        "recent_inbound_message_ids"
+    ]
     assert len(recent) == store.RECENT_INBOUND_MESSAGE_ID_LIMIT
     assert recent[0] == "m76"
     assert recent[-1] == "m1099"
@@ -471,8 +484,13 @@ def test_binding_a_thread_moves_pending_requests_to_latest_conversation() -> Non
 
     store.bind_thread("qq", "new-conv", "thr_1")
 
-    assert store.match_pending_request("qq", "new-conv", "native-request-abcdef") is not None
-    assert store.match_pending_request("qq", "old-conv", "native-request-abcdef") is None
+    assert (
+        store.match_pending_request("qq", "new-conv", "native-request-abcdef")
+        is not None
+    )
+    assert (
+        store.match_pending_request("qq", "old-conv", "native-request-abcdef") is None
+    )
 
 
 def test_visibility_preferences_persist_without_thread_or_cwd(tmp_path) -> None:
@@ -533,58 +551,6 @@ def test_thread_browser_context_is_runtime_only_and_expires(tmp_path) -> None:
 
     now["value"] = 131.0
     assert store.get_thread_browser_context("qq", "conv-1") is None
-
-
-def test_native_appserver_journal_is_bounded_and_runtime_only(tmp_path) -> None:
-    state_path = tmp_path / "state.json"
-    store = ConversationStore(clock=lambda: 10.0, state_path=state_path, native_event_journal_limit=2)
-
-    store.append_native_appserver_event(
-        seen_at=10.0,
-        direction="notification",
-        method="turn/started",
-        category="turn",
-        kind="turn_started",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        summary={"payload_keys": ["threadId", "turn"]},
-    )
-    store.append_native_appserver_event(
-        seen_at=11.0,
-        direction="notification",
-        method="item/completed",
-        category="item",
-        kind="item_completed",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        item_id="item_1",
-        summary={"item_type": "agentMessage"},
-    )
-    rejected = store.append_native_appserver_event(
-        seen_at=12.0,
-        direction="server_request",
-        method="item/tool/call",
-        category="item",
-        kind="unknown",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        request_id="native-request-tool",
-        outcome="rejected",
-        summary={"payload_key_count": 6},
-    )
-
-    assert [entry.method for entry in store.list_native_appserver_events()] == [
-        "item/completed",
-        "item/tool/call",
-    ]
-    assert store.list_native_appserver_events(limit=1) == [rejected]
-
-    store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "native_appserver_journal" not in payload
-
-    reloaded = ConversationStore(clock=lambda: 12.0, state_path=state_path)
-    assert reloaded.list_native_appserver_events() == []
 
 
 def test_store_has_no_bridge_owned_next_model_override_state() -> None:

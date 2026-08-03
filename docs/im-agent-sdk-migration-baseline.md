@@ -48,21 +48,21 @@ These are deliberately different facts:
    The rejected client-only trial below remains useful historical evidence,
    but this unmerged SHA is no longer the selected dependency.
 4. **Current merged SDK dependency.** The branch now pins the immutable SDK
-   `main` commit `b20317d5d410185a25f6446db6bc7ee035fd1ff1`, after merged PRs
-   [#22](https://github.com/albert-zen/im-agent-sdk/pull/22),
-   [#27](https://github.com/albert-zen/im-agent-sdk/pull/27), and
-   [#29](https://github.com/albert-zen/im-agent-sdk/pull/29). This revision
-   includes correlation-safe active-Turn continuation, bounded event fan-out
-   with explicit recovery gaps and App Server ordered handoff, and the
-   redacted diagnostics/health surface required by the consumer migration.
+   `main` commit `57f255fb1f40a095aeabb5a6967380ba057494a3`, the merge commit of
+   [PR #59](https://github.com/albert-zen/im-agent-sdk/pull/59). It contains
+   the complete independently merged ADR 0015 rollout tracked by
+   [issue #49](https://github.com/albert-zen/im-agent-sdk/issues/49), including
+   correlation-safe continuation, bounded event fan-out and recovery gaps,
+   typed I1/I2/A1/O1/O2 seams, grouped Gateway composition, metadata fidelity,
+   Channel validation/diagnostics, and App Server artifact materialization.
 
 The dependency is expressed as a PEP 508 direct Git reference in
 `pyproject.toml`; it neither reads nor depends on any developer SDK worktree.
 Every dependency update must resolve the remote full SHA and rerun the affected
 baseline and parity evidence before runtime cutover code is accepted.
 
-A fresh temporary environment resolved that direct reference to
-`b20317d5d410185a25f6446db6bc7ee035fd1ff1`, built both packages, installed the
+A fresh temporary environment must resolve that direct reference to
+`57f255fb1f40a095aeabb5a6967380ba057494a3`, build both packages, install the
 declared extras, and imported `imagent`. The full behavioral baseline remains a
 gate for the implementation work rather than for publishing this handoff branch.
 
@@ -193,20 +193,20 @@ the review evidence and the parity surface to retain after migration.
 
 | Surface | Current verified behavior and evidence | Baseline result |
 |---|---|---|
-| Multi-channel text ingress and native output | Raw text from QQ, Telegram, Feishu/Lark, Weixin, and the trusted webhook reaches the same native input boundary, and native final answers project back through the originating real adapter. Covered by `tests/e2e/test_multi_channel_system.py`, including `test_real_channel_ingress_reaches_native_and_projects_back_to_platform`. | pass |
-| Quoted-message projection | Platform-native quote snapshots remain bounded current-input context, preserve the fact that unavailable content was quoted, reject untrusted metadata stringification/boundary forgery, and never become a local conversation-history store. Covered by quote cases in `tests/test_channels.py`, `tests/test_service_e2e.py`, and `tests/e2e/test_multi_channel_system.py`. | pass |
-| Commands and Thread/workspace selection | Product grammar, native Thread query/paging, CWD-derived workspace grouping, `/pick`, attach/new/fork/name/compact, and native config commands are covered by `tests/test_commands.py`, `tests/test_backend.py`, and the command/Thread cases in `tests/test_service_e2e.py`. CWD/project grouping is presentation state; native Codex remains Thread truth. | pass |
-| History and catch-up | Native `turns/list`/`thread/read`, bounded paging, active/interrupted/compacted rendering, catch-up without model work, and handoff ordering are covered by `tests/test_thread_history.py` and the history/catch-up cases in `tests/test_service_e2e.py`. No local transcript is used as model context. | pass |
-| Active/background Turn continuation | Native steer-first continuation, stale-steer reconciliation, later output from attached/running Threads, and background reconnect without another inbound message are covered by `tests/test_backend.py` and `tests/test_service_e2e.py`. | pass |
-| Restart recovery | Binding rehydration, stale active-Turn removal, offline completion projection, per-answer receipt retention, pending terminal delivery, and standalone-delivery restart behavior are covered by `tests/test_backend.py`, `tests/test_store.py`, `tests/test_runtime.py`, and `tests/test_service_e2e.py`. | pass |
-| Timing, ordering, and deduplication | Socket-read isolation, request/notification wire order, handoff gates, response acknowledgement, lazy media after dedup, durable inbound dedup, distinct item identity, retry ordering, and cross-destination progress are covered by `tests/test_appserver_stdio.py`, `tests/test_channel_middleware.py`, `tests/test_projection.py`, and `tests/test_service_e2e.py`. | pass |
-| Images and files | Static image validation/staging, generic file bounds, image-only input, native `localImage`, exact steer/start payloads, epoch-bound local-path trust, remote-path rejection, and file manifests are covered by `tests/test_channel_files.py`, `tests/test_qq_media.py`, native channel tests, `tests/test_backend.py`, and `tests/test_service_e2e.py`. | pass |
+| Multi-channel text ingress and native output | SDK native Channel contract suites cover QQ, Telegram, Feishu/Lark, and Weixin normalization/receipts; `tests/test_sdk_composition.py`, `tests/test_sdk_webhook.py`, and `tests/test_webhook_api.py` prove the consumer composition and trusted webhook route. | pass |
+| Quoted-message projection | SDK native Channel suites own quote normalization and bounded metadata; consumer composition preserves SDK Metadata without a second quote/transcript path. | pass |
+| Commands and Thread/workspace selection | Product grammar, native Thread query/paging, CWD-derived grouping, and native config commands remain covered by `tests/test_commands.py`, `tests/test_backend.py`, and focused Thread rendering tests. | pass |
+| History and catch-up | SDK Application authoritative history/recovery contracts plus `tests/test_thread_history.py` cover bounded native reads and rendering; the old handoff projection gate was removed. | pass |
+| Active/background Turn continuation | SDK Gateway/Application tests own steer-first continuation, honest `started`, correlation, and reconnect projection; consumer backend tests retain product command policy. | pass |
+| Restart recovery | SDK projection/repository suites own authoritative replay and checkpoints; `tests/test_sdk_migration.py`, `tests/test_store.py`, and `tests/test_runtime.py` cover the one-time consumer state handoff. | pass |
+| Timing, ordering, and deduplication | SDK App Server, Gateway, Channel, projection, and coordinator suites own bounded queues, wire order, durable admission, retry ordering, and cross-destination progress. `tests/test_webhook_api.py` proves the product webhook requests pre-media admission. | pass |
+| Images and files | SDK native Channel/media suites own built-in transport media; `tests/test_channel_files.py`, `tests/test_outbound_artifacts.py`, and proactive lease tests retain product webhook/spool policy. | pass |
 | Allowlist and access | Stable sender/conversation admission, `any`/`all`/deny-all behavior, rejection before media work, outbound recheck, and health labels are covered by channel foundation, middleware, config, admin, and native channel tests. This is IM admission, not Codex execution permission. | pass |
-| App Server topology and trust | Target parsing, explicit connect-only behavior, stdio/WebSocket/Unix capability gates, bounded reconnect, dispatch overflow, Windows managed-core PID/listener/command verification, and local-image epoch trust are covered by `tests/test_appserver_target.py`, `tests/test_appserver_stdio.py`, `tests/test_core_manager.py`, startup tests, and the real Windows smoke. | pass, with Unix-only cases skipped on Windows |
+| App Server topology and trust | SDK App Server suites own transport/reconnect/dispatch contracts; `tests/test_appserver_target.py`, `tests/test_core_manager.py`, startup tests, and the real Windows smoke cover consumer topology and managed-core trust. | pass, with Unix-only cases skipped on Windows |
 | Observability | Non-blocking event/log/health writers, redacted transport summaries, reconnect/degraded state, runtime lifecycle, and `health.json` are covered by `tests/test_observability.py`, `tests/test_runtime.py`, and the real Windows smoke. | pass |
-| Artifact projection and sending | Explicit artifact extraction/staging, per-artifact receipts, partial/permanent failure, durable outbox, sender launcher selection, current-Thread route resolution, loopback credential boundary, idempotent replay, and restart are covered by `tests/test_outbound_artifacts.py`, `tests/test_channel_artifacts.py`, `tests/test_delivery_api.py`, `tests/test_channels_send.py`, and `tests/test_service_e2e.py`. | pass |
-| Approval and user input | Native request IDs, batch and prefix approval, plain-text cancellation, bounded request delivery, explicit rejection of unsupported requests, permission-profile responses, and structured answers are covered by `tests/test_commands.py`, `tests/test_appserver_stdio.py`, and `tests/test_service_e2e.py`. | pass |
-| Proactive artifact delivery | The local delivery endpoint and `imcodex-send` route through the same durable outbox, preserve per-artifact outcome, bind implicit delivery to native `CODEX_THREAD_ID`, and do not expose bot credentials. Covered by delivery API, sender, store, and service end-to-end tests. | pass |
+| Artifact projection and sending | `tests/test_outbound_artifacts.py`, `tests/test_sdk_presentation.py`, `tests/test_sdk_delivery.py`, `tests/test_delivery_api.py`, and `tests/test_channels_send.py` cover materialization, consumer leases, typed receipts, local credentials, and proactive submission. | pass |
+| Approval and user input | SDK request-runtime suites own native request correlation and response safety; `tests/test_sdk_requests.py`, `tests/test_sdk_controller.py`, and command parser tests cover IMCodex presentation and product commands. | pass |
+| Proactive artifact delivery | The local endpoint and `imcodex-send` use SDK proactive delivery plus the consumer path lease ledger and never expose bot credentials. Stable same-content replay and terminal lease reconciliation pass. SDK `IN_FLIGHT` crash recovery and partial retryable-suffix resumption remain unsupported, so the previous durable-outbox parity claim is not satisfied. | blocked |
 | Contract/schema/architecture | App Server generated-request schema drift and the repository dependency rules are covered by `tests/test_appserver_schema_drift.py` and `tests/test_architecture.py`; the full test suite included both. | pass |
 
 ### Environment limits
@@ -250,41 +250,24 @@ runtime or policy authority.
 | Codex-only `/model`, `/think`, `/personality`, `/fast`, `/credits`, `/goal`, `/native`, `/config`, Thread-tool hosting | IMCodex consumer/Application policy | Keep as thin native operations. Do not add them to common SDK Slash semantics. |
 | Full Access defaults and `/permission` product behavior | IMCodex consumer policy over native Codex config | Keep. SDK translates native requests but never chooses Full Access, sandbox, approval, or prompting policy. |
 | Runtime health files, bridge log/events, `/status`, and operator diagnostics | IMCodex composition, using SDK diagnostics/worker health | Reuse SDK redacted facts and health; keep file layout, HTTP exposure, labels, and operator UX in IMCodex. Logging must remain off the socket read path. |
-| Explicit/proactive artifact submission | SDK typed intent, handler, route snapshot, planner/coordinator; IMCodex durable product boundary, wrapper, and hosting | Mount the SDK handler in the existing authenticated local service and keep `imcodex-send.cmd`/`CODEX_THREAD_ID` product UX as a thin wrapper. The candidate handler is synchronous and is not a durable job/content store, so IMCodex must retain or replace with proven parity its durable outbox, managed artifact spool lifetime, and final per-artifact acknowledgement ledger across restart. Do not give callers bot credentials or persistence access. |
+| Explicit/proactive artifact submission | SDK typed intent, route snapshot, planner/coordinator; IMCodex authenticated wrapper, bytes/path/quota/lease policy | Keep `imcodex-send.cmd`/`CODEX_THREAD_ID` as a thin wrapper. IMCodex persists only bounded path leases, not an intent outbox. Missing SDK recovery for crash-stuck `IN_FLIGHT` submissions and partial retryable suffixes is an explicit consumer-acceptance blocker. |
 | Repository tests and conformance | SDK test kit plus IMCodex product tests | Use SDK contract tests for shared seams and retain the baseline matrix for consumer behavior, topology, commands, trust, and Windows smoke. |
 
 ### Expected duplicate-removal targets
 
 #### Current experimental cutover status
 
-No production App Server client deletion or replacement is accepted yet. The
-legacy `src/imcodex/appserver/client.py` remains production-constructed until
-SDK Gateway/Application composition has demonstrated wire-order, native
-unknown-input recovery, and observability parity. Its bounded dispatch
-behavior remains evidence for the later SDK queue/projection admission
-decision. This is a tracked blocker, not permission for an indefinite shim or
-for copying IMCodex semantics into SDK Core.
-
-After parity, the reusable implementations already transferred to the SDK
-should disappear from IMCodex rather than remain as indefinite shims:
-
-- `src/imcodex/channels/access.py`, `artifacts.py`, `base.py`, `media.py`,
-  `qq_media.py`, `qq.py`, `telegram.py`, `feishu.py`, `weixin_ilink.py`,
-  `weixin_state.py`, `weixin.py`, and neutral text/file/security helpers;
-- `src/imcodex/app_server_target.py` and reusable parts of
-  `src/imcodex/appserver/client.py`, `diagnostics.py`, `protocol_map.py`,
-  `retry.py`, and `supervisor.py`;
-- generic binding/projection/delivery coordination that is fully provided by
-  the SDK Gateway, persistence, recovery, planner, and coordinator.
-
-The following adjacent code remains product-owned or must become thin
-composition rather than being copied into SDK Core:
+The production graph now constructs the merged SDK Gateway, Codex Application
+client, and native Channels. The reusable consumer copies and their duplicate
+test suites were deleted; there is no client-only compatibility composition.
+The retained product surfaces are:
 
 - `src/imcodex/config.py`, `admin/`, `application.py`, `composition.py`,
   `runtime.py`, launchers, core/restart management, and branding;
-- webhook API/outbound composition, channel registry/enablement, and Weixin
-  login UX;
-- Codex settings/Full Access commands, native Thread-tool host policy, and
+- generic webhook API/media/outbound composition, channel
+  registry/enablement, and Weixin login UX;
+- Codex settings/Full Access commands, explicit rejection of the unavailable
+  native Thread-tool host mode, and
   product-specific command rendering;
 - IMCodex observability file/HTTP surfaces and the `imcodex-send` wrapper.
 
@@ -341,17 +324,15 @@ valid consumer.
 
 These are migration review items, not authorization to expand the SDK:
 
-1. **Terminal/proactive outbox versus honest unknown outcomes.** IMCodex currently keeps
-   exact terminal/answer-segment deliveries retryable across restart until its
-   sink accepts them. Proactive submissions use that same outbox, managed
-   artifact spool, and final per-artifact acknowledgement ledger. The candidate
-   SDK handler is synchronous, intentionally stores neither job content nor
-   artifact bytes, and does not automatically retry an ambiguous native
-   outcome. Stable identity and honest `unknown` are Core invariants;
-   IMCodex's durable persistence, spool lifetime, and retry appetite are
-   consumer policy unless a second consumer proves a common optional
-   capability. The migration must preserve both terminal and proactive
-   receipts across restart and avoid duplicate sends without hiding ambiguity.
+1. **Proactive submission recovery remains a consumer acceptance blocker.**
+   IMCodex owns a bounded crash-safe path lease ledger, but intentionally does
+   not create another intent outbox. The SDK submission repository stores
+   identity/outcomes rather than content. A crash can therefore leave a
+   submission `IN_FLIGHT` with no SDK transition/replay path, and a `PARTIAL`
+   receipt containing a retryable/unattempted suffix is terminal in the current
+   SDK. O2 cannot repair either case because it is best-effort and has no retry
+   authority. Closing consumer migration requires an SDK-owned recovery rule,
+   not a product-side coordinator.
 2. **Codex workspace grouping is not an SDK Project.** Existing `/threads
    --project` groups native Threads by CWD for IM browsing. Zen/T3 may expose
    real native Projects. Keep the Codex grouping in IMCodex presentation or a
@@ -361,12 +342,13 @@ These are migration review items, not authorization to expand the SDK:
    prove its managed PID/listener/command/topology on every epoch. A remote or
    merely loopback second consumer is a counterexample to automatic trust.
 4. **State transition must be non-destructive and explicit.** Current IMCodex
-   JSON state and candidate SDK SQLite state have different shapes. Only
-   bridge-owned bindings, routes, delivery identity/receipts, and IM reply
-   correlations are eligible to migrate. No transcript or native lifecycle
-   truth may be imported. A one-time conversion must keep a recoverable backup
-   or the experiment must use isolated state; no production state migration is
-   authorized by this baseline.
+   JSON state and SDK SQLite state have different shapes. The implemented
+   conversion copies bindings/routes and leaves the JSON source intact. The
+   former wall-clock presentation fence was removed because it could suppress
+   previously undelivered authoritative output and had a cross-store crash
+   gap. Old acknowledged entries do not retain enough native item identity to
+   seed an exact SDK checkpoint, so first-upgrade duplicate suppression remains
+   unproven and blocks production migration acceptance.
 5. **Request recovery parity.** Native Codex exposes no authoritative pending
    request snapshot. The SDK correctly refuses to reconstruct request truth
    from Gateway correlation. Baseline cases where native resume re-emits a
@@ -374,24 +356,15 @@ These are migration review items, not authorization to expand the SDK:
 6. **Generic webhook and operator surfaces.** The SDK handler is not another
    web server. IMCodex must mount it inside the existing authenticated local
    service and keep webhook/admin/health exposure policy at composition.
-7. **Bounded dispatch and projection pressure.** The candidate SDK explicitly
-   documents unbounded Application subscriber and bootstrap queues. IMCodex
-   requires a fast socket read path, bounded server-request/notification
-   dispatch, explicit overflow reset/reconciliation, and bounded IM request
-   presentation. The transferred App Server client covers part of this
-   boundary, but the final composition must prove there is no unbounded gap
-   between Application publication and Channel coordination. Until that proof
-   exists, removal of the current bounded consumer stage is blocked. A second
-   consumer with a different event volume may choose different limits, so the
-   numeric policy stays consumer-owned even if a reusable optional bounded
-   capability is eventually justified.
+7. **Bounded dispatch and projection pressure.** The merged SDK supplies
+   bounded App Server dispatch, Gateway coordination, and request-presentation
+   admission. IMCodex does not add consumer work on the socket read path and
+   no longer maintains a second event dispatcher.
 
-No SDK Core expansion is asserted by this baseline. Durable proactive parity
-and end-to-end bounded pressure are implementation blockers until the final
-immutable SDK input and IMCodex composition are inspected and tested. That
-review must decide whether each is existing SDK capability, thin consumer
-glue, or a genuinely reusable optional capability before proposing any SDK
-change.
+No SDK Core expansion is asserted by this baseline. Proactive `IN_FLIGHT`/
+partial recovery and exact first-upgrade replay fencing are the remaining SDK
+consumer-acceptance blockers; they cannot be repaired with O2 or a second
+consumer runtime.
 
 ## Post-pin validation gate
 
@@ -421,14 +394,10 @@ Nothing in this baseline authorizes merging.
 
 ## Implementation input after SDK boundary review
 
-Issue [im-agent-sdk#31](https://github.com/albert-zen/im-agent-sdk/issues/31)
-and Draft PR [im-agent-sdk#32](https://github.com/albert-zen/im-agent-sdk/pull/32)
-provide the consumer-safe projection and Channel diagnostics seams identified
-by this baseline. IMCodex provisionally pins immutable review commit
-`7df2447dd66586a6f149d3bb42fb18532c2e38b1`; this is deliberately not a claim
-that SDK main has accepted the change. The final migration must either advance
-to the merged immutable SDK main commit or retain the reviewed commit explicitly
-in the Draft IMCodex PR.
+The complete SDK-side rollout is merged on `main` through immutable commit
+`57f255fb1f40a095aeabb5a6967380ba057494a3`; no Draft SDK branch or unpublished
+worktree is an implementation input. The focused PRs and commits are recorded
+in [im-agent-sdk#49](https://github.com/albert-zen/im-agent-sdk/issues/49).
 
 The SDK change preserves normalized message Metadata through Gateway delivery,
 routes live-only `message.created` observations without advancing authoritative
@@ -438,7 +407,7 @@ continues to own visibility defaults, health-file/operator rendering, managed
 artifact spool/lifetime policy, launch topology, and Full Access behavior.
 
 Follow-up [im-agent-sdk#33](https://github.com/albert-zen/im-agent-sdk/issues/33)
-is implemented by the same Draft PR and pin. Its typed App Server presentation
+is included in the merged pin. Its typed App Server presentation
 hook keeps native artifact candidates in the single ordered Application
 event/history path while letting IMCodex validate and materialize them into its
 own managed spool. It does not move spool durability, retry, cleanup, or
@@ -469,7 +438,54 @@ of its existing health file. The product runtime owns sampling and the overall
 non-authoritative and contains no native conversation, thread, turn, request,
 or credential identity. Gateway startup/shutdown replaces the former manual
 ordering of App Server and channel lifecycle. The default `build_runtime()` is
-now cut over to this SDK composition. The remaining product `BridgeService`
-instance is restricted to commands, bootstrap cwd/Full Access compatibility,
+now cut over to this SDK composition. The product command-policy instance is
+restricted to commands, bootstrap cwd/Full Access compatibility,
 and staging helpers while those product boundaries are migrated; it does not
 subscribe to App Server events or own normal projection/delivery lifecycle.
+
+IMCodex imports the merged SDK App Server client, supervisor, retry policy,
+protocol normalization, and redacted diagnostics directly. The transferred
+consumer copies and their duplicate protocol test suite are removed; retained
+`imcodex.appserver` modules contain Codex-specific command/settings/thread
+policy over the SDK client only.
+
+Proactive uploads remain consumer-owned: one bounded content-addressed spool
+and crash-safe bounded lease ledger retains local paths from HTTP staging
+through SDK submission. The ledger is persisted before submission, keyed by
+the caller's stable delivery ID, and restored before the startup sweep so a
+process crash cannot delete an attachment required by an SDK retry.
+Request cleanup releases only paths that were not transferred; same-content
+replay reuses the content-addressed path. O2 releases terminal items and keeps
+retryable/unknown/skipped items; startup reconciliation releases submissions
+whose SDK record is terminal when detached O2 did not run. A missing or
+`IN_FLIGHT` SDK record remains leased for caller replay. This ledger is not an
+SDK outbox or transcript.
+
+IMCodex no longer subscribes to or journals raw App Server events. The legacy
+`/native events` spelling remains only to return an explicit unavailable
+diagnostic; it cannot imply that an empty local journal is authoritative.
+
+The retired raw App Server request callback is not retained for native dynamic
+Thread tools. If `IMCODEX_NATIVE_THREAD_TOOL_HOST` is explicitly enabled, the
+consumer now fails startup instead of advertising tools whose calls the SDK
+Application request runtime would reject or double-answer. Restoring this
+optional product feature requires a future typed Application operation backed
+by two real integrations; it cannot be implemented as a raw event hook during
+this migration.
+
+The consumer adapts to the merged ADR 0015 contracts without a compatibility
+shim: `CodexLiveActivityPresenter` handles only bounded live activity,
+`AppServerArtifactMaterializer` handles completed-item/terminal artifact facts,
+O1 receives `OutboundPresentationContext`, O2 receives one typed logical
+`DeliveryOutcome`, and Gateway repositories/extensions are supplied through
+their immutable composition groups. No combined App Server presentation hook
+or flat Gateway constructor remains in the product composition.
+
+The product-owned generic webhook now participates in that same ownership
+boundary directly: after HTTP authentication and bounded multipart parsing it
+acquires the SDK Gateway admission lease, stages media, and transfers exactly
+one normalized message through that lease. It does not retain the former
+consumer-wide channel middleware, response cache, binding idempotency, or
+delivery acknowledgement path. Immediate HTTP replies are captured only by
+the webhook Channel instance; durable admission and outbound identity remain
+SDK Gateway concerns.

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from imcodex.config import Settings
 from imcodex.composition import _managed_core_shared_filesystem_verifier, build_runtime
+from imcodex.config import Settings
 from imcodex.observability.runtime import ObservabilityRuntime
 from imcodex.runtime import AppRuntime
 
@@ -336,7 +336,9 @@ class _NamedChannel:
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events() -> None:
+async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events() -> (
+    None
+):
     calls: list[str] = []
     runtime = AppRuntime(
         client=_FakeClient(calls),
@@ -368,7 +370,9 @@ async def test_app_runtime_wraps_startup_and_shutdown_with_observability_events(
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_health_is_degraded_when_channel_access_denies_everyone() -> None:
+async def test_app_runtime_health_is_degraded_when_channel_access_denies_everyone() -> (
+    None
+):
     calls: list[str] = []
     health_updates: list[dict] = []
 
@@ -407,7 +411,9 @@ async def test_app_runtime_closes_service_before_app_server_client() -> None:
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_initializes_native_permission_default_before_thread_rehydration() -> None:
+async def test_app_runtime_initializes_native_permission_default_before_thread_rehydration() -> (
+    None
+):
     calls: list[str] = []
     runtime = AppRuntime(
         client=_InvokingReadyClient(calls),
@@ -450,7 +456,7 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
         qq_client_secret="",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=False,
-        native_thread_tool_host=True,
+        native_thread_tool_host=False,
         app_server_managed_target="ws://127.0.0.1:8765",
         app_server_reconnect_initial_delay_s=0.6,
         app_server_reconnect_max_delay_s=45.0,
@@ -464,22 +470,21 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.observability.service_name == settings.service_name
     assert runtime.client._supervisor.target.connection_mode == "external"
     assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
-    assert runtime.client._supervisor.websocket_retry_policy.attempts == settings.app_server_connect_max_attempts
-    assert runtime.client._experimental_api_enabled is True
+    assert (
+        runtime.client._supervisor.websocket_retry_policy.attempts
+        == settings.app_server_connect_max_attempts
+    )
+    assert runtime.client._experimental_api_enabled is False
     assert runtime.client.supports_local_image_paths() is False
     assert (runtime.client._shared_filesystem_verifier is not None) is (os.name == "nt")
-    assert runtime.service.native_requests.native_thread_tool_host is True
-    assert {tool["name"] for tool in runtime.service.backend.thread_dynamic_tools} == {
-        "create_thread",
-        "list_threads",
-        "read_thread",
-        "send_message_to_thread",
-    }
     assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
     assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
-    assert runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
+    assert (
+        runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
+    )
     assert runtime.observability._pending_launch_snapshot["restartSupported"] is False
+
 
 @pytest.mark.asyncio
 async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
@@ -496,7 +501,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
         "ws://127.0.0.1:8765",
     )
-    monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "1")
+    monkeypatch.setenv("IMCODEX_NATIVE_THREAD_TOOL_HOST", "0")
     monkeypatch.setenv("IMCODEX_DOTENV_IMPORTED_KEYS", "IMCODEX_QQ_ENABLED")
     monkeypatch.setenv("IMCODEX_LAUNCHER_RELOADABLE_KEYS", "")
     settings = Settings(
@@ -519,7 +524,7 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
         qq_client_secret="do-not-persist",
         qq_api_base="https://api.sgroup.qq.com",
         qq_markdown_enabled=True,
-        native_thread_tool_host=True,
+        native_thread_tool_host=False,
         app_server_managed_target="ws://127.0.0.1:8765",
         telegram_bot_token="do-not-persist",
         feishu_app_secret="do-not-persist",
@@ -534,7 +539,9 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     runtime.client.close = lambda: __import__("asyncio").sleep(0)
 
     await runtime.start()
-    launch = json.loads(runtime.observability.paths.current_launch_path.read_text(encoding="utf-8"))
+    launch = json.loads(
+        runtime.observability.paths.current_launch_path.read_text(encoding="utf-8")
+    )
     await runtime.stop()
 
     assert launch["command"] == [sys.executable, "-m", "imcodex"]
@@ -551,7 +558,6 @@ async def test_app_runtime_persists_launch_snapshot_for_restart_executor(
     assert {
         "IMCODEX_QQ_ALLOWED_USER_IDS",
         "IMCODEX_QQ_CLIENT_SECRET",
-        "IMCODEX_NATIVE_THREAD_TOOL_HOST",
         "IMCODEX_INTERNAL_MANAGED_APP_SERVER_TARGET",
         "PATH",
     } <= required_external
@@ -588,12 +594,16 @@ async def test_app_runtime_persists_lifecycle_events_and_health_snapshot(
     )
 
     await runtime.start()
-    started_health = json.loads(observability.paths.health_path.read_text(encoding="utf-8"))
+    started_health = json.loads(
+        observability.paths.health_path.read_text(encoding="utf-8")
+    )
     await runtime.stop()
 
     events = [
         json.loads(line)
-        for line in observability.paths.events_path.read_text(encoding="utf-8").splitlines()
+        for line in observability.paths.events_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
         if line.strip()
     ]
     health = json.loads(observability.paths.health_path.read_text(encoding="utf-8"))
@@ -611,7 +621,9 @@ async def test_app_runtime_persists_lifecycle_events_and_health_snapshot(
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup_error() -> None:
+async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup_error() -> (
+    None
+):
     calls: list[str] = []
     runtime = AppRuntime(
         client=_FailingClient(calls),
@@ -638,7 +650,9 @@ async def test_app_runtime_emits_start_failed_and_stops_observability_on_startup
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_start_fails() -> None:
+async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_start_fails() -> (
+    None
+):
     calls: list[str] = []
     runtime = AppRuntime(
         client=_FakeClient(calls),
@@ -665,7 +679,9 @@ async def test_app_runtime_rolls_back_started_channels_and_client_when_channel_s
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_stops_prepared_channels_when_client_initialize_fails() -> None:
+async def test_app_runtime_stops_prepared_channels_when_client_initialize_fails() -> (
+    None
+):
     calls: list[str] = []
     duplicate = _NamedChannel("duplicate", calls)
     runtime = AppRuntime(
@@ -688,7 +704,9 @@ async def test_app_runtime_stops_prepared_channels_when_client_initialize_fails(
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_stops_remaining_resources_after_channel_stop_failure() -> None:
+async def test_app_runtime_stops_remaining_resources_after_channel_stop_failure() -> (
+    None
+):
     calls: list[str] = []
     runtime = AppRuntime(
         client=_FakeClient(calls),
@@ -728,7 +746,9 @@ async def test_app_runtime_closes_client_when_initialize_is_cancelled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_stops_partially_started_channel_when_start_is_cancelled() -> None:
+async def test_app_runtime_stops_partially_started_channel_when_start_is_cancelled() -> (
+    None
+):
     calls: list[str] = []
     channel_started = __import__("asyncio").Event()
 
@@ -784,7 +804,9 @@ async def test_app_runtime_finishes_shutdown_before_propagating_cancellation() -
 
 
 @pytest.mark.asyncio
-async def test_app_runtime_ignores_repeated_cancellation_until_shutdown_finishes() -> None:
+async def test_app_runtime_ignores_repeated_cancellation_until_shutdown_finishes() -> (
+    None
+):
     calls: list[str] = []
     stop_started = __import__("asyncio").Event()
     release_stop = __import__("asyncio").Event()

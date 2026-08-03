@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
-from dataclasses import dataclass, field
 import ipaddress
 import json
 import logging
-from pathlib import Path
 import re
 import secrets
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -18,28 +17,24 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.responses import JSONResponse
 
-from ..models import InboundMessage, OutboundMessage
+from ..models import InboundMessage
 from .media import (
-    FileMediaMaterializer,
     MAX_FILE_BYTES,
     MAX_FILE_COUNT,
     MAX_IMAGE_BYTES,
     MAX_IMAGE_COUNT,
+    FileMediaMaterializer,
     ImageMediaMaterializer,
     materialize_inbound_media,
 )
-from .middleware import UnifiedChannelMiddleware
 from .registry import BUILTIN_CHANNEL_IDS
-
 
 logger = logging.getLogger(__name__)
 
 INBOUND_WEBHOOK_PATH = "/api/channels/webhook/inbound"
 MAX_INBOUND_WEBHOOK_BODY_BYTES = 64 * 1024
 MAX_INBOUND_WEBHOOK_MULTIPART_BODY_BYTES = (
-    MAX_IMAGE_COUNT * MAX_IMAGE_BYTES
-    + MAX_FILE_COUNT * MAX_FILE_BYTES
-    + 1024 * 1024
+    MAX_IMAGE_COUNT * MAX_IMAGE_BYTES + MAX_FILE_COUNT * MAX_FILE_BYTES + 1024 * 1024
 )
 MAX_CONCURRENT_INBOUND_WEBHOOK_MULTIPART_REQUESTS = 2
 MAX_INBOUND_WEBHOOK_MULTIPART_RETENTION_S = 30.0
@@ -184,7 +179,9 @@ class _InboundWebhookGuard:
         denial = self._authorization_denial(scope=scope, authorization=authorization)
         if denial is not None:
             status_code, detail = denial
-            await JSONResponse({"detail": detail}, status_code=status_code)(scope, receive, send)
+            await JSONResponse({"detail": detail}, status_code=status_code)(
+                scope, receive, send
+            )
             return
 
         content_length = self._header(scope, b"content-length")
@@ -193,10 +190,14 @@ class _InboundWebhookGuard:
             try:
                 declared_size = int(content_length)
             except ValueError:
-                await JSONResponse({"detail": "Invalid Content-Length."}, status_code=400)(scope, receive, send)
+                await JSONResponse(
+                    {"detail": "Invalid Content-Length."}, status_code=400
+                )(scope, receive, send)
                 return
             if declared_size < 0:
-                await JSONResponse({"detail": "Invalid Content-Length."}, status_code=400)(scope, receive, send)
+                await JSONResponse(
+                    {"detail": "Invalid Content-Length."}, status_code=400
+                )(scope, receive, send)
                 return
             if declared_size > body_limit:
                 await self._send_too_large(scope, receive, send)
@@ -236,7 +237,9 @@ class _InboundWebhookGuard:
                 return 401, "Invalid inbound webhook credentials."
             return None
         client = scope.get("client")
-        client_host = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+        client_host = (
+            str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+        )
         try:
             is_loopback = ipaddress.ip_address(client_host).is_loopback
         except ValueError:
@@ -251,10 +254,14 @@ class _InboundWebhookGuard:
                 403,
                 "Browser-origin webhook requests require IMCODEX_INBOUND_WEBHOOK_TOKEN.",
             )
-        if self._is_multipart(scope) and self._header(
-            scope,
-            b"x-imcodex-webhook",
-        ).strip() != b"1":
+        if (
+            self._is_multipart(scope)
+            and self._header(
+                scope,
+                b"x-imcodex-webhook",
+            ).strip()
+            != b"1"
+        ):
             return (
                 403,
                 "Loopback multipart requests require X-IMCodex-Webhook: 1.",
@@ -278,26 +285,6 @@ class _InboundWebhookGuard:
         return content_type.strip().lower() == b"multipart/form-data"
 
 
-class _WebhookResponseAdapter:
-    def __init__(
-        self,
-        channel_id: str,
-        *,
-        outbound_sink=None,
-    ) -> None:
-        self.channel_id = channel_id
-        self.messages: list[OutboundMessage] = []
-        self.outbound_sink = outbound_sink
-
-    async def send_message(self, message: OutboundMessage) -> None:
-        self.messages.append(message)
-
-    async def after_inbound_committed(self) -> None:
-        if self.outbound_sink is not None:
-            for message in self.messages:
-                await self.outbound_sink.send_message(message)
-
-
 def create_app(
     service,
     *,
@@ -307,7 +294,6 @@ def create_app(
     file_materializer: FileMediaMaterializer[_WebhookFileReference] | None = None,
 ) -> FastAPI:
     app = FastAPI()
-    middleware = UnifiedChannelMiddleware(service=service)
     materializer = media_materializer or ImageMediaMaterializer(
         root=media_dir or Path(".imcodex") / "channels" / "webhook" / "inbound-media",
         download=_download_webhook_upload,
@@ -401,9 +387,7 @@ def create_app(
 
             async def await_close_grace(task: asyncio.Task[None]) -> None:
                 try:
-                    async with asyncio.timeout(
-                        MAX_INBOUND_WEBHOOK_FORM_CLOSE_GRACE_S
-                    ):
+                    async with asyncio.timeout(MAX_INBOUND_WEBHOOK_FORM_CLOSE_GRACE_S):
                         await asyncio.shield(task)
                 except TimeoutError:
                     # The app-level task set retains cleanup ownership without
@@ -417,8 +401,7 @@ def create_app(
                 nonlocal acquired, form
                 current_form, form = form, None
                 expired = bool(
-                    multipart_timeout is not None
-                    and multipart_timeout.expired()
+                    multipart_timeout is not None and multipart_timeout.expired()
                 )
                 # Once the retention deadline has fired, unblock new parsers
                 # before attempting best-effort close of a potentially slow
@@ -426,9 +409,7 @@ def create_app(
                 if expired:
                     release_capacity()
                 close_task = (
-                    track_form_close(current_form)
-                    if current_form is not None
-                    else None
+                    track_form_close(current_form) if current_form is not None else None
                 )
                 try:
                     if close_task is not None:
@@ -464,7 +445,12 @@ def create_app(
                     try:
                         await app.state.webhook_multipart_semaphore.acquire()
                         acquired = True
-                        request, image_references, file_references, form = await _parse_webhook_request(
+                        (
+                            request,
+                            image_references,
+                            file_references,
+                            form,
+                        ) = await _parse_webhook_request(
                             http_request,
                             retain_form=retain_parsed_form,
                         )
@@ -474,7 +460,6 @@ def create_app(
                             request=request,
                             image_references=image_references,
                             file_references=file_references,
-                            middleware=middleware,
                             materializer=materializer,
                             file_materializer=generic_file_materializer,
                             service=service,
@@ -493,12 +478,16 @@ def create_app(
                     status_code=408,
                     detail="Inbound multipart upload timed out.",
                 ) from None
-        request, image_references, file_references, _form = await _parse_webhook_request(http_request)
+        (
+            request,
+            image_references,
+            file_references,
+            _form,
+        ) = await _parse_webhook_request(http_request)
         return await _handle_webhook_inbound(
             request=request,
             image_references=image_references,
             file_references=file_references,
-            middleware=middleware,
             materializer=materializer,
             file_materializer=generic_file_materializer,
             service=service,
@@ -513,7 +502,6 @@ async def _handle_webhook_inbound(
     request: InboundWebhookRequest,
     image_references: tuple[_WebhookImageReference, ...],
     file_references: tuple[_WebhookFileReference, ...],
-    middleware: UnifiedChannelMiddleware,
     materializer: ImageMediaMaterializer[_WebhookImageReference],
     file_materializer: FileMediaMaterializer[_WebhookFileReference],
     service,
@@ -522,14 +510,18 @@ async def _handle_webhook_inbound(
     for field_name, limit in WEBHOOK_ID_LIMITS.items():
         value = str(getattr(request, field_name) or "")
         if not value.strip():
-            raise HTTPException(status_code=422, detail=f"{field_name} must not be empty.")
+            raise HTTPException(
+                status_code=422, detail=f"{field_name} must not be empty."
+            )
         if len(value) > limit:
             raise HTTPException(
                 status_code=422,
                 detail=f"{field_name} exceeds the {limit}-character limit.",
             )
     if CHANNEL_ID_PATTERN.fullmatch(request.channel_id) is None:
-        raise HTTPException(status_code=422, detail="channel_id contains unsupported characters.")
+        raise HTTPException(
+            status_code=422, detail="channel_id contains unsupported characters."
+        )
     if request.channel_id in BUILTIN_CHANNEL_IDS:
         raise HTTPException(
             status_code=409,
@@ -543,16 +535,10 @@ async def _handle_webhook_inbound(
             detail="Inbound message must contain text or an attachment.",
         )
     if len(request.text) > MAX_INBOUND_TEXT_CHARS:
-        raise HTTPException(status_code=413, detail="Inbound message text is too large.")
+        raise HTTPException(
+            status_code=413, detail="Inbound message text is too large."
+        )
     message = request.to_inbound_message()
-    outbound_sink = getattr(service, "outbound_sink", None)
-    can_deliver = getattr(outbound_sink, "can_deliver", None)
-    if callable(can_deliver) and not can_deliver(message.channel_id):
-        outbound_sink = None
-    adapter = _WebhookResponseAdapter(
-        message.channel_id,
-        outbound_sink=outbound_sink,
-    )
     prepare_inbound = None
     if image_references or file_references:
 
@@ -564,15 +550,13 @@ async def _handle_webhook_inbound(
                 file_references=file_references,
                 file_materializer=file_materializer,
             )
-    await middleware.handle_inbound(
-        adapter,
+
+    messages = await service.handle_inbound(
         message,
-        reply_to_message_id=message.reply_to_message_id or message.message_id,
         prepare_inbound=prepare_inbound,
         finalize_inbound=finalize_inbound,
-        pending_attachment_count=len(image_references) + len(file_references),
     )
-    return {"messages": [asdict(item) for item in adapter.messages]}
+    return {"messages": [asdict(item) for item in messages]}
 
 
 async def _parse_webhook_request(
@@ -585,12 +569,16 @@ async def _parse_webhook_request(
     tuple[_WebhookFileReference, ...],
     FormData | None,
 ]:
-    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    content_type = (
+        request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    )
     if content_type == "application/json" or content_type.endswith("+json"):
         try:
             payload = await request.json()
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            raise HTTPException(status_code=422, detail="Inbound webhook JSON is invalid.") from None
+            raise HTTPException(
+                status_code=422, detail="Inbound webhook JSON is invalid."
+            ) from None
         return _validate_webhook_model(payload), (), (), None
 
     if content_type != "multipart/form-data":
@@ -615,8 +603,12 @@ async def _parse_webhook_request(
     except MultiPartException as exc:
         detail = str(exc)
         if "Too many files" in detail:
-            raise HTTPException(status_code=422, detail="Too many inbound attachments.") from None
-        raise HTTPException(status_code=400, detail="Inbound multipart body is invalid.") from None
+            raise HTTPException(
+                status_code=422, detail="Too many inbound attachments."
+            ) from None
+        raise HTTPException(
+            status_code=400, detail="Inbound multipart body is invalid."
+        ) from None
 
     if retain_form is not None:
         # Transfer ownership immediately after parsing so every later
@@ -630,14 +622,19 @@ async def _parse_webhook_request(
     unknown_fields = {key for key, _value in form.multi_items()} - WEBHOOK_FORM_FIELDS
     if unknown_fields:
         await close_unretained_form()
-        raise HTTPException(status_code=422, detail="Inbound multipart body contains unsupported fields.")
+        raise HTTPException(
+            status_code=422,
+            detail="Inbound multipart body contains unsupported fields.",
+        )
 
     payload: dict[str, object] = {}
     for name in WEBHOOK_FORM_FIELDS - {"images", "files"}:
         values = form.getlist(name)
         if len(values) > 1 or any(isinstance(value, UploadFile) for value in values):
             await close_unretained_form()
-            raise HTTPException(status_code=422, detail=f"{name} must be a single text field.")
+            raise HTTPException(
+                status_code=422, detail=f"{name} must be a single text field."
+            )
         if values:
             payload[name] = str(values[0])
     payload.setdefault("text", "")
@@ -645,7 +642,9 @@ async def _parse_webhook_request(
     uploads = form.getlist("images")
     if any(not isinstance(upload, UploadFile) for upload in uploads):
         await close_unretained_form()
-        raise HTTPException(status_code=422, detail="images must contain uploaded files.")
+        raise HTTPException(
+            status_code=422, detail="images must contain uploaded files."
+        )
     references = tuple(
         _WebhookImageReference(upload=upload)
         for upload in uploads[: MAX_IMAGE_COUNT + 1]
@@ -653,7 +652,9 @@ async def _parse_webhook_request(
     file_uploads = form.getlist("files")
     if any(not isinstance(upload, UploadFile) for upload in file_uploads):
         await close_unretained_form()
-        raise HTTPException(status_code=422, detail="files must contain uploaded files.")
+        raise HTTPException(
+            status_code=422, detail="files must contain uploaded files."
+        )
     file_references = tuple(
         _WebhookFileReference(
             upload=upload,

@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from io import BytesIO
-from pathlib import Path
 import os
 import threading
+from io import BytesIO
+from pathlib import Path
 
 import pytest
-from PIL import Image
 from imagent.applications import AppServerArtifactCandidate, AppServerArtifactSourceKind
+from PIL import Image
 
-from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
+from imcodex.bridge.outbound_artifacts import (
+    OutboundArtifactLeaseLedger,
+    OutboundArtifactStager,
+)
 from imcodex.models import OutboundArtifact
 
 
@@ -31,7 +34,8 @@ def test_stager_materializes_dynamic_tool_image_data_url(tmp_path: Path) -> None
             "contentItems": [
                 {
                     "type": "inputImage",
-                    "imageUrl": "data:image/png;base64," + base64.b64encode(content).decode("ascii"),
+                    "imageUrl": "data:image/png;base64,"
+                    + base64.b64encode(content).decode("ascii"),
                 }
             ],
         }
@@ -50,9 +54,9 @@ def test_stager_materializes_typed_sdk_artifact_candidate(tmp_path: Path) -> Non
     artifact = stager.stage_appserver_candidate(
         AppServerArtifactCandidate(
             candidate_id="tool-1:image:0",
-            media_kind="image",
             source_kind=AppServerArtifactSourceKind.DATA_URL,
-            value="data:image/png;base64," + base64.b64encode(content).decode("ascii"),
+            locator="data:image/png;base64,"
+            + base64.b64encode(content).decode("ascii"),
         )
     )
 
@@ -183,7 +187,9 @@ def test_stager_refuses_preexisting_content_address_collision(tmp_path: Path) ->
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows file URL conversion")
-def test_stager_accepts_windows_file_url_inside_native_workspace(tmp_path: Path) -> None:
+def test_stager_accepts_windows_file_url_inside_native_workspace(
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     image_path = workspace / "generated.png"
@@ -193,9 +199,7 @@ def test_stager_accepts_windows_file_url_inside_native_workspace(tmp_path: Path)
     artifacts = stager.stage_native_item(
         {
             "type": "dynamicToolCall",
-            "contentItems": [
-                {"type": "inputImage", "imageUrl": image_path.as_uri()}
-            ],
+            "contentItems": [{"type": "inputImage", "imageUrl": image_path.as_uri()}],
         },
         cwd=str(workspace),
     )
@@ -245,9 +249,7 @@ def test_cleanup_cannot_delete_artifact_while_stage_result_is_being_handed_off(
             )
         )
     )
-    cleanup_thread = threading.Thread(
-        target=lambda: stager.cleanup_unreferenced(set())
-    )
+    cleanup_thread = threading.Thread(target=lambda: stager.cleanup_unreferenced(set()))
 
     stage_thread.start()
     assert staged.wait(timeout=5)
@@ -261,3 +263,172 @@ def test_cleanup_cannot_delete_artifact_while_stage_result_is_being_handed_off(
     assert not cleanup_thread.is_alive()
     assert len(result) == 1
     assert Path(result[0].local_path).read_bytes() == b"# durable\n"
+
+
+def test_lease_ledger_preserves_transferred_artifact_across_restart(
+    tmp_path: Path,
+) -> None:
+    class ProductStore:
+        @staticmethod
+        def referenced_terminal_artifact_paths() -> set[str]:
+            return set()
+
+    spool = tmp_path / "spool"
+    state_path = tmp_path / "leases.json"
+    first_stager = OutboundArtifactStager(spool)
+    artifact = first_stager.stage_upload(
+        b"# durable\n",
+        kind="file",
+        content_type="text/markdown",
+        filename="durable.md",
+    )
+    first = OutboundArtifactLeaseLedger(
+        stager=first_stager,
+        product_store=ProductStore(),
+        state_path=state_path,
+    )
+    first.transfer("delivery-1", (artifact,))
+
+    restarted = OutboundArtifactLeaseLedger(
+        stager=OutboundArtifactStager(spool),
+        product_store=ProductStore(),
+        state_path=state_path,
+    )
+    restarted.cleanup()
+
+    assert Path(artifact.local_path).exists()
+    assert restarted.referenced_paths() == {artifact.local_path}
+
+    restarted.complete_delivery("delivery-1", (artifact.local_path,))
+
+    assert not Path(artifact.local_path).exists()
+    assert restarted.referenced_paths() == set()
+
+
+def test_lease_ledger_replay_requires_same_artifacts(tmp_path: Path) -> None:
+    class ProductStore:
+        @staticmethod
+        def referenced_terminal_artifact_paths() -> set[str]:
+            return set()
+
+    stager = OutboundArtifactStager(tmp_path / "spool")
+    first = stager.stage_upload(
+        b"first\n",
+        kind="file",
+        content_type="text/plain",
+        filename="first.txt",
+    )
+    second = stager.stage_upload(
+        b"second\n",
+        kind="file",
+        content_type="text/plain",
+        filename="second.txt",
+    )
+    ledger = OutboundArtifactLeaseLedger(
+        stager=stager,
+        product_store=ProductStore(),
+        state_path=tmp_path / "leases.json",
+    )
+    ledger.transfer("delivery-1", (first,))
+    ledger.transfer("delivery-1", (first,))
+
+    with pytest.raises(ValueError, match="different artifacts"):
+        ledger.transfer("delivery-1", (second,))
+
+
+def test_same_upload_content_reuses_path_for_delivery_replay(tmp_path: Path) -> None:
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    first = stager.stage_upload(
+        b"same\n", kind="file", content_type="text/plain", filename="first.txt"
+    )
+    replay = stager.stage_upload(
+        b"same\n", kind="file", content_type="text/plain", filename="renamed.txt"
+    )
+
+    assert replay.local_path == first.local_path
+
+
+@pytest.mark.asyncio
+async def test_lease_ledger_reconciles_terminal_sdk_submission(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from imagent.contracts import DeliverySubmissionState
+
+    class ProductStore:
+        @staticmethod
+        def referenced_terminal_artifact_paths() -> set[str]:
+            return set()
+
+    stager = OutboundArtifactStager(tmp_path / "spool")
+    artifact = stager.stage_upload(
+        b"terminal\n",
+        kind="file",
+        content_type="text/plain",
+        filename="terminal.txt",
+    )
+    ledger = OutboundArtifactLeaseLedger(
+        stager=stager,
+        product_store=ProductStore(),
+        state_path=tmp_path / "leases.json",
+    )
+    ledger.transfer("delivery-1", (artifact,))
+
+    class Submissions:
+        async def get_delivery_submission(self, _submission_id):
+            return SimpleNamespace(
+                destinations=(SimpleNamespace(state=DeliverySubmissionState.ACCEPTED),)
+            )
+
+    await ledger.reconcile(Submissions())
+
+    assert ledger.referenced_paths() == set()
+    assert not Path(artifact.local_path).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [
+        "in_flight",
+        "retryable",
+        "partial",
+    ],
+)
+async def test_lease_ledger_preserves_nonterminal_or_partial_submission(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from imagent.contracts import DeliverySubmissionState
+
+    class ProductStore:
+        @staticmethod
+        def referenced_terminal_artifact_paths() -> set[str]:
+            return set()
+
+    stager = OutboundArtifactStager(tmp_path / "spool")
+    artifact = stager.stage_upload(
+        state.encode(),
+        kind="file",
+        content_type="text/plain",
+        filename=f"{state}.txt",
+    )
+    ledger = OutboundArtifactLeaseLedger(
+        stager=stager,
+        product_store=ProductStore(),
+        state_path=tmp_path / "leases.json",
+    )
+    ledger.transfer("delivery-1", (artifact,))
+
+    class Submissions:
+        async def get_delivery_submission(self, _submission_id):
+            return SimpleNamespace(
+                destinations=(SimpleNamespace(state=DeliverySubmissionState(state)),)
+            )
+
+    await ledger.reconcile(Submissions())
+
+    assert ledger.referenced_paths() == {artifact.local_path}
+    assert Path(artifact.local_path).exists()

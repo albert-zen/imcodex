@@ -10,10 +10,12 @@ from imagent.contracts import (
     DeliveryIntent,
     DeliveryItemStatus,
     DeliveryPrincipal,
+    DeliveryReceiptStatus,
     DeliverySubmissionState,
     LocalPath,
     TextContent,
 )
+from imagent.delivery_outcomes import DeliveryOutcome, DeliveryOutcomeContext
 from imagent.proactive_delivery import ScopedDeliveryAuthorizer
 
 from ..models import OutboundMessage
@@ -22,22 +24,39 @@ from ..models import OutboundMessage
 class ImcodexDeliveryOutcomeObserver:
     """Release product-owned spool leases after one complete SDK delivery."""
 
-    def __init__(self, *, artifact_stager, product_store) -> None:
-        self.artifact_stager = artifact_stager
-        self.product_store = product_store
+    def __init__(self, *, artifact_ledger) -> None:
+        self.artifact_ledger = artifact_ledger
 
-    async def observe_delivery_outcome(self, intent, *, result, error) -> None:
-        del result, error
-        paths = tuple(
-            item.source.path
-            for item in intent.content
+    async def observe_delivery_outcome(
+        self,
+        context: DeliveryOutcomeContext,
+        outcome: DeliveryOutcome,
+    ) -> None:
+        receipt = outcome.receipt
+        if (
+            receipt is not None
+            and receipt.status is DeliveryReceiptStatus.RETRYABLE_FAILURE
+        ):
+            return
+        attachments = {
+            index: item.source.path
+            for index, item in enumerate(context.message.content)
             if isinstance(item, AttachmentContent)
             and isinstance(item.source, LocalPath)
-        )
-        self.artifact_stager.release(paths)
-        self.artifact_stager.cleanup_unreferenced(
-            self.product_store.referenced_terminal_artifact_paths()
-        )
+        }
+        paths = tuple(attachments.values())
+        if receipt is not None and receipt.items:
+            terminal_statuses = {
+                DeliveryItemStatus.ACCEPTED,
+                DeliveryItemStatus.REJECTED,
+            }
+            paths = tuple(
+                attachments[item.content_index]
+                for item in receipt.items
+                if item.content_index in attachments
+                and item.status in terminal_statuses
+            )
+        self.artifact_ledger.complete_attempt(context.message.delivery_id, paths)
 
 
 class ImcodexProactiveDelivery:
@@ -48,14 +67,16 @@ class ImcodexProactiveDelivery:
         *,
         gateway,
         authorizer: ScopedDeliveryAuthorizer,
-        product_service,
+        product_store,
+        artifact_ledger,
         registered_channel_ids: set[str],
         fallback_excluded_channel_ids: set[str],
         webhook_channel,
     ) -> None:
         self.gateway = gateway
         self.authorizer = authorizer
-        self.product_service = product_service
+        self.product_store = product_store
+        self.artifact_ledger = artifact_ledger
         self.registered_channel_ids = registered_channel_ids
         self.fallback_excluded_channel_ids = fallback_excluded_channel_ids
         self.webhook_channel = webhook_channel
@@ -69,17 +90,30 @@ class ImcodexProactiveDelivery:
         )
 
     def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        return self.product_service.resolve_outbound_route(source_thread_id)
+        thread_id = str(source_thread_id or "").strip()
+        route = (
+            self.product_store.find_recipient_route_by_thread_id(thread_id)
+            if thread_id
+            else None
+        )
+        if route is None:
+            raise ValueError(
+                "This Codex thread has not been selected from an IM conversation. "
+                "Open or pick it from IMCodex once, then retry."
+            )
+        return route
 
     def validate_outbound_message(self, message: OutboundMessage) -> None:
         if not self.can_deliver_outbound(message.channel_id):
-            raise ValueError(f"Configured channel {message.channel_id!r} is unavailable.")
+            raise ValueError(
+                f"Configured channel {message.channel_id!r} is unavailable."
+            )
 
     async def stage_outbound_upload(self, content: bytes, **kwargs):
-        return await self.product_service.stage_outbound_upload(content, **kwargs)
+        return await self.artifact_ledger.stage_upload(content, **kwargs)
 
     async def discard_outbound_uploads(self, artifacts) -> None:
-        await self.product_service.discard_outbound_uploads(artifacts)
+        self.artifact_ledger.discard_request(artifacts)
 
     async def deliver_outbound_message(
         self,
@@ -116,12 +150,17 @@ class ImcodexProactiveDelivery:
                 allowed_conversations=(conversation,),
             )
         )
+        self.artifact_ledger.transfer(intent.delivery_id, message.artifacts)
         try:
             result = await self.gateway.deliver_proactively(
                 intent,
                 credential=credential,
             )
         except DeliverySubmissionConflict as exc:
+            self.artifact_ledger.complete_delivery(
+                intent.delivery_id,
+                tuple(artifact.local_path for artifact in message.artifacts),
+            )
             raise ValueError(str(exc)) from None
         finally:
             await self.authorizer.revoke(credential)
@@ -130,14 +169,16 @@ class ImcodexProactiveDelivery:
         if result.state is DeliverySubmissionState.ACCEPTED:
             return [message], True, True
         if result.state is DeliverySubmissionState.PARTIAL:
-            return [message], True, True
+            return [message], False, False
         if result.state is DeliverySubmissionState.RETRYABLE:
             return [message], False, True
         if result.state is DeliverySubmissionState.REJECTED:
             raise ValueError(result.error or "delivery was rejected")
         return [message], False, False
 
-    def _conversation_ref(self, channel_id: str, conversation_id: str) -> ConversationRef:
+    def _conversation_ref(
+        self, channel_id: str, conversation_id: str
+    ) -> ConversationRef:
         if channel_id in self.registered_channel_ids:
             return ConversationRef(channel_id, conversation_id)
         return self.webhook_channel.conversation_ref_for(channel_id, conversation_id)

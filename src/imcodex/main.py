@@ -10,14 +10,11 @@ from .config import Settings
 from .composition import preflight_runtime_configuration
 from .channels_cli import run_channels_cli
 from .core_cli import run_core_cli
-from .debug_harness.cli import run_debug_cli
 from .ops_cli import run_ops_cli
 
 
 def run(argv: list[str] | None = None) -> int | None:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "debug":
-        return run_debug_cli(argv[1:])
     if argv and argv[0] == "core":
         return run_core_cli(argv[1:])
     if argv and argv[0] == "app-server":

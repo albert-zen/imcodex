@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import UTC, datetime
 
 import pytest
-from imagent.contracts import ConversationRef, OutboundMessage, TextContent
-from imagent.outbound_presentation import (
-    PROJECTION_ORIGIN_AUTHORITATIVE,
-    PROJECTION_ORIGIN_LIVE,
-    PROJECTION_ORIGIN_METADATA_KEY,
+from imagent.contracts import (
+    ApplicationRef,
+    ConversationBinding,
+    ConversationRef,
+    ThreadRef,
 )
 from imagent.storage import SQLiteGatewayState
 
-from imcodex.bridge.sdk_presentation import ImcodexOutboundPresentation
 from imcodex.models import OutboundMessage as ProductOutboundMessage
 from imcodex.sdk_migration import (
-    SdkMigrationState,
     migrate_legacy_gateway_state,
     recover_legacy_deliveries,
 )
@@ -29,23 +26,18 @@ async def test_legacy_binding_and_route_are_imported_once(tmp_path) -> None:
     product.set_bootstrap_cwd("telegram", "chat-1", "/repo")
     product.bind_thread("telegram", "chat-1", "thread-1")
     state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
-    migration = SdkMigrationState(tmp_path / "sdk-migration.json")
     try:
         first = await migrate_legacy_gateway_state(
             product_store=product,
             gateway_state=state,
-            migration_state=migration,
             application_instance_id="codex-main",
             native_channel_ids=frozenset({"telegram"}),
-            clock=lambda: 100.0,
         )
         second = await migrate_legacy_gateway_state(
             product_store=product,
             gateway_state=state,
-            migration_state=migration,
             application_instance_id="codex-main",
             native_channel_ids=frozenset({"telegram"}),
-            clock=lambda: 200.0,
         )
 
         binding = await state.get(ConversationRef("telegram", "chat-1"))
@@ -55,7 +47,6 @@ async def test_legacy_binding_and_route_are_imported_once(tmp_path) -> None:
         assert binding is not None
         assert binding.thread_ref.native_thread_id == "thread-1"
         assert len(routes) == 1
-        assert migration.cutoff("telegram", "chat-1") == 100.0
     finally:
         await state.close()
 
@@ -68,15 +59,12 @@ async def test_legacy_generic_webhook_binding_uses_multiplexed_sdk_namespace(
     product.set_bootstrap_cwd("custom-a", "room/1", "/repo")
     product.bind_thread("custom-a", "room/1", "thread-1")
     state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
-    migration = SdkMigrationState(tmp_path / "sdk-migration.json")
     try:
         await migrate_legacy_gateway_state(
             product_store=product,
             gateway_state=state,
-            migration_state=migration,
             application_instance_id="codex-main",
             native_channel_ids=frozenset({"telegram", "qq", "feishu", "weixin"}),
-            clock=lambda: 100.0,
         )
 
         conversation = ConversationRef(
@@ -88,36 +76,36 @@ async def test_legacy_generic_webhook_binding_uses_multiplexed_sdk_namespace(
         assert binding is not None
         assert binding.thread_ref.native_thread_id == "thread-1"
         assert routes[0].conversation_ref == conversation
-        assert migration.cutoff("custom-a", "room/1") == 100.0
     finally:
         await state.close()
 
 
 @pytest.mark.asyncio
-async def test_migration_baseline_suppresses_only_old_authoritative_output(tmp_path) -> None:
+async def test_binding_import_resumes_after_crash_before_route_write(tmp_path) -> None:
     product = ConversationStore(clock=lambda: 100.0, state_path=tmp_path / "state.json")
-    migration = SdkMigrationState(tmp_path / "sdk-migration.json")
-    migration.mark("telegram", "chat-1", cutoff=100.0)
-    policy = ImcodexOutboundPresentation(store=product, migration_state=migration)
-
-    def message(origin: str, timestamp: float) -> OutboundMessage:
-        return OutboundMessage(
-            delivery_id=f"delivery-{origin}-{timestamp}",
-            conversation_ref=ConversationRef("telegram", "chat-1"),
-            content=(TextContent("answer"),),
-            created_at=datetime.fromtimestamp(timestamp, UTC),
-            metadata={
-                PROJECTION_ORIGIN_METADATA_KEY: origin,
-                "native_application": "appserver",
-                "native_item_kind": "agent_message",
-                "phase": "final_answer",
-            },
+    product.set_bootstrap_cwd("telegram", "chat-1", "/repo")
+    product.bind_thread("telegram", "chat-1", "thread-1")
+    state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
+    conversation = ConversationRef("telegram", "chat-1")
+    await state.put(
+        ConversationBinding(
+            conversation_ref=conversation,
+            application_ref=ApplicationRef("codex-main"),
+            thread_ref=ThreadRef("codex-main", "thread-1"),
+        )
+    )
+    try:
+        imported = await migrate_legacy_gateway_state(
+            product_store=product,
+            gateway_state=state,
+            application_instance_id="codex-main",
+            native_channel_ids=frozenset({"telegram"}),
         )
 
-    assert await policy.present(message(PROJECTION_ORIGIN_AUTHORITATIVE, 99.0)) is None
-    current = message(PROJECTION_ORIGIN_LIVE, 101.0)
-    assert await policy.present(current) is current
-    assert migration.cutoff("telegram", "chat-1") is None
+        assert imported == 0
+        assert len(await state.list_projection_routes()) == 1
+    finally:
+        await state.close()
 
 
 @pytest.mark.asyncio

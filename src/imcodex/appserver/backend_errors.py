@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .client import AppServerError
+from imagent.applications.appserver_client import AppServerError
 
 
 class CodexBackendErrorMixin:

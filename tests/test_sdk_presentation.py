@@ -1,31 +1,46 @@
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from imagent.applications import (
     AppServerArtifactCandidate,
     AppServerArtifactSourceKind,
-    AppServerPresentationContext,
-    AppServerPresentationItem,
+    AppServerCompletedItemFacts,
+    AppServerCompletedItemKind,
+    AppServerCompletedItemPhase,
+    AppServerTurnTerminalFacts,
+    AppServerTurnTerminalStatus,
+    CodexLiveActivityFacts,
+    CodexLiveActivityKind,
+    CodexLiveActivityMethod,
+    CodexPlanStep,
 )
 from imagent.contracts import (
-    AgentMessage,
     AttachmentContent,
     ConversationRef,
-    MessageRole,
     OutboundMessage,
     TextContent,
     ThreadRef,
 )
+from imagent.outbound_presentation import (
+    OutboundPresentationContext,
+    ProjectionPresentationOrigin,
+)
+from PIL import Image
 
+from imcodex.bridge.outbound_artifacts import OutboundArtifactStager
 from imcodex.bridge.sdk_presentation import (
-    ImcodexAppServerPresentation,
+    ImcodexArtifactMaterializer,
+    ImcodexCodexLiveActivityPresenter,
     ImcodexOutboundPresentation,
 )
-from imcodex.webhook_namespace import encode_webhook_conversation
 from imcodex.models import OutboundArtifact
+from imcodex.webhook_namespace import encode_webhook_conversation
 
 
 class FakeStore:
@@ -38,21 +53,14 @@ class FakeStore:
             show_system=visibility.get("show_system", False),
         )
 
-    def find_binding_by_thread_id(self, thread_id):
-        del thread_id
-        return self.binding
-
     def get_binding(self, channel_id, conversation_id):
         self.binding_reads.append((channel_id, conversation_id))
         return self.binding
 
-    def get_thread_snapshot(self, thread_id):
-        del thread_id
-        return None
-
 
 class FakeStager:
     def stage_appserver_candidate(self, candidate):
+        assert candidate.locator == "file:///native/output.png"
         return OutboundArtifact(
             kind="image",
             local_path="/spool/output.png",
@@ -62,182 +70,197 @@ class FakeStager:
             sha256="abc123",
         )
 
-    def stage_markdown_images(self, text, *, cwd):
-        del text, cwd
-        return ()
 
-
-def _context(*, authoritative: bool = False) -> AppServerPresentationContext:
-    return AppServerPresentationContext(
-        ThreadRef("codex-main", "thread-1"),
-        "turn-1",
-        authoritative,
-    )
-
-
-def _item(**changes) -> AppServerPresentationItem:
-    values = {
-        "item_id": "answer-1",
-        "item_kind": "agentmessage",
-        "phase": "final_answer",
-        "text": "Done",
-        "command": "",
-        "changed_paths": (),
-        "artifact_candidates": (),
-    }
-    values.update(changes)
-    return AppServerPresentationItem(**values)
-
-
-def _message(*, kind: str = "agent_message") -> AgentMessage:
-    return AgentMessage(
-        agent_item_id="answer-1",
+def _item(
+    *,
+    item_id: str = "answer-1",
+    authoritative: bool = False,
+    kind: AppServerCompletedItemKind = AppServerCompletedItemKind.AGENT_MESSAGE,
+    phase: AppServerCompletedItemPhase = AppServerCompletedItemPhase.FINAL_ANSWER,
+    candidates=(),
+) -> AppServerCompletedItemFacts:
+    return AppServerCompletedItemFacts(
+        item_id=item_id,
         thread_ref=ThreadRef("codex-main", "thread-1"),
-        role=MessageRole.ASSISTANT,
-        content=(TextContent("Done"),),
-        created_at=datetime.now(UTC),
-        metadata={"native_item_kind": kind, "phase": "final_answer"},
+        turn_id="turn-1",
+        authoritative=authoritative,
+        kind=kind,
+        phase=phase,
+        has_default_message=(kind is AppServerCompletedItemKind.AGENT_MESSAGE),
+        artifact_candidates=tuple(candidates),
     )
 
 
-def test_artifact_candidate_is_attached_to_the_next_final_answer() -> None:
-    presentation = ImcodexAppServerPresentation(
-        store=FakeStore(),
-        artifact_stager=FakeStager(),
+def _terminal(*, authoritative: bool = False) -> AppServerTurnTerminalFacts:
+    return AppServerTurnTerminalFacts(
+        thread_ref=ThreadRef("codex-main", "thread-1"),
+        turn_id="turn-1",
+        authoritative=authoritative,
+        status=AppServerTurnTerminalStatus.COMPLETED,
     )
-    candidate = AppServerArtifactCandidate(
+
+
+def _candidate() -> AppServerArtifactCandidate:
+    return AppServerArtifactCandidate(
         candidate_id="tool-1:image:0",
-        media_kind="image",
         source_kind=AppServerArtifactSourceKind.FILE_URL,
-        value="file:///native/output.png",
+        locator="file:///native/output.png",
     )
+
+
+def _outbound(kind: str, *, phase: str = "") -> OutboundMessage:
+    return OutboundMessage(
+        delivery_id=f"delivery-{kind}-{phase}",
+        conversation_ref=ConversationRef("telegram", "chat-1"),
+        content=(TextContent("message"),),
+        created_at=datetime.now(UTC),
+        metadata={
+            "native_application": "codex",
+            "native_item_kind": kind,
+            "phase": phase,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_artifact_candidate_is_attached_to_the_next_final_answer() -> None:
+    materializer = ImcodexArtifactMaterializer(artifact_stager=FakeStager())
 
     assert (
-        presentation.present_completed_item(
-            _context(),
+        await materializer.materialize_completed_item(
             _item(
                 item_id="tool-1",
-                item_kind="dynamictoolcall",
-                phase="",
-                text="",
-                artifact_candidates=(candidate,),
-            ),
-            None,
+                kind=AppServerCompletedItemKind.DYNAMIC_TOOL_CALL,
+                phase=AppServerCompletedItemPhase.NONE,
+                candidates=(_candidate(),),
+            )
         )
         is None
     )
-    projected = presentation.present_completed_item(
-        _context(),
-        _item(),
-        _message(),
-    )
+    projected = await materializer.materialize_completed_item(_item())
 
     assert projected is not None
-    assert isinstance(projected.content[-1], AttachmentContent)
-    assert projected.content[-1].attachment_id == "imcodex:artifact:abc123"
-    assert presentation.present_turn_terminal(_context(), "completed") is None
+    assert isinstance(projected.attachments[0], AttachmentContent)
+    assert projected.attachments[0].attachment_id == "imcodex:artifact:abc123"
+    assert await materializer.materialize_turn_terminal(_terminal()) is None
 
 
-def test_application_presentation_defers_visibility_and_keeps_terminal_fallback() -> None:
-    presentation = ImcodexAppServerPresentation(
-        store=FakeStore(show_commentary=False, show_toolcalls=False, show_system=False),
-        artifact_stager=FakeStager(),
+@pytest.mark.asyncio
+async def test_artifact_only_terminal_fallback_and_authoritative_scope() -> None:
+    materializer = ImcodexArtifactMaterializer(artifact_stager=FakeStager())
+    await materializer.materialize_completed_item(
+        _item(
+            item_id="tool-1",
+            kind=AppServerCompletedItemKind.DYNAMIC_TOOL_CALL,
+            phase=AppServerCompletedItemPhase.NONE,
+            candidates=(_candidate(),),
+        )
     )
 
-    assert presentation.present_completed_item(
-        _context(),
-        _item(phase="commentary"),
-        _message(),
-    ) is not None
-    assert presentation.present_live_message(_context(), _message(kind="plan_updated")) is not None
-    presentation.observe_delta(_context(), "partial answer")
-
-    fallback = presentation.present_turn_terminal(_context(), "interrupted")
-
+    assert (
+        await materializer.materialize_turn_terminal(_terminal(authoritative=True))
+        is None
+    )
+    fallback = await materializer.materialize_turn_terminal(_terminal())
     assert fallback is not None
-    text = fallback.content[0]
-    assert isinstance(text, TextContent)
-    assert text.text == "Turn interrupted.\npartial answer"
+    assert fallback.attachments[0].attachment_id == "imcodex:artifact:abc123"
+
+
+@pytest.mark.asyncio
+async def test_authoritative_a1_replay_recreates_content_addressed_artifact(
+    tmp_path: Path,
+) -> None:
+    stream = BytesIO()
+    Image.new("RGB", (1, 1), (1, 2, 3)).save(stream, format="PNG")
+    candidate = AppServerArtifactCandidate(
+        candidate_id="tool-1:image:0",
+        source_kind=AppServerArtifactSourceKind.DATA_URL,
+        locator="data:image/png;base64,"
+        + base64.b64encode(stream.getvalue()).decode("ascii"),
+    )
+    facts = _item(authoritative=True, candidates=(candidate,))
+    first = ImcodexArtifactMaterializer(
+        artifact_stager=OutboundArtifactStager(tmp_path / "spool")
+    )
+    materialized = await first.materialize_completed_item(facts)
+    assert materialized is not None
+    path = Path(materialized.attachments[0].source.path)
+    path.unlink()
+
+    replay = ImcodexArtifactMaterializer(
+        artifact_stager=OutboundArtifactStager(tmp_path / "spool")
+    )
+    replayed = await replay.materialize_completed_item(facts)
+
+    assert replayed is not None
+    assert Path(replayed.attachments[0].source.path) == path
+    assert path.read_bytes() == stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_live_activity_presenter_uses_only_typed_bounded_facts() -> None:
+    presenter = ImcodexCodexLiveActivityPresenter()
+    output = await presenter.present_live_activity(
+        CodexLiveActivityFacts(
+            event_id="plan-1",
+            thread_ref=ThreadRef("codex-main", "thread-1"),
+            turn_id="turn-1",
+            kind=CodexLiveActivityKind.PLAN_UPDATED,
+            native_method=CodexLiveActivityMethod.PLAN_UPDATED,
+            summary="Implementation plan",
+            plan=(CodexPlanStep(status="in_progress", step="Migrate composition"),),
+        )
+    )
+
+    assert output is not None
+    assert (
+        output.content[0].text
+        == "Implementation plan\n- [in_progress] Migrate composition"
+    )
 
 
 @pytest.mark.asyncio
 async def test_outbound_visibility_is_applied_per_destination() -> None:
     store = FakeStore(show_commentary=False, show_toolcalls=True, show_system=False)
     presentation = ImcodexOutboundPresentation(store=store)
-    conversation = ConversationRef("telegram", "chat-1")
+    live = OutboundPresentationContext(ProjectionPresentationOrigin.LIVE_ONLY)
 
-    def outbound(kind: str, *, phase: str = "") -> OutboundMessage:
-        return OutboundMessage(
-            delivery_id=f"delivery-{kind}-{phase}",
-            conversation_ref=conversation,
-            content=(TextContent("message"),),
-            created_at=datetime.now(UTC),
-            metadata={
-                "native_application": "appserver",
-                "native_item_kind": kind,
-                "phase": phase,
-            },
-        )
-
-    assert await presentation.present(outbound("plan_updated")) is None
-    assert await presentation.present(outbound("command_execution")) is not None
-    final = outbound("agent_message", phase="final_answer")
-    assert await presentation.present(final) is final
+    assert await presentation.present(_outbound("plan_updated"), live) is None
+    assert await presentation.present(_outbound("command_execution"), live) is not None
+    final = _outbound("agent_message", phase="final_answer")
+    assert await presentation.present(final, live) is final
 
 
 @pytest.mark.asyncio
 async def test_webhook_visibility_reads_original_product_namespace() -> None:
     store = FakeStore(show_commentary=False)
     presentation = ImcodexOutboundPresentation(store=store)
-    message = OutboundMessage(
-        delivery_id="delivery-webhook",
-        conversation_ref=ConversationRef(
+    message = replace_conversation(
+        _outbound("plan_updated"),
+        ConversationRef(
             "webhook",
             encode_webhook_conversation("custom-a", "room/1"),
         ),
-        content=(TextContent("plan"),),
-        created_at=datetime.now(UTC),
-        metadata={
-            "native_application": "appserver",
-            "native_item_kind": "plan_updated",
-        },
     )
 
-    assert await presentation.present(message) is None
+    assert (
+        await presentation.present(
+            message,
+            OutboundPresentationContext(ProjectionPresentationOrigin.LIVE_ONLY),
+        )
+        is None
+    )
     assert store.binding_reads == [("custom-a", "room/1")]
 
 
-def test_authoritative_and_live_buffers_do_not_cross_contaminate() -> None:
-    presentation = ImcodexAppServerPresentation(
-        store=FakeStore(),
-        artifact_stager=FakeStager(),
+def replace_conversation(
+    message: OutboundMessage,
+    conversation_ref: ConversationRef,
+) -> OutboundMessage:
+    return OutboundMessage(
+        delivery_id=message.delivery_id,
+        conversation_ref=conversation_ref,
+        content=message.content,
+        created_at=message.created_at,
+        metadata=message.metadata,
     )
-    presentation.observe_delta(_context(authoritative=False), "live")
-
-    authoritative = presentation.present_turn_terminal(
-        _context(authoritative=True),
-        "completed",
-    )
-    live = presentation.present_turn_terminal(_context(authoritative=False), "completed")
-
-    assert authoritative is None
-    assert live is not None
-    text = live.content[0]
-    assert isinstance(text, TextContent)
-    assert text.text == "live"
-
-
-def test_terminal_delta_fallback_has_a_bounded_buffer() -> None:
-    presentation = ImcodexAppServerPresentation(
-        store=FakeStore(),
-        artifact_stager=FakeStager(),
-    )
-    presentation.observe_delta(_context(), "x" * (70 * 1024))
-
-    fallback = presentation.present_turn_terminal(_context(), "completed")
-
-    assert fallback is not None
-    text = fallback.content[0]
-    assert isinstance(text, TextContent)
-    assert len(text.text) < 65 * 1024
-    assert text.text.endswith("[Output truncated while recovering the turn.]")

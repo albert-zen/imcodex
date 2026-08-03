@@ -112,8 +112,8 @@ detached TCP launcher. The HTTP port check uses the configured
 Run only one bridge process for a given `IMCODEX_DATA_DIR`. A normal managed
 restart stops the old bridge before starting its replacement. Sharing one data
 directory between overlapping bridge processes, even on different HTTP ports,
-is unsupported because channel bindings and the terminal-delivery outbox have
-one bridge owner.
+is unsupported because SDK Gateway state, channel bindings, and the consumer
+artifact lease ledger have one process owner.
 
 ### Configuration console
 
@@ -186,18 +186,11 @@ progress, because ordinary editors do not participate in that lock.
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.
 
-`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` declares that IMCodex handles supported
-Desktop-style thread-management tools on the selected App Server. The
-platform launchers set it automatically when they start or reuse the project's
-independent App Server. Explicit connect-only endpoints leave it disabled so a
-Desktop or other host cannot race IMCodex on side-effecting tool calls; set it
-manually only when that explicit endpoint has no other dynamic-tool host. Host
-mode also opts the App Server client into the upstream experimental protocol
-capability required by dynamic tools and paged thread history; it does not
-enable unrelated IMCodex product features. Host selection belongs to the App
-Server connection topology, not to individual threads: when enabled, IMCodex
-resolves native-mappable tool calls for Desktop-, CLI-, and IMCodex-created
-threads alike. It does not persist or infer per-thread tool ownership.
+`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` is rejected by the SDK-owned runtime. A
+future typed Application operation is required before IMCodex can host
+Desktop-style thread-management tools. The migration does not retain the old
+raw App Server request callback or silently advertise tools that cannot be
+served. Leave this setting disabled.
 
 For websocket cores that require bearer auth, set
 `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` to a local file containing the token, or
@@ -233,25 +226,13 @@ unavailable. Recovery does not wait for another IM message. Reconnect delays
 must be positive, the maximum must be at least the initial delay, and jitter
 must be between `0` and `1`.
 
-JSON-RPC responses are handled on the socket read fast path. Native server
-requests such as approvals use a separate bounded dispatcher so a slow ordinary
-notification cannot starve them, while `serverRequest/resolved` stays on that
-same ordered lane. IM channel delivery for a native request is bounded; failure
-removes its local route and sends a JSON-RPC error so the turn does not hang. If
-either dispatch queue fills, the bridge
-records `appserver.dispatch.overflow`, resets that connection epoch, and lets
-normal reconnect reconciliation recover from native state. WebSocket frame
-size is not capped by the bridge because native `thread/resume` may return a
-legitimate full thread in one response. Rehydration clears cached active-turn
-authority before resume, reports an active thread without an active turn as
-unverified, and projects a terminal turn result that completed while the
-transport or bridge process was offline. Active-turn state remains runtime-only;
-the persisted state contains only a terminal-delivery checkpoint and, after
-projection, the pending outbound message. Terminal delivery uses a stable
-thread/turn identity and retries from that outbox until the channel sink accepts
-it or the service is intentionally closed. Outbox draining runs after every
-connection becomes ready, including `stdio://`; only native thread rehydration
-depends on using a persistent external App Server.
+The SDK App Server client keeps JSON-RPC responses on the socket read fast path
+and uses bounded dispatch lanes for notifications and native requests. The SDK
+Gateway owns projection recovery, checkpoints, request correlation, and
+delivery retries. IMCodex does not persist active-Turn authority or a second
+outbox. Its legacy terminal-delivery fields are read only by the one-time
+migration/drain path and receive no new runtime writes. The consumer persists
+only IM routing/configuration plus its bounded proactive artifact lease ledger.
 
 ### Native Windows: independent TCP App Server + bridge
 

@@ -102,9 +102,13 @@ def install_delivery_route(
         content_length = request.headers.get("content-length", "")
         try:
             if content_length and int(content_length) > MAX_DELIVERY_BODY_BYTES:
-                raise HTTPException(status_code=413, detail="Delivery body is too large.")
+                raise HTTPException(
+                    status_code=413, detail="Delivery body is too large."
+                )
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid Content-Length header.") from None
+            raise HTTPException(
+                status_code=400, detail="Invalid Content-Length header."
+            ) from None
         content_type = request.headers.get("content-type", "").partition(";")[0].strip()
         if content_type == "application/x-www-form-urlencoded":
             body = bytearray()
@@ -279,9 +283,7 @@ def install_delivery_route(
                 metadata={
                     "delivery_id": delivery_id,
                     "source": (
-                        "channels.send.current"
-                        if source_thread_id
-                        else "channels.send"
+                        "channels.send.current" if source_thread_id else "channels.send"
                     ),
                 },
                 artifacts=list(artifacts),
@@ -339,9 +341,9 @@ def install_delivery_route(
                 status_code = 207
             return JSONResponse(receipt, status_code=status_code)
         finally:
-            # Pending deliveries are already referenced by the durable outbox,
-            # so the shared cleanup preserves them. Always surrender the
-            # request-scoped active lease, including validation/conflict paths.
+            # Transferred paths are already referenced by the consumer lease
+            # ledger. Always surrender only the request-scoped lease, including
+            # validation and conflict paths.
             await discard_uploads(artifacts)
 
     return credential
@@ -391,7 +393,9 @@ def _authorize_local_instance(
         or not hmac.compare_digest(supplied, instance_id)
         or not hmac.compare_digest(supplied_token, credential.token)
     ):
-        raise HTTPException(status_code=403, detail="Local delivery request was rejected.")
+        raise HTTPException(
+            status_code=403, detail="Local delivery request was rejected."
+        )
 
 
 def _delivery_receipt(
@@ -427,9 +431,7 @@ def _delivery_receipt(
                 None,
             )
         delivery = (
-            recorded_items.pop(delivery_index)
-            if delivery_index is not None
-            else {}
+            recorded_items.pop(delivery_index) if delivery_index is not None else {}
         )
         failure = ""
         recorded_status = str(delivery.get("status") or "")
@@ -441,9 +443,7 @@ def _delivery_receipt(
                     failure = failure_strings.pop(index)
                     break
         delivered = recorded_status == "delivered"
-        outcome_unknown = bool(
-            message.metadata.get("artifact_outcome_unknown")
-        )
+        outcome_unknown = bool(message.metadata.get("artifact_outcome_unknown"))
         items.append(
             {
                 "filename": artifact.filename,

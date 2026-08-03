@@ -1,37 +1,46 @@
 from __future__ import annotations
 
-import copy
+from imagent.applications.appserver_client import AppServerError
 
 from ..store import ConversationStore
 from .backend_errors import CodexBackendErrorMixin
 from .backend_types import (
     ACTIVE_THREAD_STATUSES as ACTIVE_THREAD_STATUSES,
+)
+from .backend_types import (
     StaleThreadBindingError as StaleThreadBindingError,
+)
+from .backend_types import (
     ThreadListResult as ThreadListResult,
+)
+from .backend_types import (
     ThreadSelectionError as ThreadSelectionError,
+)
+from .backend_types import (
     TurnSubmission as TurnSubmission,
 )
-from .client import AppServerError
 from .settings_backend import (
     PERMISSION_MODE_PROFILE_IDS as PERMISSION_MODE_PROFILE_IDS,
+)
+from .settings_backend import (
     CodexSettingsBackendMixin,
 )
 from .thread_backend import CodexThreadBackendMixin
 
 
-class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBackendErrorMixin):
+class CodexBackend(
+    CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBackendErrorMixin
+):
     def __init__(
         self,
         *,
         client,
         store: ConversationStore,
         service_name: str,
-        thread_dynamic_tools: list[dict] | None = None,
     ) -> None:
         self.client = client
         self.store = store
         self.service_name = service_name
-        self.thread_dynamic_tools = copy.deepcopy(thread_dynamic_tools)
         # A native thread has no resumable rollout until its first turn starts.
         # Keep that transient fact process-local so the first input can use the
         # live connection instead of asking Codex to resume nonexistent history.
@@ -41,7 +50,9 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         preserves_server_state = getattr(self.client, "preserves_server_state", None)
         if preserves_server_state is not None:
             return bool(preserves_server_state)
-        mode = getattr(self.client, "connection_mode", "") or getattr(self.client, "last_connection_mode", "")
+        mode = getattr(self.client, "connection_mode", "") or getattr(
+            self.client, "last_connection_mode", ""
+        )
         if mode == "disconnected":
             mode = getattr(self.client, "last_connection_mode", "")
         return mode in {"external", "dedicated-ws", "shared-ws"}
@@ -70,7 +81,9 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
             "reconnect_enabled": self.prefers_native_recovery(),
         }
 
-    async def reply_to_server_request(self, request_id: str, decision_or_answers: dict) -> None:
+    async def reply_to_server_request(
+        self, request_id: str, decision_or_answers: dict
+    ) -> None:
         route = self.store.get_pending_request(request_id)
         if route is None or route.transport_request_id is None:
             raise AppServerError(f"unknown pending request: {request_id}")

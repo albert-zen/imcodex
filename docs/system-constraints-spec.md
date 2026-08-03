@@ -115,7 +115,7 @@ It MUST:
 - implement Codex app-server protocol integration
 - expose native thread operations
 - expose native config operations
-- surface native event and request streams upward
+- provide the SDK Application adapter with native Thread and Turn operations
 
 It MUST be the only layer that knows Codex protocol details such as:
 
@@ -443,7 +443,8 @@ The rewrite MUST assume that:
 - a hidden message is still transport traffic unless the client opted out of it natively
 - stale local turn state after disconnect is a product bug, not just an observability bug
 
-The bridge and App Server adapter MUST therefore follow these rules:
+The SDK Gateway and Application adapter MUST therefore follow these rules;
+IMCodex supplies only product policy through the accepted typed seams:
 
 - the socket read path MUST be kept fast and MUST NOT block on slow downstream projection or logging work
 - platform attachment download, content validation, and disk staging MUST run
@@ -451,14 +452,17 @@ The bridge and App Server adapter MUST therefore follow these rules:
   from receiving and queueing later gateway events
 - JSON-RPC responses MUST stay on the socket read fast path, while native server requests such as approvals MUST use a bounded dispatch path isolated from ordinary notifications
 - native request-resolution notifications MUST preserve wire order with the request they resolve
-- IM delivery for a native server request MUST be bounded; failure MUST explicitly reject the native request and remove its local route instead of starving later requests
+- IM delivery for a native server request MUST be bounded; classified failure
+  follows the SDK I2 claim and terminality rules and MUST NOT re-authorize the
+  native request
 - dispatch queues MUST be bounded; overflow MUST reset and reconcile the connection explicitly instead of blocking the socket reader, dropping protocol messages silently, or growing memory without limit
 - protocol/event logging MUST NOT synchronously slow the transport read path under normal operation
 - high-volume native notifications that the default product does not need SHOULD be suppressed using native `optOutNotificationMethods` during `initialize`
 - default visibility policy MUST NOT be implemented by merely receiving everything and then doing expensive per-message work for hidden high-frequency deltas
 - the websocket client MUST accept legitimate full native thread responses; a bridge-owned frame limit MUST NOT create a permanent reconnect loop for a large `thread/resume` result
 - recovery MAY request a bounded recent-turn page only when the experimental native API is enabled, and MUST retry with the stable request shape when that capability is rejected
-- reconnect and rehydrate logic MUST reconcile native thread state before trusting any previously cached local `active_turn`
+- reconnect and rehydrate logic MUST reconcile native Thread state before
+  trusting any product routing hint
 - an established external App Server target MUST reconnect in the background after an unexpected disconnect; a new inbound IM message MUST NOT be the recovery trigger
 - an external connection failure MUST NOT silently spawn or select another App Server; `stdio://` is an explicit bridge-child compatibility target only
 - background reconnect delay MUST be capped and jittered, while retrying until recovery succeeds or bridge shutdown begins
@@ -466,30 +470,32 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
-- cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
-- cached `active_turn` is a routing hint only and MUST NOT suppress a native item, server request, or Turn lifecycle event with another Turn ID; only an explicitly suppressed Turn MAY have its presentation hidden
+- IMCodex MUST NOT persist active-Turn authority; any remaining product route is
+  a hint only and cannot suppress SDK observation of a different native Turn
 - every ordinary input to an existing binding MUST resume and reconcile the exact native thread before steer/start; a different returned thread ID or an unverifiable active turn MUST fail explicitly rather than create a competing continuation
 - history display MUST use native turn APIs, preserve terminal and active turn statuses, and paginate to the oldest available turn without becoming model context or a bridge-local transcript
-- for every bound native turn, the bridge MAY persist a minimal terminal-delivery checkpoint, but MUST NOT use that checkpoint as active-turn authority; native resume remains the source of truth for whether the turn is active or terminal
 - a native `final_answer` item MUST be treated as an item-scoped visible answer segment, not as Turn completion; only native Turn lifecycle state such as `turn/completed` may close Turn authority, and a later item in the same Turn MUST reopen presentation output without requiring another inbound IM message
-- projected native output MUST retain the native Codex method or item type and item phase; the bridge MUST NOT replace them with a parallel progress/result message taxonomy, and any presentation grouping MUST remain derived state
-- when a watched turn completes during a disconnect or bridge process restart, recovery SHOULD project its terminal native result, MUST use a stable delivery identity scoped to the projected unit (thread/turn for a completion fallback and thread/turn/item for an answer item), and MUST discard any orphaned message-pump buffer
-- recovery MUST NOT consume a Turn-level watch until the recovered message is either already known by exact delivery identity or durably staged in the delivery outbox
-- every projected answer segment or completed-Turn fallback MUST enter a durable delivery outbox before channel delivery and MUST remain retryable until its IM sink confirms delivery; a transient sink failure or bridge restart MUST NOT consume the only recovery marker
-- an acknowledged answer delivery identity MUST remain durable for the remaining lifetime of its Turn watch, so a restart before native Turn completion cannot replay the answer or emit a false empty-result fallback; the receipt MUST be removed when the watch is consumed
-- multiple projected answer items from one native Turn MUST be independently stageable, deduplicated, acknowledged, and retried; a pending delivery for one item MUST NOT suppress, overwrite, reroute, or consume later commentary or answer items from that Turn
+- projected native output MUST retain stable native identity and typed phase;
+  IMCodex MUST NOT replace it with a parallel progress/result taxonomy
+- recoverable A1 output MUST be reproducible from authoritative history;
+  live-only presentation MUST NOT advance the SDK checkpoint
+- O1 suppression MUST complete SDK outbound idempotency before checkpoint CAS;
+  crash/replay convergence remains SDK-owned
+- O2 observes one logical Coordinator attempt, is best-effort and non-durable,
+  and MUST NOT rewrite receipts or retry scheduling
 - distinct native item IDs MUST remain distinct projected messages even when their rendered text is identical; delivery deduplication MUST use identity rather than content
-- snapshot recovery MUST enumerate all nonblank final-answer items in native order; explicit artifacts after the last answer MUST use a separate completed-Turn fallback identity, and answer items without a distinct stable identity MUST fail recovery explicitly rather than be conflated
-- durable answer segments for one IM destination MUST drain in projection order; a blocked destination MUST NOT prevent an unrelated destination from making delivery progress
-- structured outbound artifacts MUST be staged from explicit native output, validated for type and size, persisted with the terminal outbox, and delivered with stable per-artifact identities; adapters MUST NOT silently claim attachment success after a failed platform upload
+- structured outbound artifacts MUST be staged from typed A1 facts, validated for
+  trust, type, size, and quota by IMCodex, and delivered with stable
+  per-artifact identities; adapters MUST NOT claim attachment success after a
+  failed platform upload
 - ordinary final-answer Markdown links MUST remain navigation references and MUST NOT be inferred as outbound attachments; only explicit Markdown image nodes outside fenced and inline code MAY trigger automatic preview delivery, while generic files require structured native output or explicit standalone delivery
-- every channel with a per-artifact platform API MUST use the shared batch checkpoint contract: confirmed artifacts are recorded, retryable failures preserve only the failed artifact and unattempted suffix, and permanent failures become visible notices while later artifacts continue; a batch-atomic multipart webhook MUST instead preserve and report the whole batch as one delivery attempt
-- standalone channel/tool delivery MUST enter the same durable outbound outbox and managed artifact spool as projected native output; HTTP or tool entrypoints MUST NOT bypass the service boundary to call a channel sink directly
+- standalone delivery MUST enter the SDK proactive-delivery boundary; HTTP or
+  tool entrypoints MUST NOT call a Channel sink directly
 - implicit standalone delivery MUST forward native `CODEX_THREAD_ID` and resolve the last IM recipient that explicitly selected that thread; the bridge MUST retain that minimal route when the recipient selects another thread, MUST move it when the same thread is explicitly selected elsewhere, and Agent-side launchers MUST NOT parse persisted bridge state, receive bot credentials, or persist a parallel route
-- standalone delivery IDs MUST use a namespace separate from native projection identities; the bounded acknowledgement ledger MUST retain the final per-artifact outcome so same-payload idempotent replay cannot turn a prior partial/permanent failure into inferred success, while the same external ID with different content or destination MUST fail explicitly
-- once a terminal message is staged, replayed native notifications, interruption cleanup, stale native binding cleanup, and conversation rebinding MUST NOT overwrite, remove, or reroute it before sink acceptance
-- delivery-outbox draining MUST run for every App Server connection mode, including `stdio://`; native thread rehydration may remain mode-dependent
-- recovery health MUST remain degraded while a staged terminal delivery is pending, even if the native App Server connection is healthy
+- standalone delivery IDs use the SDK delivery-submission identity. IMCodex's
+  bounded, crash-safe artifact lease ledger persists paths before submission,
+  rejects an ID rebound to different artifacts, retains retryable outcomes,
+  and releases only on a terminal O2 outcome
 - one `IMCODEX_DATA_DIR` MUST have one bridge-process owner; overlapping bridge processes sharing it are unsupported, and managed restart MUST remain stop-then-start
 - if ready-time rehydration cannot verify a cached local `active_turn`, recovery MUST discard that untrusted cache rather than continue showing it as `inProgress`
 - bridge shutdown MUST cancel reconnect work and finish closing any transport or child process whose teardown has already started
@@ -550,37 +556,15 @@ Internal failure handling MUST follow these rules:
 
 - no native request may be left silently pending because the bridge forgot to answer it
 - unsupported native request shapes must fail explicitly
-- on a shared external App Server, host-registered dynamic tool requests are
-  owned by the client that supplied their implementation; IMCodex MUST NOT
-  execute a fallback with side effects unless its configured topology declares
-  IMCodex to be the thread-tool host. That declaration is enabled by the
-  project launchers for the independent App Server they manage, but remains
-  disabled for explicit connect-only endpoints. Delegation MUST be bounded and
-  canceled when native completion arrives. As the declared host, IMCodex MAY
-  translate only operations that map directly to native thread/turn APIs; it
-  MUST NOT recreate Desktop-owned project, pin, handoff, or remote-host state.
-  Other unresolved dynamic tools MUST fail explicitly rather than leave the
-  turn pending. A private bridge-child connection MAY use the same native
-  translations, but MUST reject unsupported requests immediately
-- when IMCodex owns the dynamic-tool host role, each `thread/start` issued by
-  IMCodex MUST register the declared thread tools through the App Server
-  `dynamicTools` field. A thread created through the model-facing
-  `create_thread` translation MUST register the same tools recursively. An
-  explicit connect-only endpoint for which IMCodex is not the declared tool
-  host MUST NOT receive this injection. Existing Desktop-registered tools MUST
-  be left intact. When a supported thread-tool request reaches a private
-  bridge-child or a declared IMCodex host, IMCodex MUST resolve it through the
-  native App Server regardless of which client originally created the thread.
-  Thread creation origin is not an authorization boundary and MUST NOT be
-  persisted or consulted as tool-routing state. On an explicit shared endpoint
-  where IMCodex is not the host, requests remain delegated to the client that
-  registered them. The current native protocol exposes `dynamicTools` only on
-  `thread/start`; IMCodex MUST NOT replace, fork, or locally emulate an existing
-  thread merely to retrofit tools that were absent when it was created
-- IMCodex MUST NOT advertise an agent-facing thread tool whose native creation
-  path cannot register the same tool set on the resulting thread. In the
-  current protocol this excludes `thread/fork` from the injected tool surface
+- IMCodex MUST NOT register or answer dynamic Thread tools through a raw App
+  Server callback in the SDK-owned runtime. `IMCODEX_NATIVE_THREAD_TOOL_HOST=1`
+  MUST fail startup explicitly. A future restoration requires a bounded typed
+  Application operation with cross-integration evidence; until then IMCodex
+  MUST NOT advertise the tool set or infer a host role
 - protocol details should stay inside the App Server boundary
+- IMCodex MUST NOT keep a parallel native-event journal or expose raw
+  Application events through `/native events`; that command fails explicitly
+  in the SDK-owned runtime
 - the bridge may log diagnostic detail, but must not expose raw protocol noise to end users
 
 ## Rewrite Guardrails

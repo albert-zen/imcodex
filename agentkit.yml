@@ -36,9 +36,8 @@ components:
     code:
       - src/imcodex/channels/**
       - tests/test_channel_*.py
-      - tests/test_channels.py
       - tests/test_sdk_webhook.py
-      - tests/test_service_e2e.py
+      - tests/test_webhook_api.py
     docs:
       - docs/design.md
       - docs/product-behavior-spec.md
@@ -61,7 +60,6 @@ components:
       - src/imcodex/webhook_namespace.py
       - tests/test_commands.py
       - tests/test_settings.py
-      - tests/test_projection*.py
       - tests/test_outbound_artifacts.py
       - tests/test_sdk_presentation.py
       - tests/test_sdk_controller.py
@@ -69,7 +67,6 @@ components:
       - tests/test_sdk_delivery.py
       - src/imcodex/bridge/sdk_requests.py
       - tests/test_store.py
-      - tests/test_service_e2e.py
     docs:
       - docs/design.md
       - docs/product-behavior-spec.md
@@ -84,12 +81,12 @@ components:
       - conversation
 
   appserver:
-    description: Native Codex protocol integration, dedicated core transport, restart handling, and approval flow plumbing.
+    description: Codex-specific settings and Thread policy over the SDK-owned App Server client.
     code:
       - src/imcodex/appserver/**
       - src/imcodex/core_cli.py
       - src/imcodex/core_manager.py
-      - tests/test_appserver_stdio.py
+      - tests/test_appserver_target.py
       - tests/test_backend.py
       - tests/test_core_manager.py
     docs:

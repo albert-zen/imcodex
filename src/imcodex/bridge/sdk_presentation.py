@@ -1,22 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 
-from imagent.applications import AppServerPresentationContext, AppServerPresentationItem
+from imagent.applications import (
+    ApplicationArtifactMaterialization,
+    ApplicationTextPresentation,
+    AppServerCompletedItemFacts,
+    AppServerCompletedItemPhase,
+    AppServerTurnTerminalFacts,
+    CodexLiveActivityFacts,
+    CodexLiveActivityKind,
+)
 from imagent.contracts import (
-    AgentMessage,
     AttachmentContent,
     LocalPath,
-    MessageRole,
     OutboundMessage,
     TextContent,
+    TextFormat,
 )
 from imagent.outbound_presentation import (
-    PROJECTION_ORIGIN_AUTHORITATIVE,
-    PROJECTION_ORIGIN_METADATA_KEY,
+    OutboundPresentationContext,
 )
 
 from ..models import OutboundArtifact
@@ -24,173 +30,130 @@ from ..webhook_namespace import (
     WEBHOOK_CHANNEL_INSTANCE_ID,
     decode_webhook_conversation,
 )
-from .message_pump import EMPTY_COMPLETED_TURN_TEXT
-
 
 _MAX_OUTBOUND_ARTIFACTS = 4
-_MAX_DELTA_CHARS = 64 * 1024
-_MAX_COMMAND_SUMMARIES = 64
-_MAX_CHANGED_FILES = 128
-_MAX_ARTIFACT_ERRORS = 8
+_MAX_TURN_ARTIFACT_BUFFERS = 256
+
+
+class ImcodexCodexLiveActivityPresenter:
+    """Render only the bounded Codex live-activity facts accepted by A1."""
+
+    async def present_live_activity(
+        self,
+        facts: CodexLiveActivityFacts,
+    ) -> ApplicationTextPresentation | None:
+        text = self._text(facts)
+        if not text:
+            return None
+        return ApplicationTextPresentation((TextContent(text, TextFormat.MARKDOWN),))
+
+    @staticmethod
+    def _text(facts: CodexLiveActivityFacts) -> str:
+        if facts.kind is CodexLiveActivityKind.PLAN_UPDATED:
+            plan = "\n".join(f"- [{step.status}] {step.step}" for step in facts.plan)
+            return "\n".join(
+                part for part in (facts.summary or "Plan updated.", plan) if part
+            )
+        if facts.kind is CodexLiveActivityKind.DIFF_UPDATED:
+            count = (
+                f"{facts.changed_file_count} changed file(s)."
+                if facts.changed_file_count is not None
+                else ""
+            )
+            return "\n".join(
+                part for part in (facts.summary or "Diff updated.", count) if part
+            )
+        if facts.kind is CodexLiveActivityKind.THREAD_STATUS_CHANGED:
+            return f"Codex status: {facts.summary}" if facts.summary else ""
+        if facts.kind is CodexLiveActivityKind.THREAD_COMPACTED:
+            return facts.summary or "Codex compacted the Thread context."
+        if facts.kind is CodexLiveActivityKind.MODEL_REROUTED:
+            return facts.summary or "Codex rerouted the model."
+        return ""
 
 
 @dataclass(slots=True)
-class _TurnPresentation:
-    deltas: list[str] = field(default_factory=list)
-    delta_chars: int = 0
-    deltas_truncated: bool = False
-    command_summaries: list[str] = field(default_factory=list)
-    changed_files: list[str] = field(default_factory=list)
-    final_text: str = ""
-    final_visible: bool = False
+class _TurnArtifacts:
     artifacts: list[OutboundArtifact] = field(default_factory=list)
-    artifact_errors: list[str] = field(default_factory=list)
 
 
-class ImcodexAppServerPresentation:
-    """IMCodex visibility and managed-spool policy over the SDK Application seam."""
+class ImcodexArtifactMaterializer:
+    """Validate native candidates into the consumer-owned managed spool."""
 
-    def __init__(self, *, store, artifact_stager) -> None:
-        self.store = store
+    def __init__(self, *, artifact_stager) -> None:
         self.artifact_stager = artifact_stager
         self._lock = RLock()
-        self._turns: dict[tuple[bool, str, str], _TurnPresentation] = {}
+        self._turns: OrderedDict[tuple[bool, str, str], _TurnArtifacts] = OrderedDict()
 
-    def present_completed_item(
+    async def materialize_completed_item(
         self,
-        context: AppServerPresentationContext,
-        item: AppServerPresentationItem,
-        default_message: AgentMessage | None,
-    ) -> AgentMessage | None:
+        facts: AppServerCompletedItemFacts,
+    ) -> ApplicationArtifactMaterialization | None:
         with self._lock:
-            buffer = self._buffer(context)
-            self._stage_candidates(buffer, item)
-            if item.item_kind == "agentmessage":
-                if item.phase == "final_answer" and item.text.strip():
-                    self._stage_markdown_images(buffer, context, item.text)
-                    buffer.final_text = item.text
-                    buffer.final_visible = True
-                elif not item.phase and item.text:
-                    buffer.final_text = item.text
-            elif item.item_kind == "commandexecution" and item.command:
-                if len(buffer.command_summaries) < _MAX_COMMAND_SUMMARIES:
-                    buffer.command_summaries.append(f"Executed `{item.command}`")
-            elif item.item_kind == "filechange":
-                remaining = _MAX_CHANGED_FILES - len(buffer.changed_files)
-                if remaining > 0:
-                    buffer.changed_files.extend(item.changed_paths[:remaining])
-
-            if default_message is None:
+            buffer = self._buffer(facts)
+            for candidate in facts.artifact_candidates:
+                self._record_artifact(
+                    buffer,
+                    self.artifact_stager.stage_appserver_candidate(candidate),
+                )
+            if facts.phase is not AppServerCompletedItemPhase.FINAL_ANSWER:
                 return None
-            if item.item_kind != "agentmessage" or item.phase != "final_answer":
-                return default_message
-            return self._attach_buffer(default_message, buffer)
+            return self._take_materialization(buffer)
 
-    def present_live_message(
+    async def materialize_turn_terminal(
         self,
-        context: AppServerPresentationContext,
-        message: AgentMessage,
-    ) -> AgentMessage | None:
-        del context
-        return message
-
-    def observe_delta(self, context: AppServerPresentationContext, delta: str) -> None:
-        if not delta:
-            return
+        facts: AppServerTurnTerminalFacts,
+    ) -> ApplicationArtifactMaterialization | None:
         with self._lock:
-            buffer = self._buffer(context)
-            remaining = _MAX_DELTA_CHARS - buffer.delta_chars
-            if remaining <= 0:
-                buffer.deltas_truncated = True
-                return
-            accepted = delta[:remaining]
-            buffer.deltas.append(accepted)
-            buffer.delta_chars += len(accepted)
-            buffer.deltas_truncated = len(accepted) != len(delta)
+            buffer = self._turns.pop(self._key(facts), None)
+            return self._take_materialization(buffer)
 
-    def present_turn_terminal(
-        self,
-        context: AppServerPresentationContext,
-        status: str,
-    ) -> AgentMessage | None:
-        with self._lock:
-            buffer = self._turns.pop(self._key(context), None)
-            if buffer is None or buffer.final_visible:
-                return None
-            text = self._terminal_text(buffer, status)
-            message = AgentMessage(
-                agent_item_id=f"{context.turn_id or 'turn'}:imcodex-terminal",
-                thread_ref=context.thread_ref,
-                role=MessageRole.ASSISTANT,
-                content=(TextContent(text),),
-                created_at=datetime.now(UTC),
-                metadata={"status": status, "imcodex_terminal_fallback": True},
-            )
-            return self._attach_buffer(message, buffer)
-
-    def _stage_candidates(
-        self,
-        buffer: _TurnPresentation,
-        item: AppServerPresentationItem,
-    ) -> None:
-        for candidate in item.artifact_candidates:
-            try:
-                artifact = self.artifact_stager.stage_appserver_candidate(candidate)
-            except (OSError, ValueError) as exc:
-                self._record_error(buffer, str(exc))
-                continue
-            self._record_artifact(buffer, artifact)
-
-    def _stage_markdown_images(
-        self,
-        buffer: _TurnPresentation,
-        context: AppServerPresentationContext,
-        text: str,
-    ) -> None:
-        try:
-            artifacts = self.artifact_stager.stage_markdown_images(
-                text,
-                cwd=self._thread_cwd(context.thread_ref.native_thread_id),
-            )
-        except (OSError, ValueError) as exc:
-            self._record_error(buffer, str(exc))
-            return
-        for artifact in artifacts:
-            self._record_artifact(buffer, artifact)
+    def _buffer(self, facts: AppServerCompletedItemFacts) -> _TurnArtifacts:
+        key = self._key(facts)
+        buffer = self._turns.get(key)
+        if buffer is not None:
+            self._turns.move_to_end(key)
+            return buffer
+        if len(self._turns) >= _MAX_TURN_ARTIFACT_BUFFERS:
+            raise RuntimeError("IMCodex artifact association capacity is exhausted")
+        buffer = _TurnArtifacts()
+        self._turns[key] = buffer
+        return buffer
 
     @staticmethod
-    def _record_artifact(buffer: _TurnPresentation, artifact: OutboundArtifact) -> None:
-        merged = {Path(value.local_path).stem: value for value in buffer.artifacts}
-        merged[Path(artifact.local_path).stem] = artifact
-        buffer.artifacts = list(merged.values())[:_MAX_OUTBOUND_ARTIFACTS]
+    def _key(
+        facts: AppServerCompletedItemFacts | AppServerTurnTerminalFacts,
+    ) -> tuple[bool, str, str]:
+        return (
+            facts.authoritative,
+            facts.thread_ref.native_thread_id,
+            facts.turn_id,
+        )
+
+    @staticmethod
+    def _record_artifact(buffer: _TurnArtifacts, artifact: OutboundArtifact) -> None:
+        identity = artifact.sha256 or Path(artifact.local_path).stem
+        merged = {
+            value.sha256 or Path(value.local_path).stem: value
+            for value in buffer.artifacts
+        }
+        merged[identity] = artifact
         if len(merged) > _MAX_OUTBOUND_ARTIFACTS:
-            ImcodexAppServerPresentation._record_error(
-                buffer,
-                f"only {_MAX_OUTBOUND_ARTIFACTS} outbound artifacts can be delivered per turn",
+            raise ValueError(
+                f"only {_MAX_OUTBOUND_ARTIFACTS} outbound artifacts can be delivered per turn"
             )
+        buffer.artifacts = list(merged.values())
 
-    @staticmethod
-    def _record_error(buffer: _TurnPresentation, error: str) -> None:
-        if (
-            error
-            and error not in buffer.artifact_errors
-            and len(buffer.artifact_errors) < _MAX_ARTIFACT_ERRORS
-        ):
-            buffer.artifact_errors.append(error)
-
-    def _attach_buffer(
-        self,
-        message: AgentMessage,
-        buffer: _TurnPresentation,
-    ) -> AgentMessage:
-        attachments = tuple(self._attachment(artifact) for artifact in buffer.artifacts)
-        text_notice = self._artifact_error_notice(buffer)
-        content = message.content
-        if text_notice:
-            content = (*content, TextContent(text_notice))
+    @classmethod
+    def _take_materialization(
+        cls,
+        buffer: _TurnArtifacts | None,
+    ) -> ApplicationArtifactMaterialization | None:
+        if buffer is None or not buffer.artifacts:
+            return None
+        attachments = tuple(cls._attachment(artifact) for artifact in buffer.artifacts)
         buffer.artifacts.clear()
-        buffer.artifact_errors.clear()
-        return replace(message, content=(*content, *attachments))
+        return ApplicationArtifactMaterialization(attachments)
 
     @staticmethod
     def _attachment(artifact: OutboundArtifact) -> AttachmentContent:
@@ -204,79 +167,24 @@ class ImcodexAppServerPresentation:
             metadata={"kind": artifact.kind, "sha256": artifact.sha256},
         )
 
-    @staticmethod
-    def _artifact_error_notice(buffer: _TurnPresentation) -> str:
-        if not buffer.artifact_errors:
-            return ""
-        lines = "\n".join(f"- {error}" for error in buffer.artifact_errors)
-        return f"Attachment delivery unavailable:\n{lines}"
-
-    @staticmethod
-    def _terminal_text(buffer: _TurnPresentation, status: str) -> str:
-        normalized = status.strip().casefold()
-        final_text = buffer.final_text or "".join(buffer.deltas)
-        if not buffer.final_text and buffer.deltas_truncated:
-            final_text = f"{final_text}\n[Output truncated while recovering the turn.]"
-        changes = ""
-        if buffer.changed_files:
-            changes = "\n".join(
-                ("Changed files:", *(f"- {path}" for path in dict.fromkeys(buffer.changed_files)))
-            )
-        if normalized == "completed":
-            text = final_text
-        elif normalized == "interrupted":
-            text = "\n".join(part for part in ("Turn interrupted.", final_text, changes) if part)
-        else:
-            text = "\n".join(part for part in ("Turn failed.", final_text, changes) if part)
-        if not text and buffer.command_summaries:
-            text = "\n".join(buffer.command_summaries)
-        return text or EMPTY_COMPLETED_TURN_TEXT
-
-    def _thread_cwd(self, thread_id: str) -> str:
-        snapshot = self.store.get_thread_snapshot(thread_id)
-        if snapshot is not None and snapshot.cwd:
-            return snapshot.cwd
-        binding = self.store.find_binding_by_thread_id(thread_id)
-        return str(getattr(binding, "bootstrap_cwd", "") or "")
-
-    def _buffer(self, context: AppServerPresentationContext) -> _TurnPresentation:
-        return self._turns.setdefault(self._key(context), _TurnPresentation())
-
-    @staticmethod
-    def _key(context: AppServerPresentationContext) -> tuple[bool, str, str]:
-        return (
-            context.authoritative,
-            context.thread_ref.native_thread_id,
-            context.turn_id,
-        )
-
 
 class ImcodexOutboundPresentation:
     """Apply IMCodex visibility only after Gateway resolves a destination."""
 
-    def __init__(self, *, store, migration_state=None) -> None:
+    def __init__(self, *, store) -> None:
         self.store = store
-        self.migration_state = migration_state
 
-    async def present(self, message: OutboundMessage) -> OutboundMessage | None:
+    async def present(
+        self,
+        message: OutboundMessage,
+        context: OutboundPresentationContext,
+    ) -> OutboundMessage | None:
         metadata = message.metadata
         channel_id, conversation_id = self._product_route(message)
-        cutoff = (
-            self.migration_state.cutoff(channel_id, conversation_id)
-            if self.migration_state is not None
-            else None
-        )
-        origin = str(metadata.get(PROJECTION_ORIGIN_METADATA_KEY) or "")
-        if cutoff is not None:
-            if (
-                origin == PROJECTION_ORIGIN_AUTHORITATIVE
-                and message.created_at.timestamp() <= cutoff
-            ):
-                return None
-            self.migration_state.clear(channel_id, conversation_id)
+        del context
         if metadata.get("native_application") not in {"appserver", "codex", "zen"}:
             return message
-        kind = str(metadata.get("native_item_kind") or "")
+        kind = str(metadata.get("native_item_kind") or metadata.get("kind") or "")
         phase = str(metadata.get("phase") or "")
         if kind == "agent_message" and phase == "final_answer":
             return message

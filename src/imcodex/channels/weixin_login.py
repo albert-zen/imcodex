@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urlparse
 
-from .weixin_ilink import DEFAULT_ILINK_BASE_URL, ILinkError
-from .weixin_state import (
+from imagent.channels.native.weixin_ilink import DEFAULT_ILINK_BASE_URL, ILinkError
+from imagent.channels.native.weixin_state import (
     WeixinCredentials,
     WeixinStateStore,
     is_weixin_account_id,
@@ -61,7 +61,9 @@ class WeixinLoginFlow:
             except ILinkError:
                 poll_failures += 1
                 if poll_failures >= 3:
-                    raise WeixinLoginError("二维码状态查询连续失败，请检查网络后重试。") from None
+                    raise WeixinLoginError(
+                        "二维码状态查询连续失败，请检查网络后重试。"
+                    ) from None
                 await self.sleep(2.0)
                 continue
             status = str(response.get("status") or "")
@@ -82,14 +84,18 @@ class WeixinLoginFlow:
                     raise WeixinLoginError("配对码必须是数字。")
                 continue
             elif status == "scaned_but_redirect":
-                poll_base_url = self._redirect_base_url(str(response.get("redirect_host") or ""))
+                poll_base_url = self._redirect_base_url(
+                    str(response.get("redirect_host") or "")
+                )
             elif status == "confirmed":
                 credentials = self._credentials_from_confirmation(response)
                 self.state_store.clear_transport_state()
                 self.state_store.save_credentials(credentials)
                 self.output("微信 iLink 登录成功。")
                 if not credentials.owner_user_id:
-                    self.output("警告：平台未返回扫码用户 ID；请配置 IMCODEX_WEIXIN_ALLOWED_USER_IDS。")
+                    self.output(
+                        "警告：平台未返回扫码用户 ID；请配置 IMCODEX_WEIXIN_ALLOWED_USER_IDS。"
+                    )
                 return self.state_store.load_credentials() or credentials
             elif status == "expired":
                 refresh_count += 1
@@ -107,9 +113,13 @@ class WeixinLoginFlow:
                 if existing is not None:
                     self.output("此微信已连接，保留现有本地凭据。")
                     return existing
-                raise WeixinLoginError("平台报告已绑定，但本机没有可恢复的凭据。请先解除旧绑定。")
+                raise WeixinLoginError(
+                    "平台报告已绑定，但本机没有可恢复的凭据。请先解除旧绑定。"
+                )
             else:
-                raise WeixinLoginError(f"微信登录返回了不支持的状态：{status or '(empty)'}")
+                raise WeixinLoginError(
+                    f"微信登录返回了不支持的状态：{status or '(empty)'}"
+                )
             await self.sleep(1.0)
         raise WeixinLoginError("微信登录超时，请重新运行登录命令。")
 

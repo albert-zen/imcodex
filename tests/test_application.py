@@ -12,7 +12,17 @@ from imcodex.models import OutboundMessage
 
 
 class _Service:
-    async def handle_inbound(self, message):
+    async def handle_inbound(
+        self,
+        message,
+        *,
+        prepare_inbound=None,
+        finalize_inbound=None,
+    ):
+        if prepare_inbound is not None:
+            message = await prepare_inbound(message)
+        if finalize_inbound is not None:
+            await finalize_inbound()
         return [
             OutboundMessage(
                 channel_id=message.channel_id,
@@ -80,7 +90,9 @@ def test_application_health_identifies_the_running_bridge_process() -> None:
         observability=SimpleNamespace(context=context),
     )
 
-    response = TestClient(create_application(settings=settings, runtime=runtime)).get("/healthz")
+    response = TestClient(create_application(settings=settings, runtime=runtime)).get(
+        "/healthz"
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -89,6 +101,26 @@ def test_application_health_identifies_the_running_bridge_process() -> None:
         "pid": 43210,
         "instanceId": "instance-43210",
     }
+
+
+def test_debug_api_is_read_only_and_exposes_no_state_injection() -> None:
+    settings = SimpleNamespace(
+        inbound_webhook_token="",
+        debug_api_enabled=True,
+    )
+    context = SimpleNamespace(pid=43210, instance_id="instance-43210")
+    runtime = SimpleNamespace(
+        service=_Service(),
+        observability=SimpleNamespace(context=context),
+    )
+    client = TestClient(create_application(settings=settings, runtime=runtime))
+
+    response = client.get("/api/debug/runtime")
+
+    assert response.status_code == 200
+    assert response.json()["instance_id"] == "instance-43210"
+    assert client.post("/api/debug/inject/active-turn", json={}).status_code == 404
+    assert client.post("/api/debug/inject/pending-request", json={}).status_code == 404
 
 
 def test_application_graceful_shutdown_is_loopback_and_instance_bound() -> None:
@@ -213,9 +245,8 @@ def test_application_stops_webhook_media_when_runtime_start_fails(
     )
     app = create_application(settings=settings, runtime=FailingRuntime())
 
-    with pytest.raises(RuntimeError, match="startup failed"):
-        with TestClient(app):
-            pass
+    with pytest.raises(RuntimeError, match="startup failed"), TestClient(app):
+        pass
 
     assert events == ["media.start", "runtime.start", "media.stop"]
 
@@ -269,9 +300,8 @@ def test_application_rolls_back_image_materializer_when_file_start_fails(
         runtime=Runtime(),
     )
 
-    with pytest.raises(RuntimeError, match="file startup failed"):
-        with TestClient(app):
-            pass
+    with pytest.raises(RuntimeError, match="file startup failed"), TestClient(app):
+        pass
 
     assert events == ["image.start", "file.start", "image.stop"]
 

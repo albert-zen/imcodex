@@ -7,9 +7,7 @@ import math
 from pathlib import Path
 
 import httpx
-
-from .registry import BUILTIN_CHANNEL_IDS
-from .artifacts import (
+from imagent.channels.native.artifacts import (
     PermanentArtifactDeliveryError,
     append_artifact_failures,
     read_managed_artifact,
@@ -90,7 +88,11 @@ class WebhookOutboundSink:
                 files = uploads
         if not message.text.strip() and not message.artifacts:
             return
-        headers = {"Authorization": f"Bearer {self.bearer_token}"} if self.bearer_token else None
+        headers = (
+            {"Authorization": f"Bearer {self.bearer_token}"}
+            if self.bearer_token
+            else None
+        )
         if self.client is not None:
             await self._post_with_artifact_fallback(
                 self.client,
@@ -142,10 +144,7 @@ class WebhookOutboundSink:
             record_artifact_failure(message, artifact, error=error)
         append_artifact_failures(
             message,
-            [
-                f"{artifact.filename}: {error}"
-                for artifact in rejected
-            ],
+            [f"{artifact.filename}: {error}" for artifact in rejected],
         )
         if not message.text.strip():
             return
@@ -208,7 +207,9 @@ class WebhookOutboundSink:
         if url.scheme not in {"http", "https"} or not url.host:
             raise ValueError("IMCODEX_OUTBOUND_URL must be an HTTP(S) URL.")
         if url.username or url.password:
-            raise ValueError("IMCODEX_OUTBOUND_URL must not contain userinfo credentials.")
+            raise ValueError(
+                "IMCODEX_OUTBOUND_URL must not contain userinfo credentials."
+            )
         host = url.host.rstrip(".").lower()
         try:
             loopback = ipaddress.ip_address(host).is_loopback
@@ -217,74 +218,6 @@ class WebhookOutboundSink:
         if not loopback and url.scheme != "https":
             raise ValueError("Remote IMCODEX_OUTBOUND_URL requires HTTPS.")
         if not loopback and not self.bearer_token:
-            raise ValueError("Remote IMCODEX_OUTBOUND_URL requires IMCODEX_OUTBOUND_WEBHOOK_TOKEN.")
-
-
-class MultiplexOutboundSink:
-    def __init__(
-        self,
-        *,
-        channel_sinks: dict[str, object] | None = None,
-        default_sink: object | None = None,
-    ) -> None:
-        self.channel_sinks = channel_sinks or {}
-        self.default_sink = default_sink
-
-    def can_deliver(self, channel_id: str) -> bool:
-        if channel_id in self.channel_sinks:
-            return True
-        if channel_id in BUILTIN_CHANNEL_IDS:
-            return False
-        return self.default_sink is not None
-
-    def validate_message(self, message) -> None:
-        sink = self._sink_for(message.channel_id)
-        ensure_allowed = getattr(sink, "ensure_outbound_allowed", None)
-        if callable(ensure_allowed):
-            ensure_allowed(message)
-        validate = getattr(sink, "validate_outbound_message", None)
-        if callable(validate):
-            validate(message)
-
-    def prepare_durable_message(self, message) -> None:
-        sink = self.channel_sinks.get(message.channel_id)
-        if sink is None and message.channel_id in BUILTIN_CHANNEL_IDS:
-            return
-        sink = sink or self.default_sink
-        if sink is None:
-            return
-        if message.artifacts and not bool(
-            getattr(sink, "supports_outbound_artifacts", False)
-        ):
-            rejected = list(message.artifacts)
-            count = len(rejected)
-            notice = (
-                f"Attachment delivery unavailable: this channel does not support "
-                f"{count} staged artifact{'s' if count != 1 else ''}."
+            raise ValueError(
+                "Remote IMCODEX_OUTBOUND_URL requires IMCODEX_OUTBOUND_WEBHOOK_TOKEN."
             )
-            for artifact in rejected:
-                record_artifact_failure(
-                    message,
-                    artifact,
-                    error="this channel does not support outbound artifacts",
-                )
-            message.text = "\n\n".join(part for part in (message.text, notice) if part)
-            message.artifacts = []
-        prepare = getattr(sink, "prepare_durable_message", None)
-        if callable(prepare):
-            prepare(message)
-
-    async def send_message(self, message) -> None:
-        sink = self._sink_for(message.channel_id)
-        await sink.send_message(message)
-
-    def _sink_for(self, channel_id: str):
-        sink = self.channel_sinks.get(channel_id)
-        if sink is None and channel_id in BUILTIN_CHANNEL_IDS:
-            raise RuntimeError(
-                f"Built-in channel {channel_id!r} is not enabled; refusing fallback delivery."
-            )
-        sink = sink or self.default_sink
-        if sink is None:
-            raise RuntimeError(f"No outbound sink is configured for channel {channel_id!r}.")
-        return sink

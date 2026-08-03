@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import copy
 import os
 import re
+
+from imagent.applications.appserver_client import AppServerError
 
 from ..models import InboundAttachment, NativeThreadSnapshot
 from ..observability.runtime import emit_event
@@ -13,8 +14,6 @@ from .backend_types import (
     ThreadSelectionError,
     TurnSubmission,
 )
-from .client import AppServerError
-
 
 _TERMINAL_TURN_STATUSES = frozenset({"completed", "interrupted", "failed"})
 _IMAGE_ONLY_DISPLAY_TEXT = "[Image]"
@@ -62,7 +61,9 @@ class CodexThreadBackendMixin:
                 raise AppServerError(
                     "Codex resumed a different thread; refusing an inexact continuation"
                 )
-            self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+            self.store.bind_thread_with_cwd(
+                channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
+            )
             self._unpersisted_thread_ids.discard(snapshot.thread_id)
             self._reconcile_native_active_turn(result.get("thread") or {}, snapshot)
             if (
@@ -79,20 +80,17 @@ class CodexThreadBackendMixin:
         result = await self.client.start_thread(
             cwd=binding.bootstrap_cwd,
             service_name=self.service_name,
-            **self._new_thread_dynamic_tool_params(),
         )
         snapshot = self._remember_snapshot(result.get("thread") or {})
-        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self.store.bind_thread_with_cwd(
+            channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
+        )
         self._unpersisted_thread_ids.add(snapshot.thread_id)
         return snapshot.thread_id
 
-    def _new_thread_dynamic_tool_params(self) -> dict[str, object]:
-        dynamic_tools = getattr(self, "thread_dynamic_tools", None)
-        if not dynamic_tools:
-            return {}
-        return {"dynamicTools": copy.deepcopy(dynamic_tools)}
-
-    async def attach_thread(self, channel_id: str, conversation_id: str, thread_id: str) -> str:
+    async def attach_thread(
+        self, channel_id: str, conversation_id: str, thread_id: str
+    ) -> str:
         result = await self.client.resume_thread(
             thread_id=thread_id,
             service_name=self.service_name,
@@ -117,7 +115,9 @@ class CodexThreadBackendMixin:
                 "refusing an unverifiable handoff"
             )
         snapshot = self._remember_snapshot(payload)
-        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self.store.bind_thread_with_cwd(
+            channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
+        )
         self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
 
@@ -137,12 +137,18 @@ class CodexThreadBackendMixin:
             if score is not None:
                 ranked.append((score, index, snapshot))
         if not ranked:
-            raise ThreadSelectionError(f"No thread matches '{selector}'. Try /threads {selector}.")
+            raise ThreadSelectionError(
+                f"No thread matches '{selector}'. Try /threads {selector}."
+            )
         ranked.sort(key=lambda item: (item[0], item[1]))
         best_score = ranked[0][0]
-        best_matches = [snapshot for score, _, snapshot in ranked if score == best_score]
+        best_matches = [
+            snapshot for score, _, snapshot in ranked if score == best_score
+        ]
         if len(best_matches) > 1:
-            labels = ", ".join(self._thread_short_label(snapshot) for snapshot in best_matches[:3])
+            labels = ", ".join(
+                self._thread_short_label(snapshot) for snapshot in best_matches[:3]
+            )
             if len(best_matches) > 3:
                 labels += ", ..."
             raise ThreadSelectionError(
@@ -176,7 +182,9 @@ class CodexThreadBackendMixin:
         if cursor is not None:
             params["cursor"] = cursor
         result = await self.client.list_threads(**params)
-        threads = [self._remember_snapshot(item) for item in self._thread_list_items(result)]
+        threads = [
+            self._remember_snapshot(item) for item in self._thread_list_items(result)
+        ]
         binding = self.store.get_binding(channel_id, conversation_id)
         next_cursor = self._next_thread_cursor(result)
         seen_thread_ids = {snapshot.thread_id for snapshot in threads}
@@ -188,7 +196,9 @@ class CodexThreadBackendMixin:
             and binding.thread_id
             and binding.thread_id not in seen_thread_ids
         ):
-            snapshot = await self.read_thread(channel_id, conversation_id, binding.thread_id)
+            snapshot = await self.read_thread(
+                channel_id, conversation_id, binding.thread_id
+            )
             if snapshot is not None:
                 threads.append(snapshot)
         return ThreadListResult(
@@ -231,7 +241,9 @@ class CodexThreadBackendMixin:
             if next_cursor is None:
                 break
             if next_cursor in seen_cursors:
-                raise AppServerError("thread list returned a repeated pagination cursor")
+                raise AppServerError(
+                    "thread list returned a repeated pagination cursor"
+                )
             seen_cursors.add(next_cursor)
             cursor = next_cursor
 
@@ -240,7 +252,9 @@ class CodexThreadBackendMixin:
         if not search_term and binding.thread_id:
             seen_thread_ids = {snapshot.thread_id for snapshot in threads}
             if binding.thread_id not in seen_thread_ids:
-                snapshot = await self.read_thread(channel_id, conversation_id, binding.thread_id)
+                snapshot = await self.read_thread(
+                    channel_id, conversation_id, binding.thread_id
+                )
                 if snapshot is not None:
                     threads.append(snapshot)
         return ThreadListResult(
@@ -301,7 +315,9 @@ class CodexThreadBackendMixin:
                 if next_cursor is None:
                     return {"turns": [], "page": safe_page, "hasOlder": False}
                 if next_cursor in seen_cursors:
-                    raise AppServerError("thread history returned a repeated pagination cursor")
+                    raise AppServerError(
+                        "thread history returned a repeated pagination cursor"
+                    )
                 seen_cursors.add(next_cursor)
                 cursor = next_cursor
         except AppServerError as exc:
@@ -317,7 +333,9 @@ class CodexThreadBackendMixin:
             "hasOlder": start > 0,
         }
 
-    async def fork_thread(self, channel_id: str, conversation_id: str) -> NativeThreadSnapshot:
+    async def fork_thread(
+        self, channel_id: str, conversation_id: str
+    ) -> NativeThreadSnapshot:
         thread_id = self._active_thread_id(channel_id, conversation_id)
         result = await self.client.fork_thread(thread_id)
         payload = result.get("thread")
@@ -327,10 +345,14 @@ class CodexThreadBackendMixin:
                 raise AppServerError("Codex did not return a forked thread")
             payload = {"id": forked_id}
         snapshot = self._remember_snapshot(payload)
-        self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self.store.bind_thread_with_cwd(
+            channel_id, conversation_id, snapshot.thread_id, snapshot.cwd
+        )
         return snapshot
 
-    async def rename_thread(self, channel_id: str, conversation_id: str, name: str) -> dict:
+    async def rename_thread(
+        self, channel_id: str, conversation_id: str, name: str
+    ) -> dict:
         thread_id = self._active_thread_id(channel_id, conversation_id)
         result = await self.client.set_thread_name(thread_id, name)
         payload = result.get("thread")
@@ -382,7 +404,9 @@ class CodexThreadBackendMixin:
         attachments: tuple[InboundAttachment, ...] = (),
     ) -> TurnSubmission:
         if attachments and not self.supports_local_image_paths():
-            raise AppServerError("configured App Server cannot read bridge-local attachment paths")
+            raise AppServerError(
+                "configured App Server cannot read bridge-local attachment paths"
+            )
         expected_local_image_epoch: int | None = None
         if attachments:
             epoch_capability = getattr(self.client, "local_image_paths_epoch", None)
@@ -422,7 +446,11 @@ class CodexThreadBackendMixin:
                     expected_local_image_epoch=expected_local_image_epoch,
                 )
             except AppServerError as exc:
-                if is_unpersisted or not can_resume or not self._requires_thread_resume(exc):
+                if (
+                    is_unpersisted
+                    or not can_resume
+                    or not self._requires_thread_resume(exc)
+                ):
                     raise
                 thread_id = await self.ensure_thread(channel_id, conversation_id)
                 expected_local_image_epoch = self._refresh_local_image_epoch(
@@ -432,7 +460,10 @@ class CodexThreadBackendMixin:
                 # temporarily non-steerable Turns. If resume still exposes an
                 # active Turn, preserve the authoritative steer rejection rather
                 # than risking a competing turn/start.
-                if attempted_steer and self.store.get_active_turn(thread_id) is not None:
+                if (
+                    attempted_steer
+                    and self.store.get_active_turn(thread_id) is not None
+                ):
                     raise exc
                 return await self._submit_to_reconciled_thread(
                     thread_id,
@@ -474,7 +505,9 @@ class CodexThreadBackendMixin:
             try:
                 steer_kwargs: dict[str, object] = {"input_items": input_items}
                 if expected_local_image_epoch is not None:
-                    steer_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
+                    steer_kwargs["expected_local_image_epoch"] = (
+                        expected_local_image_epoch
+                    )
                 await self.client.steer_turn(thread_id, active[0], **steer_kwargs)
             except AppServerError as exc:
                 if not self._is_stale_turn_error(exc):
@@ -483,14 +516,18 @@ class CodexThreadBackendMixin:
                     raise
                 self.store.clear_active_turn(thread_id)
             else:
-                return TurnSubmission(kind="steer", thread_id=thread_id, turn_id=active[0])
+                return TurnSubmission(
+                    kind="steer", thread_id=thread_id, turn_id=active[0]
+                )
         return await self._start_turn(
             thread_id,
             input_items,
             expected_local_image_epoch=expected_local_image_epoch,
         )
 
-    async def submit_text(self, channel_id: str, conversation_id: str, text: str) -> TurnSubmission:
+    async def submit_text(
+        self, channel_id: str, conversation_id: str, text: str
+    ) -> TurnSubmission:
         return await self.submit_input(channel_id, conversation_id, text)
 
     @staticmethod
@@ -518,14 +555,18 @@ class CodexThreadBackendMixin:
             input_items.append({"type": "text", "text": display_text})
         for attachment in attachments:
             if attachment.kind == "image":
-                input_items.append({"type": "localImage", "path": attachment.local_path})
+                input_items.append(
+                    {"type": "localImage", "path": attachment.local_path}
+                )
             elif attachment.kind == "file":
                 # Generic files have no native Codex input item. Their durable
                 # text manifest gives the agent a stable path it can read with
                 # native filesystem tools and survives thread history rebuilds.
                 continue
             else:
-                raise ValueError(f"unsupported inbound attachment kind: {attachment.kind}")
+                raise ValueError(
+                    f"unsupported inbound attachment kind: {attachment.kind}"
+                )
         if not input_items:
             raise ValueError("inbound message has no supported input")
         return input_items
@@ -574,9 +615,7 @@ class CodexThreadBackendMixin:
 
     @staticmethod
     def _safe_attachment_filename(attachment: InboundAttachment) -> str:
-        candidate = (
-            str(attachment.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-        )
+        candidate = str(attachment.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
         candidate = "".join(
             character
             for character in candidate
@@ -584,9 +623,7 @@ class CodexThreadBackendMixin:
         ).strip(" .")
         if candidate:
             return candidate[:120]
-        fallback = (
-            str(attachment.local_path).replace("\\", "/").rsplit("/", 1)[-1]
-        )
+        fallback = str(attachment.local_path).replace("\\", "/").rsplit("/", 1)[-1]
         return fallback[:120] or "attachment"
 
     async def _start_turn(
@@ -611,11 +648,20 @@ class CodexThreadBackendMixin:
         self.store.note_active_turn(thread_id, turn_id, status)
         return TurnSubmission(kind="start", thread_id=thread_id, turn_id=turn_id)
 
-    async def interrupt_active_turn(self, channel_id: str, conversation_id: str) -> bool:
+    async def interrupt_active_turn(
+        self, channel_id: str, conversation_id: str
+    ) -> bool:
         binding = self.store.get_binding(channel_id, conversation_id)
         if binding.thread_id is None:
             return False
-        active = self.store.get_active_turn(binding.thread_id)
+        result = await self.client.resume_thread(
+            thread_id=binding.thread_id,
+            service_name=self.service_name,
+        )
+        payload = result.get("thread")
+        if not isinstance(payload, dict):
+            return False
+        active = self._native_active_turn(payload)
         if active is None:
             return False
         return await self.interrupt_turn(binding.thread_id, active[0])
@@ -626,15 +672,9 @@ class CodexThreadBackendMixin:
         except AppServerError as exc:
             if not self._is_stale_turn_error(exc):
                 raise
-            self.store.suppress_turn(thread_id, turn_id)
-            self.store.discard_terminal_watch(thread_id, turn_id)
             self.store.clear_active_turn(thread_id)
-            self.store.remove_pending_requests_for_turn(thread_id, turn_id)
             return False
-        self.store.suppress_turn(thread_id, turn_id)
-        self.store.discard_terminal_watch(thread_id, turn_id)
         self.store.clear_active_turn(thread_id)
-        self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
 
     async def rehydrate_bound_threads(self) -> dict:
@@ -681,7 +721,9 @@ class CodexThreadBackendMixin:
                         {"threadId": failed_thread_id, "turnId": cached_active[0]}
                     )
                 if stale_thread:
-                    self.store.clear_thread_binding(binding.channel_id, binding.conversation_id)
+                    self.store.clear_thread_binding(
+                        binding.channel_id, binding.conversation_id
+                    )
                 emit_event(
                     component="appserver.backend",
                     event="bridge.thread_rehydrate.failed",
@@ -776,14 +818,18 @@ class CodexThreadBackendMixin:
                     discarded_turns.append(
                         {"threadId": snapshot.thread_id, "turnId": cached_active[0]}
                     )
-                self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
+                self.store.note_active_turn(
+                    snapshot.thread_id, native_active[0], native_active[1]
+                )
             # Resume may synchronously replay item/turn notifications before
             # returning the thread snapshot. Re-read the watch set so a turn
             # already completed through that live path is not recovered and
             # projected a second time from the snapshot.
             recovery_turn_ids = {
                 watch.turn_id
-                for watch in self.store.list_terminal_delivery_watches(snapshot.thread_id)
+                for watch in self.store.list_terminal_delivery_watches(
+                    snapshot.thread_id
+                )
             }
             if native_active is not None:
                 recovery_turn_ids.discard(native_active[0])
@@ -839,9 +885,21 @@ class CodexThreadBackendMixin:
         previous = self.store.get_thread_snapshot(thread_id)
         snapshot = NativeThreadSnapshot(
             thread_id=thread_id,
-            cwd=str(payload.get("cwd") or (previous.cwd if previous is not None else "") or ""),
-            preview=str(payload.get("preview") or (previous.preview if previous is not None else "") or ""),
-            status=str(status or (previous.status if previous is not None else "idle") or "idle"),
+            cwd=str(
+                payload.get("cwd")
+                or (previous.cwd if previous is not None else "")
+                or ""
+            ),
+            preview=str(
+                payload.get("preview")
+                or (previous.preview if previous is not None else "")
+                or ""
+            ),
+            status=str(
+                status
+                or (previous.status if previous is not None else "idle")
+                or "idle"
+            ),
             name=(
                 str(payload["name"])
                 if payload.get("name") is not None
@@ -870,7 +928,11 @@ class CodexThreadBackendMixin:
                 continue
             turn_id = str(turn.get("id") or turn.get("turnId") or "")
             status = self._native_status(turn.get("status"))
-            if turn_id and status is not None and status.strip().lower() in ACTIVE_THREAD_STATUSES:
+            if (
+                turn_id
+                and status is not None
+                and status.strip().lower() in ACTIVE_THREAD_STATUSES
+            ):
                 return turn_id, status
         return None
 
@@ -881,7 +943,9 @@ class CodexThreadBackendMixin:
     ) -> None:
         native_active = self._native_active_turn(payload)
         if native_active is not None:
-            self.store.note_active_turn(snapshot.thread_id, native_active[0], native_active[1])
+            self.store.note_active_turn(
+                snapshot.thread_id, native_active[0], native_active[1]
+            )
         elif str(snapshot.status or "").strip().lower() not in ACTIVE_THREAD_STATUSES:
             self.store.clear_active_turn(snapshot.thread_id)
 
@@ -932,8 +996,7 @@ class CodexThreadBackendMixin:
 
     def _normalize_path(self, value: str) -> str:
         normalized = value.strip()
-        if normalized.startswith("\\\\?\\"):
-            normalized = normalized[4:]
+        normalized = normalized.removeprefix("\\\\?\\")
         return os.path.normcase(os.path.normpath(normalized))
 
     def _thread_list_items(self, payload: dict) -> list[dict]:
@@ -972,7 +1035,9 @@ class CodexThreadBackendMixin:
             raise KeyError("No active thread.")
         return binding.thread_id
 
-    def _thread_match_score(self, snapshot: NativeThreadSnapshot, selector: str) -> int | None:
+    def _thread_match_score(
+        self, snapshot: NativeThreadSnapshot, selector: str
+    ) -> int | None:
         selector_norm = self._normalize_selector(selector)
         if not selector_norm:
             return None
@@ -1010,7 +1075,12 @@ class CodexThreadBackendMixin:
         return labels
 
     def _thread_short_label(self, snapshot: NativeThreadSnapshot) -> str:
-        label = snapshot.name or snapshot.preview or os.path.basename((snapshot.path or snapshot.cwd).rstrip("/\\")) or snapshot.thread_id
+        label = (
+            snapshot.name
+            or snapshot.preview
+            or os.path.basename((snapshot.path or snapshot.cwd).rstrip("/\\"))
+            or snapshot.thread_id
+        )
         return label.strip() or snapshot.thread_id
 
     def _normalize_selector(self, value: str) -> str:

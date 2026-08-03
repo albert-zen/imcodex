@@ -179,13 +179,13 @@ there is no channel-specific feature switch.
 Only validated files copied into the private
 `IMCODEX_DATA_DIR/outbound-media` spool are eligible. Explicit Markdown image
 nodes and structured native image outputs may originate outside the thread
-workspace, but are copied into that spool before channel delivery. When an
-adapter returns a failure, the durable retry retains only the artifacts not yet
-accepted. QQ and Weixin derive stable platform delivery identities, and Feishu
-supplies a stable SDK UUID. Telegram has no equivalent client idempotency key:
-it does not retry an ambiguous upload inside the adapter, but the durable outbox
-may replay it after an ambiguous live failure or a process exit before the
-bridge checkpoints progress.
+workspace, but are copied into that spool before channel delivery. The SDK owns
+delivery-submission state and retry decisions; IMCodex owns only bounded path
+leases. QQ and Weixin derive stable platform delivery identities, and Feishu
+supplies a stable SDK UUID. Telegram has no equivalent client idempotency key,
+so an ambiguous upload remains an honest unknown rather than being silently
+retried by a consumer outbox. Proactive `IN_FLIGHT` crash recovery and partial
+retryable suffixes are tracked migration blockers.
 
 The generic outbound webhook uses JSON for text-only messages. A message with
 artifacts uses `multipart/form-data`: the `payload` field contains the normal

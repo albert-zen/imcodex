@@ -76,7 +76,7 @@ be simplified before more code is added.
 
 When a runtime failure is hard to explain:
 
-- reproduce it with the debug harness when possible
+- inspect the read-only SDK diagnostics and product health/log surfaces
 - add observability before adding more local behavior
 - prefer evidence from native protocol behavior, logs, and restart traces over
   speculative bridge state
@@ -101,8 +101,8 @@ on the reproduced success path. In particular:
 
 - distinguish native Turn completion, item/answer-segment completion, and IM
   delivery acknowledgement
-- trace identity changes through in-memory deduplication, durable outbox keys,
-  retries, restart recovery, and adapter idempotency
+- trace identity changes through SDK idempotency/submission keys, consumer
+  artifact leases, retries, restart recovery, and adapter idempotency
 - combine continuation scenarios such as queued steering with successful,
   failed, ambiguous, and replayed delivery
 

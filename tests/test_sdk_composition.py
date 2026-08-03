@@ -37,15 +37,24 @@ def _settings(tmp_path: Path, **changes) -> Settings:
     return Settings(**values)
 
 
+def test_sdk_composition_rejects_raw_native_thread_tool_host(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="typed Application operation"):
+        build_sdk_composition(_settings(tmp_path, native_thread_tool_host=True))
+
+
 @pytest.mark.asyncio
-async def test_sdk_composition_uses_one_gateway_state_and_sdk_client(tmp_path: Path) -> None:
+async def test_sdk_composition_uses_one_gateway_state_and_sdk_client(
+    tmp_path: Path,
+) -> None:
     composition = build_sdk_composition(_settings(tmp_path))
     try:
         assert isinstance(composition.client, AppServerClient)
         assert isinstance(composition.state, SQLiteGatewayState)
         assert len(composition.channels) == 1
         assert isinstance(composition.channels[0], SdkWebhookChannel)
-        assert composition.application.summary.ref.application_instance_id == "codex-main"
+        assert (
+            composition.application.summary.ref.application_instance_id == "codex-main"
+        )
         assert composition.gateway._bindings is composition.state
         assert composition.gateway._idempotency is composition.state
         assert composition.gateway._projection_runtime._projections is composition.state

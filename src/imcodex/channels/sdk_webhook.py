@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 from imagent.contracts import (
@@ -9,12 +10,16 @@ from imagent.contracts import (
     ConversationRef,
     DeliveryReceipt,
     DeliveryReceiptStatus,
-    InboundMessage as SdkInboundMessage,
     LocalPath,
-    OutboundMessage as SdkOutboundMessage,
     SupportLevel,
     TextContent,
     TextFormat,
+)
+from imagent.contracts import (
+    InboundMessage as SdkInboundMessage,
+)
+from imagent.contracts import (
+    OutboundMessage as SdkOutboundMessage,
 )
 
 from ..models import InboundMessage, OutboundArtifact, OutboundMessage
@@ -45,6 +50,7 @@ class SdkWebhookChannel:
         self._on_operation = None
         self._on_admission = None
         self._pending: dict[tuple[ConversationRef, str], list[OutboundMessage]] = {}
+        self._pending_lock = asyncio.Lock()
 
     async def start(self, on_message, on_operation, on_admission=None) -> None:
         self._on_message = on_message
@@ -55,36 +61,87 @@ class SdkWebhookChannel:
         self._on_message = None
         self._on_operation = None
         self._on_admission = None
-        self._pending.clear()
+        async with self._pending_lock:
+            self._pending.clear()
 
-    async def receive(self, message: InboundMessage) -> list[OutboundMessage]:
+    async def receive(
+        self,
+        message: InboundMessage,
+        *,
+        prepare_inbound=None,
+        finalize_inbound=None,
+    ) -> list[OutboundMessage]:
         if self._on_message is None:
             raise RuntimeError("webhook Channel is not started")
-        conversation = self._conversation_ref(message.channel_id, message.conversation_id)
+        conversation = self._conversation_ref(
+            message.channel_id, message.conversation_id
+        )
         key = (conversation, message.message_id)
         responses: list[OutboundMessage] = []
-        self._pending[key] = responses
-        sdk_message = self._to_sdk_inbound(message, conversation)
+        admission = None
+        transferred = False
+        finalized = False
+        owns_pending = False
+
+        async def finalize_once() -> None:
+            nonlocal finalized
+            if finalized or finalize_inbound is None:
+                return
+            finalized = True
+            await finalize_inbound()
+
         try:
-            if self._on_admission is None:
+            if self._on_admission is not None:
+                admission = await self._on_admission(conversation, message.message_id)
+                if admission is None:
+                    await finalize_once()
+                    return responses
+            async with self._pending_lock:
+                duplicate_pending = key in self._pending
+                if not duplicate_pending:
+                    self._pending[key] = responses
+                    owns_pending = True
+            if duplicate_pending:
+                if admission is not None:
+                    await admission.release()
+                    admission = None
+                await finalize_once()
+                return responses
+            if prepare_inbound is not None:
+                message = await prepare_inbound(message)
+            await finalize_once()
+            sdk_message = self._to_sdk_inbound(message, conversation)
+            if admission is None:
                 await self._on_message(sdk_message)
             else:
-                admission = await self._on_admission(conversation, message.message_id)
-                if admission is not None:
-                    await admission.deliver(sdk_message)
+                transferred = True
+                await admission.deliver(sdk_message)
             return responses
+        except BaseException:
+            if admission is not None and not transferred:
+                await admission.release()
+            await finalize_once()
+            raise
         finally:
-            self._pending.pop(key, None)
+            if owns_pending:
+                async with self._pending_lock:
+                    if self._pending.get(key) is responses:
+                        self._pending.pop(key, None)
 
     async def send(self, message: SdkOutboundMessage) -> DeliveryReceipt:
-        channel_id, conversation_id = self._decode_conversation(message.conversation_ref)
+        channel_id, conversation_id = self._decode_conversation(
+            message.conversation_ref
+        )
         legacy = self._to_product_outbound(message, channel_id, conversation_id)
-        pending = self._pending.get((message.conversation_ref, str(message.reply_to or "")))
-        if pending is not None:
-            pending.append(legacy)
-        elif self.outbound_sink is not None and channel_id not in BUILTIN_CHANNEL_IDS:
+        async with self._pending_lock:
+            pending = self._pending.get(
+                (message.conversation_ref, str(message.reply_to or ""))
+            )
+            if pending is not None:
+                pending.append(legacy)
+        if self.outbound_sink is not None and channel_id not in BUILTIN_CHANNEL_IDS:
             await self.outbound_sink.send_message(legacy)
-        else:
+        elif pending is None:
             return DeliveryReceipt(
                 status=DeliveryReceiptStatus.REJECTED,
                 detail="No outbound webhook is configured for asynchronous delivery",
@@ -92,7 +149,9 @@ class SdkWebhookChannel:
         return DeliveryReceipt(status=DeliveryReceiptStatus.ACCEPTED_BY_PLATFORM)
 
     @classmethod
-    def _conversation_ref(cls, channel_id: str, conversation_id: str) -> ConversationRef:
+    def _conversation_ref(
+        cls, channel_id: str, conversation_id: str
+    ) -> ConversationRef:
         return ConversationRef(
             cls.channel_instance_id,
             encode_webhook_conversation(channel_id, conversation_id),
@@ -127,7 +186,9 @@ class SdkWebhookChannel:
                 )
             )
         try:
-            created_at = datetime.fromisoformat(str(message.sent_at).replace("Z", "+00:00"))
+            created_at = datetime.fromisoformat(
+                str(message.sent_at).replace("Z", "+00:00")
+            )
         except (TypeError, ValueError):
             created_at = datetime.now(UTC)
         return SdkInboundMessage(
@@ -165,7 +226,8 @@ class SdkWebhookChannel:
                 sha256=str(item.metadata.get("sha256") or ""),
             )
             for item in message.content
-            if isinstance(item, AttachmentContent) and isinstance(item.source, LocalPath)
+            if isinstance(item, AttachmentContent)
+            and isinstance(item.source, LocalPath)
         ]
         metadata = dict(message.metadata)
         metadata["delivery_id"] = message.delivery_id
@@ -181,8 +243,8 @@ class SdkWebhookChannel:
         )
 
 
-class SdkWebhookServiceFacade:
-    """Temporary API compatibility while HTTP parsing remains product-owned."""
+class ImcodexRuntimeService:
+    """Explicit product HTTP/admin/delivery surface over the SDK runtime."""
 
     def __init__(
         self,
@@ -198,13 +260,30 @@ class SdkWebhookServiceFacade:
         self.outbound_sink = channel.outbound_sink
         self.delivery_service = delivery_service
 
-    async def handle_inbound(self, message: InboundMessage) -> list[OutboundMessage]:
-        return await self.channel.receive(message)
+    async def handle_inbound(
+        self, message: InboundMessage, **options
+    ) -> list[OutboundMessage]:
+        return await self.channel.receive(message, **options)
 
-    def preflight_inbound_attachments(self, message: InboundMessage):
-        return self.product_service.preflight_inbound_attachments(message)
+    def _delivery(self):
+        if self.delivery_service is None:
+            raise RuntimeError("proactive delivery is not configured")
+        return self.delivery_service
 
-    def __getattr__(self, name: str):
-        if self.delivery_service is not None and hasattr(self.delivery_service, name):
-            return getattr(self.delivery_service, name)
-        return getattr(self.product_service, name)
+    def can_deliver_outbound(self, channel_id: str) -> bool:
+        return self._delivery().can_deliver_outbound(channel_id)
+
+    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
+        return self._delivery().resolve_outbound_route(source_thread_id)
+
+    def validate_outbound_message(self, message: OutboundMessage) -> None:
+        self._delivery().validate_outbound_message(message)
+
+    async def stage_outbound_upload(self, content: bytes, **kwargs):
+        return await self._delivery().stage_outbound_upload(content, **kwargs)
+
+    async def discard_outbound_uploads(self, artifacts) -> None:
+        await self._delivery().discard_outbound_uploads(artifacts)
+
+    async def deliver_outbound_message(self, message: OutboundMessage):
+        return await self._delivery().deliver_outbound_message(message)

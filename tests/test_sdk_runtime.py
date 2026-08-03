@@ -19,7 +19,7 @@ from imcodex.sdk_runtime import SdkRuntime, sdk_health_payload
 
 
 def _snapshot(*, degraded: bool = False) -> DiagnosticsSnapshot:
-    connection = ConnectionDiagnosticFacts(
+    application_connection = ConnectionDiagnosticFacts(
         state=ConnectionDiagnosticState.READY,
         connection_epoch=2,
         reconnect_count=1,
@@ -33,9 +33,25 @@ def _snapshot(*, degraded: bool = False) -> DiagnosticsSnapshot:
             ),
         ),
     )
+    channel_connection = ConnectionDiagnosticFacts(
+        state=ConnectionDiagnosticState.READY,
+        connection_epoch=2,
+        reconnect_count=1,
+        worker_running=True,
+        worker_degraded=degraded,
+        queues=(
+            QueueDiagnosticFacts(
+                name=QueueDiagnosticName.CHANNEL_INBOUND,
+                capacity=32,
+                depth=3,
+            ),
+        ),
+    )
     return DiagnosticsSnapshot(
-        applications=(ApplicationDiagnosticFacts("codex-main", "codex", connection),),
-        channels=(ChannelDiagnosticFacts("telegram", "telegram", connection),),
+        applications=(
+            ApplicationDiagnosticFacts("codex-main", "codex", application_connection),
+        ),
+        channels=(ChannelDiagnosticFacts("telegram", "telegram", channel_connection),),
         projections=ProjectionDiagnosticFacts(degraded_count=int(degraded)),
         gateway=GatewayDiagnosticFacts(
             accepting_inbound=True,
@@ -53,7 +69,7 @@ def _snapshot(*, degraded: bool = False) -> DiagnosticsSnapshot:
 def test_sdk_health_payload_is_redacted_and_operator_friendly() -> None:
     payload = sdk_health_payload(_snapshot())
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 8
     assert payload["authoritative"] is False
     assert payload["applications"]["codex-main"]["connection"]["state"] == "ready"
     assert payload["channels"]["telegram"]["connection"]["reconnect_count"] == 1
