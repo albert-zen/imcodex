@@ -64,6 +64,13 @@ def test_windows_sdk_smoke_uses_isolated_state_and_graceful_shutdown() -> None:
     assert "$exited = $process.WaitForExit(15000)" in script
     assert "$process.WaitForExit()" in script
     assert "$process.Refresh()" in script
+    assert 'IMCODEX_SMOKE_SUCCESS = $success' in script
+    assert "$exitCode = $LASTEXITCODE" in script
+    assert "if ($exitCode -eq 0)" in script
+    assert "-not (Test-Path -LiteralPath $success)" in script
+    assert "$quotedWrapper = '\"' + $wrapper + '\"'" in script
+    assert 'taskkill.exe"' in script
+    assert "/PID ([string]$process.Id) /T /F" in script
     assert "Get-Content $stderr -Tail 80" in script
     assert 'snapshot.status -ne "stopped"' in script
     assert "Remove-Item -LiteralPath $smokeRoot -Recurse -Force" in script

@@ -261,6 +261,11 @@ binds are reachable through loopback. If the bridge is bound only to a
 non-loopback interface or is hosted by a third-party ASGI runner without the
 built-in shutdown callback, restart fails closed and the operator must stop it
 through that service manager.
+The built-in `python -m imcodex` entry point exits nonzero when Uvicorn reports
+that application startup or shutdown failed. A `stopped` health snapshot is not
+by itself proof of clean process teardown because it may have been written
+before a later lifespan cleanup failed; service managers and smoke tests must
+also require a successful process exit.
 The equivalent explicit workflow is:
 
 ```powershell

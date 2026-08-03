@@ -35,6 +35,11 @@ def run(argv: list[str] | None = None) -> int | None:
     )
     app.state.request_shutdown = lambda: setattr(server, "should_exit", True)
     server.run()
+    lifespan = getattr(server, "lifespan", None)
+    if bool(getattr(lifespan, "startup_failed", False)) or bool(
+        getattr(lifespan, "shutdown_failed", False)
+    ):
+        return 1
     return 0
 
 

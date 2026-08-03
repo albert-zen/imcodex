@@ -26,10 +26,29 @@ try {
 
     $stdout = Join-Path $smokeRoot "stdout.log"
     $stderr = Join-Path $smokeRoot "stderr.log"
+    $wrapper = Join-Path $smokeRoot "run-imcodex.ps1"
+    $success = Join-Path $smokeRoot "clean-exit"
     $python = (Get-Command python).Source
+    $env:IMCODEX_SMOKE_PYTHON = $python
+    $env:IMCODEX_SMOKE_SUCCESS = $success
+    @'
+$python = $env:IMCODEX_SMOKE_PYTHON
+& $python -m imcodex
+$exitCode = $LASTEXITCODE
+if ($exitCode -eq 0) {
+    [System.IO.File]::WriteAllText($env:IMCODEX_SMOKE_SUCCESS, "ok")
+}
+exit $exitCode
+'@ | Set-Content -LiteralPath $wrapper -Encoding UTF8
+    $powershell = if ($PSVersionTable.PSEdition -eq "Desktop") {
+        Join-Path $PSHOME "powershell.exe"
+    } else {
+        Join-Path $PSHOME "pwsh.exe"
+    }
+    $quotedWrapper = '"' + $wrapper + '"'
     $process = Start-Process `
-        -FilePath $python `
-        -ArgumentList "-m", "imcodex" `
+        -FilePath $powershell `
+        -ArgumentList "-NoLogo", "-NoProfile", "-File", $quotedWrapper `
         -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr `
         -PassThru
@@ -65,7 +84,11 @@ try {
         $process.WaitForExit()
         $process.Refresh()
     }
-    if (-not $exited -or $process.ExitCode -ne 0) {
+    # Windows PowerShell 5 may leave Start-Process.ExitCode unset after a clean
+    # redirected exit. The wrapper writes this marker only after Python itself
+    # returns zero, so a stopped snapshot followed by teardown failure cannot
+    # make the smoke pass.
+    if (-not $exited -or -not (Test-Path -LiteralPath $success)) {
         $exitCode = if ($process.HasExited) { [string]$process.ExitCode } else { "running" }
         $stdoutDetail = ((Get-Content $stdout -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
         $stderrDetail = ((Get-Content $stderr -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
@@ -89,7 +112,8 @@ try {
     Write-Host "Windows SDK startup/shutdown smoke passed."
 } finally {
     if ($null -ne $process -and -not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+        & $taskkill /PID ([string]$process.Id) /T /F 2>$null | Out-Null
         $process.WaitForExit(5000)
     }
     if (Test-Path -LiteralPath $smokeRoot) {
