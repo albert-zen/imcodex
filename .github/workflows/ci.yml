@@ -33,12 +33,18 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
       - name: Check out pinned SDK
         uses: actions/checkout@v4
         with:
           repository: albert-zen/im-agent-sdk
           ref: 57f255fb1f40a095aeabb5a6967380ba057494a3
           path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install dependencies
         run: |
@@ -64,12 +70,18 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
       - name: Check out pinned SDK
         uses: actions/checkout@v4
         with:
           repository: albert-zen/im-agent-sdk
           ref: 57f255fb1f40a095aeabb5a6967380ba057494a3
           path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install minimum multipart-compatible stack
         run: |
@@ -95,12 +107,18 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
       - name: Check out pinned SDK
         uses: actions/checkout@v4
         with:
           repository: albert-zen/im-agent-sdk
           ref: 57f255fb1f40a095aeabb5a6967380ba057494a3
           path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install Codex CLI
         run: npm install --global @openai/codex
@@ -133,12 +151,18 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
       - name: Check out pinned SDK
         uses: actions/checkout@v4
         with:
           repository: albert-zen/im-agent-sdk
           ref: 57f255fb1f40a095aeabb5a6967380ba057494a3
           path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
 
       - name: Install AgentKit
         run: |
