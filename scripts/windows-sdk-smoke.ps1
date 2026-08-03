@@ -60,7 +60,14 @@ try {
     }
     $process.WaitForExit(15000)
     if (-not $process.HasExited -or $process.ExitCode -ne 0) {
-        throw "IMCodex Windows SDK shutdown failed."
+        $exitCode = if ($process.HasExited) { [string]$process.ExitCode } else { "running" }
+        $stdoutDetail = ((Get-Content $stdout -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
+        $stderrDetail = ((Get-Content $stderr -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
+        $detail = ("stdout:`n{0}`nstderr:`n{1}" -f $stdoutDetail, $stderrDetail)
+        if ($detail.Length -gt 8000) {
+            $detail = $detail.Substring($detail.Length - 8000)
+        }
+        throw "IMCodex Windows SDK shutdown failed (exit=$exitCode). $detail"
     }
 
     $snapshot = Get-Content (Join-Path $runRoot "current\health.json") -Raw | ConvertFrom-Json
