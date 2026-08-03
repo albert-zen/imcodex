@@ -48,8 +48,8 @@ These are deliberately different facts:
    The rejected client-only trial below remains useful historical evidence,
    but this unmerged SHA is no longer the selected dependency.
 4. **Current merged SDK dependency.** The branch now pins the immutable SDK
-   `main` commit `57f255fb1f40a095aeabb5a6967380ba057494a3`, the merge commit of
-   [PR #59](https://github.com/albert-zen/im-agent-sdk/pull/59). It contains
+   `main` commit `17d708ec6b61767afb05e567ae7a09221ac2f364`, the merge commit of
+   [PR #63](https://github.com/albert-zen/im-agent-sdk/pull/63). It contains
    the complete independently merged ADR 0015 rollout tracked by
    [issue #49](https://github.com/albert-zen/im-agent-sdk/issues/49), including
    correlation-safe continuation, bounded event fan-out and recovery gaps,
@@ -62,7 +62,7 @@ Every dependency update must resolve the remote full SHA and rerun the affected
 baseline and parity evidence before runtime cutover code is accepted.
 
 A fresh temporary environment must resolve that direct reference to
-`57f255fb1f40a095aeabb5a6967380ba057494a3`, build both packages, install the
+`17d708ec6b61767afb05e567ae7a09221ac2f364`, build both packages, install the
 declared extras, and imported `imagent`. The full behavioral baseline remains a
 gate for the implementation work rather than for publishing this handoff branch.
 
@@ -71,7 +71,7 @@ gate for the implementation work rather than for publishing this handoff branch.
 ### Current SDK cutover regression
 
 On the final SDK-composed tree, the repository regression completed with
-`549 passed, 18 skipped, 1 warning in 16.82s`; compileall and `git diff
+`556 passed, 18 skipped, 1 warning`; compileall and `git diff
 --check` also passed. The warning remains the third-party
 `StarletteDeprecationWarning` described below. A prior run had two AgentKit
 launcher subprocesses terminated by the host with `SIGKILL`; both the focused
@@ -348,8 +348,11 @@ These are migration review items, not authorization to expand the SDK:
    submission `IN_FLIGHT` with no SDK transition/replay path, and a `PARTIAL`
    receipt containing a retryable/unattempted suffix is terminal in the current
    SDK. O2 cannot repair either case because it is best-effort and has no retry
-   authority. Closing consumer migration requires an SDK-owned recovery rule,
-   not a product-side coordinator.
+   authority. The consumer root artifact lease remains held while any fan-out
+   destination is `IN_FLIGHT` or `RETRYABLE`; terminal mixed results are exposed
+   as partial rather than total failure. Closing consumer migration still
+   requires an SDK-owned recovery rule for stranded `IN_FLIGHT`, not a
+   product-side coordinator.
 2. **Codex workspace grouping is not an SDK Project.** Existing `/threads
    --project` groups native Threads by CWD for IM browsing. Zen/T3 may expose
    real native Projects. Keep the Codex grouping in IMCodex presentation or a
@@ -396,15 +399,20 @@ These are migration review items, not authorization to expand the SDK:
    1,024 stable identities, fails explicitly at capacity, and startup sweep
    recovers leaked process-local attempts. Guaranteed clean-process convergence
    remains an SDK lifecycle-signal blocker rather than a consumer timer.
-10. **Product thread-selection commands still write the legacy JSON mirror
-    before SDK binding CAS.** Startup conversion and every ordinary input now
-    repair a mismatched SDK binding from that mirror, so a crash cannot leave
-    permanent split routing. It is nevertheless a compatibility mirror, not
-    the desired single owner. `/new`, `/pick`, `/fork`, and `/exit` must execute
-    typed SDK binding/Application operations directly before the
-    [IMCodex migration issue #9](https://github.com/albert-zen/imcodex/issues/9)
-    can close; the
-    JSON thread field can then be removed instead of becoming permanent.
+10. **SDK binding authority survives the legacy JSON handoff.** One crash-safe
+    migration copies legacy thread selections only into absent SDK bindings,
+    establishes one route for every current Conversation/Thread edge, and
+    durably marks the handoff complete. Later startups never promote JSON
+    cache or replace another Conversation's route for the same Thread. Before
+    product command policy runs,
+    the controller projects that SDK selection into the rebuildable product
+    command context. A product command may compute a new selection before its SDK
+    CAS, but a crash cannot promote that cache on restart; the next process
+    restores the SDK selection instead. IMCodex selects SDK
+    `foreground_only`, so an inactive historical checkpoint route never grants
+    delivery authority, and implicit Thread delivery uses the SDK active-route
+    set. The JSON field is no longer a second binding authority or a permanent
+    split-routing shim.
 
 No SDK Core expansion is asserted by this baseline. Proactive `IN_FLIGHT`/
 partial recovery, controller-command crash fencing, and exact first-upgrade replay fencing are the remaining SDK
@@ -440,7 +448,7 @@ Nothing in this baseline authorizes merging.
 ## Implementation input after SDK boundary review
 
 The complete SDK-side rollout is merged on `main` through immutable commit
-`57f255fb1f40a095aeabb5a6967380ba057494a3`; no Draft SDK branch or unpublished
+`17d708ec6b61767afb05e567ae7a09221ac2f364`; no Draft SDK branch or unpublished
 worktree is an implementation input. The focused PRs and commits are recorded
 in [im-agent-sdk#49](https://github.com/albert-zen/im-agent-sdk/issues/49).
 
@@ -500,13 +508,14 @@ through SDK submission. The ledger is persisted before submission, keyed by
 the caller's stable delivery ID, and restored before the startup sweep so a
 process crash cannot delete an attachment required by an SDK retry.
 Request cleanup releases only paths that were not transferred; same-content
-replay reuses the content-addressed path. O2 releases accepted/rejected items
-and keeps retryable/unknown/skipped items inside a partial receipt. A
-whole-attempt terminal `UNKNOWN` releases every path because the SDK will not
-retry it. Startup reconciliation releases submissions whose SDK record is
-terminal when detached O2 did not run. A missing or
-`IN_FLIGHT` SDK record remains leased for caller replay. This ledger is not an
-SDK outbox or transcript.
+replay reuses the content-addressed path. The root lease remains held only
+while at least one destination is `IN_FLIGHT` or `RETRYABLE`. SDK `PARTIAL` is
+a terminal mixed outcome in the current submission model, so synchronous and
+startup reconciliation both release the root lease once every destination is
+terminal, including `ACCEPTED` + `PARTIAL` fan-out after a lost O2 callback. A
+whole-attempt terminal `UNKNOWN` likewise releases every path because the SDK
+will not retry it. A missing or `IN_FLIGHT` SDK record remains leased for
+caller replay. This ledger is not an SDK outbox or transcript.
 
 A1 paths are registered under the concrete destination delivery ID in O1
 before Channel work and released by O2 terminal item facts. O1 suppression

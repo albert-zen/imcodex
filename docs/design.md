@@ -102,7 +102,8 @@ This keeps `imcodex` thin, inspectable, and easier to recover.
 The bridge may keep only IM-specific state that native Codex does not own, such
 as:
 
-- channel and conversation bindings
+- bootstrap context and rebuildable product routing projections; the SDK
+  Gateway repository is authoritative for live conversation bindings
 - bootstrap context before a native thread exists
 - reply context needed by a transport adapter
 - the last admitted stable sender ID needed to recheck current channel policy
@@ -193,6 +194,16 @@ Outbound IM idempotency, projection checkpoints, retry, and recovery belong to
 the SDK Gateway. IMCodex keeps no second Turn watch, message pump, or delivery
 outbox. The one-time legacy migration may drain already-persisted terminal
 deliveries from older releases, but new work is never written to that format.
+IMCodex selects SDK `foreground_only`: one Conversation selects at most one
+current Thread, one Thread may fan out through the SDK's single subscription
+worker to several currently bound Conversations, and changing a binding makes
+the old route inactive for that Conversation.
+Legacy JSON thread selections seed absent SDK bindings during one globally
+marked, crash-safe migration only. Once that migration is committed, startup
+never promotes JSON thread cache again. Controller execution
+projects its typed Thread identity and native cwd into the product command
+context; stale JSON can never overwrite the SDK repository or supply cwd for a
+different Thread.
 The old callable runtime and writable outbox/active-Turn APIs are removed; the
 consumer store exposes only read-and-consume migration evidence.
 Explicit standalone delivery enters SDK proactive delivery; its HTTP/tool
@@ -200,13 +211,10 @@ boundary never calls a Channel sink directly or creates a parallel retry
 runtime.
 
 The Agent-facing repository launcher forwards native `CODEX_THREAD_ID` but
-does not copy an IM route. The running bridge remembers the last IM recipient
-that explicitly selected each thread. That minimal routing fact survives the
-conversation switching to a newer thread, while selecting the same thread from
-another conversation moves its recipient. Route authority therefore remains
-in the bridge, parallel tasks cannot steal one another's destinations, and
-explicit channel/conversation targeting remains a lower-level operator
-interface.
+does not copy an IM route. The running bridge targets the SDK's active route
+set for that Thread, so all currently bound IM Conversations receive the
+delivery and Conversations that switched away do not. Explicit
+channel/conversation targeting remains a lower-level operator interface.
 
 Native lifecycle, visible answer projection, and IM delivery have different
 granularities and must not share one implicit terminal flag. A `final_answer`

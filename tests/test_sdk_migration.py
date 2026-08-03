@@ -75,6 +75,10 @@ async def test_legacy_binding_and_route_are_imported_once(tmp_path) -> None:
         assert binding is not None
         assert binding.thread_ref.native_thread_id == "thread-1"
         assert len(routes) == 1
+        assert ConversationStore(
+            clock=lambda: 101.0,
+            state_path=tmp_path / "state.json",
+        ).sdk_gateway_migration_completed()
     finally:
         await state.close()
 
@@ -109,7 +113,7 @@ async def test_legacy_generic_webhook_binding_uses_multiplexed_sdk_namespace(
 
 
 @pytest.mark.asyncio
-async def test_binding_import_resumes_after_crash_before_route_write(tmp_path) -> None:
+async def test_existing_sdk_binding_rebuilds_its_foreground_route(tmp_path) -> None:
     product = ConversationStore(clock=lambda: 100.0, state_path=tmp_path / "state.json")
     product.set_bootstrap_cwd("telegram", "chat-1", "/repo")
     product.bind_thread("telegram", "chat-1", "thread-1")
@@ -131,13 +135,16 @@ async def test_binding_import_resumes_after_crash_before_route_write(tmp_path) -
         )
 
         assert imported == 0
-        assert len(await state.list_projection_routes()) == 1
+        routes = await state.list_projection_routes()
+        assert [route.conversation_ref for route in routes] == [conversation]
     finally:
         await state.close()
 
 
 @pytest.mark.asyncio
-async def test_startup_repairs_product_to_sdk_binding_crash_gap(tmp_path) -> None:
+async def test_existing_sdk_binding_and_remembered_route_win_over_product_cache(
+    tmp_path,
+) -> None:
     product = ConversationStore(clock=lambda: 100.0, state_path=tmp_path / "state.json")
     product.bind_thread("telegram", "chat-1", "thread-product")
     state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
@@ -149,11 +156,11 @@ async def test_startup_repairs_product_to_sdk_binding_crash_gap(tmp_path) -> Non
             thread_ref=ThreadRef("codex-main", "thread-sdk-old"),
         )
     )
-    old_thread = ThreadRef("codex-main", "thread-sdk-old")
+    stale_product_thread = ThreadRef("codex-main", "thread-product")
     await state.put_projection_route(
         ThreadProjectionRoute(
-            route_id=derive_projection_route_id(old_thread, conversation),
-            thread_ref=old_thread,
+            route_id=derive_projection_route_id(stale_product_thread, conversation),
+            thread_ref=stale_product_thread,
             conversation_ref=conversation,
             updated_at=datetime.now(UTC),
         )
@@ -168,10 +175,80 @@ async def test_startup_repairs_product_to_sdk_binding_crash_gap(tmp_path) -> Non
 
         binding = await state.get(conversation)
         assert binding is not None
-        assert binding.thread_ref == ThreadRef("codex-main", "thread-product")
+        assert binding.thread_ref == ThreadRef("codex-main", "thread-sdk-old")
         routes = await state.list_projection_routes()
         assert {route.thread_ref for route in routes} == {
-            ThreadRef("codex-main", "thread-product")
+            ThreadRef("codex-main", "thread-product"),
+            ThreadRef("codex-main", "thread-sdk-old"),
+        }
+    finally:
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_handoff_never_promotes_new_product_cache(tmp_path) -> None:
+    product = ConversationStore(clock=lambda: 100.0, state_path=tmp_path / "state.json")
+    state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
+    try:
+        assert (
+            await migrate_legacy_gateway_state(
+                product_store=product,
+                gateway_state=state,
+                application_instance_id="codex-main",
+                native_channel_ids=frozenset({"telegram"}),
+            )
+            == 0
+        )
+        product.bind_thread("telegram", "post-cutover", "thread-uncommitted")
+
+        assert (
+            await migrate_legacy_gateway_state(
+                product_store=product,
+                gateway_state=state,
+                application_instance_id="codex-main",
+                native_channel_ids=frozenset({"telegram"}),
+            )
+            == 0
+        )
+        assert await state.get(ConversationRef("telegram", "post-cutover")) is None
+    finally:
+        await state.close()
+
+
+@pytest.mark.asyncio
+async def test_import_adds_another_foreground_subscriber_without_replacing_existing(
+    tmp_path,
+) -> None:
+    product = ConversationStore(clock=lambda: 100.0, state_path=tmp_path / "state.json")
+    product.bind_thread("telegram", "conversation-a", "thread-1")
+    state = SQLiteGatewayState(tmp_path / "gateway.sqlite3")
+    thread = ThreadRef("codex-main", "thread-1")
+    conversation_a = ConversationRef("telegram", "conversation-a")
+    conversation_b = ConversationRef("telegram", "conversation-b")
+    await state.replace_thread_projection_routes(
+        ThreadProjectionRoute(
+            route_id=derive_projection_route_id(thread, conversation_b),
+            thread_ref=thread,
+            conversation_ref=conversation_b,
+            updated_at=datetime.now(UTC),
+        )
+    )
+    try:
+        imported = await migrate_legacy_gateway_state(
+            product_store=product,
+            gateway_state=state,
+            application_instance_id="codex-main",
+            native_channel_ids=frozenset({"telegram"}),
+        )
+
+        assert imported == 1
+        binding = await state.get(conversation_a)
+        assert binding is not None
+        assert binding.thread_ref == thread
+        routes = await state.list_projection_routes(thread)
+        assert {route.conversation_ref for route in routes} == {
+            conversation_a,
+            conversation_b,
         }
     finally:
         await state.close()

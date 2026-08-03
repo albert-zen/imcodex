@@ -17,7 +17,10 @@ from imagent.contracts import (
     RequestChoice,
     RequestRef,
     TextContent,
+    ThreadRead,
     ThreadRef,
+    ThreadStatus,
+    ThreadSummary,
 )
 
 from imcodex.bridge.sdk_controller import ImcodexController
@@ -38,6 +41,17 @@ class Store:
         )
         return self.binding
 
+    def bind_thread(self, channel_id, conversation_id, thread_id):
+        self.get_binding(channel_id, conversation_id).thread_id = thread_id
+
+    def clear_thread_binding(self, channel_id, conversation_id):
+        self.get_binding(channel_id, conversation_id).thread_id = None
+
+    def project_sdk_thread_context(self, channel_id, conversation_id, thread_id, cwd):
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.thread_id = thread_id
+        binding.bootstrap_cwd = cwd
+
 
 class Backend:
     def __init__(self, store) -> None:
@@ -56,9 +70,12 @@ class Service:
         self.store = store
         self.backend = Backend(store)
         self.handled = []
+        self.thread_after_handle = None
 
     async def handle_inbound(self, message):
         self.handled.append(message)
+        if self.thread_after_handle is not None:
+            self.store.binding.thread_id = self.thread_after_handle
         return [
             OutboundMessage(
                 channel_id=message.channel_id,
@@ -81,6 +98,17 @@ class Actions:
         del conversation_ref
         return self.binding
 
+    async def execute_application(self, operation):
+        return ThreadRead(
+            operation_id=operation.operation_id,
+            completed_at=datetime.now(UTC),
+            thread=ThreadSummary(
+                ref=operation.thread_ref,
+                status=ThreadStatus.IDLE,
+                metadata={"cwd": f"/sdk/{operation.thread_ref.native_thread_id}"},
+            ),
+        )
+
     async def execute_gateway(self, operation):
         self.operations.append(operation)
         self.binding = ConversationBinding(
@@ -101,7 +129,6 @@ class RequestFailureActions(Actions):
     def __init__(self, code: str) -> None:
         super().__init__()
         self.code = code
-
     async def execute_gateway(self, operation):
         self.operations.append(operation)
         return GatewayOperationFailed(
@@ -148,12 +175,13 @@ async def test_first_input_prepares_product_cwd_thread_then_passes_to_gateway() 
 
     assert outputs is None
     assert service.backend.ensure_calls == 1
+    assert len(actions.operations) == 1
     assert isinstance(actions.operations[0], BindConversationToThread)
     assert actions.operations[0].thread_ref == ThreadRef("codex-main", "thread-created")
 
 
 @pytest.mark.asyncio
-async def test_input_repairs_a_crash_diverged_sdk_binding_before_dispatch() -> None:
+async def test_input_projects_authoritative_sdk_binding_before_dispatch() -> None:
     service = Service(Store(cwd="/repo", thread_id="thread-product"))
     controller = ImcodexController(
         service=service, request_presenter=ImcodexRequestPresenter()
@@ -170,14 +198,16 @@ async def test_input_repairs_a_crash_diverged_sdk_binding_before_dispatch() -> N
     outputs = await controller.handle(_inbound("hello"), actions)
 
     assert outputs is None
-    assert service.backend.ensure_calls == 1
-    assert actions.operations[0].expected_revision == 4
-    assert actions.operations[0].thread_ref == ThreadRef("codex-main", "thread-product")
+    assert service.backend.ensure_calls == 0
+    assert actions.operations == []
+    assert service.store.binding.thread_id == "thread-sdk-old"
+    assert service.store.binding.bootstrap_cwd == "/sdk/thread-sdk-old"
 
 
 @pytest.mark.asyncio
 async def test_slash_command_stays_product_owned_and_syncs_binding() -> None:
-    service = Service(Store(cwd="/repo", thread_id="thread-new"))
+    service = Service(Store(cwd="/repo", thread_id="thread-stale"))
+    service.thread_after_handle = "thread-new"
     controller = ImcodexController(
         service=service, request_presenter=ImcodexRequestPresenter()
     )
@@ -196,6 +226,7 @@ async def test_slash_command_stays_product_owned_and_syncs_binding() -> None:
     assert outputs[0].metadata["imcodex_product_controller"] is True
     assert actions.operations[0].expected_revision == 3
     assert actions.operations[0].thread_ref.native_thread_id == "thread-new"
+    assert len(actions.operations) == 1
 
 
 @pytest.mark.asyncio

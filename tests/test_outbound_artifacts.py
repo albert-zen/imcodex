@@ -392,10 +392,9 @@ async def test_lease_ledger_reconciles_terminal_sdk_submission(tmp_path: Path) -
     [
         "in_flight",
         "retryable",
-        "partial",
     ],
 )
-async def test_lease_ledger_preserves_nonterminal_or_partial_submission(
+async def test_lease_ledger_preserves_nonterminal_submission(
     tmp_path: Path,
     state: str,
 ) -> None:
@@ -432,3 +431,53 @@ async def test_lease_ledger_preserves_nonterminal_or_partial_submission(
 
     assert ledger.referenced_paths() == {artifact.local_path}
     assert Path(artifact.local_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_lease_ledger_releases_terminal_partial_fanout_after_restart(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from imagent.contracts import DeliverySubmissionState
+
+    class ProductStore:
+        @staticmethod
+        def referenced_legacy_artifact_paths() -> set[str]:
+            return set()
+
+    spool = tmp_path / "spool"
+    state_path = tmp_path / "leases.json"
+    first_stager = OutboundArtifactStager(spool)
+    artifact = first_stager.stage_upload(
+        b"terminal partial\n",
+        kind="file",
+        content_type="text/plain",
+        filename="terminal-partial.txt",
+    )
+    first = OutboundArtifactLeaseLedger(
+        stager=first_stager,
+        product_store=ProductStore(),
+        state_path=state_path,
+    )
+    first.transfer("delivery-1", (artifact,))
+
+    restarted = OutboundArtifactLeaseLedger(
+        stager=OutboundArtifactStager(spool),
+        product_store=ProductStore(),
+        state_path=state_path,
+    )
+
+    class Submissions:
+        async def get_delivery_submission(self, _submission_id):
+            return SimpleNamespace(
+                destinations=(
+                    SimpleNamespace(state=DeliverySubmissionState.ACCEPTED),
+                    SimpleNamespace(state=DeliverySubmissionState.PARTIAL),
+                )
+            )
+
+    await restarted.reconcile(Submissions())
+
+    assert restarted.referenced_paths() == set()
+    assert not Path(artifact.local_path).exists()

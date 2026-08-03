@@ -635,8 +635,8 @@ remain `images`.
 
 ## Explicit Agent Delivery
 
-An Agent sends back to the IM recipient remembered for its native Codex thread
-with the repository launcher:
+An Agent sends back to every IM conversation currently bound to its native
+Codex Thread with the repository launcher:
 
 ```bash
 scripts/imcodex-send \
@@ -647,12 +647,11 @@ scripts/imcodex-send \
 On Windows use `scripts\imcodex-send.cmd`. The launcher preserves the Agent's
 working directory for relative artifact paths and submits to the authenticated
 local delivery endpoint. The launcher forwards native `CODEX_THREAD_ID`; the
-running bridge, not the launcher, resolves the last `channel_id` and
-`conversation_id` that explicitly selected that thread. Switching the
-conversation to another thread does not invalidate an older task, so parallel
-tasks retain their own recipients. Selecting the same native thread from
-another IM conversation intentionally moves its remembered route. A thread
-that has never been selected from IM fails explicitly instead of guessing.
+running bridge, not the launcher, resolves every SDK route whose IM
+Conversation currently selects that Thread. One Thread may fan out to several
+current IM subscribers. When a Conversation switches to another Thread, it no
+longer receives implicit delivery from the previous Thread. A Thread with no
+active IM route fails explicitly instead of guessing.
 The Windows launcher selects `IMCODEX_PYTHON` first, then the repository
 `.venv`, the active Conda environment, and finally `python` on `PATH`.
 

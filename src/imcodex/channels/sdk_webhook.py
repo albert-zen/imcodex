@@ -278,9 +278,6 @@ class ImcodexRuntimeService:
     def can_deliver_outbound(self, channel_id: str) -> bool:
         return self._delivery().can_deliver_outbound(channel_id)
 
-    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        return self._delivery().resolve_outbound_route(source_thread_id)
-
     def validate_outbound_message(self, message: OutboundMessage) -> None:
         self._delivery().validate_outbound_message(message)
 

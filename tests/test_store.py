@@ -157,17 +157,16 @@ def test_store_atomic_save_preserves_previous_state_on_replace_failure(
     assert state_path.read_text(encoding="utf-8") == previous
 
 
-def test_binding_a_thread_moves_ownership_to_latest_conversation() -> None:
+def test_multiple_conversations_can_bind_the_same_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "old", "thr-1")
     store.bind_thread("qq", "new", "thr-1")
 
-    binding = store.find_binding_by_thread_id("thr-1")
-    assert binding is not None
-    assert binding.conversation_id == "new"
+    assert store.get_binding("qq", "old").thread_id == "thr-1"
+    assert store.get_binding("qq", "new").thread_id == "thr-1"
 
 
-def test_thread_recipient_routes_survive_conversation_switch_and_restart(tmp_path) -> None:
+def test_conversation_switch_persists_only_its_current_thread(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     store = ConversationStore(clock=lambda: 1.0, state_path=state_path)
     store.bind_thread("qq", "conv-1", "thr-a")
@@ -175,8 +174,22 @@ def test_thread_recipient_routes_survive_conversation_switch_and_restart(tmp_pat
 
     reloaded = ConversationStore(clock=lambda: 2.0, state_path=state_path)
 
-    assert reloaded.find_recipient_route_by_thread_id("thr-a") == ("qq", "conv-1")
-    assert reloaded.find_recipient_route_by_thread_id("thr-b") == ("qq", "conv-1")
+    assert reloaded.get_binding("qq", "conv-1").thread_id == "thr-b"
+    assert "thread_recipient_routes" not in state_path.read_text(encoding="utf-8")
+
+
+def test_sdk_command_context_projection_does_not_clear_another_subscriber() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "selected", "thr-a", "/selected")
+
+    store.project_sdk_thread_context("qq", "rebuild", "thr-a", "/authoritative")
+
+    assert store.get_binding("qq", "selected").thread_id == "thr-a"
+    rebuilt = store.get_binding("qq", "rebuild")
+    assert (rebuilt.thread_id, rebuilt.bootstrap_cwd) == (
+        "thr-a",
+        "/authoritative",
+    )
 
 
 def test_visibility_preferences_persist_without_thread_or_cwd(tmp_path) -> None:

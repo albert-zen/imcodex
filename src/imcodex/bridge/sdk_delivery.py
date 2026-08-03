@@ -15,11 +15,17 @@ from imagent.contracts import (
     DeliverySubmissionState,
     LocalPath,
     TextContent,
+    ThreadRef,
+    ThreadRouteDeliveryTarget,
 )
 from imagent.delivery_outcomes import DeliveryOutcome, DeliveryOutcomeContext
-from imagent.proactive_delivery import ScopedDeliveryAuthorizer
+from imagent.proactive_delivery import DeliveryRouteError, ScopedDeliveryAuthorizer
 
 from ..models import OutboundMessage
+from ..webhook_namespace import (
+    WEBHOOK_CHANNEL_INSTANCE_ID,
+    decode_webhook_conversation,
+)
 
 
 class ImcodexDeliveryOutcomeObserver:
@@ -46,16 +52,16 @@ class ImcodexProactiveDelivery:
         *,
         gateway,
         authorizer: ScopedDeliveryAuthorizer,
-        product_store,
         artifact_ledger,
+        application_instance_id: str,
         registered_channel_ids: set[str],
         fallback_excluded_channel_ids: set[str],
         webhook_channel,
     ) -> None:
         self.gateway = gateway
         self.authorizer = authorizer
-        self.product_store = product_store
         self.artifact_ledger = artifact_ledger
+        self.application_instance_id = application_instance_id
         self.registered_channel_ids = registered_channel_ids
         self.fallback_excluded_channel_ids = fallback_excluded_channel_ids
         self.webhook_channel = webhook_channel
@@ -68,21 +74,9 @@ class ImcodexProactiveDelivery:
             and self.webhook_channel.outbound_sink is not None
         )
 
-    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        thread_id = str(source_thread_id or "").strip()
-        route = (
-            self.product_store.find_recipient_route_by_thread_id(thread_id)
-            if thread_id
-            else None
-        )
-        if route is None:
-            raise ValueError(
-                "This Codex thread has not been selected from an IM conversation. "
-                "Open or pick it from IMCodex once, then retry."
-            )
-        return route
-
     def validate_outbound_message(self, message: OutboundMessage) -> None:
+        if str(message.metadata.get("source_thread_id") or "").strip():
+            return
         if not self.can_deliver_outbound(message.channel_id):
             raise ValueError(
                 f"Configured channel {message.channel_id!r} is unavailable."
@@ -98,9 +92,21 @@ class ImcodexProactiveDelivery:
         self,
         message: OutboundMessage,
     ) -> tuple[list[OutboundMessage], bool, bool]:
-        conversation = self._conversation_ref(
-            message.channel_id,
-            message.conversation_id,
+        source_thread_id = str(
+            message.metadata.get("source_thread_id") or ""
+        ).strip()
+        thread_ref = (
+            ThreadRef(self.application_instance_id, source_thread_id)
+            if source_thread_id
+            else None
+        )
+        conversation = (
+            None
+            if thread_ref is not None
+            else self._conversation_ref(
+                message.channel_id,
+                message.conversation_id,
+            )
         )
         content = []
         if message.text:
@@ -118,7 +124,11 @@ class ImcodexProactiveDelivery:
             )
         intent = DeliveryIntent(
             delivery_id=str(message.metadata.get("delivery_id") or ""),
-            target=ConversationDeliveryTarget(conversation),
+            target=(
+                ThreadRouteDeliveryTarget(thread_ref)
+                if thread_ref is not None
+                else ConversationDeliveryTarget(conversation)
+            ),
             content=tuple(content),
             created_at=datetime.now(UTC),
             metadata={"imcodex_message_type": message.message_type},
@@ -126,7 +136,8 @@ class ImcodexProactiveDelivery:
         credential = await self.authorizer.issue(
             DeliveryPrincipal(
                 principal_id="imcodex:local-delivery",
-                allowed_conversations=(conversation,),
+                allowed_threads=(thread_ref,) if thread_ref is not None else (),
+                allowed_conversations=(conversation,) if conversation is not None else (),
             )
         )
         created_lease = False
@@ -138,7 +149,7 @@ class ImcodexProactiveDelivery:
                 intent,
                 credential=credential,
             )
-        except DeliverySubmissionConflict as exc:
+        except (DeliverySubmissionConflict, DeliveryRouteError) as exc:
             if created_lease:
                 self.artifact_ledger.complete_delivery(
                     intent.delivery_id,
@@ -148,36 +159,77 @@ class ImcodexProactiveDelivery:
         finally:
             await self.authorizer.revoke(credential)
 
-        self._apply_item_receipts(message, result, text_offset=bool(message.text))
+        outbound = self._destination_messages(message, result)
         self._reconcile_terminal_result(intent.delivery_id, result, intent.content)
         if result.state is DeliverySubmissionState.ACCEPTED:
-            return [message], True, True
+            return outbound, True, True
         if result.state is DeliverySubmissionState.PARTIAL:
-            return [message], False, False
+            return outbound, False, True
         if result.state is DeliverySubmissionState.RETRYABLE:
-            return [message], False, True
+            return outbound, False, True
         if result.state is DeliverySubmissionState.REJECTED:
             raise ValueError(result.error or "delivery was rejected")
-        return [message], False, False
+        return outbound, False, False
+
+    def _destination_messages(self, message, result) -> list[OutboundMessage]:
+        outbound: list[OutboundMessage] = []
+        message.metadata["sdk_submission_state"] = result.state.value
+        for destination in result.destinations:
+            conversation = destination.conversation_ref
+            if conversation is None:
+                continue
+            channel_id, conversation_id = self._product_route(conversation)
+            projected = OutboundMessage(
+                channel_id=channel_id,
+                conversation_id=conversation_id,
+                message_type=message.message_type,
+                text=message.text,
+                request_id=message.request_id,
+                metadata={
+                    **message.metadata,
+                    "destination_delivery_id": destination.delivery_id,
+                    "destination_state": destination.state.value,
+                    "destination_error": destination.error or "",
+                },
+                artifacts=list(message.artifacts),
+            )
+            self._apply_item_receipts(
+                projected,
+                (destination,),
+                text_offset=bool(message.text),
+            )
+            outbound.append(projected)
+        if outbound:
+            return outbound
+        message.metadata["destination_count"] = len(result.destinations)
+        message.metadata["destination_states"] = tuple(
+            destination.state.value for destination in result.destinations
+        )
+        self._apply_item_receipts(
+            message,
+            result.destinations,
+            text_offset=bool(message.text),
+        )
+        return [message]
 
     def _reconcile_terminal_result(self, delivery_id: str, result, content) -> None:
         """Converge leases when an SDK terminal replay does not emit O2 again."""
 
-        for destination in result.destinations:
-            if destination.state in {
+        if any(
+            destination.state
+            in {
                 DeliverySubmissionState.IN_FLIGHT,
                 DeliverySubmissionState.RETRYABLE,
-            }:
-                continue
-            if destination.state is DeliverySubmissionState.PARTIAL and (
-                destination.receipt is None or not destination.receipt.items
-            ):
-                continue
-            paths = _terminal_artifact_paths(
-                content,
-                destination.receipt,
-                submission_state=destination.state,
-            )
+            }
+            for destination in result.destinations
+        ):
+            return
+        paths = tuple(
+            item.source.path
+            for item in content
+            if isinstance(item, AttachmentContent) and isinstance(item.source, LocalPath)
+        )
+        if paths:
             self.artifact_ledger.complete_delivery(delivery_id, paths)
 
     def _conversation_ref(
@@ -188,9 +240,18 @@ class ImcodexProactiveDelivery:
         return self.webhook_channel.conversation_ref_for(channel_id, conversation_id)
 
     @staticmethod
-    def _apply_item_receipts(message, result, *, text_offset: bool) -> None:
+    def _product_route(conversation: ConversationRef) -> tuple[str, str]:
+        if conversation.channel_instance_id == WEBHOOK_CHANNEL_INSTANCE_ID:
+            return decode_webhook_conversation(conversation.native_conversation_id)
+        return (
+            conversation.channel_instance_id,
+            conversation.native_conversation_id,
+        )
+
+    @staticmethod
+    def _apply_item_receipts(message, destinations, *, text_offset: bool) -> None:
         recorded = []
-        for destination in result.destinations:
+        for destination in destinations:
             receipt = destination.receipt
             if receipt is None:
                 continue

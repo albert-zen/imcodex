@@ -206,7 +206,6 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "artifacts must be uploaded files.")
         service = runtime.service
         can_deliver = getattr(service, "can_deliver_outbound", None)
-        resolve_route = getattr(service, "resolve_outbound_route", None)
         validate_message = getattr(service, "validate_outbound_message", None)
         stage_upload = getattr(service, "stage_outbound_upload", None)
         discard_uploads = getattr(service, "discard_outbound_uploads", None)
@@ -219,30 +218,7 @@ def install_delivery_route(
             or not callable(deliver_message)
         ):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
-        if source_thread_id:
-            if not callable(resolve_route):
-                await _raise_form_error(
-                    form,
-                    503,
-                    "Current-thread route resolution is unavailable.",
-                )
-            try:
-                channel_id, conversation_id = resolve_route(source_thread_id)
-            except ValueError as exc:
-                await _close_form_uploads(form)
-                return JSONResponse(
-                    {
-                        "delivery_id": delivery_id,
-                        "channel_id": "",
-                        "conversation_id": "",
-                        "status": "rejected",
-                        "text_status": "rejected",
-                        "artifacts": [],
-                        "error": str(exc),
-                    },
-                    status_code=409,
-                )
-        if not can_deliver(channel_id):
+        if not source_thread_id and not can_deliver(channel_id):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
 
         artifacts: list[OutboundArtifact] = []
@@ -282,6 +258,7 @@ def install_delivery_route(
                 text=text,
                 metadata={
                     "delivery_id": delivery_id,
+                    "source_thread_id": source_thread_id,
                     "source": (
                         "channels.send.current" if source_thread_id else "channels.send"
                     ),
@@ -330,13 +307,25 @@ def install_delivery_route(
             else:
                 status = "failed"
                 status_code = 503
-            receipt_message = outbound[-1] if outbound else message
-            receipt = _delivery_receipt(
-                receipt_message,
-                artifacts,
-                status=status,
-                delivery_id=delivery_id,
-            )
+            if source_thread_id:
+                receipt = _thread_delivery_receipt(
+                    outbound,
+                    message,
+                    artifacts,
+                    status=status,
+                    delivery_id=delivery_id,
+                )
+            else:
+                receipt_message = outbound[-1] if outbound else message
+                receipt = _delivery_receipt(
+                    receipt_message,
+                    artifacts,
+                    status=status,
+                    delivery_id=delivery_id,
+                )
+            if message.metadata.get("sdk_submission_state") == "partial":
+                receipt["status"] = "partial"
+                receipt["text_status"] = "partial"
             if receipt["status"] == "partial":
                 status_code = 207
             return JSONResponse(receipt, status_code=status_code)
@@ -480,3 +469,50 @@ def _delivery_receipt(
         "artifacts": items,
         "error": error,
     }
+
+
+def _thread_delivery_receipt(
+    outbound: list[OutboundMessage],
+    source: OutboundMessage,
+    artifacts: list[OutboundArtifact],
+    *,
+    status: str,
+    delivery_id: str,
+) -> dict[str, object]:
+    destinations = [
+        _delivery_receipt(
+            item,
+            artifacts,
+            status=_destination_status(item, fallback=status),
+            error=str(item.metadata.get("destination_error") or ""),
+            delivery_id=delivery_id,
+        )
+        for item in outbound
+        if item.channel_id and item.conversation_id
+    ]
+    receipt = _delivery_receipt(
+        source,
+        artifacts,
+        status=status,
+        delivery_id=delivery_id,
+    )
+    receipt["destinations"] = destinations
+    receipt["destination_count"] = int(
+        source.metadata.get("destination_count") or len(destinations)
+    )
+    receipt["destination_states"] = list(
+        source.metadata.get("destination_states") or ()
+    )
+    return receipt
+
+
+def _destination_status(message: OutboundMessage, *, fallback: str) -> str:
+    state = str(message.metadata.get("destination_state") or "")
+    return {
+        "accepted": "delivered",
+        "retryable": "queued",
+        "partial": "partial",
+        "rejected": "rejected",
+        "unknown": "failed",
+        "in_flight": "queued",
+    }.get(state, fallback)

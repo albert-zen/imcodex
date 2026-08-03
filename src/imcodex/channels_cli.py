@@ -47,8 +47,7 @@ def build_channels_parser() -> argparse.ArgumentParser:
         "--current",
         action="store_true",
         help=(
-            "Send to the IM recipient remembered for the current CODEX_THREAD_ID, "
-            "even after that recipient switches threads."
+            "Send to every IM conversation currently bound to CODEX_THREAD_ID."
         ),
     )
     send.add_argument("--bridge-root", default="", help=argparse.SUPPRESS)

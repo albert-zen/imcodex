@@ -94,18 +94,10 @@ class DeliveryService:
     def __init__(self, tmp_path: Path, sink: Sink) -> None:
         self.sink = sink
         self.stager = OutboundArtifactStager(tmp_path / "outbound-media")
-        self.routes = {"thread-current": ("telegram", "chat:current")}
+        self.routes = {"thread-current": [("telegram", "chat:current")]}
 
     def can_deliver_outbound(self, channel_id: str) -> bool:
         return self.sink.can_deliver(channel_id)
-
-    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        try:
-            return self.routes[source_thread_id]
-        except KeyError:
-            raise ValueError(
-                "This Codex thread has not been selected from an IM conversation."
-            ) from None
 
     def validate_outbound_message(self, message) -> None:
         return None
@@ -118,6 +110,23 @@ class DeliveryService:
         self.stager.cleanup_unreferenced(set())
 
     async def deliver_outbound_message(self, message):
+        source_thread_id = str(message.metadata.get("source_thread_id") or "")
+        if source_thread_id:
+            routes = self.routes.get(source_thread_id, [])
+            if not routes:
+                raise ValueError(
+                    "This Codex thread has no active IM conversation route."
+                )
+            outbound = []
+            for channel_id, conversation_id in routes:
+                projected = copy.deepcopy(message)
+                projected.channel_id = channel_id
+                projected.conversation_id = conversation_id
+                self.sink.prepare_durable_message(projected)
+                await self.sink.send_message(projected)
+                outbound.append(projected)
+            self.stager.release(message.artifacts)
+            return outbound, True, True
         self.stager.release(message.artifacts)
         self.sink.prepare_durable_message(message)
         await self.sink.send_message(message)
@@ -133,6 +142,14 @@ class QueuedDeliveryService(DeliveryService):
 
     def owns_outbound_delivery(self, delivery_id: str) -> bool:
         return True
+
+
+class PartialThreadDeliveryService(DeliveryService):
+    async def deliver_outbound_message(self, message):
+        message.metadata["sdk_submission_state"] = "partial"
+        message.metadata["destination_count"] = 2
+        message.metadata["destination_states"] = ("accepted", "retryable")
+        return [message], False, True
 
 
 class RejectingDeliveryService(DeliveryService):
@@ -315,7 +332,10 @@ def test_delivery_endpoint_resolves_current_thread_route_at_request_time(
     app = _app(tmp_path, sink, delivery_service=service)
     client = TestClient(app, client=("127.0.0.1", 50000))
 
-    service.routes["thread-current"] = ("telegram", "chat:latest")
+    service.routes["thread-current"] = [
+        ("telegram", "chat:latest"),
+        ("qq", "group:second"),
+    ]
     response = client.post(
         DELIVERY_PATH,
         headers=_headers(app),
@@ -329,8 +349,12 @@ def test_delivery_endpoint_resolves_current_thread_route_at_request_time(
 
     assert response.status_code == 200
     assert response.json()["status"] == "delivered"
-    assert response.json()["channel_id"] == "telegram"
-    assert response.json()["conversation_id"] == "chat:latest"
+    assert response.json()["channel_id"] == ""
+    assert response.json()["conversation_id"] == ""
+    assert {
+        (item["channel_id"], item["conversation_id"])
+        for item in response.json()["destinations"]
+    } == {("telegram", "chat:latest"), ("qq", "group:second")}
     assert sink.messages[0].channel_id == "telegram"
     assert sink.messages[0].conversation_id == "chat:latest"
     assert sink.messages[0].metadata["source"] == "channels.send.current"
@@ -356,29 +380,28 @@ def test_delivery_endpoint_rejects_current_thread_without_im_binding(
 
     assert response.status_code == 409
     assert response.json()["status"] == "rejected"
-    assert "has not been selected from an IM conversation" in response.json()["error"]
+    assert "no active IM conversation route" in response.json()["error"]
     assert sink.messages == []
 
 
-def test_current_route_resolver_follows_latest_cross_channel_selection() -> None:
+def test_product_store_allows_two_conversations_on_one_thread() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "old-conversation", "thread-current")
     store.bind_thread("telegram", "latest-conversation", "thread-current")
-    assert store.find_recipient_route_by_thread_id("thread-current") == (
-        "telegram",
-        "latest-conversation",
+    assert store.get_binding("qq", "old-conversation").thread_id == "thread-current"
+    assert (
+        store.get_binding("telegram", "latest-conversation").thread_id
+        == "thread-current"
     )
 
 
-def test_current_route_resolver_survives_switching_threads_in_one_conversation() -> (
+def test_product_store_switches_one_conversation_to_only_its_current_thread() -> (
     None
 ):
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "recipient", "thread-a")
     store.bind_thread("qq", "recipient", "thread-b")
-    assert store.find_binding_by_thread_id("thread-a") is None
-    assert store.find_recipient_route_by_thread_id("thread-a") == ("qq", "recipient")
-    assert store.find_recipient_route_by_thread_id("thread-b") == ("qq", "recipient")
+    assert store.get_binding("qq", "recipient").thread_id == "thread-b"
 
 
 def test_delivery_endpoint_rejects_ambiguous_current_and_explicit_route(
@@ -426,6 +449,35 @@ def test_delivery_endpoint_reports_durably_queued_message(tmp_path: Path) -> Non
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
     assert response.json()["text_status"] == "queued"
+
+
+def test_thread_delivery_endpoint_reports_mixed_sdk_outcome_as_partial(
+    tmp_path: Path,
+) -> None:
+    sink = Sink()
+    app = _app(
+        tmp_path,
+        sink,
+        delivery_service=PartialThreadDeliveryService(tmp_path, sink),
+    )
+    client = TestClient(app, client=("127.0.0.1", 50000))
+
+    response = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={
+            "payload": (
+                '{"source_thread_id":"thread-current",'
+                '"text":"done","delivery_id":"stable-partial"}'
+            )
+        },
+    )
+
+    assert response.status_code == 207
+    assert response.json()["status"] == "partial"
+    assert response.json()["text_status"] == "partial"
+    assert response.json()["destination_count"] == 2
+    assert response.json()["destination_states"] == ["accepted", "retryable"]
 
 
 def test_delivery_endpoint_rejects_disallowed_route_before_outbox(

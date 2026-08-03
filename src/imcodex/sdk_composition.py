@@ -9,6 +9,7 @@ from imagent.applications import CodexApplicationAdapter
 from imagent.applications.appserver_client import AppServerClient, AppServerSupervisor
 from imagent.applications.appserver_client.retry import RetryBackoff
 from imagent.channels import channel_from_config
+from imagent.contracts import ProjectionPolicy
 from imagent.gateway import GatewayExtensions, GatewayRepositories, ImAgentGateway
 from imagent.proactive_delivery import ScopedDeliveryAuthorizer
 from imagent.storage import SQLiteGatewayState
@@ -193,6 +194,7 @@ def build_sdk_composition(settings) -> SdkComposition:
                 artifact_ledger=artifact_ledger,
             ),
         ),
+        projection_policy=ProjectionPolicy.FOREGROUND_ONLY,
         delivery_authorizer=delivery_authorizer,
     )
     composition = SdkComposition(
@@ -212,8 +214,8 @@ def build_sdk_composition(settings) -> SdkComposition:
     composition.service.delivery_service = ImcodexProactiveDelivery(
         gateway=gateway,
         authorizer=delivery_authorizer,
-        product_store=product_store,
         artifact_ledger=artifact_ledger,
+        application_instance_id=SDK_APPLICATION_INSTANCE_ID,
         registered_channel_ids={
             channel.channel_instance_id
             for channel in channels

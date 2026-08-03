@@ -40,6 +40,7 @@ This direction is enforced by architecture tests in [tests/test_architecture.py]
 - [System constraints](docs/system-constraints-spec.md)
 - [Testing](docs/testing.md)
 - [Unified attachment and delivery decision](docs/adr/0002-unified-channel-message-delivery.md)
+- [Current Thread subscriptions and SDK-owned fan-out](docs/adr/0003-current-thread-subscriptions.md)
 
 ## Run
 

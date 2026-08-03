@@ -32,14 +32,15 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
         self.clock = clock
         self.state_path = Path(state_path) if state_path else None
         self._bindings: dict[tuple[str, str], ConversationBinding] = {}
-        self._thread_recipient_routes: dict[str, tuple[str, str]] = {}
         self._legacy_delivery_evidence: dict[
             str, LegacyPendingDeliveryEvidence
         ] = {}
+        self._sdk_gateway_migration_completed = False
         self._thread_snapshots: dict[str, NativeThreadSnapshot] = {}
         self._thread_browser_contexts: dict[tuple[str, str], ThreadBrowserContext] = {}
         self._save_lock = RLock()
         self._revision_lock = Lock()
+        self._migration_lock = asyncio.Lock()
         self._next_state_revision = 0
         self._persisted_state_revision = 0
         self._queued_state_write: tuple[int, str] | None = None
@@ -60,20 +61,6 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
     def iter_bindings(self) -> list[ConversationBinding]:
         return list(self._bindings.values())
 
-    def find_binding_by_thread_id(self, thread_id: str) -> ConversationBinding | None:
-        for binding in self._bindings.values():
-            if binding.thread_id == thread_id:
-                return binding
-        return None
-
-    def find_recipient_route_by_thread_id(
-        self,
-        thread_id: str,
-    ) -> tuple[str, str] | None:
-        """Return the last IM recipient that explicitly selected a native thread."""
-
-        return self._thread_recipient_routes.get(str(thread_id or "").strip())
-
     def set_bootstrap_cwd(
         self, channel_id: str, conversation_id: str, cwd: str
     ) -> ConversationBinding:
@@ -86,14 +73,8 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
     def bind_thread(
         self, channel_id: str, conversation_id: str, thread_id: str
     ) -> ConversationBinding:
-        for key, existing in self._bindings.items():
-            if key == (channel_id, conversation_id):
-                continue
-            if existing.thread_id == thread_id:
-                existing.thread_id = None
         binding = self.get_binding(channel_id, conversation_id)
         binding.thread_id = thread_id
-        self._thread_recipient_routes[thread_id] = (channel_id, conversation_id)
         self._save()
         return binding
 
@@ -104,11 +85,45 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
         thread_id: str,
         cwd: str | None,
     ) -> ConversationBinding:
-        binding = self.bind_thread(channel_id, conversation_id, thread_id)
-        if cwd:
-            binding.bootstrap_cwd = cwd
-            self._save()
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.thread_id = thread_id
+        binding.bootstrap_cwd = cwd
+        self._save()
         return binding
+
+    def project_sdk_thread_context(
+        self,
+        channel_id: str,
+        conversation_id: str,
+        thread_id: str,
+        cwd: str,
+    ) -> ConversationBinding:
+        """Update rebuildable product command context from SDK authority."""
+
+        binding = self.get_binding(channel_id, conversation_id)
+        binding.thread_id = thread_id
+        binding.bootstrap_cwd = cwd
+        self._save()
+        return binding
+
+    def sdk_gateway_migration_completed(self) -> bool:
+        return self._sdk_gateway_migration_completed
+
+    async def commit_sdk_gateway_migration_completed(self) -> None:
+        if self._sdk_gateway_migration_completed:
+            return
+        async with self._migration_lock:
+            if self._sdk_gateway_migration_completed:
+                return
+            self._sdk_gateway_migration_completed = True
+            if self.state_path is None:
+                return
+            revision, serialized = self._snapshot_state()
+            try:
+                await self._write_state_async(serialized, revision)
+            except BaseException:
+                self._sdk_gateway_migration_completed = False
+                raise
 
     def clear_thread_binding(
         self, channel_id: str, conversation_id: str
@@ -351,6 +366,7 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
     def _snapshot_state(self) -> tuple[int, str]:
         payload = {
             "version": 2,
+            "sdk_gateway_migration_completed": self._sdk_gateway_migration_completed,
             "bindings": [
                 {
                     "channel_id": binding.channel_id,
@@ -371,14 +387,6 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
                 or binding.show_toolcalls is not False
                 or binding.show_system is not False
                 or binding.reply_context
-            ],
-            "thread_recipient_routes": [
-                {
-                    "thread_id": thread_id,
-                    "channel_id": route[0],
-                    "conversation_id": route[1],
-                }
-                for thread_id, route in sorted(self._thread_recipient_routes.items())
             ],
             "pending_terminal_deliveries": [
                 {
@@ -451,6 +459,12 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
             raise RuntimeError(
                 f"Unsupported or invalid bridge state: {self.state_path}"
             )
+        migration_completed = payload.get("sdk_gateway_migration_completed", False)
+        if not isinstance(migration_completed, bool):
+            raise RuntimeError(
+                f"Invalid SDK migration state: {self.state_path}"
+            )
+        self._sdk_gateway_migration_completed = migration_completed
         bindings = payload.get("bindings")
         if not isinstance(bindings, list):
             raise RuntimeError(f"Invalid bridge bindings state: {self.state_path}")
@@ -477,35 +491,6 @@ class ConversationStore(LegacyDeliveryEvidenceStoreMixin):
                 reply_context=dict(item.get("reply_context") or {}),
             )
             self._bindings[(binding.channel_id, binding.conversation_id)] = binding
-        thread_recipient_routes = payload.get("thread_recipient_routes", [])
-        if not isinstance(thread_recipient_routes, list):
-            raise RuntimeError(
-                f"Invalid thread recipient routes state: {self.state_path}"
-            )
-        for item in thread_recipient_routes:
-            if not isinstance(item, dict):
-                raise RuntimeError(
-                    f"Invalid thread recipient route entry: {self.state_path}"
-                )
-            thread_id = str(item.get("thread_id") or "").strip()
-            channel_id = str(item.get("channel_id") or "").strip()
-            conversation_id = str(item.get("conversation_id") or "").strip()
-            if not thread_id or not channel_id or not conversation_id:
-                raise RuntimeError(
-                    f"Invalid thread recipient route entry: {self.state_path}"
-                )
-            self._thread_recipient_routes[thread_id] = (
-                channel_id,
-                conversation_id,
-            )
-        # State written before standalone delivery routes existed can derive
-        # the only truthful route available from its current bindings.
-        for binding in self._bindings.values():
-            if binding.thread_id:
-                self._thread_recipient_routes[binding.thread_id] = (
-                    binding.channel_id,
-                    binding.conversation_id,
-                )
         pending_terminal_deliveries = payload.get("pending_terminal_deliveries", [])
         if not isinstance(pending_terminal_deliveries, list):
             raise RuntimeError(

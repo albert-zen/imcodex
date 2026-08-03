@@ -28,6 +28,8 @@ async def migrate_legacy_gateway_state(
 ) -> int:
     """Import legacy bindings/routes once without importing Agent state."""
 
+    if product_store.sdk_gateway_migration_completed():
+        return 0
     imported = 0
     for legacy in product_store.iter_bindings():
         conversation = (
@@ -48,6 +50,18 @@ async def migrate_legacy_gateway_state(
             else None
         )
         if current is None:
+            if desired_thread_ref is not None:
+                await gateway_state.put_projection_route(
+                    ThreadProjectionRoute(
+                        route_id=derive_projection_route_id(
+                            desired_thread_ref,
+                            conversation,
+                        ),
+                        thread_ref=desired_thread_ref,
+                        conversation_ref=conversation,
+                        updated_at=datetime.now(UTC),
+                    )
+                )
             current = await gateway_state.put(
                 ConversationBinding(
                     conversation_ref=conversation,
@@ -57,31 +71,18 @@ async def migrate_legacy_gateway_state(
                 )
             )
             imported += 1
-        elif current.thread_ref != desired_thread_ref:
-            if current.thread_ref is not None:
-                await gateway_state.delete_projection_routes(
-                    current.thread_ref,
-                    conversation_ref=conversation,
+        else:
+            thread_ref = current.thread_ref
+            if thread_ref is not None:
+                await gateway_state.put_projection_route(
+                    ThreadProjectionRoute(
+                        route_id=derive_projection_route_id(thread_ref, conversation),
+                        thread_ref=thread_ref,
+                        conversation_ref=conversation,
+                        updated_at=datetime.now(UTC),
+                    )
                 )
-            current = await gateway_state.put(
-                ConversationBinding(
-                    conversation_ref=conversation,
-                    application_ref=ApplicationRef(application_instance_id),
-                    thread_ref=desired_thread_ref,
-                    updated_at=datetime.now(UTC),
-                ),
-                expected_revision=current.revision,
-            )
-        thread_ref = current.thread_ref
-        if thread_ref is None:
-            continue
-        route = ThreadProjectionRoute(
-            route_id=derive_projection_route_id(thread_ref, conversation),
-            thread_ref=thread_ref,
-            conversation_ref=conversation,
-            updated_at=datetime.now(UTC),
-        )
-        await gateway_state.put_projection_route(route)
+    await product_store.commit_sdk_gateway_migration_completed()
     return imported
 
 

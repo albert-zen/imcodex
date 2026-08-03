@@ -503,7 +503,6 @@ class OutboundArtifactLeaseLedger:
                 destination.state
                 in {
                     DeliverySubmissionState.IN_FLIGHT,
-                    DeliverySubmissionState.PARTIAL,
                     DeliverySubmissionState.RETRYABLE,
                 }
                 for destination in record.destinations

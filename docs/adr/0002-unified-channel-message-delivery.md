@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted.
+Accepted, except that ADR 0003 supersedes the remembered-recipient behavior
+for implicit delivery by Thread ID.
 
 ## Context
 
@@ -40,11 +41,10 @@ behind an over-general message class.
   polling runtime.
 - Agents use the repository launcher `scripts/imcodex-send` (or
   `scripts\imcodex-send.cmd` on Windows). It submits the native
-  `CODEX_THREAD_ID`; the running bridge resolves the last IM recipient that
-  explicitly selected that thread. The remembered route survives that
-  conversation switching to another thread and moves when the same thread is
-  explicitly selected from another conversation. The launcher does not parse
-  bridge state, receive bot credentials, or persist an independent route.
+  `CODEX_THREAD_ID`; the running bridge resolves the SDK's current active
+  routes for that Thread and fans out to every bound IM Conversation. The
+  launcher does not parse bridge state, receive bot credentials, or persist an
+  independent route.
 - Operators may name a channel and conversation explicitly. The bridge applies
   the current access policy to both explicit and implicit-current delivery and
   returns a JSON receipt with overall and per-artifact state, platform identity

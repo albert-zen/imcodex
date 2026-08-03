@@ -13,6 +13,7 @@ components:
       - .gitignore
       - .gitmessage
       - AGENTS.md
+      - README.md
       - agentkit.yml
       - pyproject.toml
       - .github/workflows/**
@@ -20,6 +21,9 @@ components:
       - plugins/agentkit/**
       - .codex/**
     docs:
+      - docs/adr/0002-unified-channel-message-delivery.md
+      - docs/adr/0003-current-thread-subscriptions.md
+      - docs/channels.md
       - docs/design.md
       - docs/workflow.md
     required_docs:
@@ -39,6 +43,9 @@ components:
       - tests/test_sdk_webhook.py
       - tests/test_webhook_api.py
     docs:
+      - docs/adr/0002-unified-channel-message-delivery.md
+      - docs/adr/0003-current-thread-subscriptions.md
+      - docs/channels.md
       - docs/design.md
       - docs/product-behavior-spec.md
       - docs/system-constraints-spec.md

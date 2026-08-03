@@ -9,12 +9,14 @@ from imagent.contracts import (
     BindConversationToThread,
     ClearConversationThread,
     ConversationBound,
+    GetThread,
     GatewayOperationFailed,
     LocalPath,
     RequestResponseRouted,
     RespondToRequest,
     TextContent,
     TextFormat,
+    ThreadRead,
     ThreadRef,
 )
 from imagent.contracts import (
@@ -50,11 +52,12 @@ class ImcodexController:
         self, message: SdkInboundMessage, actions
     ) -> tuple[SdkOutboundMessage, ...] | None:
         legacy = self._legacy_inbound(message)
+        sdk_binding = await actions.get_binding(message.conversation_ref)
+        await self._project_sdk_binding(message, legacy, sdk_binding, actions)
         product_binding = self.service.store.get_binding(
             legacy.channel_id,
             legacy.conversation_id,
         )
-        sdk_binding = await actions.get_binding(message.conversation_ref)
 
         request_output = await self._handle_request_command(
             message, actions, legacy.text
@@ -83,12 +86,63 @@ class ImcodexController:
                     legacy.channel_id,
                     legacy.conversation_id,
                 )
-                await self._sync_binding(message, actions)
+                await self._sync_binding(message, actions, sdk_binding)
             return None
 
         outputs = await self.service.handle_inbound(legacy)
-        await self._sync_binding(message, actions)
+        await self._sync_binding(message, actions, sdk_binding)
         return self._sdk_outputs(message, outputs)
+
+    async def _project_sdk_binding(
+        self,
+        inbound: SdkInboundMessage,
+        message: InboundMessage,
+        binding,
+        actions,
+    ) -> None:
+        if binding is None:
+            return
+        product = self.service.store.get_binding(
+            message.channel_id,
+            message.conversation_id,
+        )
+        thread_ref = binding.thread_ref
+        thread_id = thread_ref.native_thread_id if thread_ref is not None else None
+        if product.thread_id == thread_id:
+            return
+        if thread_id is None:
+            self.service.store.clear_thread_binding(
+                message.channel_id,
+                message.conversation_id,
+            )
+            return
+        if binding.application_ref is None:
+            raise RuntimeError(
+                "SDK Thread projection has no authoritative Application"
+            )
+        read = await actions.execute_application(
+            GetThread(
+                operation_id=f"imcodex:{inbound.message_id}:project-thread",
+                application_ref=binding.application_ref,
+                thread_ref=thread_ref,
+                created_at=inbound.created_at,
+            )
+        )
+        if not isinstance(read, ThreadRead):
+            raise RuntimeError(
+                "SDK Thread projection could not read the authoritative Thread"
+            )
+        cwd = str(read.thread.metadata.get("cwd") or "").strip()
+        if not cwd:
+            raise RuntimeError(
+                "SDK Thread projection did not expose an authoritative cwd"
+            )
+        self.service.store.project_sdk_thread_context(
+            message.channel_id,
+            message.conversation_id,
+            thread_id,
+            cwd,
+        )
 
     async def _handle_request_command(self, message, actions, text):
         try:
@@ -208,13 +262,17 @@ class ImcodexController:
     async def close(self) -> None:
         await self.service.close()
 
-    async def _sync_binding(self, message: SdkInboundMessage, actions) -> None:
+    async def _sync_binding(
+        self,
+        message: SdkInboundMessage,
+        actions,
+        current,
+    ) -> None:
         channel_id, conversation_id = self._product_route(message)
         product = self.service.store.get_binding(
             channel_id,
             conversation_id,
         )
-        current = await actions.get_binding(message.conversation_ref)
         expected_revision = current.revision if current is not None else None
         if product.thread_id:
             if current is not None and current.thread_ref is not None:

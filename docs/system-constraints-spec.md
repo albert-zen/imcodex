@@ -499,7 +499,7 @@ IMCodex supplies only product policy through the accepted typed seams:
 - ordinary final-answer Markdown links MUST remain navigation references and MUST NOT be inferred as outbound attachments; only explicit Markdown image nodes outside fenced and inline code MAY trigger automatic preview delivery, while generic files require structured native output or explicit standalone delivery
 - standalone delivery MUST enter the SDK proactive-delivery boundary; HTTP or
   tool entrypoints MUST NOT call a Channel sink directly
-- implicit standalone delivery MUST forward native `CODEX_THREAD_ID` and resolve the last IM recipient that explicitly selected that thread; the bridge MUST retain that minimal route when the recipient selects another thread, MUST move it when the same thread is explicitly selected elsewhere, and Agent-side launchers MUST NOT parse persisted bridge state, receive bot credentials, or persist a parallel route
+- implicit standalone delivery MUST forward native `CODEX_THREAD_ID` and resolve only SDK `foreground_only` routes whose Conversations currently select that Thread; one Thread MAY fan out to multiple current IM Conversations, a Conversation that switches Thread MUST lose old-Thread delivery authority, and Agent-side launchers MUST NOT parse persisted bridge state, receive bot credentials, or persist a parallel route
 - standalone delivery IDs use the SDK delivery-submission identity. IMCodex's
   bounded, crash-safe artifact lease ledger persists paths before submission,
   rejects an ID rebound to different artifacts, retains retryable outcomes,

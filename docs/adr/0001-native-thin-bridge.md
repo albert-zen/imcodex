@@ -191,8 +191,8 @@ The persisted bridge state should contain only:
 - IM-only visibility preferences
 - channel-specific reply context if the platform requires it
 - minimal native request routing data
-- the last IM recipient that explicitly selected a native thread, solely so an
-  Agent's explicit standalone delivery can finish after the recipient switches
+- current SDK projection routes for a native Thread, solely so an Agent's
+  explicit standalone delivery can fan out to currently bound IM Conversations
   to another thread
 - minimal terminal-delivery checkpoints and projected outbox payloads needed
   to finish IM delivery across a bridge restart

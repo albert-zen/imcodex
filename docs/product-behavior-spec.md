@@ -434,12 +434,11 @@ than switching into an undeliverable live stream.
 
 An Agent can explicitly send files back through `scripts/imcodex-send`. The
 launcher supplies the current native thread identity, while the running bridge
-resolves the last IM recipient that explicitly selected it and returns a
-machine-readable receipt. Agents do not need App IDs, bot secrets, openids, or
-raw conversation IDs. Switching that recipient to another thread does not
-invalidate the older task; selecting the original thread from another IM
-conversation moves the route used by later script calls. A thread never
-selected from IM fails explicitly.
+resolves its SDK `foreground_only` active IM routes and returns a
+machine-readable aggregate receipt. Agents do not need App IDs, bot secrets,
+openids, or raw conversation IDs. One Thread may fan out to multiple current
+IM subscribers; a Conversation that switches away is excluded. A Thread with
+no active IM route fails explicitly.
 
 If no thread browser is active, `/next` and `/prev` should return a user-facing error telling the user to run `/threads` first. A numeric `/pick` without browser context is treated as a direct text query rather than a page index.
 
@@ -858,9 +857,10 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
   SDK delivery identity, and consumer artifact leases. The HTTP route does not
   call a channel sink directly.
 - Agent-facing standalone delivery forwards native `CODEX_THREAD_ID` and
-  resolves the last IM recipient that explicitly selected that thread. The
-  remembered route survives the recipient switching to another thread; an
-  explicit selection of the same thread from another recipient moves it.
+  resolves all SDK `foreground_only` routes whose Conversations currently
+  select that Thread. One Thread may fan out to several current IM
+  subscribers, while switching a Conversation to another Thread removes it
+  from the old Thread's active delivery set.
   The lower-level operator interface may instead name its channel and
   conversation explicitly. Both return a machine-readable
   overall/per-artifact receipt. A retryable SDK submission returns `queued`;
