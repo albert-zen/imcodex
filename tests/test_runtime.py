@@ -89,7 +89,8 @@ def test_managed_core_verifier_rejects_non_windows() -> None:
     )
 
 
-def test_build_runtime_constructs_only_sdk_runtime(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_build_runtime_constructs_only_sdk_runtime(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / ".imcodex",
         run_dir=tmp_path / ".imcodex-run",
@@ -118,13 +119,17 @@ def test_build_runtime_constructs_only_sdk_runtime(tmp_path: Path) -> None:
     )
 
     runtime = build_runtime(settings)
-
-    assert isinstance(runtime, SdkRuntime)
-    assert runtime.observability.run_root == settings.run_dir
-    assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
-    assert runtime.client._experimental_api_enabled is False
-    assert runtime.client.supports_local_image_paths() is False
-    assert (runtime.client._shared_filesystem_verifier is not None) is (os.name == "nt")
-    assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
-    assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
-    assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
+    try:
+        assert isinstance(runtime, SdkRuntime)
+        assert runtime.observability.run_root == settings.run_dir
+        assert runtime.client._supervisor.connection_target == "ws://127.0.0.1:8765"
+        assert runtime.client._experimental_api_enabled is False
+        assert runtime.client.supports_local_image_paths() is False
+        assert (runtime.client._shared_filesystem_verifier is not None) is (
+            os.name == "nt"
+        )
+        assert runtime.client._reconnect_retry_policy.initial_delay_s == 0.6
+        assert runtime.client._reconnect_retry_policy.max_delay_s == 45.0
+        assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
+    finally:
+        await runtime.state.close()

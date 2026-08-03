@@ -183,8 +183,9 @@ def preflight_runtime_configuration(settings: Settings | None = None) -> None:
             ) from exc
     _validate_http_bind(settings)
     _validate_local_app_server_prerequisites(settings)
-    runtime = build_runtime(settings, settings_source="environment")
-    for channel in runtime.managed_channels:
+    from .sdk_composition import build_sdk_managed_channels
+
+    for channel in build_sdk_managed_channels(settings):
         validator = getattr(channel, "validate_startup_configuration", None)
         if callable(validator):
             validator()

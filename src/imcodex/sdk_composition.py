@@ -169,14 +169,7 @@ def build_sdk_composition(settings) -> SdkComposition:
         else None
     )
     webhook_channel = SdkWebhookChannel(outbound_sink=outbound_sink)
-    channels = (
-        webhook_channel,
-        *tuple(
-            channel_from_config(channel_id, config=config)
-            for channel_id, config in settings.channel_configs().items()
-            if bool(config.get("enabled"))
-        ),
-    )
+    channels = (webhook_channel, *build_sdk_managed_channels(settings))
     state = SQLiteGatewayState(settings.data_dir / "gateway.sqlite3")
     delivery_authorizer = ScopedDeliveryAuthorizer()
     gateway = ImAgentGateway(
@@ -230,6 +223,16 @@ def build_sdk_composition(settings) -> SdkComposition:
         webhook_channel=webhook_channel,
     )
     return composition
+
+
+def build_sdk_managed_channels(settings) -> tuple[object, ...]:
+    """Construct only enabled native Channel wrappers for pure preflight validation."""
+
+    return tuple(
+        channel_from_config(channel_id, config=config)
+        for channel_id, config in settings.channel_configs().items()
+        if bool(config.get("enabled"))
+    )
 
 
 def _shared_filesystem_root(*, target, verifier) -> Path | None:

@@ -66,7 +66,9 @@ python -m imcodex channels doctor
 
 Managed restart preflight calls each SDK native Channel's side-effect-free
 configuration validator before replacing the running process. It does not open
-provider connections or start background workers.
+provider connections, start background workers, or construct the SDK Gateway,
+App Server client, or SQLite state. Runtime-owned resources are created only
+for the process that will actually start.
 
 Optional environment controls:
 
