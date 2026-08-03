@@ -41,7 +41,8 @@ In practice, native Codex is the source of truth for:
 
 The bridge may own only IM-specific concerns such as:
 
-- channel and conversation bindings
+- the SDK Gateway repository's authoritative channel/conversation bindings;
+  IMCodex may retain only rebuildable command context projected from them
 - bootstrap context before a native thread exists
 - channel reply context
 - IM-only visibility preferences
