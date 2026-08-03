@@ -33,9 +33,29 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
+      - name: Check out pinned SDK
+        uses: actions/checkout@v4
+        with:
+          repository: albert-zen/im-agent-sdk
+          ref: 17d708ec6b61767afb05e567ae7a09221ac2f364
+          path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+
       - name: Install dependencies
+        env:
+          # Authenticate only pip's pinned SDK clone without persisting a
+          # credential helper or importing the checkout's remote config.
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.IM_AGENT_SDK_TOKEN }}@github.com/albert-zen/im-agent-sdk.git.insteadOf"
+          GIT_CONFIG_VALUE_0: https://github.com/albert-zen/im-agent-sdk.git
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
           python -m pip install -e ".[dev,feishu]"
 
       - name: Run tests
@@ -56,13 +76,76 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
+      - name: Check out pinned SDK
+        uses: actions/checkout@v4
+        with:
+          repository: albert-zen/im-agent-sdk
+          ref: 17d708ec6b61767afb05e567ae7a09221ac2f364
+          path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+
       - name: Install minimum multipart-compatible stack
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.IM_AGENT_SDK_TOKEN }}@github.com/albert-zen/im-agent-sdk.git.insteadOf"
+          GIT_CONFIG_VALUE_0: https://github.com/albert-zen/im-agent-sdk.git
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
           python -m pip install -e ".[dev]" "fastapi==0.116.1" "starlette==0.47.2"
 
       - name: Run webhook compatibility tests
-        run: python -m pytest tests/test_channels.py tests/test_application.py
+        run: python -m pytest tests/test_webhook_api.py tests/test_application.py
+
+  windows-sdk-smoke:
+    name: Windows SDK startup and shutdown smoke
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
+      - name: Check out pinned SDK
+        uses: actions/checkout@v4
+        with:
+          repository: albert-zen/im-agent-sdk
+          ref: 17d708ec6b61767afb05e567ae7a09221ac2f364
+          path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+
+      - name: Install Codex CLI
+        run: npm install --global @openai/codex
+
+      - name: Install IMCodex
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.IM_AGENT_SDK_TOKEN }}@github.com/albert-zen/im-agent-sdk.git.insteadOf"
+          GIT_CONFIG_VALUE_0: https://github.com/albert-zen/im-agent-sdk.git
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
+          python -m pip install -e ".[dev]"
+
+      - name: Start and gracefully stop the SDK runtime
+        shell: powershell
+        run: scripts\windows-sdk-smoke.ps1
 
   agentkit:
     name: agentkit check
@@ -82,9 +165,27 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Require private SDK read token
+        env:
+          SDK_TOKEN: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+        run: python -c "import os, sys; sys.exit(0 if os.environ.get('SDK_TOKEN') else 'IM_AGENT_SDK_TOKEN is required to read the pinned private SDK revision')"
+
+      - name: Check out pinned SDK
+        uses: actions/checkout@v4
+        with:
+          repository: albert-zen/im-agent-sdk
+          ref: 17d708ec6b61767afb05e567ae7a09221ac2f364
+          path: .ci/im-agent-sdk
+          token: ${{ secrets.IM_AGENT_SDK_TOKEN }}
+
       - name: Install AgentKit
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.IM_AGENT_SDK_TOKEN }}@github.com/albert-zen/im-agent-sdk.git.insteadOf"
+          GIT_CONFIG_VALUE_0: https://github.com/albert-zen/im-agent-sdk.git
         run: |
           python -m pip install --upgrade pip
+          python -m pip install -e ".ci/im-agent-sdk[appserver,channels]"
           python -m pip install -e ".[agentkit]"
 
       - name: Run AgentKit advisory check

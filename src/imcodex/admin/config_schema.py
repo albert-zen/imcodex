@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import math
 import ipaddress
+import math
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 from urllib.parse import urlsplit
 
-from ..app_server_target import default_app_server_endpoint, parse_app_server_target
-from ..config import validate_http_endpoint
+from imagent.applications.appserver_client.target import (
+    default_app_server_endpoint,
+    parse_app_server_target,
+)
 
+from ..config import validate_http_endpoint
 
 FieldKind = Literal["string", "boolean", "integer", "number", "select", "secret"]
 
@@ -81,7 +84,9 @@ class ConfigFieldDefinition:
 
     def validate(self, value: object, *, secret_replacement: bool = False) -> str:
         if self.secret and not secret_replacement:
-            raise FieldValueError(f"{self.key} must be updated through the secrets payload")
+            raise FieldValueError(
+                f"{self.key} must be updated through the secrets payload"
+            )
 
         if self.kind == "boolean":
             if not isinstance(value, bool):
@@ -113,7 +118,9 @@ class ConfigFieldDefinition:
             choices = ", ".join(self.options)
             raise FieldValueError(f"{self.key} must be one of: {choices}")
         if self.secret and not value:
-            raise FieldValueError(f"{self.key} replacement must not be empty; use clear instead")
+            raise FieldValueError(
+                f"{self.key} replacement must not be empty; use clear instead"
+            )
         if self.validation == "http_url":
             _validate_http_url(value, key=self.key)
         elif self.validation == "outbound_url":
@@ -164,7 +171,7 @@ class ConfigFieldDefinition:
             result["advanced"] = True
         return result
 
-    def _validate_range(self, value: int | float) -> None:
+    def _validate_range(self, value: float) -> None:
         if self.minimum is not None and value < self.minimum:
             raise FieldValueError(f"{self.key} must be at least {self.minimum}")
         if self.maximum is not None and value > self.maximum:
@@ -515,7 +522,9 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         False,
         description="Requires the Feishu extra plus an App ID and app secret. Messages follow the app's tenant visibility by default.",
     ),
-    _field("IMCODEX_FEISHU_APP_ID", "feishu", "App ID", aliases=("IMCODEX_LARK_APP_ID",)),
+    _field(
+        "IMCODEX_FEISHU_APP_ID", "feishu", "App ID", aliases=("IMCODEX_LARK_APP_ID",)
+    ),
     _field(
         "IMCODEX_FEISHU_APP_SECRET",
         "feishu",
@@ -559,7 +568,9 @@ CONFIG_FIELDS: tuple[ConfigFieldDefinition, ...] = (
         description="any accepts a matching user or conversation; all requires both to match.",
         advanced=True,
     ),
-    _field("IMCODEX_FEISHU_REQUIRE_MENTION", "feishu", "Require mention", "boolean", True),
+    _field(
+        "IMCODEX_FEISHU_REQUIRE_MENTION", "feishu", "Require mention", "boolean", True
+    ),
     _field(
         "IMCODEX_FEISHU_STARTUP_TIMEOUT",
         "feishu",

@@ -14,7 +14,6 @@ from .settings import (
     permission_mode_label,
 )
 
-
 _THREADS_PAGE_SIZE = 5
 _INLINE_PROJECT_LIMIT = 8
 _STATUS_QUERY_TIMEOUT_S = 2.5
@@ -37,7 +36,9 @@ class ThreadViewMixin:
             else await self._load_thread_catalog(message, query=query, refresh=refresh)
         )
         project_options = self._thread_project_options(threads)
-        project_path, project_error = self._resolve_thread_project(project, project_options)
+        project_path, project_error = self._resolve_thread_project(
+            project, project_options
+        )
         if project_error is not None:
             self.store.set_thread_browser_context(
                 message.channel_id,
@@ -59,7 +60,9 @@ class ThreadViewMixin:
             )
 
         filtered = self._filter_threads_by_project(threads, project_path)
-        page_count = max(1, (len(filtered) + _THREADS_PAGE_SIZE - 1) // _THREADS_PAGE_SIZE)
+        page_count = max(
+            1, (len(filtered) + _THREADS_PAGE_SIZE - 1) // _THREADS_PAGE_SIZE
+        )
         safe_page = min(max(page, 1), page_count)
         page_start = (safe_page - 1) * _THREADS_PAGE_SIZE
         visible = filtered[page_start : page_start + _THREADS_PAGE_SIZE]
@@ -75,13 +78,19 @@ class ThreadViewMixin:
             project_path=project_path,
         )
         project_label = self._selected_project_label(project_path, project_options)
-        lines = [self._thread_page_heading(safe_page, page_count, project_label=project_label)]
+        lines = [
+            self._thread_page_heading(
+                safe_page, page_count, project_label=project_label
+            )
+        ]
         if not visible:
             lines.append("(none)")
         for index, snapshot in enumerate(visible, start=1):
             is_current = (
                 snapshot.thread_id
-                == self.store.get_binding(message.channel_id, message.conversation_id).thread_id
+                == self.store.get_binding(
+                    message.channel_id, message.conversation_id
+                ).thread_id
             )
             current_marker = " ✓" if is_current else ""
             lines.append(
@@ -89,7 +98,11 @@ class ThreadViewMixin:
                 f"[{self._thread_workspace_label(snapshot)}]{current_marker}"
             )
         if project_options:
-            lines.append(self._thread_project_choices(project_options, selected_path=project_path))
+            lines.append(
+                self._thread_project_choices(
+                    project_options, selected_path=project_path
+                )
+            )
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
         if safe_page < page_count:
             actions.insert(1, "/next for more")
@@ -108,7 +121,9 @@ class ThreadViewMixin:
         query: str | None,
         refresh: bool,
     ) -> list[NativeThreadSnapshot]:
-        context = self.store.get_thread_browser_context(message.channel_id, message.conversation_id)
+        context = self.store.get_thread_browser_context(
+            message.channel_id, message.conversation_id
+        )
         if not refresh and context is not None and context.query == query:
             cached = [
                 self.store.get_thread_snapshot(thread_id)
@@ -140,13 +155,17 @@ class ThreadViewMixin:
             paths.append(path)
         base_labels = [self._path_leaf(path) for path in paths]
         duplicate_labels = {
-            label.casefold() for label in base_labels if sum(item.casefold() == label.casefold() for item in base_labels) > 1
+            label.casefold()
+            for label in base_labels
+            if sum(item.casefold() == label.casefold() for item in base_labels) > 1
         }
         options: list[tuple[str, str]] = []
         for path, base_label in zip(paths, base_labels, strict=True):
             label = base_label
             if base_label.casefold() in duplicate_labels:
-                parent = self._path_leaf(path.rstrip("/\\").rsplit("\\", 1)[0].rsplit("/", 1)[0])
+                parent = self._path_leaf(
+                    path.rstrip("/\\").rsplit("\\", 1)[0].rsplit("/", 1)[0]
+                )
                 label = f"{parent}/{base_label}" if parent else path
             options.append((path, label))
         return options
@@ -164,14 +183,23 @@ class ThreadViewMixin:
                 return options[index][0], None
             return None, f"Unknown project number: {selector}."
         normalized = self._normalized_project_path(selector)
-        path_matches = [path for path, _label in options if self._normalized_project_path(path) == normalized]
+        path_matches = [
+            path
+            for path, _label in options
+            if self._normalized_project_path(path) == normalized
+        ]
         if len(path_matches) == 1:
             return path_matches[0], None
-        label_matches = [path for path, label in options if label.casefold() == selector.casefold()]
+        label_matches = [
+            path for path, label in options if label.casefold() == selector.casefold()
+        ]
         if len(label_matches) == 1:
             return label_matches[0], None
         if len(label_matches) > 1:
-            return None, f"Project name '{selector}' is ambiguous; choose its number instead."
+            return (
+                None,
+                f"Project name '{selector}' is ambiguous; choose its number instead.",
+            )
         return None, f"Unknown project: {selector}."
 
     def _filter_threads_by_project(
@@ -220,7 +248,11 @@ class ThreadViewMixin:
             return "All projects"
         selected = self._normalized_project_path(project_path)
         return next(
-            (label for path, label in options if self._normalized_project_path(path) == selected),
+            (
+                label
+                for path, label in options
+                if self._normalized_project_path(path) == selected
+            ),
             self._path_leaf(project_path),
         )
 
@@ -245,21 +277,27 @@ class ThreadViewMixin:
             if selected_index is not None and selected_index not in visible_indices:
                 visible_indices[-1:] = [selected_index]
         choices.extend(
-            f"[{index + 1}] {options[index][1]}"
-            for index in visible_indices
+            f"[{index + 1}] {options[index][1]}" for index in visible_indices
         )
         hidden_count = len(options) - len(visible_indices)
         if hidden_count > 0:
             choices.append(f"… +{hidden_count} more")
         return "Projects: " + " · ".join(choices)
 
-    def _thread_page_heading(self, page: int, page_count: int, *, project_label: str) -> str:
+    def _thread_page_heading(
+        self, page: int, page_count: int, *, project_label: str
+    ) -> str:
         return f"Threads · [{project_label}] · Page {page}/{page_count}"
 
     async def _render_status(self, message: InboundMessage) -> str:
         binding = self.store.get_binding(message.channel_id, message.conversation_id)
-        cwd = self.store.current_cwd(message.channel_id, message.conversation_id) or "(none)"
-        config = await self._read_status_config(message.channel_id, message.conversation_id)
+        cwd = (
+            self.store.current_cwd(message.channel_id, message.conversation_id)
+            or "(none)"
+        )
+        config = await self._read_status_config(
+            message.channel_id, message.conversation_id
+        )
         current_config = effective_config(config)
         if binding.thread_id is None:
             thread_label = "(none)"
@@ -282,15 +320,16 @@ class ThreadViewMixin:
             else:
                 thread_label = self._thread_label(snapshot)
                 cwd = snapshot.cwd or cwd
-                active = self.store.get_active_turn(binding.thread_id)
-                state = "Working" if active and active[1] == "inProgress" else self._human_state(snapshot.status)
+                state = self._human_state(snapshot.status)
         app_server = self.backend.app_server_connection_facts()
         fast_label = fast_mode_label(
             current_config,
             default_service_tier=config.get("selectedModelDefaultServiceTier"),
             feature_available=config.get("fastAvailable") is not False,
             fast_supported=(
-                config.get("fastSupported") if isinstance(config.get("fastSupported"), bool) else None
+                config.get("fastSupported")
+                if isinstance(config.get("fastSupported"), bool)
+                else None
             ),
         )
         return "\n".join(
@@ -310,15 +349,19 @@ class ThreadViewMixin:
                 f"Fast mode: {fast_label}",
                 f"Permissions: {permission_mode_label(current_config)}",
                 f"Bridge visibility: {self._bridge_visibility_label(binding)}",
-                f"Pending approvals: {len(self.store.list_pending_requests(message.channel_id, message.conversation_id, kind='approval'))}",
+                "Pending approvals: SDK request presenter",
             ]
         )
 
-    async def _render_thread(self, message: InboundMessage, thread_id: str | None) -> str:
+    async def _render_thread(
+        self, message: InboundMessage, thread_id: str | None
+    ) -> str:
         if thread_id is None:
             return "No active thread."
         try:
-            snapshot = await self.backend.read_thread(message.channel_id, message.conversation_id, thread_id)
+            snapshot = await self.backend.read_thread(
+                message.channel_id, message.conversation_id, thread_id
+            )
         except AppServerError as exc:
             return f"Current thread {thread_id} could not be queried from Codex right now: {self._safe_appserver_error(exc)}."
         if snapshot is None:

@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from imcodex.channels import MultiplexOutboundSink, WebhookOutboundSink
+from imcodex.channels.outbound import WebhookOutboundSink
 from imcodex.models import OutboundArtifact, OutboundMessage
 
 
@@ -88,7 +88,9 @@ async def test_webhook_outbound_sink_retries_with_stable_delivery_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_webhook_outbound_sink_sends_artifacts_as_multipart(tmp_path: Path) -> None:
+async def test_webhook_outbound_sink_sends_artifacts_as_multipart(
+    tmp_path: Path,
+) -> None:
     outbound_root = tmp_path / "outbound-media"
     outbound_root.mkdir()
     image_path = outbound_root / "preview.png"
@@ -135,7 +137,9 @@ async def test_webhook_outbound_sink_sends_artifacts_as_multipart(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_webhook_converts_missing_artifact_to_visible_notice(tmp_path: Path) -> None:
+async def test_webhook_converts_missing_artifact_to_visible_notice(
+    tmp_path: Path,
+) -> None:
     outbound_root = tmp_path / "outbound-media"
     outbound_root.mkdir()
     requests: list[httpx.Request] = []
@@ -346,108 +350,6 @@ def test_webhook_outbound_sink_bounds_untrusted_retry_after() -> None:
         )
         == 2
     )
-
-
-@pytest.mark.asyncio
-async def test_multiplex_outbound_sink_prefers_exact_channel_adapter() -> None:
-    class Sink:
-        def __init__(self) -> None:
-            self.messages: list[OutboundMessage] = []
-
-        async def send_message(self, message: OutboundMessage) -> None:
-            self.messages.append(message)
-
-    telegram = Sink()
-    fallback = Sink()
-    sink = MultiplexOutboundSink(
-        channel_sinks={"telegram": telegram},
-        default_sink=fallback,
-    )
-    assert sink.can_deliver("telegram") is True
-    assert sink.can_deliver("gateway") is True
-    telegram_message = OutboundMessage(
-        channel_id="telegram",
-        conversation_id="chat:42",
-        message_type="turn/completed",
-        text="telegram",
-    )
-    gateway_message = OutboundMessage(
-        channel_id="gateway",
-        conversation_id="conv-1",
-        message_type="turn/completed",
-        text="gateway",
-    )
-
-    await sink.send_message(telegram_message)
-    await sink.send_message(gateway_message)
-
-    assert telegram.messages == [telegram_message]
-    assert fallback.messages == [gateway_message]
-
-
-def test_multiplex_delegates_durable_message_preparation_to_channel() -> None:
-    class Sink:
-        def prepare_durable_message(self, message: OutboundMessage) -> None:
-            message.metadata["platform_identity"] = "pinned"
-
-    sink = MultiplexOutboundSink(channel_sinks={"qq": Sink()})
-    message = OutboundMessage("qq", "group:1", "turn/completed", "Done")
-
-    sink.prepare_durable_message(message)
-
-    assert message.metadata["platform_identity"] == "pinned"
-
-
-def test_multiplex_delegates_route_validation_before_durable_staging() -> None:
-    class Sink:
-        def validate_outbound_message(self, message: OutboundMessage) -> None:
-            raise ValueError(f"invalid route: {message.conversation_id}")
-
-    sink = MultiplexOutboundSink(channel_sinks={"qq": Sink()})
-    message = OutboundMessage("qq", "invalid", "tool_delivery", "Hello")
-
-    with pytest.raises(ValueError, match="invalid route: invalid"):
-        sink.validate_message(message)
-
-
-@pytest.mark.asyncio
-async def test_multiplex_never_routes_disabled_builtin_channel_to_fallback() -> None:
-    class Sink:
-        def __init__(self) -> None:
-            self.messages: list[OutboundMessage] = []
-
-        async def send_message(self, message: OutboundMessage) -> None:
-            self.messages.append(message)
-
-    fallback = Sink()
-    sink = MultiplexOutboundSink(default_sink=fallback)
-    assert sink.can_deliver("telegram") is False
-    message = OutboundMessage(
-        channel_id="telegram",
-        conversation_id="chat:42",
-        message_type="turn/completed",
-        text="must not leak",
-    )
-
-    with pytest.raises(RuntimeError, match="refusing fallback delivery"):
-        await sink.send_message(message)
-
-    assert fallback.messages == []
-
-
-@pytest.mark.asyncio
-async def test_multiplex_rejects_delivery_without_any_matching_sink() -> None:
-    sink = MultiplexOutboundSink()
-    assert sink.can_deliver("gateway") is False
-    message = OutboundMessage(
-        channel_id="gateway",
-        conversation_id="conv-1",
-        message_type="turn/completed",
-        text="must not disappear",
-    )
-
-    with pytest.raises(RuntimeError, match="No outbound sink"):
-        await sink.send_message(message)
 
 
 def test_remote_outbound_webhook_requires_https_and_bearer_token() -> None:

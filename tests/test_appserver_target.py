@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import pytest
-
-from imcodex.appserver import (
-    AppServerClient,
-    AppServerSupervisor,
+from imagent.applications.appserver_client import AppServerClient, AppServerSupervisor
+from imagent.applications.appserver_client.target import (
     AppServerTargetConfigError,
     parse_app_server_target,
-    resolve_app_server_target,
+)
+
+from imcodex.config import (
+    resolve_product_app_server_target as resolve_app_server_target,
 )
 
 
@@ -45,7 +46,9 @@ def test_resolve_app_server_target_defaults_to_the_native_unix_control_socket() 
     assert target.is_external is True
 
 
-def test_resolve_app_server_target_defaults_to_an_external_tcp_server_on_windows() -> None:
+def test_resolve_app_server_target_defaults_to_an_external_tcp_server_on_windows() -> (
+    None
+):
     target = resolve_app_server_target(os_name="nt")
 
     assert target.endpoint == "ws://127.0.0.1:8765"
@@ -102,7 +105,9 @@ def test_legacy_websocket_modes_are_external_aliases(legacy_mode: str) -> None:
 
 
 @pytest.mark.parametrize("legacy_mode", ["stdio", "spawned-stdio"])
-def test_legacy_stdio_modes_select_the_explicit_compatibility_target(legacy_mode: str) -> None:
+def test_legacy_stdio_modes_select_the_explicit_compatibility_target(
+    legacy_mode: str,
+) -> None:
     target = resolve_app_server_target(core_mode=legacy_mode)
 
     assert target.endpoint == "stdio://"
@@ -110,7 +115,9 @@ def test_legacy_stdio_modes_select_the_explicit_compatibility_target(legacy_mode
 
 
 def test_auto_mode_is_rejected_instead_of_falling_back_to_a_different_server() -> None:
-    with pytest.raises(AppServerTargetConfigError, match="silently changes App Server lifecycle"):
+    with pytest.raises(
+        AppServerTargetConfigError, match="silently changes App Server lifecycle"
+    ):
         resolve_app_server_target(
             app_server_url="ws://127.0.0.1:8765",
             core_mode="auto",
@@ -137,6 +144,8 @@ def test_auto_mode_is_rejected_instead_of_falling_back_to_a_different_server() -
         {"core_mode": "mystery"},
     ],
 )
-def test_invalid_or_conflicting_targets_fail_explicitly(payload: dict[str, str]) -> None:
+def test_invalid_or_conflicting_targets_fail_explicitly(
+    payload: dict[str, str],
+) -> None:
     with pytest.raises(AppServerTargetConfigError):
         resolve_app_server_target(**payload)

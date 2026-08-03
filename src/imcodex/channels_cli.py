@@ -3,22 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import importlib.util
 import json
 import mimetypes
 import os
-from pathlib import Path
-from typing import Callable
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 
 import httpx
+from imagent.channels import channel_from_config
+from imagent.channels.native.weixin_ilink import ILinkError, WeixinILinkTransport
+from imagent.channels.native.weixin_state import WeixinStateStore
 
-from .channels.access import ChannelAccessPolicy
-from .channels.feishu import FeishuChannelAdapter
-from .channels.telegram import read_telegram_bot_token_file
-from .channels.weixin_ilink import ILinkError, WeixinILinkTransport
 from .channels.weixin_login import WeixinLoginError, WeixinLoginFlow
-from .channels.weixin_state import WeixinStateStore
 from .config import Settings
 from .delivery_api import (
     DELIVERY_PATH,
@@ -32,7 +29,9 @@ from .observability.health import BRIDGE_INSTANCE_HEADER
 def build_channels_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m imcodex channels")
     subparsers = parser.add_subparsers(dest="command")
-    subparsers.add_parser("list", help="List built-in channel adapters and enabled state.")
+    subparsers.add_parser(
+        "list", help="List built-in channel adapters and enabled state."
+    )
     subparsers.add_parser(
         "doctor",
         help="Validate enabled channel configuration without revealing secrets.",
@@ -48,8 +47,7 @@ def build_channels_parser() -> argparse.ArgumentParser:
         "--current",
         action="store_true",
         help=(
-            "Send to the IM recipient remembered for the current CODEX_THREAD_ID, "
-            "even after that recipient switches threads."
+            "Send to every IM conversation currently bound to CODEX_THREAD_ID."
         ),
     )
     send.add_argument("--bridge-root", default="", help=argparse.SUPPRESS)
@@ -61,9 +59,13 @@ def build_channels_parser() -> argparse.ArgumentParser:
     login.add_argument("channel", choices=["weixin"])
     login.add_argument("--timeout", type=float, default=480.0)
 
-    logout = subparsers.add_parser("logout", help="Remove local channel credentials and transport state.")
+    logout = subparsers.add_parser(
+        "logout", help="Remove local channel credentials and transport state."
+    )
     logout.add_argument("channel", choices=["weixin"])
-    logout.add_argument("--yes", action="store_true", help="Do not prompt for confirmation.")
+    logout.add_argument(
+        "--yes", action="store_true", help="Do not prompt for confirmation."
+    )
     return parser
 
 
@@ -141,7 +143,11 @@ def run_channels_cli(
         )
     if command == "login":
         state_store = WeixinStateStore(_weixin_state_dir(settings))
-        transport = transport_factory() if transport_factory is not None else WeixinILinkTransport()
+        transport = (
+            transport_factory()
+            if transport_factory is not None
+            else WeixinILinkTransport()
+        )
 
         async def login() -> None:
             try:
@@ -153,7 +159,9 @@ def run_channels_cli(
                 )
                 credentials = await flow.login(timeout_s=args.timeout)
                 output(f"Account: {credentials.account_id}")
-                output(f"Owner: {credentials.owner_user_id or '(not reported by platform)'}")
+                output(
+                    f"Owner: {credentials.owner_user_id or '(not reported by platform)'}"
+                )
                 output(f"State: {state_store.root}")
                 output("Restart the bridge to load the new Weixin credentials.")
             finally:
@@ -168,7 +176,9 @@ def run_channels_cli(
         return 0
     if command == "logout":
         if not args.yes:
-            answer = input_func("Remove local Weixin credentials and transport state? [y/N] ")
+            answer = input_func(
+                "Remove local Weixin credentials and transport state? [y/N] "
+            )
             if answer.strip().lower() not in {"y", "yes"}:
                 output("Cancelled.")
                 return 1
@@ -200,8 +210,12 @@ def _list_channels(settings: Settings, *, output: Callable[[str], object]) -> in
     output("Built-in channels:")
     output(f"  qq        {'enabled' if settings.qq_enabled else 'disabled'}")
     output(f"  telegram  {'enabled' if settings.telegram_enabled else 'disabled'}")
-    output(f"  feishu    {'enabled' if settings.feishu_enabled else 'disabled'} ({settings.feishu_domain})")
-    output(f"  weixin    {'enabled' if settings.weixin_enabled else 'disabled'} (experimental)")
+    output(
+        f"  feishu    {'enabled' if settings.feishu_enabled else 'disabled'} ({settings.feishu_domain})"
+    )
+    output(
+        f"  weixin    {'enabled' if settings.weixin_enabled else 'disabled'} (experimental)"
+    )
     return 0
 
 
@@ -211,42 +225,10 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
         if not bool(config.get("enabled")):
             continue
         try:
-            ChannelAccessPolicy.from_config(config)
-        except ValueError as exc:
-            failures.append(f"{channel_id}: invalid access restrictions ({exc})")
-    if settings.qq_enabled:
-        if not settings.qq_app_id or not settings.qq_client_secret:
-            failures.append("qq: missing App ID or Client Secret")
-    if settings.telegram_enabled:
-        token_file_ok = False
-        token_file_invalid = False
-        if not settings.telegram_bot_token.strip() and settings.telegram_bot_token_file:
-            try:
-                token_file_ok = bool(read_telegram_bot_token_file(settings.telegram_bot_token_file))
-            except RuntimeError as exc:
-                token_file_invalid = True
-                failures.append(f"telegram: {exc}")
-        if not settings.telegram_bot_token.strip() and not token_file_ok and not token_file_invalid:
-            failures.append("telegram: missing bot token or readable token file")
-    if settings.feishu_enabled:
-        if not settings.feishu_app_id or not settings.feishu_app_secret:
-            failures.append("feishu: missing App ID or App Secret")
-        try:
-            FeishuChannelAdapter._normalize_domain(settings.feishu_domain)
-        except ValueError as exc:
-            failures.append(f"feishu: invalid domain ({exc})")
-        if importlib.util.find_spec("lark_channel") is None:
-            failures.append("feishu: optional dependency missing; install .[feishu]")
-    if settings.weixin_enabled:
-        state_store = WeixinStateStore(_weixin_state_dir(settings))
-        try:
-            credentials = state_store.load_credentials()
-            state_store.load_transport_state()
-        except RuntimeError as exc:
-            failures.append(f"weixin: {exc}")
-        else:
-            if credentials is None:
-                failures.append("weixin: not logged in; run channels login weixin")
+            channel = channel_from_config(channel_id, config=config)
+            channel.validate_startup_configuration()
+        except (OSError, RuntimeError, ValueError) as exc:
+            failures.append(f"{channel_id}: {exc}")
     if failures:
         output("Channel doctor found configuration problems:")
         for failure in failures:
@@ -295,7 +277,11 @@ def _send(
         )
         return 2
     if len(artifact_values) > MAX_DELIVERY_ARTIFACTS:
-        output(json.dumps({"status": "invalid", "error": "At most 4 artifacts are supported."}))
+        output(
+            json.dumps(
+                {"status": "invalid", "error": "At most 4 artifacts are supported."}
+            )
+        )
         return 2
     uploads = []
     manifest = []
@@ -303,12 +289,16 @@ def _send(
         for value in artifact_values:
             candidate = Path(value).expanduser()
             if candidate.is_symlink():
-                raise ValueError(f"Artifact path must not be a symlink: {candidate.name}")
+                raise ValueError(
+                    f"Artifact path must not be a symlink: {candidate.name}"
+                )
             path = candidate.resolve(strict=True)
             if not path.is_file() or path.is_symlink():
                 raise ValueError(f"Artifact is not a regular file: {path.name}")
             content = path.read_bytes()
-            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            content_type = (
+                mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            )
             kind = "image" if content_type.startswith("image/") else "file"
             uploads.append(("artifacts", (path.name, content, content_type)))
             manifest.append(
@@ -348,7 +338,10 @@ def _send(
     except (OSError, ValueError, httpx.HTTPError) as exc:
         output(
             json.dumps(
-                {"status": "failed", "error": f"Local bridge delivery failed: {type(exc).__name__}"},
+                {
+                    "status": "failed",
+                    "error": f"Local bridge delivery failed: {type(exc).__name__}",
+                },
                 ensure_ascii=False,
             )
         )
@@ -370,8 +363,10 @@ def _running_bridge_target(settings: Settings) -> tuple[str, str, str]:
         port = int(http["port"])
         instance_id = str(health["instance_id"])
         delivery_token = (
-            settings.run_dir / "current" / DELIVERY_TOKEN_FILE
-        ).read_text(encoding="utf-8").strip()
+            (settings.run_dir / "current" / DELIVERY_TOKEN_FILE)
+            .read_text(encoding="utf-8")
+            .strip()
+        )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("running bridge health metadata is unavailable") from None
     if not bool(http.get("listening")) or not instance_id or not delivery_token:

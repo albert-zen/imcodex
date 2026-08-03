@@ -5,8 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .app_server_target import AppServerTarget, resolve_app_server_target
-
+from imagent.applications.appserver_client.target import (
+    LEGACY_WEBSOCKET_ENDPOINT,
+    STDIO_APP_SERVER_ENDPOINT,
+    AppServerTarget,
+    AppServerTargetConfigError,
+    default_app_server_endpoint,
+    parse_app_server_target,
+)
 
 DOTENV_IMPORTED_KEYS_ENV = "IMCODEX_DOTENV_IMPORTED_KEYS"
 LAUNCHER_RELOADABLE_KEYS_ENV = "IMCODEX_LAUNCHER_RELOADABLE_KEYS"
@@ -118,7 +124,9 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
 
 
 def is_restart_context_env_key(key: str) -> bool:
-    return key in RESTART_CONTEXT_ENV_KEYS or key.startswith(RESTART_CONTEXT_ENV_PREFIXES)
+    return key in RESTART_CONTEXT_ENV_KEYS or key.startswith(
+        RESTART_CONTEXT_ENV_PREFIXES
+    )
 
 
 def validate_http_endpoint(value: str, *, key: str) -> None:
@@ -224,7 +232,9 @@ def _app_server_config_from_env(
         try:
             port = int(core_port)
         except ValueError as exc:
-            raise ValueError("IMCODEX_CORE_PORT must be an integer between 1 and 65535") from exc
+            raise ValueError(
+                "IMCODEX_CORE_PORT must be an integer between 1 and 65535"
+            ) from exc
         if not 1 <= port <= 65535:
             raise ValueError("IMCODEX_CORE_PORT must be an integer between 1 and 65535")
         core_url = f"ws://127.0.0.1:{port}"
@@ -232,9 +242,59 @@ def _app_server_config_from_env(
     return app_server_url, core_url, core_mode
 
 
+def resolve_product_app_server_target(
+    *,
+    app_server_url: str | None = None,
+    core_url: str | None = None,
+    core_mode: str | None = None,
+    os_name: str | None = None,
+) -> AppServerTarget:
+    """Normalize legacy product configuration into the SDK target model."""
+
+    canonical_url = str(app_server_url or "").strip() or None
+    legacy_url = str(core_url or "").strip() or None
+    if canonical_url and legacy_url and canonical_url != legacy_url:
+        raise AppServerTargetConfigError(
+            "IMCODEX_APP_SERVER_URL and legacy IMCODEX_CORE_URL disagree; configure only one endpoint"
+        )
+    requested_mode = str(core_mode or "").strip().lower() or None
+    if requested_mode == "auto":
+        raise AppServerTargetConfigError(
+            "IMCODEX_CORE_MODE=auto is no longer supported because it silently changes App Server "
+            "lifecycle; remove it and configure IMCODEX_APP_SERVER_URL explicitly"
+        )
+    external_aliases = {"external", "dedicated-ws", "shared-ws"}
+    stdio_aliases = {"stdio", "spawned-stdio"}
+    if requested_mode not in external_aliases | stdio_aliases | {None}:
+        raise AppServerTargetConfigError(
+            f"unsupported legacy IMCODEX_CORE_MODE: {requested_mode}; "
+            "configure IMCODEX_APP_SERVER_URL instead"
+        )
+    endpoint = canonical_url or legacy_url
+    if endpoint is None:
+        if requested_mode in {"dedicated-ws", "shared-ws"}:
+            endpoint = LEGACY_WEBSOCKET_ENDPOINT
+        elif requested_mode in stdio_aliases:
+            endpoint = STDIO_APP_SERVER_ENDPOINT
+        else:
+            endpoint = default_app_server_endpoint(os_name=os_name)
+    target = parse_app_server_target(endpoint)
+    if requested_mode in external_aliases and not target.is_external:
+        raise AppServerTargetConfigError(
+            f"legacy mode {requested_mode} conflicts with App Server endpoint {target.endpoint}"
+        )
+    if requested_mode in stdio_aliases and target.is_external:
+        raise AppServerTargetConfigError(
+            f"legacy mode {requested_mode} conflicts with external App Server endpoint {target.endpoint}"
+        )
+    return target
+
+
 def load_app_server_target(dotenv_path: Path = Path(".env")) -> AppServerTarget:
-    app_server_url, core_url, core_mode = _app_server_config_from_env(_read_dotenv(dotenv_path))
-    return resolve_app_server_target(
+    app_server_url, core_url, core_mode = _app_server_config_from_env(
+        _read_dotenv(dotenv_path)
+    )
+    return resolve_product_app_server_target(
         app_server_url=app_server_url,
         core_url=core_url,
         core_mode=core_mode,
@@ -307,20 +367,29 @@ class Settings:
     inbound_webhook_token: str = ""
 
     def __post_init__(self) -> None:
-        resolve_app_server_target(
+        resolve_product_app_server_target(
             app_server_url=self.app_server_url,
             core_url=self.core_url,
             core_mode=self.core_mode,
         )
         if self.app_server_reconnect_initial_delay_s <= 0:
-            raise ValueError("app-server reconnect initial delay must be greater than zero")
-        if self.app_server_reconnect_max_delay_s < self.app_server_reconnect_initial_delay_s:
-            raise ValueError("app-server reconnect max delay must be at least the initial delay")
+            raise ValueError(
+                "app-server reconnect initial delay must be greater than zero"
+            )
+        if (
+            self.app_server_reconnect_max_delay_s
+            < self.app_server_reconnect_initial_delay_s
+        ):
+            raise ValueError(
+                "app-server reconnect max delay must be at least the initial delay"
+            )
         if not 0 <= self.app_server_reconnect_jitter_fraction <= 1:
             raise ValueError("app-server reconnect jitter must be between zero and one")
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
-        weixin_state_dir = self.weixin_state_dir or self.data_dir / "channels" / "weixin"
+        weixin_state_dir = (
+            self.weixin_state_dir or self.data_dir / "channels" / "weixin"
+        )
         return {
             "qq": {
                 "enabled": self.qq_enabled,
@@ -375,14 +444,14 @@ class Settings:
 
     @property
     def app_server_target(self) -> AppServerTarget:
-        return resolve_app_server_target(
+        return resolve_product_app_server_target(
             app_server_url=self.app_server_url,
             core_url=self.core_url,
             core_mode=self.core_mode,
         )
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         dotenv = _read_dotenv(Path(".env"))
         app_server_url, core_url, core_mode = _app_server_config_from_env(dotenv)
         return cls(
@@ -390,7 +459,9 @@ class Settings:
             run_dir=Path(_env("IMCODEX_RUN_DIR", ".imcodex-run", dotenv)),
             codex_bin=_codex_bin(dotenv),
             app_server_url=app_server_url,
-            app_server_experimental_api_enabled=_env_bool("IMCODEX_APP_SERVER_EXPERIMENTAL_API", False, dotenv),
+            app_server_experimental_api_enabled=_env_bool(
+                "IMCODEX_APP_SERVER_EXPERIMENTAL_API", False, dotenv
+            ),
             core_mode=core_mode,
             core_url=core_url,
             restart_executor=_env("IMCODEX_RESTART_EXECUTOR", "", dotenv) or None,
@@ -403,21 +474,50 @@ class Settings:
             qq_enabled=_env_bool("IMCODEX_QQ_ENABLED", False, dotenv),
             qq_app_id=_env("IMCODEX_QQ_APP_ID", "", dotenv),
             qq_client_secret=_env("IMCODEX_QQ_CLIENT_SECRET", "", dotenv),
-            qq_api_base=_env("IMCODEX_QQ_API_BASE", "https://api.sgroup.qq.com", dotenv),
-            qq_markdown_enabled=_env_bool("IMCODEX_QQ_MARKDOWN_ENABLED", True, dotenv),
-            app_server_auth_token=_env("IMCODEX_APP_SERVER_AUTH_TOKEN", "", dotenv).strip() or None,
-            app_server_auth_token_file=(
-                Path(path) if (path := _env("IMCODEX_APP_SERVER_AUTH_TOKEN_FILE", "", dotenv).strip()) else None
+            qq_api_base=_env(
+                "IMCODEX_QQ_API_BASE", "https://api.sgroup.qq.com", dotenv
             ),
-            app_server_connect_max_attempts=_env_int("IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS", 3, dotenv),
-            app_server_request_max_attempts=_env_int("IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS", 3, dotenv),
-            app_server_retry_initial_delay_s=_env_float("IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY", 0.25, dotenv),
-            app_server_retry_max_delay_s=_env_float("IMCODEX_APP_SERVER_RETRY_MAX_DELAY", 2.0, dotenv),
-            app_server_retry_jitter_fraction=_env_float("IMCODEX_APP_SERVER_RETRY_JITTER", 0.25, dotenv),
-            app_server_connect_timeout_s=_env_float("IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv),
-            app_server_health_timeout_s=_env_float("IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv),
-            native_thread_tool_host=_env_bool("IMCODEX_NATIVE_THREAD_TOOL_HOST", False, dotenv),
-            app_server_managed_target=_process_env_optional(MANAGED_APP_SERVER_TARGET_ENV),
+            qq_markdown_enabled=_env_bool("IMCODEX_QQ_MARKDOWN_ENABLED", True, dotenv),
+            app_server_auth_token=_env(
+                "IMCODEX_APP_SERVER_AUTH_TOKEN", "", dotenv
+            ).strip()
+            or None,
+            app_server_auth_token_file=(
+                Path(path)
+                if (
+                    path := _env(
+                        "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE", "", dotenv
+                    ).strip()
+                )
+                else None
+            ),
+            app_server_connect_max_attempts=_env_int(
+                "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS", 3, dotenv
+            ),
+            app_server_request_max_attempts=_env_int(
+                "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS", 3, dotenv
+            ),
+            app_server_retry_initial_delay_s=_env_float(
+                "IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY", 0.25, dotenv
+            ),
+            app_server_retry_max_delay_s=_env_float(
+                "IMCODEX_APP_SERVER_RETRY_MAX_DELAY", 2.0, dotenv
+            ),
+            app_server_retry_jitter_fraction=_env_float(
+                "IMCODEX_APP_SERVER_RETRY_JITTER", 0.25, dotenv
+            ),
+            app_server_connect_timeout_s=_env_float(
+                "IMCODEX_APP_SERVER_CONNECT_TIMEOUT", 3.0, dotenv
+            ),
+            app_server_health_timeout_s=_env_float(
+                "IMCODEX_APP_SERVER_HEALTH_TIMEOUT", 1.0, dotenv
+            ),
+            native_thread_tool_host=_env_bool(
+                "IMCODEX_NATIVE_THREAD_TOOL_HOST", False, dotenv
+            ),
+            app_server_managed_target=_process_env_optional(
+                MANAGED_APP_SERVER_TARGET_ENV
+            ),
             app_server_reconnect_initial_delay_s=_env_float(
                 "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY",
                 0.5,
@@ -434,19 +534,33 @@ class Settings:
                 dotenv,
             ),
             qq_allowed_user_ids=_env("IMCODEX_QQ_ALLOWED_USER_IDS", "", dotenv),
-            qq_allowed_conversation_ids=_env("IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            qq_allowed_conversation_ids=_env(
+                "IMCODEX_QQ_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
             qq_access_match=_env("IMCODEX_QQ_ACCESS_MATCH", "any", dotenv),
             telegram_enabled=_env_bool("IMCODEX_TELEGRAM_ENABLED", False, dotenv),
             telegram_bot_token=_env("IMCODEX_TELEGRAM_BOT_TOKEN", "", dotenv),
             telegram_bot_token_file=(
-                Path(path) if (path := _env("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "", dotenv).strip()) else None
+                Path(path)
+                if (path := _env("IMCODEX_TELEGRAM_BOT_TOKEN_FILE", "", dotenv).strip())
+                else None
             ),
-            telegram_api_base=_env("IMCODEX_TELEGRAM_API_BASE", "https://api.telegram.org", dotenv),
-            telegram_allowed_user_ids=_env("IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "", dotenv),
-            telegram_allowed_conversation_ids=_env("IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            telegram_api_base=_env(
+                "IMCODEX_TELEGRAM_API_BASE", "https://api.telegram.org", dotenv
+            ),
+            telegram_allowed_user_ids=_env(
+                "IMCODEX_TELEGRAM_ALLOWED_USER_IDS", "", dotenv
+            ),
+            telegram_allowed_conversation_ids=_env(
+                "IMCODEX_TELEGRAM_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
             telegram_access_match=_env("IMCODEX_TELEGRAM_ACCESS_MATCH", "any", dotenv),
-            telegram_require_mention=_env_bool("IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv),
-            telegram_poll_timeout_s=_env_int("IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv),
+            telegram_require_mention=_env_bool(
+                "IMCODEX_TELEGRAM_REQUIRE_MENTION", True, dotenv
+            ),
+            telegram_poll_timeout_s=_env_int(
+                "IMCODEX_TELEGRAM_POLL_TIMEOUT", 30, dotenv
+            ),
             feishu_enabled=_env_bool("IMCODEX_FEISHU_ENABLED", False, dotenv),
             feishu_app_id=_env_with_fallback(
                 "IMCODEX_FEISHU_APP_ID",
@@ -460,16 +574,30 @@ class Settings:
             ),
             feishu_domain=_env("IMCODEX_FEISHU_DOMAIN", "feishu", dotenv),
             feishu_allowed_user_ids=_env("IMCODEX_FEISHU_ALLOWED_USER_IDS", "", dotenv),
-            feishu_allowed_conversation_ids=_env("IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            feishu_allowed_conversation_ids=_env(
+                "IMCODEX_FEISHU_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
             feishu_access_match=_env("IMCODEX_FEISHU_ACCESS_MATCH", "any", dotenv),
-            feishu_require_mention=_env_bool("IMCODEX_FEISHU_REQUIRE_MENTION", True, dotenv),
-            feishu_startup_timeout_s=_env_float("IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv),
+            feishu_require_mention=_env_bool(
+                "IMCODEX_FEISHU_REQUIRE_MENTION", True, dotenv
+            ),
+            feishu_startup_timeout_s=_env_float(
+                "IMCODEX_FEISHU_STARTUP_TIMEOUT", 30.0, dotenv
+            ),
             weixin_enabled=_env_bool("IMCODEX_WEIXIN_ENABLED", False, dotenv),
-            weixin_state_dir=(Path(path) if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip()) else None),
+            weixin_state_dir=(
+                Path(path)
+                if (path := _env("IMCODEX_WEIXIN_STATE_DIR", "", dotenv).strip())
+                else None
+            ),
             weixin_allowed_user_ids=_env("IMCODEX_WEIXIN_ALLOWED_USER_IDS", "", dotenv),
-            weixin_allowed_conversation_ids=_env("IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv),
+            weixin_allowed_conversation_ids=_env(
+                "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS", "", dotenv
+            ),
             weixin_access_match=_env("IMCODEX_WEIXIN_ACCESS_MATCH", "any", dotenv),
-            weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
+            weixin_poll_timeout_ms=_env_int(
+                "IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv
+            ),
             outbound_webhook_token=_env("IMCODEX_OUTBOUND_WEBHOOK_TOKEN", "", dotenv),
             inbound_webhook_token=_env("IMCODEX_INBOUND_WEBHOOK_TOKEN", "", dotenv),
         )

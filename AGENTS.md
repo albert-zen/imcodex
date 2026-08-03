@@ -41,7 +41,8 @@ In practice, native Codex is the source of truth for:
 
 The bridge may own only IM-specific concerns such as:
 
-- channel and conversation bindings
+- the SDK Gateway repository's authoritative channel/conversation bindings;
+  IMCodex may retain only rebuildable command context projected from them
 - bootstrap context before a native thread exists
 - channel reply context
 - IM-only visibility preferences
@@ -134,8 +135,8 @@ scripts/imcodex-send --artifact path/to/file --text "Optional message"
 
 On Windows use `scripts\imcodex-send.cmd`. The launcher submits to the
 already-running bridge with the native `CODEX_THREAD_ID`. The bridge remembers
-the last IM recipient that explicitly selected that thread, so the task can
-still deliver after the user switches to another thread. Do not parse
+the SDK's current active IM routes for that Thread and fans out to every
+currently bound Conversation. A Conversation that switches to another Thread
+no longer receives delivery from the previous Thread. Do not parse
 `state.json`, copy raw conversation IDs, read bot secrets, or substitute a
-Markdown link for an explicitly requested attachment. Selecting the same
-thread from another IM conversation moves its remembered recipient.
+Markdown link for an explicitly requested attachment.

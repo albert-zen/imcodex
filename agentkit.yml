@@ -13,6 +13,7 @@ components:
       - .gitignore
       - .gitmessage
       - AGENTS.md
+      - README.md
       - agentkit.yml
       - pyproject.toml
       - .github/workflows/**
@@ -20,6 +21,9 @@ components:
       - plugins/agentkit/**
       - .codex/**
     docs:
+      - docs/adr/0002-unified-channel-message-delivery.md
+      - docs/adr/0003-current-thread-subscriptions.md
+      - docs/channels.md
       - docs/design.md
       - docs/workflow.md
     required_docs:
@@ -36,9 +40,12 @@ components:
     code:
       - src/imcodex/channels/**
       - tests/test_channel_*.py
-      - tests/test_channels.py
-      - tests/test_service_e2e.py
+      - tests/test_sdk_webhook.py
+      - tests/test_webhook_api.py
     docs:
+      - docs/adr/0002-unified-channel-message-delivery.md
+      - docs/adr/0003-current-thread-subscriptions.md
+      - docs/channels.md
       - docs/design.md
       - docs/product-behavior-spec.md
       - docs/system-constraints-spec.md
@@ -57,12 +64,16 @@ components:
       - src/imcodex/store.py
       - src/imcodex/store_*.py
       - src/imcodex/models.py
+      - src/imcodex/webhook_namespace.py
       - tests/test_commands.py
       - tests/test_settings.py
-      - tests/test_projection*.py
       - tests/test_outbound_artifacts.py
+      - tests/test_sdk_presentation.py
+      - tests/test_sdk_controller.py
+      - tests/test_sdk_requests.py
+      - tests/test_sdk_delivery.py
+      - src/imcodex/bridge/sdk_requests.py
       - tests/test_store.py
-      - tests/test_service_e2e.py
     docs:
       - docs/design.md
       - docs/product-behavior-spec.md
@@ -77,12 +88,12 @@ components:
       - conversation
 
   appserver:
-    description: Native Codex protocol integration, dedicated core transport, restart handling, and approval flow plumbing.
+    description: Codex-specific settings and Thread policy over the SDK-owned App Server client.
     code:
       - src/imcodex/appserver/**
       - src/imcodex/core_cli.py
       - src/imcodex/core_manager.py
-      - tests/test_appserver_stdio.py
+      - tests/test_appserver_target.py
       - tests/test_backend.py
       - tests/test_core_manager.py
     docs:
@@ -104,6 +115,7 @@ components:
     code:
       - src/imcodex/admin/**
       - src/imcodex/application.py
+      - src/imcodex/__main__.py
       - src/imcodex/composition.py
       - src/imcodex/config.py
       - src/imcodex/debug_harness/**
@@ -113,7 +125,9 @@ components:
       - src/imcodex/observability/**
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
+      - src/imcodex/sdk_runtime.py
+      - src/imcodex/sdk_composition.py
+      - src/imcodex/sdk_migration.py
       - scripts/**
       - tests/test_admin_*.py
       - tests/test_application.py
@@ -125,6 +139,9 @@ components:
       - tests/test_restart_executor.py
       - tests/test_restart_preflight.py
       - tests/test_runtime.py
+      - tests/test_sdk_runtime.py
+      - tests/test_sdk_composition.py
+      - tests/test_sdk_migration.py
       - tests/test_startup_scripts.py
       - tests/test_windows_scripts.py
     docs:
@@ -132,6 +149,7 @@ components:
       - docs/workflow.md
       - docs/startup.md
       - docs/architecture/dependency-rules.md
+      - docs/im-agent-sdk-migration-baseline.md
     required_docs:
       - design
       - workflow
@@ -148,6 +166,7 @@ layers:
       - src/imcodex/config.py
       - src/imcodex/logging_utils.py
       - src/imcodex/models.py
+      - src/imcodex/webhook_namespace.py
       - src/imcodex/observability/context.py
       - src/imcodex/observability/events.py
       - src/imcodex/observability/health.py
@@ -193,7 +212,9 @@ layers:
       - src/imcodex/main.py
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
+      - src/imcodex/sdk_runtime.py
+      - src/imcodex/sdk_composition.py
+      - src/imcodex/sdk_migration.py
     may_import:
       - support
       - state
@@ -241,11 +262,3 @@ maintainability:
       max_classes: 8
       mode: warn
       guidance: "Bridge state should stay intentionally small. Growth here is a signal to re-check whether state really belongs outside native Codex."
-    - name: debug-harness-scenarios
-      paths:
-        - src/imcodex/debug_harness/scenarios.py
-      max_lines: 425
-      max_functions: 25
-      max_classes: 6
-      mode: warn
-      guidance: "Scenario runners should stay small and evidence-oriented. Prefer extracting reusable probes or assertions before adding many more scenarios."

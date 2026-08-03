@@ -6,23 +6,12 @@ import os
 import shutil
 import socket
 import sys
-import time
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
-from .appserver.retry import RetryBackoff
-from .appserver.supervisor import resolve_unix_socket_path
-from .appserver.thread_dynamic_tools import native_thread_dynamic_tool_specs
-from .bridge import BridgeService, CommandRouter, MessageProjector
-from .bridge.outbound_artifacts import OutboundArtifactStager
-from .channels import (
-    MultiplexOutboundSink,
-    UnifiedChannelMiddleware,
-    WebhookOutboundSink,
-)
-from .channels.registry import build_enabled_channel_adapters
+from imagent.applications.appserver_client.supervisor import resolve_unix_socket_path
+
 from .config import (
     DOTENV_IMPORTED_KEYS_ENV,
     KNOWN_SETTING_ENV_KEYS,
@@ -36,9 +25,7 @@ from .config import (
 )
 from .core_manager import DedicatedCoreManager
 from .observability.runtime import ObservabilityRuntime
-from .runtime import AppRuntime
-from .store import ConversationStore
-
+from .sdk_runtime import SdkRuntime
 
 SettingsSource = Literal["environment", "explicit"]
 
@@ -47,10 +34,12 @@ def build_runtime(
     settings: Settings | None = None,
     *,
     settings_source: SettingsSource | None = None,
-) -> AppRuntime:
+) -> SdkRuntime:
     if settings is None:
         if settings_source not in (None, "environment"):
-            raise ValueError("Settings loaded by build_runtime must use the environment source")
+            raise ValueError(
+                "Settings loaded by build_runtime must use the environment source"
+            )
         settings = Settings.from_env()
         resolved_settings_source: SettingsSource = "environment"
     else:
@@ -58,84 +47,9 @@ def build_runtime(
     if resolved_settings_source not in {"environment", "explicit"}:
         raise ValueError(f"Unsupported settings source: {resolved_settings_source}")
     app_server_target = settings.app_server_target
-    store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
-    retry_backoff = RetryBackoff(
-        initial_delay_s=settings.app_server_retry_initial_delay_s,
-        max_delay_s=settings.app_server_retry_max_delay_s,
-        jitter_fraction=settings.app_server_retry_jitter_fraction,
-    )
-    supervisor = AppServerSupervisor(
-        codex_bin=settings.codex_bin,
-        app_server_url=app_server_target.endpoint,
-        app_server_auth_token=settings.app_server_auth_token,
-        app_server_auth_token_file=settings.app_server_auth_token_file,
-        websocket_retry_policy=retry_backoff.with_max_attempts(settings.app_server_connect_max_attempts),
-        websocket_open_timeout_s=settings.app_server_connect_timeout_s,
-        health_probe_timeout_s=settings.app_server_health_timeout_s,
-    )
-    shared_filesystem_verifier = _managed_core_shared_filesystem_verifier(
-        settings=settings,
-        endpoint=app_server_target.endpoint,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={
-            "name": settings.service_name,
-            "title": "IM Codex Bridge",
-            "version": "0.1.0",
-        },
-        # Native thread-tool hosting relies on the experimental dynamic-tool
-        # and paged thread-history protocol surfaces. This capability opt-in
-        # does not enable bridge product features such as MCP or review.
-        experimental_api_enabled=(
-            settings.app_server_experimental_api_enabled
-            or settings.native_thread_tool_host
-            or not app_server_target.is_external
-        ),
-        shared_filesystem_verifier=shared_filesystem_verifier,
-        request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
-        reconnect_retry_policy=RetryBackoff(
-            initial_delay_s=settings.app_server_reconnect_initial_delay_s,
-            max_delay_s=settings.app_server_reconnect_max_delay_s,
-            jitter_fraction=settings.app_server_reconnect_jitter_fraction,
-        ),
-    )
-    hosts_native_thread_tools = settings.native_thread_tool_host or not app_server_target.is_external
-    artifact_stager = OutboundArtifactStager(settings.data_dir / "outbound-media")
-    artifact_stager.cleanup_unreferenced(store.referenced_terminal_artifact_paths())
-    service = BridgeService(
-        store=store,
-        backend=CodexBackend(
-            client=client,
-            store=store,
-            service_name=settings.service_name,
-            thread_dynamic_tools=(
-                native_thread_dynamic_tool_specs() if hosts_native_thread_tools else None
-            ),
-        ),
-        command_router=CommandRouter(store),
-        projector=MessageProjector(
-            artifact_stager=artifact_stager
-        ),
-        outbound_sink=None,
-        native_thread_tool_host=settings.native_thread_tool_host,
-    )
-    channel_middleware = UnifiedChannelMiddleware(service=service)
-    default_outbound_sink = (
-        WebhookOutboundSink(
-            settings.outbound_url,
-            bearer_token=settings.outbound_webhook_token,
-            outbound_media_dir=settings.data_dir / "outbound-media",
-        )
-        if settings.outbound_url
-        else None
-    )
-    managed_channels = build_enabled_channel_adapters(settings=settings, middleware=channel_middleware)
-    channel_sinks = {channel.channel_id: channel for channel in managed_channels}
-    service.outbound_sink = MultiplexOutboundSink(
-        channel_sinks=channel_sinks,
-        default_sink=default_outbound_sink,
-    )
+    from .sdk_composition import build_sdk_composition
+
+    sdk = build_sdk_composition(settings)
     observability = ObservabilityRuntime(
         run_root=settings.run_dir,
         service_name=settings.service_name,
@@ -151,26 +65,50 @@ def build_runtime(
         "IMCODEX_HTTP_HOST": settings.http_host,
         "IMCODEX_HTTP_PORT": str(settings.http_port),
         "IMCODEX_CODEX_BIN": settings.codex_bin,
-        "IMCODEX_APP_SERVER_EXPERIMENTAL_API": "1" if settings.app_server_experimental_api_enabled else "0",
+        "IMCODEX_APP_SERVER_EXPERIMENTAL_API": "1"
+        if settings.app_server_experimental_api_enabled
+        else "0",
         "IMCODEX_APP_SERVER_URL": app_server_target.endpoint,
         # Canonical target configuration is sufficient for restart. Keep
         # legacy aliases empty instead of regenerating a runtime mode that
         # was already normalized away.
         "IMCODEX_CORE_MODE": "",
         "IMCODEX_CORE_URL": "",
-        "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE": str(settings.app_server_auth_token_file or ""),
-        "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS": str(settings.app_server_connect_max_attempts),
-        "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS": str(settings.app_server_request_max_attempts),
-        "IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY": str(settings.app_server_retry_initial_delay_s),
-        "IMCODEX_APP_SERVER_RETRY_MAX_DELAY": str(settings.app_server_retry_max_delay_s),
-        "IMCODEX_APP_SERVER_RETRY_JITTER": str(settings.app_server_retry_jitter_fraction),
-        "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(settings.app_server_connect_timeout_s),
+        "IMCODEX_APP_SERVER_AUTH_TOKEN_FILE": str(
+            settings.app_server_auth_token_file or ""
+        ),
+        "IMCODEX_APP_SERVER_CONNECT_MAX_ATTEMPTS": str(
+            settings.app_server_connect_max_attempts
+        ),
+        "IMCODEX_APP_SERVER_REQUEST_MAX_ATTEMPTS": str(
+            settings.app_server_request_max_attempts
+        ),
+        "IMCODEX_APP_SERVER_RETRY_INITIAL_DELAY": str(
+            settings.app_server_retry_initial_delay_s
+        ),
+        "IMCODEX_APP_SERVER_RETRY_MAX_DELAY": str(
+            settings.app_server_retry_max_delay_s
+        ),
+        "IMCODEX_APP_SERVER_RETRY_JITTER": str(
+            settings.app_server_retry_jitter_fraction
+        ),
+        "IMCODEX_APP_SERVER_CONNECT_TIMEOUT": str(
+            settings.app_server_connect_timeout_s
+        ),
         "IMCODEX_APP_SERVER_HEALTH_TIMEOUT": str(settings.app_server_health_timeout_s),
-        "IMCODEX_NATIVE_THREAD_TOOL_HOST": "1" if settings.native_thread_tool_host else "0",
+        "IMCODEX_NATIVE_THREAD_TOOL_HOST": "1"
+        if settings.native_thread_tool_host
+        else "0",
         MANAGED_APP_SERVER_TARGET_ENV: settings.app_server_managed_target or "",
-        "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(settings.app_server_reconnect_initial_delay_s),
-        "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(settings.app_server_reconnect_max_delay_s),
-        "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(settings.app_server_reconnect_jitter_fraction),
+        "IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY": str(
+            settings.app_server_reconnect_initial_delay_s
+        ),
+        "IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY": str(
+            settings.app_server_reconnect_max_delay_s
+        ),
+        "IMCODEX_APP_SERVER_RECONNECT_JITTER": str(
+            settings.app_server_reconnect_jitter_fraction
+        ),
         "IMCODEX_RESTART_EXECUTOR": settings.restart_executor or "",
         "IMCODEX_DEBUG_API_ENABLED": "1" if settings.debug_api_enabled else "0",
         "IMCODEX_QQ_ENABLED": "1" if settings.qq_enabled else "0",
@@ -179,21 +117,29 @@ def build_runtime(
         "IMCODEX_QQ_MARKDOWN_ENABLED": "1" if settings.qq_markdown_enabled else "0",
         "IMCODEX_TELEGRAM_ENABLED": "1" if settings.telegram_enabled else "0",
         "IMCODEX_TELEGRAM_API_BASE": settings.telegram_api_base,
-        "IMCODEX_TELEGRAM_REQUIRE_MENTION": "1" if settings.telegram_require_mention else "0",
+        "IMCODEX_TELEGRAM_REQUIRE_MENTION": "1"
+        if settings.telegram_require_mention
+        else "0",
         "IMCODEX_TELEGRAM_POLL_TIMEOUT": str(settings.telegram_poll_timeout_s),
         "IMCODEX_FEISHU_ENABLED": "1" if settings.feishu_enabled else "0",
         "IMCODEX_FEISHU_APP_ID": settings.feishu_app_id,
         "IMCODEX_FEISHU_DOMAIN": settings.feishu_domain,
-        "IMCODEX_FEISHU_REQUIRE_MENTION": "1" if settings.feishu_require_mention else "0",
+        "IMCODEX_FEISHU_REQUIRE_MENTION": "1"
+        if settings.feishu_require_mention
+        else "0",
         "IMCODEX_FEISHU_STARTUP_TIMEOUT": str(settings.feishu_startup_timeout_s),
         "IMCODEX_WEIXIN_ENABLED": "1" if settings.weixin_enabled else "0",
-        "IMCODEX_WEIXIN_STATE_DIR": str(settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"),
+        "IMCODEX_WEIXIN_STATE_DIR": str(
+            settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"
+        ),
         "IMCODEX_WEIXIN_POLL_TIMEOUT_MS": str(settings.weixin_poll_timeout_ms),
     }
     dotenv_imported_keys = _environment_key_list(DOTENV_IMPORTED_KEYS_ENV)
     launcher_reloadable_keys = _environment_key_list(LAUNCHER_RELOADABLE_KEYS_ENV)
     reloadable_source_keys = set(dotenv_imported_keys) | set(launcher_reloadable_keys)
-    external_setting_keys = _external_setting_keys(reloadable_source_keys=reloadable_source_keys)
+    external_setting_keys = _external_setting_keys(
+        reloadable_source_keys=reloadable_source_keys
+    )
     observability.write_launch_snapshot(
         command=[sys.executable, "-m", "imcodex"],
         cwd=Path.cwd(),
@@ -212,11 +158,16 @@ def build_runtime(
         launcher_reloadable_keys=launcher_reloadable_keys,
         required_external_env_keys=sorted(external_setting_keys),
     )
-    return AppRuntime(
-        client=client,
-        service=service,
-        managed_channels=managed_channels,
+    return SdkRuntime(
+        gateway=sdk.gateway,
+        state=sdk.state,
+        client=sdk.client,
+        service=sdk.service,
+        managed_channels=list(sdk.channels[1:]),
         observability=observability,
+        resources=(sdk.controller, sdk.product_store),
+        prepare=sdk.prepare,
+        maintenance=sdk.recover_legacy_deliveries,
     )
 
 
@@ -232,8 +183,9 @@ def preflight_runtime_configuration(settings: Settings | None = None) -> None:
             ) from exc
     _validate_http_bind(settings)
     _validate_local_app_server_prerequisites(settings)
-    runtime = build_runtime(settings, settings_source="environment")
-    for channel in runtime.managed_channels:
+    from .sdk_composition import build_sdk_managed_channels
+
+    for channel in build_sdk_managed_channels(settings):
         validator = getattr(channel, "validate_startup_configuration", None)
         if callable(validator):
             validator()
@@ -262,9 +214,13 @@ def _validate_http_bind(settings: Settings) -> None:
             flags=socket.AI_PASSIVE,
         )
     except socket.gaierror as exc:
-        raise ValueError("IMCODEX_HTTP_HOST could not be resolved for the bridge listener") from exc
+        raise ValueError(
+            "IMCODEX_HTTP_HOST could not be resolved for the bridge listener"
+        ) from exc
     if not addresses:
-        raise ValueError("IMCODEX_HTTP_HOST did not resolve to a usable bridge listener address")
+        raise ValueError(
+            "IMCODEX_HTTP_HOST did not resolve to a usable bridge listener address"
+        )
     if not _addresses_can_bind(addresses, port=0):
         raise ValueError("IMCODEX_HTTP_HOST does not identify a local bindable address")
 
@@ -328,7 +284,9 @@ def _preflight_current_port() -> int | None:
     try:
         port = int(raw)
     except ValueError as exc:
-        raise ValueError("Restart preflight received an invalid current HTTP port") from exc
+        raise ValueError(
+            "Restart preflight received an invalid current HTTP port"
+        ) from exc
     if not 1 <= port <= 65535:
         raise ValueError("Restart preflight received an invalid current HTTP port")
     return port
@@ -400,13 +358,17 @@ def _validate_local_app_server_prerequisites(settings: Settings) -> None:
     try:
         token = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise RuntimeError(f"Could not read app-server auth token file: {path}") from exc
+        raise RuntimeError(
+            f"Could not read app-server auth token file: {path}"
+        ) from exc
     if not token:
         raise ValueError(f"app-server auth token file is empty: {path}")
 
 
 def _environment_key_list(marker: str) -> list[str]:
-    return sorted({key.strip() for key in os.environ.get(marker, "").split(",") if key.strip()})
+    return sorted(
+        {key.strip() for key in os.environ.get(marker, "").split(",") if key.strip()}
+    )
 
 
 def _external_setting_keys(*, reloadable_source_keys: set[str]) -> set[str]:

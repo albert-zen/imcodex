@@ -1,4 +1,5 @@
 from .main import run
 
 
-raise SystemExit(run())
+if __name__ == "__main__":
+    raise SystemExit(run())

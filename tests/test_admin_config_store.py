@@ -10,10 +10,10 @@ from pathlib import Path
 from threading import Event
 
 import pytest
+from imagent.channels.native.weixin_state import WeixinCredentials, WeixinStateStore
 
 from imcodex.admin import ConfigConflictError, ConfigStore, ConfigValidationError
 from imcodex.admin import config_store as config_store_module
-from imcodex.channels.weixin_state import WeixinCredentials, WeixinStateStore
 
 
 def test_missing_file_has_stable_defaults_and_revision(tmp_path: Path) -> None:
@@ -80,7 +80,11 @@ def test_secrets_are_never_returned_from_dotenv_or_environment(tmp_path: Path) -
         "editable": False,
         "overridden_by": ["IMCODEX_TELEGRAM_BOT_TOKEN"],
     }
-    secret_field = next(field for field in payload["fields"] if field["key"] == "IMCODEX_QQ_CLIENT_SECRET")
+    secret_field = next(
+        field
+        for field in payload["fields"]
+        if field["key"] == "IMCODEX_QQ_CLIENT_SECRET"
+    )
     assert "value" not in secret_field
     assert "default" not in secret_field
 
@@ -125,7 +129,9 @@ def test_secret_updates_support_preserve_replace_and_clear(tmp_path: Path) -> No
 
 def test_process_environment_is_reported_and_cannot_be_edited(tmp_path: Path) -> None:
     path = tmp_path / ".env"
-    path.write_text("IMCODEX_HTTP_PORT=8000\nIMCODEX_APP_SERVER_URL=unix://\n", encoding="utf-8")
+    path.write_text(
+        "IMCODEX_HTTP_PORT=8000\nIMCODEX_APP_SERVER_URL=unix://\n", encoding="utf-8"
+    )
     store = ConfigStore(
         path,
         environ={
@@ -166,7 +172,9 @@ def test_launcher_imported_dotenv_values_remain_editable(tmp_path: Path) -> None
         environ={
             "IMCODEX_HTTP_PORT": "8000",
             "IMCODEX_QQ_CLIENT_SECRET": "file-secret",
-            "IMCODEX_DOTENV_IMPORTED_KEYS": ("IMCODEX_HTTP_PORT,IMCODEX_QQ_CLIENT_SECRET"),
+            "IMCODEX_DOTENV_IMPORTED_KEYS": (
+                "IMCODEX_HTTP_PORT,IMCODEX_QQ_CLIENT_SECRET"
+            ),
         },
     )
 
@@ -198,7 +206,11 @@ def test_feishu_environment_alias_matches_runtime_fallback(tmp_path: Path) -> No
     )
 
     snapshot = store.read()
-    field = next(state for state in snapshot.fields if state.definition.key == "IMCODEX_FEISHU_APP_ID")
+    field = next(
+        state
+        for state in snapshot.fields
+        if state.definition.key == "IMCODEX_FEISHU_APP_ID"
+    )
 
     assert field.value == "cli_lark"
     assert field.source == "environment"
@@ -223,7 +235,11 @@ def test_blank_legacy_target_environment_does_not_override_dotenv(
     )
 
     snapshot = store.read()
-    field = next(state for state in snapshot.fields if state.definition.key == "IMCODEX_APP_SERVER_URL")
+    field = next(
+        state
+        for state in snapshot.fields
+        if state.definition.key == "IMCODEX_APP_SERVER_URL"
+    )
 
     assert field.value == "unix://"
     assert field.source == "dotenv"
@@ -245,7 +261,11 @@ def test_legacy_target_environment_projects_effective_endpoint(
 ) -> None:
     store = ConfigStore(tmp_path / ".env", environ=environ)
 
-    field = next(state for state in store.read().fields if state.definition.key == "IMCODEX_APP_SERVER_URL")
+    field = next(
+        state
+        for state in store.read().fields
+        if state.definition.key == "IMCODEX_APP_SERVER_URL"
+    )
 
     assert field.value == endpoint
     assert field.source == "environment"
@@ -269,7 +289,11 @@ def test_legacy_target_dotenv_projects_effective_endpoint(
     path.write_text(contents, encoding="utf-8")
     store = ConfigStore(path, environ={})
 
-    field = next(state for state in store.read().fields if state.definition.key == "IMCODEX_APP_SERVER_URL")
+    field = next(
+        state
+        for state in store.read().fields
+        if state.definition.key == "IMCODEX_APP_SERVER_URL"
+    )
 
     assert field.value == endpoint
     assert field.source == "dotenv"
@@ -309,7 +333,11 @@ def test_launcher_synthesized_target_is_reloadable_not_an_external_override(
     )
 
     before = store.read()
-    field = next(state for state in before.fields if state.definition.key == "IMCODEX_APP_SERVER_URL")
+    field = next(
+        state
+        for state in before.fields
+        if state.definition.key == "IMCODEX_APP_SERVER_URL"
+    )
     assert field.source == "default"
     assert field.editable is True
 
@@ -508,7 +536,9 @@ def test_qq_cannot_be_enabled_without_credentials(tmp_path: Path) -> None:
     assert updated.values["IMCODEX_QQ_ENABLED"] is True
 
 
-def test_channel_access_none_must_not_be_combined_with_other_ids(tmp_path: Path) -> None:
+def test_channel_access_none_must_not_be_combined_with_other_ids(
+    tmp_path: Path,
+) -> None:
     store = ConfigStore(tmp_path / ".env", environ={})
 
     with pytest.raises(ConfigValidationError, match="cannot be combined"):

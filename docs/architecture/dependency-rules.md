@@ -60,7 +60,7 @@ Transport adapters and outbound sinks.
 
 ### Runtime
 
-Composition, startup, local administration, ops, and debug harness entry
+Composition, startup, local administration, ops, and read-only diagnostics
 surfaces. `imcodex.admin` is a presentation/composition surface: it may project
 native settings through `appserver` and manage the explicit bridge-owned config
 schema, but it must not become a business layer or a second configuration
@@ -69,6 +69,12 @@ authority.
 - may import all lower layers in order to wire them together
 - should not become a new business layer
 - lower layers must not import `imcodex.admin`
+
+The SDK Gateway/Application/Channel graph is constructed only in the runtime
+composition root. Product bridge policies may depend on SDK contracts and
+ports, but still must not import concrete `imcodex.channels`; channel-specific
+fallback facts are injected by composition. Native Codex truth remains behind
+the SDK Application rather than being copied into a new IMCodex state layer.
 
 ## Existing Test Enforcement
 

@@ -8,6 +8,10 @@ From the repository root:
 
 Normal operation connects the bridge to one external App Server target. The
 explicit `stdio://` bridge-child target remains available for compatibility.
+The bridge process starts one SDK Gateway, which owns the Codex Application,
+enabled native Channel lifecycles, projection recovery, and delivery
+coordination. IMCodex keeps the platform launchers, process topology, HTTP
+operator surface, restart snapshot, and health-file presentation.
 
 Install the standalone Codex CLI first and keep `codex` on `PATH`, or set
 `IMCODEX_CODEX_BIN` to that standalone executable. IMCodex deliberately does
@@ -60,6 +64,12 @@ enabled channel, run:
 python -m imcodex channels doctor
 ```
 
+Managed restart preflight calls each SDK native Channel's side-effect-free
+configuration validator before replacing the running process. It does not open
+provider connections, start background workers, or construct the SDK Gateway,
+App Server client, or SQLite state. Runtime-owned resources are created only
+for the process that will actually start.
+
 Optional environment controls:
 
 ```env
@@ -104,8 +114,8 @@ detached TCP launcher. The HTTP port check uses the configured
 Run only one bridge process for a given `IMCODEX_DATA_DIR`. A normal managed
 restart stops the old bridge before starting its replacement. Sharing one data
 directory between overlapping bridge processes, even on different HTTP ports,
-is unsupported because channel bindings and the terminal-delivery outbox have
-one bridge owner.
+is unsupported because SDK Gateway state, channel bindings, and the consumer
+artifact lease ledger have one process owner.
 
 ### Configuration console
 
@@ -178,18 +188,11 @@ progress, because ordinary editors do not participate in that lock.
 `IMCODEX_APP_SERVER_EXPERIMENTAL_API` is disabled by default. Set it only when
 intentionally testing upstream experimental app-server protocol behavior.
 
-`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` declares that IMCodex handles supported
-Desktop-style thread-management tools on the selected App Server. The
-platform launchers set it automatically when they start or reuse the project's
-independent App Server. Explicit connect-only endpoints leave it disabled so a
-Desktop or other host cannot race IMCodex on side-effecting tool calls; set it
-manually only when that explicit endpoint has no other dynamic-tool host. Host
-mode also opts the App Server client into the upstream experimental protocol
-capability required by dynamic tools and paged thread history; it does not
-enable unrelated IMCodex product features. Host selection belongs to the App
-Server connection topology, not to individual threads: when enabled, IMCodex
-resolves native-mappable tool calls for Desktop-, CLI-, and IMCodex-created
-threads alike. It does not persist or infer per-thread tool ownership.
+`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` is rejected by the SDK-owned runtime. A
+future typed Application operation is required before IMCodex can host
+Desktop-style thread-management tools. The migration does not retain the old
+raw App Server request callback or silently advertise tools that cannot be
+served. Leave this setting disabled.
 
 For websocket cores that require bearer auth, set
 `IMCODEX_APP_SERVER_AUTH_TOKEN_FILE` to a local file containing the token, or
@@ -209,41 +212,25 @@ retries until the bridge shuts down, with delay capped by
 `IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`; explicit `stdio://` does not use this
 background loop, and `auto` is rejected. Shutdown cancels any pending retry.
 
-A transport connection is not considered fully restored on its own. Each new
-connection epoch reruns native `initialize`, permission defaults, and bound
-thread rehydration before health reports `appserver.status=connected`. If one or
-more native bindings fail or cannot be verified, the connection remains usable
-but health reports `appserver.status=degraded` with `rehydration` totals instead
-of claiming complete recovery. During recovery, `health.json` reports
-`appserver.status=reconnecting` together with the current retry attempt and
-delay. The App Server health object also reports `ready`, `ownership`,
-`transport`, a credential-safe `endpoint`, `connection_epoch`, and whether
-background reconnect and verified local image paths are enabled. The IM
-`/status` command presents the same
-connection facts and remains useful when a native thread read is temporarily
-unavailable. Recovery does not wait for another IM message. Reconnect delays
+The SDK Application diagnostic controls top-level health and the bounded facts
+under `health.json.sdk.applications`. The compatibility
+`health.json.appserver` object uses the same credential-safe native client facts
+as IM `/status`, including the distinct transport-open `connected` and fully
+initialized `ready` states, topology, endpoint, and `connection_epoch`.
+`connecting`, `reconnecting`, and `disconnected` SDK diagnostic states still
+make top-level health degraded. The IM `/status` command remains useful when
+a native thread read is temporarily unavailable. Recovery does not wait for
+another IM message. Reconnect delays
 must be positive, the maximum must be at least the initial delay, and jitter
 must be between `0` and `1`.
 
-JSON-RPC responses are handled on the socket read fast path. Native server
-requests such as approvals use a separate bounded dispatcher so a slow ordinary
-notification cannot starve them, while `serverRequest/resolved` stays on that
-same ordered lane. IM channel delivery for a native request is bounded; failure
-removes its local route and sends a JSON-RPC error so the turn does not hang. If
-either dispatch queue fills, the bridge
-records `appserver.dispatch.overflow`, resets that connection epoch, and lets
-normal reconnect reconciliation recover from native state. WebSocket frame
-size is not capped by the bridge because native `thread/resume` may return a
-legitimate full thread in one response. Rehydration clears cached active-turn
-authority before resume, reports an active thread without an active turn as
-unverified, and projects a terminal turn result that completed while the
-transport or bridge process was offline. Active-turn state remains runtime-only;
-the persisted state contains only a terminal-delivery checkpoint and, after
-projection, the pending outbound message. Terminal delivery uses a stable
-thread/turn identity and retries from that outbox until the channel sink accepts
-it or the service is intentionally closed. Outbox draining runs after every
-connection becomes ready, including `stdio://`; only native thread rehydration
-depends on using a persistent external App Server.
+The SDK App Server client keeps JSON-RPC responses on the socket read fast path
+and uses bounded dispatch lanes for notifications and native requests. The SDK
+Gateway owns projection recovery, checkpoints, request correlation, and
+delivery retries. IMCodex does not persist active-Turn authority or a second
+outbox. Its legacy terminal-delivery fields are read only by the one-time
+migration/drain path and receive no new runtime writes. The consumer persists
+only IM routing/configuration plus its bounded proactive artifact lease ledger.
 
 ### Native Windows: independent TCP App Server + bridge
 
@@ -274,6 +261,11 @@ binds are reachable through loopback. If the bridge is bound only to a
 non-loopback interface or is hosted by a third-party ASGI runner without the
 built-in shutdown callback, restart fails closed and the operator must stop it
 through that service manager.
+The built-in `python -m imcodex` entry point exits nonzero when Uvicorn reports
+that application startup or shutdown failed. A `stopped` health snapshot is not
+by itself proof of clean process teardown because it may have been written
+before a later lifespan cleanup failed; service managers and smoke tests must
+also require a successful process exit.
 The equivalent explicit workflow is:
 
 ```powershell
@@ -295,9 +287,8 @@ After startup, check `.imcodex-run/current/health.json`:
 - `status` should be `healthy`
 - `http.listening` should be `true`
 - `appserver.connected` should be `true`
-- `appserver.mode` should be `external`
-- `appserver.ownership` should be `external`
-- `appserver.transport` should describe the selected Unix, TCP, or stdio transport
+- `appserver.mode`, `ownership`, and `transport` should match the selected
+  external Unix/TCP or explicit bridge-child stdio target
 - `appserver.connection_epoch` should be at least `1`
 
 Protocol troubleshooting data is written under `.imcodex-run/current/`:

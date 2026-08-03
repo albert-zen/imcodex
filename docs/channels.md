@@ -147,10 +147,10 @@ user-visible errors and do not block later messages. A 30-second whole-batch
 deadline prevents a slowly dripping source from occupying a conversation
 indefinitely.
 
-Media preparation is lazy inside the middleware's existing per-conversation
-serialization boundary. A committed stable message replay is resolved from the
-normal dedup/reply record before media I/O; there is no media-specific durable
-queue or second dedup authority.
+Media preparation starts only after the SDK Gateway grants admission for the
+stable inbound message. A committed replay is resolved by SDK idempotency
+before media I/O; there is no media-specific durable queue or second dedup
+authority.
 
 `localImage` is a filesystem reference. Image input therefore requires the
 bridge and Codex App Server to see the same absolute spool path. imcodex submits
@@ -179,13 +179,13 @@ there is no channel-specific feature switch.
 Only validated files copied into the private
 `IMCODEX_DATA_DIR/outbound-media` spool are eligible. Explicit Markdown image
 nodes and structured native image outputs may originate outside the thread
-workspace, but are copied into that spool before channel delivery. When an
-adapter returns a failure, the durable retry retains only the artifacts not yet
-accepted. QQ and Weixin derive stable platform delivery identities, and Feishu
-supplies a stable SDK UUID. Telegram has no equivalent client idempotency key:
-it does not retry an ambiguous upload inside the adapter, but the durable outbox
-may replay it after an ambiguous live failure or a process exit before the
-bridge checkpoints progress.
+workspace, but are copied into that spool before channel delivery. The SDK owns
+delivery-submission state and retry decisions; IMCodex owns only bounded path
+leases. QQ and Weixin derive stable platform delivery identities, and Feishu
+supplies a stable SDK UUID. Telegram has no equivalent client idempotency key,
+so an ambiguous upload remains an honest unknown rather than being silently
+retried by a consumer outbox. Proactive `IN_FLIGHT` crash recovery and partial
+retryable suffixes are tracked migration blockers.
 
 The generic outbound webhook uses JSON for text-only messages. A message with
 artifacts uses `multipart/form-data`: the `payload` field contains the normal
@@ -225,13 +225,11 @@ the inbound `msg_id`; asynchronous output uses it only while that context is
 still fresh. A long-running or restart-recovered result automatically falls
 back to proactive delivery after the passive window expires, so an old reply
 identifier cannot silently strand the final answer.
-The original receive time is carried with cached reply metadata, so replaying a
-cached response cannot bypass that expiry check. Before a durable terminal
-message enters the outbox, QQ pins whether it is proactive or which `msg_id` it
-replies to, then derives a stable `msg_seq` from the bridge delivery ID. If the
-first HTTP acknowledgement is lost, later inbound traffic or passive-window
-expiry cannot change that retry identity, and QQ can deduplicate the repeated
-`msg_id + msg_seq` instead of presenting a second final answer.
+The original receive time is carried in the Channel reply context, so an SDK
+retry cannot bypass that expiry check. The SDK Coordinator keeps one stable
+logical delivery ID across segment retries; QQ derives its stable `msg_seq`
+from that ID. If the first HTTP acknowledgement is lost, QQ can deduplicate the
+repeated `msg_id + msg_seq` instead of presenting a second final answer.
 
 QQ terminal results may include structured Codex image artifacts. IMCodex
 uploads each staged image through the conversation's `/files` endpoint with
@@ -511,14 +509,12 @@ Use TLS at the reverse proxy; the built-in HTTP server does not terminate TLS.
 The webhook caller is a trusted adapter and chooses `channel_id`, stable sender
 ID, conversation ID, and message ID. Generic callers cannot claim the reserved
 `qq`, `telegram`, `feishu`, or `weixin`
-channel IDs; choose a dedicated namespace such as `wecom-gateway`. The bridge
-persists the most recent 1,024 committed `message_id` values per conversation
-and drops retries in that bounded window. A gateway must retain its own
-longer-term idempotency history when delayed replay is possible. To keep bridge
-state bounded, only the most recent 32 immediate response bodies are retained.
-If an older ID is still inside the dedupe window but its response body has been
-evicted, imcodex returns an explicit `cached_response_expired` error message
-instead of silently acknowledging it with an empty response.
+channel IDs; choose a dedicated namespace such as `wecom-gateway`. SDK Gateway
+admission and idempotency own stable `message_id` deduplication. IMCodex does
+not persist a second response-body cache. The original in-flight HTTP exchange
+captures immediate output; after that exchange closes, a committed replay is
+acknowledged with an empty `messages` list. Gateways that require replayable
+HTTP bodies must retain the canonical outbound callback by `delivery_id`.
 
 The HTTP response contains any immediate command/status messages:
 
@@ -530,8 +526,8 @@ Normal Codex prompts usually finish asynchronously. Set both
 `IMCODEX_OUTBOUND_URL=https://gateway.example/outbound` and a separate
 `IMCODEX_OUTBOUND_WEBHOOK_TOKEN`; imcodex POSTs immediate messages and later
 native results to that URL using this payload. The deterministic
-`metadata.delivery_id` is attached to both replayable immediate replies and
-native projections so callback retries remain safe to deduplicate.
+`metadata.delivery_id` is attached to immediate replies and native projections
+so callback retries remain safe to deduplicate.
 
 ```json
 {
@@ -553,10 +549,10 @@ The gateway must return a 2xx response. Non-2xx responses are surfaced as
 delivery failures instead of being silently treated as sent. It must verify
 `Authorization: Bearer <IMCODEX_OUTBOUND_WEBHOOK_TOKEN>`. Treat this callback
 as the canonical delivery path; the inbound HTTP response also contains a
-convenience copy of immediate messages. Recent committed retries replay the
-cached immediate response and retry failed callback delivery without executing
-the command again. Immediate callbacks are therefore at-least-once while the
-gateway keeps retrying inside the documented cache window. Native projections
+convenience copy of immediate messages. SDK admission/idempotency prevents a
+committed inbound message from executing twice. Sink retries use the same
+delivery ID, and the bounded in-flight HTTP response slot deduplicates that ID
+so a failed callback attempt cannot append a second immediate body. Native projections
 use bounded in-process callback retries, not a second durable bridge outbox; if
 all attempts fail, recover the result from the native Codex thread. Every
 callback retry carries the same deterministic `metadata.delivery_id`, so the
@@ -612,8 +608,8 @@ Tencent's [`openclaw-weixin`](https://github.com/Tencent/openclaw-weixin).
 
 imcodex borrows their proven transport patterns—stable native IDs, long-poll
 cursors, topic routing, bounded retries, and QR login—but does not copy their
-agent/session/plugin runtimes. The existing `BaseChannelAdapter` and middleware
-remain the complete channel-to-bridge boundary.
+agent/session/plugin runtimes. SDK `ChannelAdapter` implementations and Gateway
+admission remain the complete channel-to-Application boundary.
 
 Enterprise WeCom is intentionally not bundled in this release. The current
 official Python AI Bot SDK does not yet expose a fully awaitable authenticated
@@ -639,8 +635,8 @@ remain `images`.
 
 ## Explicit Agent Delivery
 
-An Agent sends back to the IM recipient remembered for its native Codex thread
-with the repository launcher:
+An Agent sends back to every IM conversation currently bound to its native
+Codex Thread with the repository launcher:
 
 ```bash
 scripts/imcodex-send \
@@ -651,12 +647,11 @@ scripts/imcodex-send \
 On Windows use `scripts\imcodex-send.cmd`. The launcher preserves the Agent's
 working directory for relative artifact paths and submits to the authenticated
 local delivery endpoint. The launcher forwards native `CODEX_THREAD_ID`; the
-running bridge, not the launcher, resolves the last `channel_id` and
-`conversation_id` that explicitly selected that thread. Switching the
-conversation to another thread does not invalidate an older task, so parallel
-tasks retain their own recipients. Selecting the same native thread from
-another IM conversation intentionally moves its remembered route. A thread
-that has never been selected from IM fails explicitly instead of guessing.
+running bridge, not the launcher, resolves every SDK route whose IM
+Conversation currently selects that Thread. One Thread may fan out to several
+current IM subscribers. When a Conversation switches to another Thread, it no
+longer receives implicit delivery from the previous Thread. A Thread with no
+active IM route fails explicitly instead of guessing.
 The Windows launcher selects `IMCODEX_PYTHON` first, then the repository
 `.venv`, the active Conda environment, and finally `python` on `PATH`.
 

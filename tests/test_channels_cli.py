@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from imagent.channels.native.weixin_state import WeixinStateStore
 
 from imcodex.channels.weixin_login import WeixinLoginError, WeixinLoginFlow
-from imcodex.channels.weixin_state import WeixinStateStore
 from imcodex.channels_cli import run_channels_cli
 
 
@@ -102,7 +102,9 @@ async def test_weixin_login_handles_pair_code_and_official_idc_redirect(
 
 @pytest.mark.asyncio
 async def test_weixin_login_rejects_non_weixin_redirect(tmp_path: Path) -> None:
-    transport = FakeLoginTransport([{"status": "scaned_but_redirect", "redirect_host": "attacker.example"}])
+    transport = FakeLoginTransport(
+        [{"status": "scaned_but_redirect", "redirect_host": "attacker.example"}]
+    )
     flow = WeixinLoginFlow(
         state_store=WeixinStateStore(tmp_path),
         transport=transport,
@@ -157,14 +159,14 @@ def test_channels_cli_treats_durably_queued_delivery_as_accepted(
     current.mkdir(parents=True)
     (current / "health.json").write_text(
         json.dumps(
-                {
-                    "instance_id": "instance-1",
-                    "http": {
-                        "host": "127.0.0.1",
-                        "port": 8765,
-                        "listening": True,
-                    },
-                }
+            {
+                "instance_id": "instance-1",
+                "http": {
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                    "listening": True,
+                },
+            }
         ),
         encoding="utf-8",
     )
@@ -214,7 +216,7 @@ def test_channels_cli_doctor_reports_enabled_channel_without_secrets(
 
     rendered = "\n".join(outputs)
     assert result == 1
-    assert "missing bot token" in rendered
+    assert "requires bot_token or bot_token_file" in rendered
     assert "Bearer" not in rendered
 
 
@@ -252,7 +254,8 @@ def test_channels_cli_doctor_rejects_invalid_access_policy(
     result = run_channels_cli(["doctor"], output=outputs.append)
 
     assert result == 1
-    assert "qq: invalid access restrictions" in "\n".join(outputs)
+    assert "qq:" in "\n".join(outputs)
+    assert "access" in "\n".join(outputs)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission enforcement")
@@ -285,17 +288,13 @@ def test_channels_cli_doctor_rejects_invalid_feishu_domain(
     monkeypatch.setenv("IMCODEX_FEISHU_APP_SECRET", "secret")
     monkeypatch.setenv("IMCODEX_FEISHU_DOMAIN", "example.com")
     monkeypatch.setenv("IMCODEX_FEISHU_ALLOWED_USER_IDS", "ou_owner")
-    monkeypatch.setattr(
-        "imcodex.channels_cli.importlib.util.find_spec",
-        lambda _name: object(),
-    )
     outputs: list[str] = []
 
     result = run_channels_cli(["doctor"], output=outputs.append)
 
     rendered = "\n".join(outputs)
     assert result == 1
-    assert "feishu: invalid domain" in rendered
+    assert "Feishu domain must be 'feishu' or 'lark'" in rendered
     assert "must be 'feishu' or 'lark'" in rendered
 
 

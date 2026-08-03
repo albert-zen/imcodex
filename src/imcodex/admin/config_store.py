@@ -11,23 +11,21 @@ import re
 import secrets
 import tempfile
 import time
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Iterator, Mapping
 from urllib.parse import urlsplit
 
-from ..app_server_target import resolve_app_server_target
+from ..config import resolve_product_app_server_target
 from ..windows_security import secure_windows_path
-
 from .config_schema import (
     CONFIG_FIELDS,
     CONFIG_FIELDS_BY_KEY,
     ConfigFieldDefinition,
     FieldValueError,
 )
-
 
 _ASSIGNMENT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*?)(?:\r?\n)?$")
 _DOTENV_PROVENANCE_KEY = "IMCODEX_DOTENV_IMPORTED_KEYS"
@@ -41,7 +39,9 @@ class ConfigStoreError(RuntimeError):
 
 class ConfigConflictError(ConfigStoreError):
     def __init__(self, *, expected: str, current: str) -> None:
-        super().__init__("Configuration changed since it was loaded; reload and try again")
+        super().__init__(
+            "Configuration changed since it was loaded; reload and try again"
+        )
         self.expected = expected
         self.current = current
         self.expected_revision = expected
@@ -82,7 +82,11 @@ class ConfigSnapshot:
 
     @property
     def values(self) -> dict[str, object | None]:
-        return {state.definition.key: state.value for state in self.fields if not state.definition.secret}
+        return {
+            state.definition.key: state.value
+            for state in self.fields
+            if not state.definition.secret
+        }
 
     @property
     def secrets(self) -> dict[str, dict[str, object]]:
@@ -91,7 +95,11 @@ class ConfigSnapshot:
                 "configured": state.configured,
                 "source": state.source,
                 "editable": state.editable,
-                **({"overridden_by": list(state.overridden_by)} if state.overridden_by else {}),
+                **(
+                    {"overridden_by": list(state.overridden_by)}
+                    if state.overridden_by
+                    else {}
+                ),
             }
             for state in self.fields
             if state.definition.secret
@@ -147,12 +155,16 @@ class ConfigStore:
                 raw = self._read_bytes()
                 current_revision = _revision(raw, self._revision_key)
                 if not hmac.compare_digest(expected_revision, current_revision):
-                    raise ConfigConflictError(expected=expected_revision, current=current_revision)
+                    raise ConfigConflictError(
+                        expected=expected_revision, current=current_revision
+                    )
 
                 try:
                     text = raw.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    raise ConfigStoreError("Configuration file must be valid UTF-8") from exc
+                    raise ConfigStoreError(
+                        "Configuration file must be valid UTF-8"
+                    ) from exc
                 replacements = self._validate_updates(
                     values=values,
                     secrets=secrets,
@@ -189,7 +201,9 @@ class ConfigStore:
         for key, value in values.items():
             field = self._field(key)
             if field.secret:
-                raise ConfigValidationError(f"{key} must be updated through the secrets payload")
+                raise ConfigValidationError(
+                    f"{key} must be updated through the secrets payload"
+                )
             self._ensure_editable(field)
             try:
                 replacements[key] = field.validate(value)
@@ -206,7 +220,9 @@ class ConfigStore:
             action = update.get("action", "preserve")
             if action == "preserve":
                 if set(update) - {"action"}:
-                    raise ConfigValidationError(f"{key} preserve does not accept a value")
+                    raise ConfigValidationError(
+                        f"{key} preserve does not accept a value"
+                    )
                 continue
             if action == "clear":
                 if set(update) - {"action"}:
@@ -214,11 +230,15 @@ class ConfigStore:
                 replacements[key] = None
                 continue
             if action != "replace":
-                raise ConfigValidationError(f"{key} secret action must be preserve, replace, or clear")
+                raise ConfigValidationError(
+                    f"{key} secret action must be preserve, replace, or clear"
+                )
             if set(update) - {"action", "value"} or "value" not in update:
                 raise ConfigValidationError(f"{key} replace requires only a value")
             try:
-                replacements[key] = field.validate(update["value"], secret_replacement=True)
+                replacements[key] = field.validate(
+                    update["value"], secret_replacement=True
+                )
             except FieldValueError as exc:
                 raise ConfigValidationError(str(exc)) from exc
 
@@ -259,14 +279,24 @@ class ConfigStore:
 
             initial = effective(initial_key)
             maximum = effective(maximum_key)
-            initial = str(CONFIG_FIELDS_BY_KEY[initial_key].default) if initial in {None, ""} else initial
-            maximum = str(CONFIG_FIELDS_BY_KEY[maximum_key].default) if maximum in {None, ""} else maximum
+            initial = (
+                str(CONFIG_FIELDS_BY_KEY[initial_key].default)
+                if initial in {None, ""}
+                else initial
+            )
+            maximum = (
+                str(CONFIG_FIELDS_BY_KEY[maximum_key].default)
+                if maximum in {None, ""}
+                else maximum
+            )
             try:
                 invalid = float(str(maximum)) < float(str(initial))
             except ValueError:
                 invalid = False
             if invalid:
-                raise ConfigValidationError(f"{maximum_key} must be at least {initial_key}")
+                raise ConfigValidationError(
+                    f"{maximum_key} must be at least {initial_key}"
+                )
 
     def _field(self, key: str) -> ConfigFieldDefinition:
         field = CONFIG_FIELDS_BY_KEY.get(key)
@@ -277,7 +307,9 @@ class ConfigStore:
     def _ensure_editable(self, field: ConfigFieldDefinition) -> None:
         overrides = self._process_overrides(field)
         if overrides:
-            raise ConfigValidationError(f"{field.key} is controlled by the process environment and is not editable")
+            raise ConfigValidationError(
+                f"{field.key} is controlled by the process environment and is not editable"
+            )
 
     def _snapshot(self, raw: bytes) -> ConfigSnapshot:
         try:
@@ -286,9 +318,13 @@ class ConfigStore:
             raise ConfigStoreError("Configuration file must be valid UTF-8") from exc
         assignments = _assignments(text)
         states = tuple(self._field_state(field, assignments) for field in CONFIG_FIELDS)
-        return ConfigSnapshot(revision=_revision(raw, self._revision_key), fields=states)
+        return ConfigSnapshot(
+            revision=_revision(raw, self._revision_key), fields=states
+        )
 
-    def _field_state(self, field: ConfigFieldDefinition, assignments: Mapping[str, str]) -> ConfigFieldState:
+    def _field_state(
+        self, field: ConfigFieldDefinition, assignments: Mapping[str, str]
+    ) -> ConfigFieldState:
         overrides = self._process_overrides(field)
         raw: str | None
         if overrides:
@@ -302,7 +338,10 @@ class ConfigStore:
         elif field.key == "IMCODEX_APP_SERVER_URL":
             raw = _effective_target_mapping(assignments)
             target_present = any(key in assignments for key in field.storage_keys)
-            configured = any(bool(str(assignments.get(key) or "").strip()) for key in field.storage_keys)
+            configured = any(
+                bool(str(assignments.get(key) or "").strip())
+                for key in field.storage_keys
+            )
             source = "dotenv" if target_present else "default"
         else:
             raw = _effective_assignment(field, assignments)
@@ -343,11 +382,15 @@ class ConfigStore:
         except FileNotFoundError:
             return b""
         except OSError as exc:
-            raise ConfigStoreError(f"Could not read configuration file: {self.path}") from exc
+            raise ConfigStoreError(
+                f"Could not read configuration file: {self.path}"
+            ) from exc
 
     def _write_atomic(self, raw: bytes) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent
+        )
         temporary = Path(temporary_name)
         try:
             if os.name == "posix":
@@ -365,7 +408,9 @@ class ConfigStore:
             if os.name == "nt":
                 _secure_windows_file(self.path)
         except OSError as exc:
-            raise ConfigStoreError(f"Could not write configuration file: {self.path}") from exc
+            raise ConfigStoreError(
+                f"Could not write configuration file: {self.path}"
+            ) from exc
         finally:
             if fd >= 0:
                 os.close(fd)
@@ -400,7 +445,7 @@ class ConfigStore:
         def configured(key: str) -> bool:
             return bool(str(raw(key) or "").strip())
 
-        from ..channels.access import ChannelAccessPolicy
+        from imagent.channels.native.access import ChannelAccessPolicy
 
         for prefix in ("QQ", "TELEGRAM", "FEISHU", "WEIXIN"):
             enabled_key = f"IMCODEX_{prefix}_ENABLED"
@@ -409,8 +454,12 @@ class ConfigStore:
                 f"IMCODEX_{prefix}_ALLOWED_CONVERSATION_IDS",
                 f"IMCODEX_{prefix}_ACCESS_MATCH",
             )
-            channel_touched = any(key.startswith(f"IMCODEX_{prefix}_") for key in replacements)
-            if not touched(*access_keys) and not (channel_touched and enabled(enabled_key)):
+            channel_touched = any(
+                key.startswith(f"IMCODEX_{prefix}_") for key in replacements
+            )
+            if not touched(*access_keys) and not (
+                channel_touched and enabled(enabled_key)
+            ):
                 continue
             try:
                 ChannelAccessPolicy.from_config(
@@ -421,7 +470,9 @@ class ConfigStore:
                     }
                 )
             except ValueError as exc:
-                raise ConfigValidationError(f"{prefix.title()} access restrictions are invalid: {exc}") from exc
+                raise ConfigValidationError(
+                    f"{prefix.title()} access restrictions are invalid: {exc}"
+                ) from exc
 
         qq_keys = (
             "IMCODEX_QQ_ENABLED",
@@ -429,8 +480,12 @@ class ConfigStore:
             "IMCODEX_QQ_CLIENT_SECRET",
         )
         if touched(*qq_keys) and enabled("IMCODEX_QQ_ENABLED"):
-            if not configured("IMCODEX_QQ_APP_ID") or not configured("IMCODEX_QQ_CLIENT_SECRET"):
-                raise ConfigValidationError("QQ requires an App ID and client secret before it can be enabled")
+            if not configured("IMCODEX_QQ_APP_ID") or not configured(
+                "IMCODEX_QQ_CLIENT_SECRET"
+            ):
+                raise ConfigValidationError(
+                    "QQ requires an App ID and client secret before it can be enabled"
+                )
 
         telegram_keys = (
             "IMCODEX_TELEGRAM_ENABLED",
@@ -438,16 +493,24 @@ class ConfigStore:
             "IMCODEX_TELEGRAM_BOT_TOKEN_FILE",
         )
         if touched(*telegram_keys) and enabled("IMCODEX_TELEGRAM_ENABLED"):
-            if not configured("IMCODEX_TELEGRAM_BOT_TOKEN") and not configured("IMCODEX_TELEGRAM_BOT_TOKEN_FILE"):
-                raise ConfigValidationError("Telegram requires a bot token or bot token file before it can be enabled")
+            if not configured("IMCODEX_TELEGRAM_BOT_TOKEN") and not configured(
+                "IMCODEX_TELEGRAM_BOT_TOKEN_FILE"
+            ):
+                raise ConfigValidationError(
+                    "Telegram requires a bot token or bot token file before it can be enabled"
+                )
             if not configured("IMCODEX_TELEGRAM_BOT_TOKEN"):
                 token_path = self._resolved_path(raw("IMCODEX_TELEGRAM_BOT_TOKEN_FILE"))
                 try:
-                    from ..channels.telegram import read_telegram_bot_token_file
+                    from imagent.channels.native.telegram import (
+                        read_telegram_bot_token_file,
+                    )
 
                     read_telegram_bot_token_file(token_path)
                 except (OSError, RuntimeError, ValueError) as exc:
-                    raise ConfigValidationError(f"Telegram bot token file is not usable: {token_path}") from exc
+                    raise ConfigValidationError(
+                        f"Telegram bot token file is not usable: {token_path}"
+                    ) from exc
 
         feishu_keys = (
             "IMCODEX_FEISHU_ENABLED",
@@ -455,8 +518,12 @@ class ConfigStore:
             "IMCODEX_FEISHU_APP_SECRET",
         )
         if touched(*feishu_keys) and enabled("IMCODEX_FEISHU_ENABLED"):
-            if not configured("IMCODEX_FEISHU_APP_ID") or not configured("IMCODEX_FEISHU_APP_SECRET"):
-                raise ConfigValidationError("Feishu requires an App ID and app secret before it can be enabled")
+            if not configured("IMCODEX_FEISHU_APP_ID") or not configured(
+                "IMCODEX_FEISHU_APP_SECRET"
+            ):
+                raise ConfigValidationError(
+                    "Feishu requires an App ID and app secret before it can be enabled"
+                )
             if importlib.util.find_spec("lark_channel") is None:
                 raise ConfigValidationError(
                     "Feishu support is not installed; install imcodex with the feishu extra first"
@@ -472,10 +539,14 @@ class ConfigStore:
             if state_dir:
                 resolved_state_dir = self._resolved_path(state_dir)
             else:
-                data_dir = raw("IMCODEX_DATA_DIR") or str(CONFIG_FIELDS_BY_KEY["IMCODEX_DATA_DIR"].default)
-                resolved_state_dir = self._resolved_path(data_dir) / "channels" / "weixin"
+                data_dir = raw("IMCODEX_DATA_DIR") or str(
+                    CONFIG_FIELDS_BY_KEY["IMCODEX_DATA_DIR"].default
+                )
+                resolved_state_dir = (
+                    self._resolved_path(data_dir) / "channels" / "weixin"
+                )
             try:
-                from ..channels.weixin_state import WeixinStateStore
+                from imagent.channels.native.weixin_state import WeixinStateStore
 
                 credentials = WeixinStateStore(resolved_state_dir).load_credentials()
             except (OSError, RuntimeError, ValueError) as exc:
@@ -483,7 +554,9 @@ class ConfigStore:
                     "Weixin login state is not usable; run the Weixin login command before enabling it"
                 ) from exc
             if credentials is None:
-                raise ConfigValidationError("Weixin is not logged in; run the Weixin login command before enabling it")
+                raise ConfigValidationError(
+                    "Weixin is not logged in; run the Weixin login command before enabling it"
+                )
 
         webhook_keys = (
             "IMCODEX_OUTBOUND_URL",
@@ -491,8 +564,12 @@ class ConfigStore:
         )
         if touched(*webhook_keys) and configured("IMCODEX_OUTBOUND_URL"):
             outbound_url = str(raw("IMCODEX_OUTBOUND_URL") or "")
-            if not _is_loopback_url(outbound_url) and not configured("IMCODEX_OUTBOUND_WEBHOOK_TOKEN"):
-                raise ConfigValidationError("Remote outbound webhooks require an outbound bearer token")
+            if not _is_loopback_url(outbound_url) and not configured(
+                "IMCODEX_OUTBOUND_WEBHOOK_TOKEN"
+            ):
+                raise ConfigValidationError(
+                    "Remote outbound webhooks require an outbound bearer token"
+                )
 
     def _resolved_path(self, value: object) -> Path:
         path = Path(str(value or "").strip()).expanduser()
@@ -556,7 +633,9 @@ def _acquire_windows_file_lock(fd: int) -> None:
                 raise
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise ConfigStoreError("Timed out waiting for another configuration writer") from exc
+                raise ConfigStoreError(
+                    "Timed out waiting for another configuration writer"
+                ) from exc
             time.sleep(min(0.05, remaining))
 
 
@@ -573,7 +652,9 @@ def _assignments(text: str) -> dict[str, str]:
     return values
 
 
-def _effective_assignment(field: ConfigFieldDefinition, assignments: Mapping[str, str]) -> str | None:
+def _effective_assignment(
+    field: ConfigFieldDefinition, assignments: Mapping[str, str]
+) -> str | None:
     primary = assignments.get(field.key)
     if primary is not None and (primary.strip() or not field.aliases):
         return primary
@@ -617,7 +698,7 @@ def _effective_target_mapping(values: Mapping[str, str]) -> str | None:
         core_url = f"ws://127.0.0.1:{port}"
         core_mode = core_mode or "dedicated-ws"
     try:
-        return resolve_app_server_target(
+        return resolve_product_app_server_target(
             app_server_url=app_server_url,
             core_url=core_url,
             core_mode=core_mode,
@@ -630,7 +711,12 @@ def _csv_environment_keys(
     environ: Mapping[str, str],
     *names: str,
 ) -> set[str]:
-    return {key.strip() for name in names for key in str(environ.get(name) or "").split(",") if key.strip()}
+    return {
+        key.strip()
+        for name in names
+        for key in str(environ.get(name) or "").split(",")
+        if key.strip()
+    }
 
 
 def _is_loopback_url(value: str) -> bool:
@@ -678,7 +764,8 @@ def _apply_replacements(text: str, replacements: Mapping[str, str | None]) -> st
         indexes = [
             index
             for index, line in enumerate(lines)
-            if (match := _ASSIGNMENT.match(line)) is not None and match.group(1) in field.storage_keys
+            if (match := _ASSIGNMENT.match(line)) is not None
+            and match.group(1) in field.storage_keys
         ]
         replacement = replacements[field.key]
         if replacement is None:
@@ -689,7 +776,13 @@ def _apply_replacements(text: str, replacements: Mapping[str, str | None]) -> st
         serialized = f"{field.key}={_encode_value(replacement)}"
         if indexes:
             target = indexes[-1]
-            ending = "\r\n" if lines[target].endswith("\r\n") else "\n" if lines[target].endswith("\n") else ""
+            ending = (
+                "\r\n"
+                if lines[target].endswith("\r\n")
+                else "\n"
+                if lines[target].endswith("\n")
+                else ""
+            )
             lines[target] = serialized + ending
             for index in reversed(indexes[:-1]):
                 del lines[index]
@@ -710,7 +803,11 @@ def _encode_value(value: str) -> str:
         elif '"' not in value:
             encoded = f'"{value}"'
         else:
-            raise ConfigValidationError("Configuration value cannot be represented safely in this dotenv format")
+            raise ConfigValidationError(
+                "Configuration value cannot be represented safely in this dotenv format"
+            )
     if _decode_value(encoded) != value:
-        raise ConfigValidationError("Configuration value cannot be represented safely in this dotenv format")
+        raise ConfigValidationError(
+            "Configuration value cannot be represented safely in this dotenv format"
+        )
     return encoded

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from .client import AppServerError
-
+from imagent.applications.appserver_client import AppServerError
 
 PERMISSION_MODE_PROFILE_IDS = {
     "default": ":workspace",
@@ -70,7 +69,9 @@ class CodexSettingsBackendMixin:
             page = await self.client.list_models(params)
             if not combined:
                 combined = dict(page)
-            models.extend(item for item in page.get("data", []) if isinstance(item, dict))
+            models.extend(
+                item for item in page.get("data", []) if isinstance(item, dict)
+            )
             next_cursor = page.get("nextCursor")
             if not next_cursor:
                 combined["data"] = models
@@ -127,11 +128,15 @@ class CodexSettingsBackendMixin:
 
         config = self._effective_config(result)
         requirements = result.get("requirements")
-        effective_config, managed_settings = self._global_effective_config(config, requirements)
+        effective_config, managed_settings = self._global_effective_config(
+            config, requirements
+        )
         result["effectiveGlobalConfig"] = effective_config
         result["managedSettings"] = managed_settings
         result["fastAvailable"] = self._fast_feature_available(config, requirements)
-        result["personalityAvailable"] = self._personality_feature_available(config, requirements)
+        result["personalityAvailable"] = self._personality_feature_available(
+            config, requirements
+        )
         result = await self._read_reasoning_options_for_cwd(
             None,
             config_result=result,
@@ -148,7 +153,9 @@ class CodexSettingsBackendMixin:
             result.setdefault("warnings", {}).update(warnings)
         return result
 
-    async def read_permission_options(self, channel_id: str, conversation_id: str) -> dict:
+    async def read_permission_options(
+        self, channel_id: str, conversation_id: str
+    ) -> dict:
         cwd = self.store.current_cwd(channel_id, conversation_id)
         return await self._read_permission_options_for_cwd(cwd)
 
@@ -196,7 +203,9 @@ class CodexSettingsBackendMixin:
             result["warnings"] = warnings
         return result
 
-    async def read_reasoning_options(self, channel_id: str, conversation_id: str) -> dict:
+    async def read_reasoning_options(
+        self, channel_id: str, conversation_id: str
+    ) -> dict:
         cwd = self.store.current_cwd(channel_id, conversation_id)
         result = await self.client.read_config(include_layers=False, cwd=cwd)
         result.update(await self._read_config_requirements_if_supported())
@@ -222,7 +231,9 @@ class CodexSettingsBackendMixin:
     async def read_fast_options(self, channel_id: str, conversation_id: str) -> dict:
         return await self.read_effective_settings(channel_id, conversation_id)
 
-    async def read_personality_options(self, channel_id: str, conversation_id: str) -> dict:
+    async def read_personality_options(
+        self, channel_id: str, conversation_id: str
+    ) -> dict:
         result = await self.read_effective_settings(channel_id, conversation_id)
         result["personalityAvailable"] = (
             result.get("personalityFeatureAvailable") is not False
@@ -245,7 +256,9 @@ class CodexSettingsBackendMixin:
         effective_config, _managed = self._global_effective_config(config, requirements)
         result["effectiveConfig"] = effective_config
         result["fastAvailable"] = self._fast_feature_available(config, requirements)
-        result["personalityFeatureAvailable"] = self._personality_feature_available(config, requirements)
+        result["personalityFeatureAvailable"] = self._personality_feature_available(
+            config, requirements
+        )
         if not include_model_metadata:
             return result
         return await self.enrich_effective_settings(result)
@@ -264,9 +277,13 @@ class CodexSettingsBackendMixin:
             [item for item in catalog.get("data", []) if isinstance(item, dict)],
         )
         if selected is not None:
-            result["selectedModelDefaultServiceTier"] = selected.get("defaultServiceTier")
+            result["selectedModelDefaultServiceTier"] = selected.get(
+                "defaultServiceTier"
+            )
             result["fastSupported"] = self._model_supports_fast_tier(selected)
-            result["personalitySupported"] = selected.get("supportsPersonality") is not False
+            result["personalitySupported"] = (
+                selected.get("supportsPersonality") is not False
+            )
         return result
 
     async def _read_reasoning_options_for_cwd(
@@ -279,9 +296,15 @@ class CodexSettingsBackendMixin:
         effective_config: dict | None = None,
     ) -> dict:
         result = (
-            config_result if config_result is not None else await self.client.read_config(include_layers=False, cwd=cwd)
+            config_result
+            if config_result is not None
+            else await self.client.read_config(include_layers=False, cwd=cwd)
         )
-        config = effective_config if effective_config is not None else self._effective_config(result)
+        config = (
+            effective_config
+            if effective_config is not None
+            else self._effective_config(result)
+        )
         try:
             catalog = await self.list_models(include_hidden=include_hidden)
         except AppServerError as exc:
@@ -329,11 +352,14 @@ class CodexSettingsBackendMixin:
         effort: str | None,
     ) -> dict:
         options = await self.read_reasoning_options(channel_id, conversation_id)
-        if self._managed_new_thread_value(
-            options.get("requirements"),
-            "modelReasoningEffort",
-            "model_reasoning_effort",
-        ) is not None:
+        if (
+            self._managed_new_thread_value(
+                options.get("requirements"),
+                "modelReasoningEffort",
+                "model_reasoning_effort",
+            )
+            is not None
+        ):
             raise AppServerError("reasoning effort is managed by Codex requirements")
         return await self._set_reasoning_effort_value(effort, options=options)
 
@@ -342,7 +368,12 @@ class CodexSettingsBackendMixin:
         requirements_result = await self._read_config_requirements_if_supported()
         config_result.update(requirements_result)
         requirements = config_result.get("requirements")
-        if self._managed_new_thread_value(requirements, "modelReasoningEffort", "model_reasoning_effort") is not None:
+        if (
+            self._managed_new_thread_value(
+                requirements, "modelReasoningEffort", "model_reasoning_effort"
+            )
+            is not None
+        ):
             raise AppServerError("reasoning effort is managed by Codex requirements")
         if isinstance(effort, str) and effort.lower() == "default":
             effort = None
@@ -368,7 +399,9 @@ class CodexSettingsBackendMixin:
     ) -> dict:
         if effort is not None:
             if options is None:
-                raise AppServerError("reasoning options are required to validate a non-default effort")
+                raise AppServerError(
+                    "reasoning options are required to validate a non-default effort"
+                )
             effort = self._validated_reasoning_effort(effort, options)
         return await self._write_user_config_edits(
             edits=[
@@ -382,7 +415,9 @@ class CodexSettingsBackendMixin:
             config_result=options,
         )
 
-    async def set_permission_mode(self, channel_id: str, conversation_id: str, mode: str) -> dict:
+    async def set_permission_mode(
+        self, channel_id: str, conversation_id: str, mode: str
+    ) -> dict:
         self._permission_profile_id(mode)
         cwd = self.store.current_cwd(channel_id, conversation_id)
         return await self._set_permission_mode_for_cwd(cwd, mode)
@@ -390,7 +425,9 @@ class CodexSettingsBackendMixin:
     async def set_global_permission_mode(self, mode: str) -> dict:
         self._permission_profile_id(mode)
         config_result = await self.read_global_config()
-        return await self._set_permission_mode_for_cwd(None, mode, config_result=config_result)
+        return await self._set_permission_mode_for_cwd(
+            None, mode, config_result=config_result
+        )
 
     async def _set_permission_mode_for_cwd(
         self,
@@ -414,26 +451,45 @@ class CodexSettingsBackendMixin:
                 warning=str(exc),
                 config_result=config_result,
             )
-        if self._requirements_default_permission(options.get("requirements")) is not None:
+        if (
+            self._requirements_default_permission(options.get("requirements"))
+            is not None
+        ):
             raise AppServerError("permission mode is managed by Codex requirements")
         if options.get("nativeProfilesSupported") is False:
             warning = str((options.get("warnings") or {}).get("profiles") or "")
-            if not self._legacy_permission_mode_is_allowed(mode, options.get("requirements")):
-                raise AppServerError(f"permission mode {mode} is not allowed by Codex requirements")
-            return await self._set_legacy_permission_mode(mode, warning=warning, config_result=options)
+            if not self._legacy_permission_mode_is_allowed(
+                mode, options.get("requirements")
+            ):
+                raise AppServerError(
+                    f"permission mode {mode} is not allowed by Codex requirements"
+                )
+            return await self._set_legacy_permission_mode(
+                mode, warning=warning, config_result=options
+            )
         if not self._permission_profile_is_available(profile_id, options):
-            raise AppServerError(f"permission profile {profile_id} is not available in Codex")
+            raise AppServerError(
+                f"permission profile {profile_id} is not available in Codex"
+            )
         if not self._permission_profile_is_allowed(profile_id, options):
-            raise AppServerError(f"permission profile {profile_id} is not allowed by Codex requirements")
+            raise AppServerError(
+                f"permission profile {profile_id} is not allowed by Codex requirements"
+            )
         if not self._approval_policy_is_allowed(mode, options.get("requirements")):
-            raise AppServerError(f"approval policy for {mode} is not allowed by Codex requirements")
-        write_result = await self._set_native_permission_mode(mode, profile_id, config_result=options)
+            raise AppServerError(
+                f"approval policy for {mode} is not allowed by Codex requirements"
+            )
+        write_result = await self._set_native_permission_mode(
+            mode, profile_id, config_result=options
+        )
         write_result["mode"] = mode
         write_result["profile"] = profile_id
         write_result["fallback"] = False
         return write_result
 
-    async def ensure_default_permission_mode(self, connection_epoch: int | None = None) -> dict:
+    async def ensure_default_permission_mode(
+        self, connection_epoch: int | None = None
+    ) -> dict:
         del connection_epoch
         result = await self.client.read_config(include_layers=True, cwd=None)
         config = self._effective_config(result)
@@ -444,7 +500,9 @@ class CodexSettingsBackendMixin:
             }
 
         try:
-            options = await self._read_permission_options_for_cwd(None, config_result=result)
+            options = await self._read_permission_options_for_cwd(
+                None, config_result=result
+            )
         except AppServerError as exc:
             if not self._is_native_permission_profile_unsupported(exc):
                 raise
@@ -454,7 +512,9 @@ class CodexSettingsBackendMixin:
                 config_result=result,
             )
         else:
-            managed_default = self._requirements_default_permission(options.get("requirements"))
+            managed_default = self._requirements_default_permission(
+                options.get("requirements")
+            )
             if managed_default is not None:
                 return {
                     "changed": False,
@@ -462,7 +522,9 @@ class CodexSettingsBackendMixin:
                 }
             if options.get("nativeProfilesSupported") is False:
                 warning = str((options.get("warnings") or {}).get("profiles") or "")
-                if not self._legacy_permission_mode_is_allowed("full-access", options.get("requirements")):
+                if not self._legacy_permission_mode_is_allowed(
+                    "full-access", options.get("requirements")
+                ):
                     return {
                         "changed": False,
                         "reason": "Codex requirements do not allow the documented full-access default",
@@ -484,7 +546,9 @@ class CodexSettingsBackendMixin:
                         "changed": False,
                         "reason": f"permission profile {profile_id} is not allowed by Codex requirements",
                     }
-                if not self._approval_policy_is_allowed("full-access", options.get("requirements")):
+                if not self._approval_policy_is_allowed(
+                    "full-access", options.get("requirements")
+                ):
                     return {
                         "changed": False,
                         "reason": "approval policy never is not allowed by Codex requirements",
@@ -580,7 +644,9 @@ class CodexSettingsBackendMixin:
         config_result: dict | None = None,
     ) -> dict:
         if config_result is None:
-            return await self.write_config_value(key_path="model", value=model, merge_strategy="replace")
+            return await self.write_config_value(
+                key_path="model", value=model, merge_strategy="replace"
+            )
         return await self._write_user_config_edits(
             edits=[{"keyPath": "model", "value": model, "mergeStrategy": "replace"}],
             reload_user_config=False,
@@ -601,7 +667,9 @@ class CodexSettingsBackendMixin:
         config_result = await self.client.read_config(include_layers=False, cwd=cwd)
         config_result.update(await self._read_config_requirements_if_supported())
         await self._validate_personality_compatibility(personality, config_result)
-        return await self._set_personality_value(personality, config_result=config_result)
+        return await self._set_personality_value(
+            personality, config_result=config_result
+        )
 
     async def set_global_personality(self, personality: str | None) -> dict:
         personality = self._normalized_personality(personality)
@@ -610,7 +678,9 @@ class CodexSettingsBackendMixin:
             requirements_result = await self._read_config_requirements_if_supported()
             config_result.update(requirements_result)
             await self._validate_personality_compatibility(personality, config_result)
-        return await self._set_personality_value(personality, config_result=config_result)
+        return await self._set_personality_value(
+            personality, config_result=config_result
+        )
 
     async def _set_personality_value(
         self,
@@ -637,15 +707,24 @@ class CodexSettingsBackendMixin:
         requirements_result = await self._read_config_requirements_if_supported()
         config_result.update(requirements_result)
         requirements = config_result.get("requirements")
-        if self._managed_new_thread_value(requirements, "serviceTier", "service_tier") is not None:
+        if (
+            self._managed_new_thread_value(requirements, "serviceTier", "service_tier")
+            is not None
+        ):
             raise AppServerError("Fast mode is managed by Codex requirements")
         if enabled:
             config = self._effective_config(config_result)
             if not self._fast_feature_available(config, requirements):
-                raise AppServerError("Fast mode is disabled by native Codex feature requirements")
+                raise AppServerError(
+                    "Fast mode is disabled by native Codex feature requirements"
+                )
             catalog = await self.list_models(include_hidden=True)
-            models = [item for item in catalog.get("data", []) if isinstance(item, dict)]
-            effective_config, _managed = self._global_effective_config(config, requirements)
+            models = [
+                item for item in catalog.get("data", []) if isinstance(item, dict)
+            ]
+            effective_config, _managed = self._global_effective_config(
+                config, requirements
+            )
             selected = self._select_reasoning_model(effective_config, models)
             if selected is None or not self._model_supports_fast_tier(selected):
                 model = str(
@@ -654,7 +733,9 @@ class CodexSettingsBackendMixin:
                     or self._configured_model_id(config)
                     or "the active model"
                 )
-                raise AppServerError(f"Fast mode is not available for {model} in the native model catalog")
+                raise AppServerError(
+                    f"Fast mode is not available for {model} in the native model catalog"
+                )
         return await self._write_user_config_edits(
             edits=[
                 {
@@ -670,7 +751,9 @@ class CodexSettingsBackendMixin:
     async def set_global_preferences(self, updates: dict[str, object]) -> dict:
         allowed = {"model", "reasoningEffort", "personality", "fast"}
         if not updates or not set(updates).issubset(allowed):
-            raise AppServerError("native preference update contains unsupported settings")
+            raise AppServerError(
+                "native preference update contains unsupported settings"
+            )
 
         config_result = await self.read_global_config()
         config_result.update(await self._read_config_requirements_if_supported())
@@ -687,15 +770,22 @@ class CodexSettingsBackendMixin:
                 candidate.pop(key, None)
             if model is not None:
                 candidate["model"] = model
-            edits.append({"keyPath": "model", "value": model, "mergeStrategy": "replace"})
+            edits.append(
+                {"keyPath": "model", "value": model, "mergeStrategy": "replace"}
+            )
 
         if "reasoningEffort" in updates:
-            if self._managed_new_thread_value(
-                requirements,
-                "modelReasoningEffort",
-                "model_reasoning_effort",
-            ) is not None:
-                raise AppServerError("reasoning effort is managed by Codex requirements")
+            if (
+                self._managed_new_thread_value(
+                    requirements,
+                    "modelReasoningEffort",
+                    "model_reasoning_effort",
+                )
+                is not None
+            ):
+                raise AppServerError(
+                    "reasoning effort is managed by Codex requirements"
+                )
             effort = updates["reasoningEffort"]
             candidate["model_reasoning_effort"] = effort
             edits.append(
@@ -708,8 +798,12 @@ class CodexSettingsBackendMixin:
 
         if "personality" in updates:
             personality = self._normalized_personality(updates["personality"])
-            if personality is not None and not self._personality_feature_available(config, requirements):
-                raise AppServerError("personality is disabled by native Codex feature requirements")
+            if personality is not None and not self._personality_feature_available(
+                config, requirements
+            ):
+                raise AppServerError(
+                    "personality is disabled by native Codex feature requirements"
+                )
             candidate["personality"] = personality
             edits.append(
                 {
@@ -723,10 +817,17 @@ class CodexSettingsBackendMixin:
             enabled = updates["fast"]
             if not isinstance(enabled, bool):
                 raise AppServerError("fast mode must be a boolean")
-            if self._managed_new_thread_value(requirements, "serviceTier", "service_tier") is not None:
+            if (
+                self._managed_new_thread_value(
+                    requirements, "serviceTier", "service_tier"
+                )
+                is not None
+            ):
                 raise AppServerError("Fast mode is managed by Codex requirements")
             if enabled and not self._fast_feature_available(config, requirements):
-                raise AppServerError("Fast mode is disabled by native Codex feature requirements")
+                raise AppServerError(
+                    "Fast mode is disabled by native Codex feature requirements"
+                )
             candidate["service_tier"] = "priority" if enabled else "default"
             edits.append(
                 {
@@ -750,15 +851,23 @@ class CodexSettingsBackendMixin:
                 config_result=config_result,
             )
 
-        effective_candidate, _managed = self._global_effective_config(candidate, requirements)
+        effective_candidate, _managed = self._global_effective_config(
+            candidate, requirements
+        )
         catalog = await self.list_models(include_hidden=True)
         models = [item for item in catalog.get("data", []) if isinstance(item, dict)]
         selected = self._select_reasoning_model(effective_candidate, models)
         if selected is None:
-            model = self._configured_model_id(effective_candidate) or "the native default"
-            raise AppServerError(f"model {model} was not found in the native model catalog")
+            model = (
+                self._configured_model_id(effective_candidate) or "the native default"
+            )
+            raise AppServerError(
+                f"model {model} was not found in the native model catalog"
+            )
 
-        effort = effective_candidate.get("model_reasoning_effort") or effective_candidate.get("reasoningEffort")
+        effort = effective_candidate.get(
+            "model_reasoning_effort"
+        ) or effective_candidate.get("reasoningEffort")
         native_efforts = self._native_reasoning_efforts(selected)
         if effort is not None and native_efforts is None:
             raise AppServerError(
@@ -779,7 +888,9 @@ class CodexSettingsBackendMixin:
             and personality != "default"
             and selected.get("supportsPersonality") is False
         ):
-            raise AppServerError("personality is not supported by the selected native model")
+            raise AppServerError(
+                "personality is not supported by the selected native model"
+            )
 
         tier = str(effective_candidate.get("service_tier") or "").strip().lower()
         if (
@@ -787,7 +898,9 @@ class CodexSettingsBackendMixin:
             and tier in {"fast", "priority"}
             and not self._model_supports_fast_tier(selected)
         ):
-            raise AppServerError("Fast mode is not available for the selected native model")
+            raise AppServerError(
+                "Fast mode is not available for the selected native model"
+            )
 
         return await self._write_user_config_edits(
             edits=edits,
@@ -807,15 +920,24 @@ class CodexSettingsBackendMixin:
         config_result = await self.client.read_config(include_layers=False, cwd=cwd)
         config_result.update(await self._read_config_requirements_if_supported())
         requirements = config_result.get("requirements")
-        if self._managed_new_thread_value(requirements, "serviceTier", "service_tier") is not None:
+        if (
+            self._managed_new_thread_value(requirements, "serviceTier", "service_tier")
+            is not None
+        ):
             raise AppServerError("Fast mode is managed by Codex requirements")
         config = self._effective_config(config_result)
         if enabled:
             if not self._fast_feature_available(config, requirements):
-                raise AppServerError("Fast mode is disabled by native Codex feature requirements")
-            effective_config, _managed = self._global_effective_config(config, requirements)
+                raise AppServerError(
+                    "Fast mode is disabled by native Codex feature requirements"
+                )
+            effective_config, _managed = self._global_effective_config(
+                config, requirements
+            )
             catalog = await self.list_models(include_hidden=True)
-            models = [item for item in catalog.get("data", []) if isinstance(item, dict)]
+            models = [
+                item for item in catalog.get("data", []) if isinstance(item, dict)
+            ]
             selected = self._select_reasoning_model(effective_config, models)
             if selected is None or not self._model_supports_fast_tier(selected):
                 model = str(
@@ -824,7 +946,9 @@ class CodexSettingsBackendMixin:
                     or self._configured_model_id(effective_config)
                     or "the active model"
                 )
-                raise AppServerError(f"Fast mode is not available for {model} in the native model catalog")
+                raise AppServerError(
+                    f"Fast mode is not available for {model} in the native model catalog"
+                )
         return await self._write_user_config_edits(
             edits=[
                 {
@@ -848,7 +972,9 @@ class CodexSettingsBackendMixin:
                 raise
             return {}
 
-    async def _list_permission_profiles(self, channel_id: str, conversation_id: str) -> list[dict]:
+    async def _list_permission_profiles(
+        self, channel_id: str, conversation_id: str
+    ) -> list[dict]:
         cwd = self.store.current_cwd(channel_id, conversation_id)
         return await self._list_permission_profiles_for_cwd(cwd)
 
@@ -863,13 +989,17 @@ class CodexSettingsBackendMixin:
             if cursor is not None:
                 params["cursor"] = cursor
             result = await self.client.list_permission_profiles(params)
-            profiles.extend(item for item in result.get("data", []) if isinstance(item, dict))
+            profiles.extend(
+                item for item in result.get("data", []) if isinstance(item, dict)
+            )
             next_cursor = result.get("nextCursor")
             if not next_cursor:
                 return profiles
             cursor = str(next_cursor)
             if cursor in seen_cursors:
-                raise AppServerError("permissionProfile/list returned a repeated pagination cursor")
+                raise AppServerError(
+                    "permissionProfile/list returned a repeated pagination cursor"
+                )
             seen_cursors.add(cursor)
 
     async def _set_legacy_permission_mode(
@@ -897,7 +1027,10 @@ class CodexSettingsBackendMixin:
         profiles = options.get("profiles")
         if not isinstance(profiles, list):
             return False
-        return any(isinstance(profile, dict) and profile.get("id") == profile_id for profile in profiles)
+        return any(
+            isinstance(profile, dict) and profile.get("id") == profile_id
+            for profile in profiles
+        )
 
     def _permission_profile_id(self, mode: str) -> str:
         profile_id = PERMISSION_MODE_PROFILE_IDS.get(mode)
@@ -909,7 +1042,11 @@ class CodexSettingsBackendMixin:
         profiles = options.get("profiles")
         if isinstance(profiles, list):
             profile = next(
-                (item for item in profiles if isinstance(item, dict) and item.get("id") == profile_id),
+                (
+                    item
+                    for item in profiles
+                    if isinstance(item, dict) and item.get("id") == profile_id
+                ),
                 None,
             )
             if isinstance(profile, dict) and profile.get("allowed") is False:
@@ -930,7 +1067,9 @@ class CodexSettingsBackendMixin:
             return True
         return _PERMISSION_MODE_APPROVAL_POLICIES[mode] in allowed
 
-    def _legacy_permission_mode_is_allowed(self, mode: str, requirements: object) -> bool:
+    def _legacy_permission_mode_is_allowed(
+        self, mode: str, requirements: object
+    ) -> bool:
         if not self._approval_policy_is_allowed(mode, requirements):
             return False
         if not isinstance(requirements, dict):
@@ -939,7 +1078,9 @@ class CodexSettingsBackendMixin:
         if not isinstance(allowed_sandboxes, list):
             return True
         edits = _LEGACY_PERMISSION_PRESETS[mode]
-        sandbox = next(edit["value"] for edit in edits if edit["keyPath"] == "sandbox_mode")
+        sandbox = next(
+            edit["value"] for edit in edits if edit["keyPath"] == "sandbox_mode"
+        )
         return sandbox in allowed_sandboxes
 
     def _requirements_default_permission(self, requirements: object) -> object | None:
@@ -999,7 +1140,9 @@ class CodexSettingsBackendMixin:
             file_path=file_path,
         )
 
-    def _user_config_write_target(self, config_result: dict | None) -> tuple[str | None, str | None]:
+    def _user_config_write_target(
+        self, config_result: dict | None
+    ) -> tuple[str | None, str | None]:
         if not isinstance(config_result, dict):
             return None, None
         layers = config_result.get("layers")
@@ -1009,7 +1152,11 @@ class CodexSettingsBackendMixin:
             if not isinstance(layer, dict):
                 continue
             source = layer.get("name")
-            if not isinstance(source, dict) or source.get("type") != "user" or source.get("profile"):
+            if (
+                not isinstance(source, dict)
+                or source.get("type") != "user"
+                or source.get("profile")
+            ):
                 continue
             version = str(layer.get("version") or "").strip() or None
             file_path = str(source.get("file") or "").strip() or None
@@ -1036,7 +1183,9 @@ class CodexSettingsBackendMixin:
         config = self._effective_config(config_result)
         requirements = config_result.get("requirements")
         if not self._personality_feature_available(config, requirements):
-            raise AppServerError("personality is disabled by native Codex feature requirements")
+            raise AppServerError(
+                "personality is disabled by native Codex feature requirements"
+            )
         effective_config, _managed = self._global_effective_config(
             config,
             requirements,
@@ -1047,7 +1196,9 @@ class CodexSettingsBackendMixin:
             [item for item in catalog.get("data", []) if isinstance(item, dict)],
         )
         if selected is not None and selected.get("supportsPersonality") is False:
-            model = str(selected.get("displayName") or selected.get("id") or "the active model")
+            model = str(
+                selected.get("displayName") or selected.get("id") or "the active model"
+            )
             raise AppServerError(f"personality is not supported by {model}")
 
     async def _validate_model_compatibility(
@@ -1069,15 +1220,18 @@ class CodexSettingsBackendMixin:
             "model_reasoning_effort",
         )
         if effort is None:
-            effort = config.get("model_reasoning_effort") or config.get("reasoningEffort")
-        service_tier = self._managed_new_thread_value(requirements, "serviceTier", "service_tier")
+            effort = config.get("model_reasoning_effort") or config.get(
+                "reasoningEffort"
+            )
+        service_tier = self._managed_new_thread_value(
+            requirements, "serviceTier", "service_tier"
+        )
         if service_tier is None:
             service_tier = config.get("service_tier") or config.get("serviceTier")
         personality = str(config.get("personality") or "").strip().lower()
-        personality_active = (
-            self._personality_feature_available(config, requirements)
-            and personality not in {"", "default"}
-        )
+        personality_active = self._personality_feature_available(
+            config, requirements
+        ) and personality not in {"", "default"}
         fast_requested = self._fast_feature_available(config, requirements) and str(
             service_tier or ""
         ).strip().lower() in {"fast", "priority"}
@@ -1091,7 +1245,9 @@ class CodexSettingsBackendMixin:
         )
         if selected is None:
             if model is not None:
-                raise AppServerError(f"model {model} was not found in the native model catalog")
+                raise AppServerError(
+                    f"model {model} was not found in the native model catalog"
+                )
             return
 
         native_efforts = self._native_reasoning_efforts(selected)
@@ -1103,10 +1259,14 @@ class CodexSettingsBackendMixin:
                 )
 
         if fast_requested and not self._model_supports_fast_tier(selected):
-            raise AppServerError("the selected model does not support the configured Fast service tier")
+            raise AppServerError(
+                "the selected model does not support the configured Fast service tier"
+            )
 
         if personality_active and selected.get("supportsPersonality") is False:
-            raise AppServerError("the selected model does not support the configured personality")
+            raise AppServerError(
+                "the selected model does not support the configured personality"
+            )
 
     def _effective_config(self, payload: dict) -> dict:
         config = payload.get("config")
@@ -1177,7 +1337,9 @@ class CodexSettingsBackendMixin:
             value = feature_requirements[key]
             if value is False:
                 return False
-            if isinstance(value, dict) and any(value.get(field) is False for field in ("enabled", "value", "required")):
+            if isinstance(value, dict) and any(
+                value.get(field) is False for field in ("enabled", "value", "required")
+            ):
                 return False
         return True
 
@@ -1188,7 +1350,11 @@ class CodexSettingsBackendMixin:
             return False
         if not isinstance(requirements, dict):
             return True
-        for container_key in ("features", "featureRequirements", "feature_requirements"):
+        for container_key in (
+            "features",
+            "featureRequirements",
+            "feature_requirements",
+        ):
             container = requirements.get(container_key)
             if not isinstance(container, dict) or "personality" not in container:
                 continue
@@ -1215,7 +1381,8 @@ class CodexSettingsBackendMixin:
                 (
                     model
                     for model in models
-                    if configured in {str(model.get("id") or ""), str(model.get("model") or "")}
+                    if configured
+                    in {str(model.get("id") or ""), str(model.get("model") or "")}
                 ),
                 None,
             )
@@ -1239,7 +1406,8 @@ class CodexSettingsBackendMixin:
 
         additional_tiers = model.get("additionalSpeedTiers")
         return isinstance(additional_tiers, list) and any(
-            str(tier).strip().lower() in {"fast", "priority"} for tier in additional_tiers
+            str(tier).strip().lower() in {"fast", "priority"}
+            for tier in additional_tiers
         )
 
     def _validated_reasoning_effort(self, effort: str, options: dict) -> str:
@@ -1259,7 +1427,11 @@ class CodexSettingsBackendMixin:
         }
         normalized = effort.lower()
         if normalized not in supported:
-            model = str(options.get("selectedModelDisplayName") or options.get("selectedModel") or "the active model")
+            model = str(
+                options.get("selectedModelDisplayName")
+                or options.get("selectedModel")
+                or "the active model"
+            )
             available = ", ".join(sorted(supported)) or "none"
             raise AppServerError(
                 f"reasoning effort {normalized} is not supported by {model}; available efforts: {available}"
@@ -1277,7 +1449,11 @@ class CodexSettingsBackendMixin:
                 effort = item.strip().lower()
                 description = ""
             elif isinstance(item, dict):
-                effort = str(item.get("reasoningEffort") or item.get("effort") or "").strip().lower()
+                effort = (
+                    str(item.get("reasoningEffort") or item.get("effort") or "")
+                    .strip()
+                    .lower()
+                )
                 description = str(item.get("description") or "").strip()
             else:
                 continue

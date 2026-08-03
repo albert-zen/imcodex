@@ -8,17 +8,6 @@ from imcodex.store import ConversationStore
 
 def test_requests_command_is_no_longer_supported() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    store.upsert_pending_request(
-        request_id="native-request-abcdef",
-        channel_id="qq",
-        conversation_id="conv-1",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        kind="approval",
-        request_method="item/commandExecution/requestApproval",
-        transport_request_id=99,
-        connection_epoch=1,
-    )
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/requests")
@@ -27,69 +16,14 @@ def test_requests_command_is_no_longer_supported() -> None:
     assert "Unknown command" in response.text
 
 
-def test_approve_without_id_targets_single_pending_request() -> None:
+def test_legacy_router_does_not_own_sdk_request_correlation() -> None:
     store = ConversationStore(clock=lambda: 1.0)
-    store.upsert_pending_request(
-        request_id="native-request-abcdef",
-        channel_id="qq",
-        conversation_id="conv-1",
-        thread_id="thr_1",
-        turn_id="turn_1",
-        kind="approval",
-        request_method="item/commandExecution/requestApproval",
-        transport_request_id=99,
-        connection_epoch=1,
-    )
     router = CommandRouter(store)
 
     response = router.handle("qq", "conv-1", "/approve")
 
-    assert response.action == "approval.accept"
-    assert response.request_ids == ["native-request-abcdef"]
-
-
-def test_approve_without_id_targets_all_pending_approvals() -> None:
-    store = ConversationStore(clock=lambda: 1.0)
-    for index, suffix in enumerate(("abc", "def"), start=1):
-        store.upsert_pending_request(
-            request_id=f"native-request-{suffix}",
-            channel_id="qq",
-            conversation_id="conv-1",
-            thread_id="thr_1",
-            turn_id="turn_1",
-            kind="approval",
-            request_method="item/commandExecution/requestApproval",
-            transport_request_id=90 + index,
-            connection_epoch=1,
-        )
-    router = CommandRouter(store)
-
-    response = router.handle("qq", "conv-1", "/approve")
-
-    assert response.action == "approval.accept"
-    assert response.request_ids == ["native-request-abc", "native-request-def"]
-
-
-def test_approve_prefix_must_be_unique() -> None:
-    store = ConversationStore(clock=lambda: 1.0)
-    for suffix in ("111", "222"):
-        store.upsert_pending_request(
-            request_id=f"native-request-{suffix}",
-            channel_id="qq",
-            conversation_id="conv-1",
-            thread_id="thr_1",
-            turn_id="turn_1",
-            kind="approval",
-            request_method="item/commandExecution/requestApproval",
-            transport_request_id=suffix,
-            connection_epoch=1,
-        )
-    router = CommandRouter(store)
-
-    response = router.handle("qq", "conv-1", "/approve native-request-")
-
-    assert response.action == "approval.accept.missing"
-    assert "Ambiguous" in response.text
+    assert response.action == "request.sdk_owned"
+    assert "SDK request presenter" in response.text
 
 
 def test_help_lists_compact_top_level_commands_with_examples() -> None:
@@ -236,7 +170,10 @@ def test_threads_command_rejects_unknown_flags() -> None:
     response = router.handle("qq", "conv-1", "/threads --all")
 
     assert response.action == "threads.invalid"
-    assert response.text == "Usage: /threads [query] [--project <name-or-number>] [--page N]"
+    assert (
+        response.text
+        == "Usage: /threads [query] [--project <name-or-number>] [--page N]"
+    )
 
 
 def test_next_requires_active_thread_browser_context() -> None:
@@ -344,7 +281,10 @@ def test_pick_rejects_history_and_catchup_together() -> None:
     response = router.handle("qq", "conv-1", "/pick release --history --catchup")
 
     assert response.action == "thread.pick.invalid"
-    assert response.text == "Usage: /pick <number-or-query> [--history [N] | --catchup [N]]"
+    assert (
+        response.text
+        == "Usage: /pick <number-or-query> [--history [N] | --catchup [N]]"
+    )
 
 
 def test_pick_rejects_invalid_history_limit() -> None:
@@ -451,7 +391,10 @@ def test_native_thread_operations_require_active_thread() -> None:
     router = CommandRouter(store)
 
     assert router.handle("qq", "conv-1", "/fork").action == "thread.fork.missing"
-    assert router.handle("qq", "conv-1", "/rename Ship notes").action == "thread.rename.missing"
+    assert (
+        router.handle("qq", "conv-1", "/rename Ship notes").action
+        == "thread.rename.missing"
+    )
     assert router.handle("qq", "conv-1", "/compact").action == "thread.compact.missing"
 
 
@@ -636,10 +579,14 @@ def test_goal_with_objective_builds_native_goal_payload() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
 
-    response = router.handle("qq", "conv-1", "/goal Finish the migration and keep tests green")
+    response = router.handle(
+        "qq", "conv-1", "/goal Finish the migration and keep tests green"
+    )
 
     assert response.action == "goal.set"
-    assert response.payload == {"objective": "Finish the migration and keep tests green"}
+    assert response.payload == {
+        "objective": "Finish the migration and keep tests green"
+    }
 
 
 def test_goal_subcommands_map_to_native_status_or_clear() -> None:
@@ -702,10 +649,15 @@ def test_native_events_command_builds_filter_payload() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     router = CommandRouter(store)
 
-    response = router.handle("qq", "conv-1", "/native events outcome=rejected method=item/tool --limit 3")
+    response = router.handle(
+        "qq", "conv-1", "/native events outcome=rejected method=item/tool --limit 3"
+    )
 
     assert response.action == "native.events"
-    assert response.payload == {"filters": ["outcome=rejected", "method=item/tool"], "limit": 3}
+    assert response.payload == {
+        "filters": ["outcome=rejected", "method=item/tool"],
+        "limit": 3,
+    }
 
 
 def test_native_events_command_rejects_invalid_limit() -> None:

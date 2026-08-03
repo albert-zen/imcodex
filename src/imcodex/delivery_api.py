@@ -102,9 +102,13 @@ def install_delivery_route(
         content_length = request.headers.get("content-length", "")
         try:
             if content_length and int(content_length) > MAX_DELIVERY_BODY_BYTES:
-                raise HTTPException(status_code=413, detail="Delivery body is too large.")
+                raise HTTPException(
+                    status_code=413, detail="Delivery body is too large."
+                )
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid Content-Length header.") from None
+            raise HTTPException(
+                status_code=400, detail="Invalid Content-Length header."
+            ) from None
         content_type = request.headers.get("content-type", "").partition(";")[0].strip()
         if content_type == "application/x-www-form-urlencoded":
             body = bytearray()
@@ -202,7 +206,6 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "artifacts must be uploaded files.")
         service = runtime.service
         can_deliver = getattr(service, "can_deliver_outbound", None)
-        resolve_route = getattr(service, "resolve_outbound_route", None)
         validate_message = getattr(service, "validate_outbound_message", None)
         stage_upload = getattr(service, "stage_outbound_upload", None)
         discard_uploads = getattr(service, "discard_outbound_uploads", None)
@@ -215,30 +218,7 @@ def install_delivery_route(
             or not callable(deliver_message)
         ):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
-        if source_thread_id:
-            if not callable(resolve_route):
-                await _raise_form_error(
-                    form,
-                    503,
-                    "Current-thread route resolution is unavailable.",
-                )
-            try:
-                channel_id, conversation_id = resolve_route(source_thread_id)
-            except ValueError as exc:
-                await _close_form_uploads(form)
-                return JSONResponse(
-                    {
-                        "delivery_id": delivery_id,
-                        "channel_id": "",
-                        "conversation_id": "",
-                        "status": "rejected",
-                        "text_status": "rejected",
-                        "artifacts": [],
-                        "error": str(exc),
-                    },
-                    status_code=409,
-                )
-        if not can_deliver(channel_id):
+        if not source_thread_id and not can_deliver(channel_id):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
 
         artifacts: list[OutboundArtifact] = []
@@ -278,10 +258,9 @@ def install_delivery_route(
                 text=text,
                 metadata={
                     "delivery_id": delivery_id,
+                    "source_thread_id": source_thread_id,
                     "source": (
-                        "channels.send.current"
-                        if source_thread_id
-                        else "channels.send"
+                        "channels.send.current" if source_thread_id else "channels.send"
                     ),
                 },
                 artifacts=list(artifacts),
@@ -328,20 +307,32 @@ def install_delivery_route(
             else:
                 status = "failed"
                 status_code = 503
-            receipt_message = outbound[-1] if outbound else message
-            receipt = _delivery_receipt(
-                receipt_message,
-                artifacts,
-                status=status,
-                delivery_id=delivery_id,
-            )
+            if source_thread_id:
+                receipt = _thread_delivery_receipt(
+                    outbound,
+                    message,
+                    artifacts,
+                    status=status,
+                    delivery_id=delivery_id,
+                )
+            else:
+                receipt_message = outbound[-1] if outbound else message
+                receipt = _delivery_receipt(
+                    receipt_message,
+                    artifacts,
+                    status=status,
+                    delivery_id=delivery_id,
+                )
+            if message.metadata.get("sdk_submission_state") == "partial":
+                receipt["status"] = "partial"
+                receipt["text_status"] = "partial"
             if receipt["status"] == "partial":
                 status_code = 207
             return JSONResponse(receipt, status_code=status_code)
         finally:
-            # Pending deliveries are already referenced by the durable outbox,
-            # so the shared cleanup preserves them. Always surrender the
-            # request-scoped active lease, including validation/conflict paths.
+            # Transferred paths are already referenced by the consumer lease
+            # ledger. Always surrender only the request-scoped lease, including
+            # validation and conflict paths.
             await discard_uploads(artifacts)
 
     return credential
@@ -391,7 +382,9 @@ def _authorize_local_instance(
         or not hmac.compare_digest(supplied, instance_id)
         or not hmac.compare_digest(supplied_token, credential.token)
     ):
-        raise HTTPException(status_code=403, detail="Local delivery request was rejected.")
+        raise HTTPException(
+            status_code=403, detail="Local delivery request was rejected."
+        )
 
 
 def _delivery_receipt(
@@ -427,9 +420,7 @@ def _delivery_receipt(
                 None,
             )
         delivery = (
-            recorded_items.pop(delivery_index)
-            if delivery_index is not None
-            else {}
+            recorded_items.pop(delivery_index) if delivery_index is not None else {}
         )
         failure = ""
         recorded_status = str(delivery.get("status") or "")
@@ -441,9 +432,7 @@ def _delivery_receipt(
                     failure = failure_strings.pop(index)
                     break
         delivered = recorded_status == "delivered"
-        outcome_unknown = bool(
-            message.metadata.get("artifact_outcome_unknown")
-        )
+        outcome_unknown = bool(message.metadata.get("artifact_outcome_unknown"))
         items.append(
             {
                 "filename": artifact.filename,
@@ -480,3 +469,50 @@ def _delivery_receipt(
         "artifacts": items,
         "error": error,
     }
+
+
+def _thread_delivery_receipt(
+    outbound: list[OutboundMessage],
+    source: OutboundMessage,
+    artifacts: list[OutboundArtifact],
+    *,
+    status: str,
+    delivery_id: str,
+) -> dict[str, object]:
+    destinations = [
+        _delivery_receipt(
+            item,
+            artifacts,
+            status=_destination_status(item, fallback=status),
+            error=str(item.metadata.get("destination_error") or ""),
+            delivery_id=delivery_id,
+        )
+        for item in outbound
+        if item.channel_id and item.conversation_id
+    ]
+    receipt = _delivery_receipt(
+        source,
+        artifacts,
+        status=status,
+        delivery_id=delivery_id,
+    )
+    receipt["destinations"] = destinations
+    receipt["destination_count"] = int(
+        source.metadata.get("destination_count") or len(destinations)
+    )
+    receipt["destination_states"] = list(
+        source.metadata.get("destination_states") or ()
+    )
+    return receipt
+
+
+def _destination_status(message: OutboundMessage, *, fallback: str) -> str:
+    state = str(message.metadata.get("destination_state") or "")
+    return {
+        "accepted": "delivered",
+        "retryable": "queued",
+        "partial": "partial",
+        "rejected": "rejected",
+        "unknown": "failed",
+        "in_flight": "queued",
+    }.get(state, fallback)

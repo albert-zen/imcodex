@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import hmac
 import ipaddress
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException, Request
 
 from .admin.api import install_admin_routes
-from .channels import create_app
+from .channels.api import create_app
 from .composition import SettingsSource, build_runtime
 from .config import Settings
 from .debug_harness.api import install_debug_routes
@@ -19,19 +19,21 @@ from .observability.health import (
     BRIDGE_INSTANCE_HEADER,
     BRIDGE_SHUTDOWN_PATH,
 )
-from .runtime import AppRuntime
+from .sdk_runtime import SdkRuntime
 
 
 def create_application(
     *,
     settings=None,
-    runtime: AppRuntime | None = None,
+    runtime: SdkRuntime | None = None,
     admin_config_store=None,
     settings_source: SettingsSource | None = None,
 ):
     if settings is None:
         if settings_source not in (None, "environment"):
-            raise ValueError("Application-loaded Settings must use the environment source")
+            raise ValueError(
+                "Application-loaded Settings must use the environment source"
+            )
         settings = Settings.from_env()
         resolved_settings_source: SettingsSource = "environment"
     else:
@@ -127,14 +129,22 @@ def create_application(
         context = getattr(getattr(runtime, "observability", None), "context", None)
         instance_id = str(getattr(context, "instance_id", "") or "")
         supplied_instance = request.headers.get(BRIDGE_INSTANCE_HEADER, "")
-        if not loopback or not instance_id or not hmac.compare_digest(
-            supplied_instance,
-            instance_id,
+        if (
+            not loopback
+            or not instance_id
+            or not hmac.compare_digest(
+                supplied_instance,
+                instance_id,
+            )
         ):
-            raise HTTPException(status_code=403, detail="Graceful shutdown request was rejected.")
+            raise HTTPException(
+                status_code=403, detail="Graceful shutdown request was rejected."
+            )
         request_shutdown = getattr(app.state, "request_shutdown", None)
         if not callable(request_shutdown):
-            raise HTTPException(status_code=503, detail="Graceful shutdown is unavailable.")
+            raise HTTPException(
+                status_code=503, detail="Graceful shutdown is unavailable."
+            )
         background_tasks.add_task(request_shutdown)
         return {"status": "shutting_down"}
 

@@ -1,24 +1,33 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
-from functools import wraps
 import hashlib
+import json
 import mimetypes
 import os
-from pathlib import Path
 import re
 import secrets
+from functools import wraps
+from pathlib import Path
 from threading import RLock
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
+from imagent.applications import AppServerArtifactCandidate, AppServerArtifactSourceKind
+from imagent.contracts import (
+    DeliverySubmissionOrigin,
+    DeliverySubmissionState,
+    derive_delivery_submission_id,
+)
 from PIL import Image
 
 from ..models import OutboundArtifact
 
-
-_MARKDOWN_LINK = re.compile(r"(!?)\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+['\"][^'\"]*['\"])?\)")
+_MARKDOWN_LINK = re.compile(
+    r"(!?)\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+['\"][^'\"]*['\"])?\)"
+)
 _DATA_IMAGE = re.compile(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
 _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -58,7 +67,27 @@ class OutboundArtifactStager:
         self._leased_paths: set[str] = set()
 
     @_serialized_stage
-    def stage_native_item(self, item: dict, *, cwd: str = "") -> tuple[OutboundArtifact, ...]:
+    def stage_appserver_candidate(
+        self,
+        candidate: AppServerArtifactCandidate,
+    ) -> OutboundArtifact:
+        """Validate and stage one SDK-normalized, still-untrusted native candidate."""
+
+        if candidate.source_kind is AppServerArtifactSourceKind.LOCAL_PATH:
+            return self._stage_local(candidate.locator, kind="image")
+        if candidate.source_kind is AppServerArtifactSourceKind.FILE_URL:
+            parsed = urlparse(candidate.locator)
+            if parsed.scheme != "file":
+                raise ValueError("App Server file candidate must use a file URL")
+            return self._stage_local(self._file_url_path(parsed), kind="image")
+        if candidate.source_kind is AppServerArtifactSourceKind.DATA_URL:
+            return self._stage_data_image(candidate.locator, filename_hint="image")
+        raise ValueError("unsupported App Server artifact source kind")
+
+    @_serialized_stage
+    def stage_native_item(
+        self, item: dict, *, cwd: str = ""
+    ) -> tuple[OutboundArtifact, ...]:
         item_type = str(item.get("type") or "")
         if item_type == "imageGeneration":
             saved_path = str(item.get("savedPath") or "").strip()
@@ -78,7 +107,11 @@ class OutboundArtifactStager:
                 continue
             image_url = str(content.get("imageUrl") or "")
             if _DATA_IMAGE.match(image_url):
-                artifacts.append(self._stage_data_image(image_url, filename_hint=f"image-{index + 1}"))
+                artifacts.append(
+                    self._stage_data_image(
+                        image_url, filename_hint=f"image-{index + 1}"
+                    )
+                )
             elif image_url:
                 parsed = urlparse(image_url)
                 if parsed.scheme == "file":
@@ -121,11 +154,12 @@ class OutboundArtifactStager:
             kind=kind,
             content_type=content_type or "application/octet-stream",
             filename=safe_name,
-            unique=True,
         )
 
     @_serialized_stage
-    def stage_markdown_images(self, text: str, *, cwd: str) -> tuple[OutboundArtifact, ...]:
+    def stage_markdown_images(
+        self, text: str, *, cwd: str
+    ) -> tuple[OutboundArtifact, ...]:
         """Stage local images referenced by final-answer Markdown.
 
         Only actual image nodes outside Markdown code spans are delivery
@@ -141,7 +175,9 @@ class OutboundArtifactStager:
                 continue
             target = unquote(match.group(2) or match.group(3) or "").strip()
             parsed = urlparse(target)
-            windows_absolute = len(target) >= 3 and target[1] == ":" and target[2] in {"/", "\\"}
+            windows_absolute = (
+                len(target) >= 3 and target[1] == ":" and target[2] in {"/", "\\"}
+            )
             if parsed.scheme in {"http", "https", "data"} and not windows_absolute:
                 continue
             if parsed.scheme == "file" and not windows_absolute:
@@ -206,7 +242,9 @@ class OutboundArtifactStager:
         if size > limit:
             raise ValueError(f"{kind} output exceeds the delivery size limit")
         content = source.read_bytes()
-        content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        content_type = (
+            mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        )
         return self._stage_bytes(
             content,
             kind=kind,
@@ -258,10 +296,14 @@ class OutboundArtifactStager:
                         "managed outbound artifact content does not match its digest"
                     )
             except OSError as exc:
-                raise ValueError("managed outbound artifact cannot be verified") from exc
+                raise ValueError(
+                    "managed outbound artifact cannot be verified"
+                ) from exc
         else:
             self._ensure_spool_capacity(len(content))
-            temporary = self.root / f".{digest}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+            temporary = (
+                self.root / f".{digest}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+            )
             flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
@@ -297,7 +339,7 @@ class OutboundArtifactStager:
 
     @_serialized
     def cleanup_unreferenced(self, referenced_paths: set[str]) -> None:
-        """Remove stale spool entries at startup while preserving durable outbox refs."""
+        """Remove stale spool entries while preserving supplied durable references."""
         if not self.root.exists():
             return
         referenced: set[Path] = set()
@@ -323,7 +365,9 @@ class OutboundArtifactStager:
                 if candidate.is_file():
                     total += candidate.stat().st_size
         except OSError as exc:
-            raise ValueError("managed outbound artifact spool cannot be measured") from exc
+            raise ValueError(
+                "managed outbound artifact spool cannot be measured"
+            ) from exc
         if total + incoming_bytes > _MAX_SPOOL_BYTES:
             raise ValueError("outbound artifact spool exceeds the 256 MiB limit")
 
@@ -336,6 +380,209 @@ class OutboundArtifactStager:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+class OutboundArtifactLeaseLedger:
+    """Consumer-owned request/submission lifetime for proactive artifacts."""
+
+    MAX_SUBMISSIONS = 1024
+    PRINCIPAL_ID = "imcodex:local-delivery"
+
+    def __init__(
+        self,
+        *,
+        stager: OutboundArtifactStager,
+        product_store,
+        state_path: str | Path,
+    ) -> None:
+        self.stager = stager
+        self.product_store = product_store
+        self.state_path = Path(state_path)
+        self._lock = RLock()
+        self._submissions: dict[str, tuple[str, ...]] = self._load()
+        self._attempts: dict[str, tuple[str, ...]] = {}
+
+    async def stage_upload(self, content: bytes, **kwargs) -> OutboundArtifact:
+        return await asyncio.to_thread(self.stager.stage_upload, content, **kwargs)
+
+    def transfer(self, delivery_id: str, artifacts) -> bool:
+        identity = str(delivery_id or "").strip()
+        if not identity:
+            raise ValueError("artifact delivery requires a stable delivery_id")
+        paths = tuple(sorted({str(artifact.local_path) for artifact in artifacts}))
+        if not paths:
+            return False
+        submission_id = derive_delivery_submission_id(
+            DeliverySubmissionOrigin.EXTERNAL,
+            self.PRINCIPAL_ID,
+            identity,
+        )
+        with self._lock:
+            existing = self._submissions.get(submission_id)
+            if existing is not None and existing != paths:
+                raise ValueError("delivery_id is already bound to different artifacts")
+            if existing is None and len(self._submissions) >= self.MAX_SUBMISSIONS:
+                raise ValueError("outbound artifact lease ledger is full")
+            if existing is not None:
+                return False
+            self._submissions[submission_id] = paths
+            self._save()
+            return True
+
+    def track_attempt(self, attempt_id: str, paths) -> None:
+        """Hold A1 files until the matching logical SDK attempt reports O2."""
+
+        identity = str(attempt_id or "").strip()
+        normalized = tuple(sorted({str(path) for path in paths if str(path)}))
+        if not identity or not normalized:
+            return
+        with self._lock:
+            existing = self._attempts.get(identity)
+            if existing is not None and existing != normalized:
+                raise ValueError(
+                    "delivery attempt is already bound to different artifacts"
+                )
+            if existing is None and len(self._attempts) >= self.MAX_SUBMISSIONS:
+                raise ValueError("outbound artifact attempt ledger is full")
+            self._attempts[identity] = normalized
+
+    def discard_request(self, artifacts) -> None:
+        with self._lock:
+            submitted_paths = self.referenced_paths()
+            releasable = tuple(
+                artifact
+                for artifact in artifacts
+                if str(artifact.local_path) not in submitted_paths
+            )
+        self.stager.release(releasable)
+        self.cleanup()
+
+    def complete_attempt(self, attempt_id: str, paths) -> None:
+        normalized = {str(path) for path in paths}
+        with self._lock:
+            durable = attempt_id in self._submissions
+            leased = self._submissions.get(attempt_id)
+            if leased is None:
+                leased = self._attempts.get(attempt_id)
+            if leased is None:
+                return
+            remaining = tuple(path for path in leased if path not in normalized)
+            if remaining:
+                if durable:
+                    self._submissions[attempt_id] = remaining
+                else:
+                    self._attempts[attempt_id] = remaining
+            else:
+                if durable:
+                    del self._submissions[attempt_id]
+                else:
+                    del self._attempts[attempt_id]
+            if durable:
+                self._save()
+        self.stager.release(normalized)
+        self.cleanup()
+
+    def complete_delivery(self, delivery_id: str, paths) -> None:
+        self.complete_attempt(
+            derive_delivery_submission_id(
+                DeliverySubmissionOrigin.EXTERNAL,
+                self.PRINCIPAL_ID,
+                delivery_id,
+            ),
+            paths,
+        )
+
+    async def reconcile(self, submissions) -> None:
+        """Release terminal SDK submissions missed by best-effort O2."""
+
+        with self._lock:
+            identities = tuple(self._submissions)
+        for submission_id in identities:
+            record = await submissions.get_delivery_submission(submission_id)
+            if record is None or any(
+                destination.state
+                in {
+                    DeliverySubmissionState.IN_FLIGHT,
+                    DeliverySubmissionState.RETRYABLE,
+                }
+                for destination in record.destinations
+            ):
+                continue
+            with self._lock:
+                paths = self._submissions.get(submission_id, ())
+            self.complete_attempt(submission_id, paths)
+
+    def referenced_paths(self) -> set[str]:
+        with self._lock:
+            return {
+                path
+                for paths in (*self._submissions.values(), *self._attempts.values())
+                for path in paths
+            }
+
+    def cleanup(self) -> None:
+        self.stager.cleanup_unreferenced(
+            self.product_store.referenced_legacy_artifact_paths()
+            | self.referenced_paths()
+        )
+
+    def _load(self) -> dict[str, tuple[str, ...]]:
+        if not self.state_path.exists():
+            return {}
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "outbound artifact lease ledger cannot be loaded"
+            ) from exc
+        raw = payload.get("submissions") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != 2
+            or not isinstance(raw, dict)
+            or len(raw) > self.MAX_SUBMISSIONS
+        ):
+            raise RuntimeError("outbound artifact lease ledger is invalid")
+        submissions: dict[str, tuple[str, ...]] = {}
+        root = self.stager.root.resolve(strict=False)
+        for identity, values in raw.items():
+            if (
+                not isinstance(identity, str)
+                or not identity
+                or not isinstance(values, list)
+            ):
+                raise RuntimeError("outbound artifact lease ledger is invalid")
+            paths: list[str] = []
+            for value in values:
+                try:
+                    path = Path(value).resolve(strict=False)
+                    path.relative_to(root)
+                except (OSError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "outbound artifact lease ledger contains an untrusted path"
+                    ) from exc
+                paths.append(str(path))
+            submissions[identity] = tuple(sorted(set(paths)))
+        return submissions
+
+    def _save(self) -> None:
+        self.state_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        temporary = self.state_path.with_name(f".{self.state_path.name}.tmp")
+        payload = {
+            "version": 2,
+            "submissions": {
+                identity: list(paths)
+                for identity, paths in sorted(self._submissions.items())
+            },
+        }
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.state_path)
+        if os.name != "nt":
+            os.chmod(self.state_path, 0o600)
+        self.stager._fsync_directory(self.state_path.parent)
 
 
 def _mask_markdown_code(text: str) -> str:
@@ -402,8 +649,7 @@ def _mask_markdown_code(text: str) -> str:
         index = closing_end
 
     return "".join(
-        " " if hidden else char
-        for char, hidden in zip(text, masked, strict=True)
+        " " if hidden else char for char, hidden in zip(text, masked, strict=True)
     )
 
 

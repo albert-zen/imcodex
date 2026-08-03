@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCTOR_SCRIPT = REPO_ROOT / "scripts" / "doctor.ps1"
+SDK_SMOKE_SCRIPT = REPO_ROOT / "scripts" / "windows-sdk-smoke.ps1"
 
 
 def test_windows_doctor_matches_launcher_interpreter_and_target_model() -> None:
@@ -52,3 +53,24 @@ def test_windows_doctor_parses_in_windows_powershell_when_available() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_windows_sdk_smoke_uses_isolated_state_and_graceful_shutdown() -> None:
+    script = SDK_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "[System.IO.Path]::GetTempPath()" in script
+    assert 'IMCODEX_APP_SERVER_URL = "stdio://"' in script
+    assert "/_imcodex/ops/shutdown" in script
+    assert "$exited = $process.WaitForExit(15000)" in script
+    assert "$process.WaitForExit()" in script
+    assert "$process.Refresh()" in script
+    assert 'IMCODEX_SMOKE_SUCCESS = $success' in script
+    assert "$exitCode = $LASTEXITCODE" in script
+    assert "if ($exitCode -eq 0)" in script
+    assert "-not (Test-Path -LiteralPath $success)" in script
+    assert "$quotedWrapper = '\"' + $wrapper + '\"'" in script
+    assert 'taskkill.exe"' in script
+    assert "/PID ([string]$process.Id) /T /F" in script
+    assert "Get-Content $stderr -Tail 80" in script
+    assert 'snapshot.status -ne "stopped"' in script
+    assert "Remove-Item -LiteralPath $smokeRoot -Recurse -Force" in script

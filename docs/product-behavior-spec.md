@@ -392,96 +392,53 @@ become a persisted copy of native thread or turn history, and it must not block
 the App Server socket read path. Capacity pressure must preserve native final
 output and approval/input requests rather than silently dropping them. When
 notifications and native approval/input requests use separate dispatch lanes,
-their handoff projection still follows App Server receive order. If delivery
-of the switch notice or requested history fails, buffered native output remains
-behind the durable cached response and is released only after that same inbound
-IM message is retried successfully. While that ordering gate exists, it keeps a
-transient replay copy of the immediate response even if the normal bounded
-response cache is evicted; an expired-cache notice must never release live
-output. After the immediate response succeeds, a failed buffered-output send is
-retried with bounded backoff using the same projected message and delivery ID.
-The backoff interval is capped but retries continue until delivery succeeds or
-the service closes, so a transient outage cannot strand a gate after a fixed
-attempt count. Native approval and question requests use the same projected
-message for retries within their bounded native delivery timeout, then reject
-explicitly if delivery never recovers. Each retry first verifies that the
-native request is still pending, so an approval or answer completed after an
-ambiguous platform send is not presented again as a stale request. The final
-timeout path performs the same pending check before returning a delivery error
-to Codex.
+their handoff projection still follows App Server receive order. Delivery uses
+SDK projection checkpoints, outbound idempotency, and Coordinator retries with
+the same logical delivery ID. A checkpoint advances only after accepted output
+or an idempotently recorded O1 suppression; live-only output never advances it.
+Native approval and question requests use the SDK request claim/correlation
+runtime and its bounded presentation deadline. The product keeps no cached
+response gate, pending-request store, or independent retry scheduler.
 
-Visible final-answer items and completed-Turn fallbacks use a separate durable
-delivery checkpoint. A nonblank native `final_answer` item is delivered as one
-visible answer segment, but it does not mark the native Turn complete. If a
-later `item/started` shows that queued steering continued the same Turn,
-commentary and a later answer segment resume immediately without waiting for a
-new IM message. Native `turn/completed`, not an answer phase, remains the
-authoritative lifecycle boundary.
+Visible answer items and completed-Turn fallback are projected and checkpointed
+by the SDK. A nonblank native `final_answer` item is one visible answer segment,
+not native Turn completion. Recoverable A1 output is reconstructed from
+authoritative history; live-only output does not advance a checkpoint. IMCodex
+does not keep a parallel Turn watch, message pump, transcript, or delivery
+outbox.
 
-The Turn-level checkpoint records only that a bound native thread/turn still
-owes the current IM route a completion result; it is never consulted as native
-active-turn truth. Once an answer segment is projected, its exact outbound
-message and a stable identity derived from the native answer item remain in an
-outbox until a channel sink accepts delivery. Multiple answer segments from
-one Turn coexist and retry independently; an older pending segment does not
-suppress or overwrite later commentary or answers. Answer segments for the
-same IM conversation remain ordered in the outbox, while failures in one
-conversation do not block another conversation. Rehydration recovers a
-watched turn that completed while the bridge process was stopped, and a staged
-message survives another restart without re-running the native turn. After
-staging, native thread cleanup or conversation rebinding does not discard or
-reroute that exact message; it remains owed to the IM route captured at
-projection time. Recovery remains degraded while any staged answer or
-completed-Turn fallback is still pending.
-If a completed native turn contains no final text or usable buffered output,
-the bridge sends an explicit empty-result notice instead of acknowledging a
-blank channel no-op as successful delivery.
+Native image/file outputs are typed attachments, not a bridge-defined message
+type. IMCodex owns bytes, local-path trust, file validation, the 256 MiB spool
+quota, and startup cleanup. A1 materialization is content-addressed and
+replay-safe: after a process restart the SDK authoritative recovery invokes A1
+again, so the same bytes are re-created before delivery rather than relying on
+a second durable message copy. Ordinary Markdown links remain navigation
+references and MUST NOT implicitly send their targets.
 
-Native image/file outputs are carried as structured artifacts on that same
-terminal message, not as a bridge-defined message type. Explicit native image
-content blocks, image-generation `savedPath` values, and explicit final
-Markdown image nodes outside code spans are copied into a private
-content-addressed spool with type and size validation before the terminal
-outbox is staged. Ordinary Markdown links remain navigation references and
-MUST NOT implicitly send their targets to an IM channel; generic files require
-structured native output or the explicit standalone delivery path. Image-like
-examples inside fenced or inline code are text, not delivery instructions.
-Explicit images and standalone delivery may use readable regular files outside
-the native workspace. A rejected image artifact adds a visible failure notice.
-The spool is capped at 256 MiB, and startup cleanup removes entries that are not
-referenced by the durable terminal outbox. Reference-aware cleanup also runs
-after a durable delivery acknowledgement, while preserving artifacts still
-buffered by active native turns.
+Explicit proactive uploads use SDK delivery-submission identity and a separate
+bounded, crash-safe path lease ledger. The lease is persisted before SDK
+submission, same-ID/same-content replay reuses the content-addressed path,
+retryable outcomes retain it, and terminal outcomes or startup reconciliation
+release it. The ledger is not an outbox and cannot submit work without the
+caller. SDK submission state remains the delivery/retry authority; IMCodex
+reports partial and unknown outcomes truthfully and does not let O2 rewrite a
+receipt or schedule a retry.
 
-Every configured outbound channel consumes that same artifact contract. QQ,
-Telegram, Feishu/Lark, and Weixin project images and files into their native
-attachment APIs; the generic outbound webhook projects artifact messages as a
-multipart payload. Adapters with per-artifact platform APIs use one batch-
-delivery contract: a successful artifact records a receipt, a retryable
-failure leaves that artifact and the unattempted suffix pending, and a
-permanent failure becomes a visible notice without blocking later artifacts.
-The generic multipart webhook is batch-atomic and preserves the complete
-message on retry. The bridge records available progress back to the durable
-message, and terminal text is sent last. A process crash between a
-platform acceptance and that checkpoint remains at-least-once unless the
-platform supports the adapter's stable delivery identity. A
-permanent platform or validation rejection becomes a visible failure notice;
-a retryable failure leaves only the uncompleted tail pending.
-
-For the generic webhook, the immediate command response is always available in
-the HTTP response. Live handoff requires `IMCODEX_OUTBOUND_URL`, because later
+For the generic webhook, the original in-flight exchange captures an immediate
+command response. A committed retry after that exchange closes returns an empty
+`messages` list; the bridge does not keep a second durable response cache. Live
+handoff and replayable output require `IMCODEX_OUTBOUND_URL`, because later
 native messages occur after the inbound HTTP exchange. If no outbound callback
 can route that generic channel, `/pick` and `/history` fail explicitly rather
 than switching into an undeliverable live stream.
 
 An Agent can explicitly send files back through `scripts/imcodex-send`. The
 launcher supplies the current native thread identity, while the running bridge
-resolves the last IM recipient that explicitly selected it and returns a
-machine-readable receipt. Agents do not need App IDs, bot secrets, openids, or
-raw conversation IDs. Switching that recipient to another thread does not
-invalidate the older task; selecting the original thread from another IM
-conversation moves the route used by later script calls. A thread never
-selected from IM fails explicitly.
+resolves its SDK `foreground_only` active IM routes and returns a
+machine-readable aggregate receipt. Agents do not need App IDs, bot secrets,
+openids, or raw conversation IDs. One Thread may fan out to multiple current
+IM subscribers; a Conversation that switches away is excluded. A Thread with
+no active IM route fails explicitly.
 
 If no thread browser is active, `/next` and `/prev` should return a user-facing error telling the user to run `/threads` first. A numeric `/pick` without browser context is treated as a direct text query rather than a page index.
 
@@ -546,41 +503,12 @@ Behavior:
 
 ### Agent thread tools
 
-When IMCodex is the declared dynamic-tool host, every fresh native thread that
-IMCodex starts through `thread/start` MUST receive model-callable tools for
-listing and reading native threads, sending a message to a native thread, and
-creating another thread. If a thread already has Desktop-registered tools,
-IMCodex leaves that tool set intact. Supported thread-tool calls are handled
-through native App Server APIs regardless of whether Desktop, CLI, or IMCodex
-originally created the calling thread.
-
-`create_thread` starts the child in the calling thread's native working
-directory, starts its initial turn, and gives the child the same thread-tool
-set. This recursive registration is required so an IMCodex-created child has
-the same capabilities as its parent. The bridge does not create a project
-catalog, worktree manager, pin model, handoff model, or remote-host registry to
-support these tools.
-
-Thread creation origin is not a capability or authorization boundary, so
-IMCodex does not persist an ownership list for tool routing. Host selection is a
-connection-topology decision: a private or declared IMCodex host resolves the
-native mappings immediately, while an explicit shared endpoint leaves the
-request to the client that registered the tools. If native child creation
-succeeds but initial-turn startup cannot be confirmed, the failed tool result
-still includes the created thread ID and tells the agent to inspect or message
-it instead of blindly creating another child.
-
-The current native protocol accepts `dynamicTools` on `thread/start`, but not
-on `thread/resume`, `turn/start`, or `thread/fork`. Consequently IMCodex injects
-its tool set when it creates a thread and preserves existing Desktop tools when
-attaching, but cannot retrofit tools into an already-created thread that never
-had them. It must not replace or fork the user's thread to simulate injection.
-
-Native `thread/fork` does not currently accept dynamic-tool registration.
-Therefore agent-facing `fork_thread`, rename, and archive tools are not included
-in the IMCodex-created thread tool set. The user-facing `/fork` command retains
-native fork semantics, but its result is not covered by this tool-injection
-guarantee until the upstream protocol can register tools on a fork.
+Dynamic Thread tool hosting is unavailable in the SDK-owned runtime. Setting
+`IMCODEX_NATIVE_THREAD_TOOL_HOST=1` MUST fail startup explicitly. IMCodex MUST
+NOT register raw App Server request callbacks, advertise tools whose requests
+the SDK Application adapter rejects, or keep a second request runtime. This
+optional product feature can return only after the SDK exposes a bounded typed
+Application operation supported by evidence from two real integrations.
 
 ### `/status`
 
@@ -787,11 +715,10 @@ That approval surface should explain:
 - `deny` rejects the requested action
 - `cancel` cancels the current approval interaction without allowing it
 
-It should also explain the batch behavior:
-
-- `/approve` with no argument approves all currently pending requests in the conversation
-- `/deny` with no argument denies all currently pending requests in the conversation
-- `/cancel` with no argument cancels all currently pending requests in the conversation
+With exactly one presented request, `/approve`, `/deny`, or `/cancel` may omit
+the request ID. When multiple requests are presented, the user must include a
+unique request-ID prefix; IMCodex does not invent a batch response over
+independent SDK claims.
 
 It should explain targeted behavior:
 
@@ -927,17 +854,19 @@ If a new implementation satisfies these behaviors cleanly and predictably, it ma
 - Unsupported attachments fail visibly and never become arbitrary local paths.
 - Explicit delivery enters the running bridge over its loopback-only current-
   instance endpoint and reuses configured access policy, staging, adapters,
-  multiplex routing, retry identity, durable outbox, and outbound artifact
-  behavior. The HTTP route does not call a channel sink directly.
+  SDK delivery identity, and consumer artifact leases. The HTTP route does not
+  call a channel sink directly.
 - Agent-facing standalone delivery forwards native `CODEX_THREAD_ID` and
-  resolves the last IM recipient that explicitly selected that thread. The
-  remembered route survives the recipient switching to another thread; an
-  explicit selection of the same thread from another recipient moves it.
+  resolves all SDK `foreground_only` routes whose Conversations currently
+  select that Thread. One Thread may fan out to several current IM
+  subscribers, while switching a Conversation to another Thread removes it
+  from the old Thread's active delivery set.
   The lower-level operator interface may instead name its channel and
   conversation explicitly. Both return a machine-readable
-  overall/per-artifact receipt. A transient channel failure returns `queued`
-  after durable staging and is retried by the same outbox used for projected
-  native output. Reusing the same delivery ID and payload returns the persisted
-  final receipt, including per-artifact failures, across a bridge restart;
-  reusing the ID for different content or a different destination is rejected.
-  Neither path creates a second channel runtime.
+  overall/per-artifact receipt. A retryable SDK submission returns `queued`;
+  partial and unknown results remain truthful rather than being called
+  delivered. Same-ID/same-content caller replay reuses the staged path, while
+  rebinding the ID to different content or destination is rejected. Neither
+  path creates a second channel runtime or intent outbox. Crash-stuck
+  `IN_FLIGHT` and partial retryable-suffix recovery remain explicit SDK blockers
+  for full parity.
