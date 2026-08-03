@@ -61,6 +61,9 @@ def test_windows_sdk_smoke_uses_isolated_state_and_graceful_shutdown() -> None:
     assert "[System.IO.Path]::GetTempPath()" in script
     assert 'IMCODEX_APP_SERVER_URL = "stdio://"' in script
     assert "/_imcodex/ops/shutdown" in script
+    assert "$exited = $process.WaitForExit(15000)" in script
+    assert "$process.WaitForExit()" in script
+    assert "$process.Refresh()" in script
     assert "Get-Content $stderr -Tail 80" in script
     assert 'snapshot.status -ne "stopped"' in script
     assert "Remove-Item -LiteralPath $smokeRoot -Recurse -Force" in script

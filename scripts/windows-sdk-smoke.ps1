@@ -58,8 +58,14 @@ try {
     if ($shutdown.status -ne "shutting_down") {
         throw "Graceful shutdown did not acknowledge the request."
     }
-    $process.WaitForExit(15000)
-    if (-not $process.HasExited -or $process.ExitCode -ne 0) {
+    $exited = $process.WaitForExit(15000)
+    if ($exited) {
+        # Windows PowerShell 5 can leave ExitCode unset after only the timed
+        # overload, especially when stdout/stderr are redirected.
+        $process.WaitForExit()
+        $process.Refresh()
+    }
+    if (-not $exited -or $process.ExitCode -ne 0) {
         $exitCode = if ($process.HasExited) { [string]$process.ExitCode } else { "running" }
         $stdoutDetail = ((Get-Content $stdout -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
         $stderrDetail = ((Get-Content $stderr -Tail 80 -ErrorAction SilentlyContinue) -join "`n")
