@@ -210,30 +210,34 @@ class ThreadHandoffMixin:
             result = await self.backend.query_all_threads(
                 message.channel_id,
                 message.conversation_id,
-                search_term=query,
             )
-            if len(result.threads) == 1:
+            matched_threads = self.backend.match_thread_selector_candidates(
+                result.threads,
+                query,
+            )
+            if len(matched_threads) == 1:
                 return await self._switch_thread(
                     message,
-                    result.threads[0].thread_id,
+                    matched_threads[0].thread_id,
                     history_limit=history_limit,
                     catchup_limit=catchup_limit,
                     verb="Switched to",
                 )
-            if result.threads:
+            if matched_threads:
                 text = await self._render_threads(
                     message,
                     page=1,
                     query=query,
                     refresh=False,
-                    catalog=result.threads,
+                    catalog=matched_threads,
                 )
             else:
                 text = await self._render_threads(
                     message,
                     page=1,
                     query=None,
-                    refresh=True,
+                    refresh=False,
+                    catalog=result.threads,
                 )
         except AppServerError:
             text = (

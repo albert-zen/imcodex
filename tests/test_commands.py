@@ -123,6 +123,52 @@ def test_help_lists_compact_top_level_commands_with_examples() -> None:
     assert "Doctor" not in response.text
 
 
+def test_command_names_subcommands_flags_and_choices_are_case_insensitive() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\work\alpha")
+    router = CommandRouter(store)
+
+    history = router.handle("qq", "conv-1", "/HiStOrY 2 --PaGe=3")
+    thread_history = router.handle("qq", "conv-1", "/ThReAd HiStOrY 2")
+    visibility = router.handle("qq", "conv-1", "/ViEw VeRbOsE")
+    threads = router.handle(
+        "qq", "conv-1", "/ThReAdS release --PrOjEcT=IMCODEX --PaGe 2"
+    )
+
+    assert history.action == "thread.history.query"
+    assert history.payload == {"limit": 2, "page": 3}
+    assert thread_history.action == "thread.history.query"
+    assert thread_history.payload == {"limit": 2, "page": 1}
+    assert visibility.action == "settings.view"
+    assert store.get_binding("qq", "conv-1").visibility_profile == "verbose"
+    assert threads.payload == {
+        "page": 2,
+        "query": "release",
+        "project": "IMCODEX",
+        "refresh": True,
+    }
+
+
+def test_case_insensitive_commands_preserve_native_values_and_selectors() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    router = CommandRouter(store)
+
+    model = router.handle("qq", "conv-1", "/MoDeL GPT-5-Codex")
+    attach = router.handle("qq", "conv-1", "/ThReAd AtTaCh Repo POLISH")
+    native = router.handle(
+        "qq",
+        "conv-1",
+        '/NaTiVe CaLl Thread/Read {"threadId":"AbC"}',
+    )
+
+    assert model.payload == {"model": "GPT-5-Codex"}
+    assert attach.payload == {"selector": "Repo POLISH"}
+    assert native.payload == {
+        "method": "Thread/Read",
+        "params": {"threadId": "AbC"},
+    }
+
+
 def test_cwd_without_args_reads_current_path() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\work\alpha")

@@ -50,7 +50,11 @@ def parse_command(text: str) -> ParsedCommand:
     parts = [part.strip("\"'") for part in shlex.split(body, posix=False)]
     if not parts:
         raise ValueError("empty slash command")
-    return ParsedCommand(name=name, args=parts[1:], raw_args_text=raw_args_text.strip())
+    return ParsedCommand(
+        name=name.casefold(),
+        args=parts[1:],
+        raw_args_text=raw_args_text.strip(),
+    )
 
 
 class CommandRouter:
@@ -75,7 +79,7 @@ class CommandRouter:
             return CommandResponse(action="project.cwd.read", text=text)
         if len(command.args) != 1:
             return CommandResponse(action="project.cwd.invalid", text="Usage: /cwd <path>")
-        if command.args[0].lower() == "playground":
+        if command.args[0].casefold() == "playground":
             resolved = self.playground_path
             resolved.mkdir(parents=True, exist_ok=True)
             self.store.set_bootstrap_cwd(channel_id, conversation_id, str(resolved))
@@ -93,7 +97,8 @@ class CommandRouter:
         index = 0
         while index < len(command.args):
             arg = command.args[index]
-            if arg == "--page":
+            option = arg.casefold()
+            if option == "--page":
                 if index + 1 >= len(command.args):
                     return CommandResponse(
                         action="threads.invalid",
@@ -108,7 +113,7 @@ class CommandRouter:
                     )
                 index += 2
                 continue
-            if arg.startswith("--page="):
+            if option.startswith("--page="):
                 try:
                     page = int(arg.partition("=")[2])
                 except ValueError:
@@ -118,19 +123,19 @@ class CommandRouter:
                     )
                 index += 1
                 continue
-            if arg == "--project":
+            if option == "--project":
                 if index + 1 >= len(command.args):
                     return CommandResponse(action="threads.invalid", text=_THREADS_USAGE)
                 project = command.args[index + 1].strip() or None
                 index += 2
                 continue
-            if arg.startswith("--project="):
+            if option.startswith("--project="):
                 project = arg.partition("=")[2].strip() or None
                 if project is None:
                     return CommandResponse(action="threads.invalid", text=_THREADS_USAGE)
                 index += 1
                 continue
-            if arg.startswith("--"):
+            if option.startswith("--"):
                 return CommandResponse(
                     action="threads.invalid",
                     text=_THREADS_USAGE,
@@ -220,18 +225,19 @@ class CommandRouter:
 
     def _handle_thread(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         binding = self.store.get_binding(channel_id, conversation_id)
-        if len(command.args) == 1 and command.args[0] == "read":
+        subcommand = command.args[0].casefold() if command.args else ""
+        if len(command.args) == 1 and subcommand == "read":
             if binding.thread_id is None:
                 return CommandResponse(action="thread.read.none", text="No active thread.")
             return CommandResponse(action="thread.read.query", text="", thread_id=binding.thread_id)
-        if command.args and command.args[0] == "history":
+        if subcommand == "history":
             return self._history_response(
                 binding.thread_id,
                 command.args[1:],
                 usage="Usage: /thread history [N]",
             )
-        if command.args and command.args[0] == "attach":
-            selector = command.raw_args_text[len("attach") :].strip()
+        if subcommand == "attach":
+            selector = command.raw_args_text[len(command.args[0]) :].strip()
             if not selector:
                 return CommandResponse(
                     action="thread.invalid",
@@ -305,15 +311,16 @@ class CommandRouter:
         index = 0
         while index < len(args):
             arg = args[index]
-            if arg == "--page":
+            option = arg.casefold()
+            if option == "--page":
                 if index + 1 >= len(args):
                     return CommandResponse(action="thread.history.invalid", text=usage)
                 value = args[index + 1]
                 index += 2
-            elif arg.startswith("--page="):
+            elif option.startswith("--page="):
                 value = arg.partition("=")[2]
                 index += 1
-            elif arg.startswith("--"):
+            elif option.startswith("--"):
                 return CommandResponse(action="thread.history.invalid", text=usage)
             else:
                 positional.append(arg)
@@ -348,14 +355,15 @@ class CommandRouter:
         index = 0
         while index < len(args):
             arg = args[index]
-            if arg in {"--history", "--catchup"}:
+            option = arg.casefold()
+            if option in {"--history", "--catchup"}:
                 options_started = True
-                option = arg[2:]
+                option_name = option[2:]
                 values: list[str] = []
                 if index + 1 < len(args) and args[index + 1].isdigit():
                     values = [args[index + 1]]
                     index += 1
-                if option == "history":
+                if option_name == "history":
                     parsed = self._parse_history_limit(
                         values,
                         usage=_PICK_USAGE,
@@ -371,7 +379,7 @@ class CommandRouter:
                     catchup_limit = parsed if isinstance(parsed, int) else None
                 if isinstance(parsed, CommandResponse):
                     return parsed
-            elif arg.startswith("--history="):
+            elif option.startswith("--history="):
                 options_started = True
                 parsed = self._parse_history_limit(
                     [arg.partition("=")[2]],
@@ -381,7 +389,7 @@ class CommandRouter:
                 if isinstance(parsed, CommandResponse):
                     return parsed
                 history_limit = parsed
-            elif arg.startswith("--catchup="):
+            elif option.startswith("--catchup="):
                 options_started = True
                 parsed = self._parse_catchup_limit(
                     [arg.partition("=")[2]],
@@ -391,7 +399,7 @@ class CommandRouter:
                 if isinstance(parsed, CommandResponse):
                     return parsed
                 catchup_limit = parsed
-            elif arg.startswith("--"):
+            elif option.startswith("--"):
                 return CommandResponse(action="thread.pick.invalid", text=_PICK_USAGE)
             else:
                 if options_started:
@@ -484,7 +492,7 @@ class CommandRouter:
         del channel_id, conversation_id
         if not command.args:
             return CommandResponse(action="credits.read", text="")
-        if command.args[0].lower() == "reset" and len(command.args) <= 2:
+        if command.args[0].casefold() == "reset" and len(command.args) <= 2:
             payload = {}
             if len(command.args) == 2:
                 payload["credit_selector"] = command.args[1]
@@ -501,7 +509,7 @@ class CommandRouter:
         if not command.args:
             return CommandResponse(action="goal.read", text="")
         if len(command.args) == 1:
-            subcommand = command.args[0].lower()
+            subcommand = command.args[0].casefold()
             if subcommand == "clear":
                 return CommandResponse(action="goal.clear", text="Clearing goal.")
             if subcommand == "pause":
@@ -570,10 +578,11 @@ class CommandRouter:
         )
 
     def _handle_view(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        if len(command.args) != 1 or command.args[0] not in {"minimal", "standard", "verbose"}:
+        profile = command.args[0].casefold() if len(command.args) == 1 else ""
+        if profile not in {"minimal", "standard", "verbose"}:
             return CommandResponse(action="settings.view.invalid", text="Usage: /view minimal|standard|verbose")
-        self.store.set_visibility_profile(channel_id, conversation_id, command.args[0])
-        return CommandResponse(action="settings.view", text=f"Visibility profile set to {command.args[0]}.")
+        self.store.set_visibility_profile(channel_id, conversation_id, profile)
+        return CommandResponse(action="settings.view", text=f"Visibility profile set to {profile}.")
 
     def _handle_show(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         return self._handle_visibility_toggle(channel_id, conversation_id, command.args, enabled=True)
@@ -587,7 +596,7 @@ class CommandRouter:
             return CommandResponse(action="models.list", text="")
         if len(command.args) != 1:
             return CommandResponse(action="settings.model.invalid", text="Usage: /model [model-id]")
-        if command.args[0] == "default":
+        if command.args[0].casefold() == "default":
             return CommandResponse(
                 action="settings.model",
                 text="Native default model cleared.",
@@ -612,7 +621,7 @@ class CommandRouter:
                 action="settings.reasoning.invalid",
                 text="Usage: /think [effort|default]",
             )
-        effort = command.args[0].lower()
+        effort = command.args[0].casefold()
         if effort == "default":
             return CommandResponse(
                 action="settings.reasoning.write",
@@ -634,7 +643,7 @@ class CommandRouter:
                 action="settings.personality.invalid",
                 text="Usage: /personality [default|none|friendly|pragmatic]",
             )
-        personality = command.args[0].lower()
+        personality = command.args[0].casefold()
         if personality == "default":
             return CommandResponse(
                 action="settings.personality.write",
@@ -654,13 +663,13 @@ class CommandRouter:
 
     def _handle_fast(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
         del channel_id, conversation_id
-        if not command.args or command.args[0].lower() == "status":
+        if not command.args or command.args[0].casefold() == "status":
             if len(command.args) > 1:
                 return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
             return CommandResponse(action="settings.fast.read", text="")
         if len(command.args) != 1:
             return CommandResponse(action="settings.fast.invalid", text="Usage: /fast [on|off|status]")
-        mode = command.args[0].lower()
+        mode = command.args[0].casefold()
         if mode == "on":
             return CommandResponse(
                 action="settings.fast.write",
@@ -681,7 +690,7 @@ class CommandRouter:
             return CommandResponse(action="settings.permission.read", text="")
         if len(command.args) != 1:
             return CommandResponse(action="settings.permission.invalid", text="Usage: /permission [mode]")
-        mode = command.args[0].lower()
+        mode = command.args[0].casefold()
         if mode not in _PERMISSION_MODES:
             return CommandResponse(
                 action="settings.permission.invalid",
@@ -700,14 +709,14 @@ class CommandRouter:
                 action="config.invalid",
                 text="Usage: /config read [key] | /config write <key> <json-value> | /config batch <json>",
             )
-        subcommand = command.args[0]
+        subcommand = command.args[0].casefold()
         if subcommand == "read":
             if len(command.args) > 2:
                 return CommandResponse(action="config.read.invalid", text="Usage: /config read [key]")
             key_path = command.args[1] if len(command.args) == 2 else None
             return CommandResponse(action="config.read", text="", payload={"key_path": key_path})
         if subcommand == "write":
-            raw = command.raw_args_text[len("write") :].strip()
+            raw = command.raw_args_text[len(command.args[0]) :].strip()
             key_path, separator, value_text = raw.partition(" ")
             if not key_path or not separator:
                 return CommandResponse(action="config.write.invalid", text="Usage: /config write <key> <json-value>")
@@ -721,7 +730,7 @@ class CommandRouter:
                 payload={"key_path": key_path, "value": value},
             )
         if subcommand == "batch":
-            raw = command.raw_args_text[len("batch") :].strip()
+            raw = command.raw_args_text[len(command.args[0]) :].strip()
             if not raw:
                 return CommandResponse(action="config.batch.invalid", text="Usage: /config batch <json>")
             try:
@@ -747,7 +756,8 @@ class CommandRouter:
         )
 
     def _handle_native(self, channel_id: str, conversation_id: str, command: ParsedCommand) -> CommandResponse:
-        if not command.args or command.args[0] == "help":
+        subcommand = command.args[0].casefold() if command.args else "help"
+        if subcommand == "help":
             return CommandResponse(
                 action="native.help",
                 text="\n".join(
@@ -760,11 +770,10 @@ class CommandRouter:
                     ]
                 ),
             )
-        subcommand = command.args[0]
         if subcommand == "events":
             return self._handle_native_events(command.args[1:])
         if subcommand == "call":
-            raw = command.raw_args_text[len("call") :].strip()
+            raw = command.raw_args_text[len(command.args[0]) :].strip()
             method, _, params_text = raw.partition(" ")
             if not method:
                 return CommandResponse(action="native.call.invalid", text="Usage: /native call <method> <json>")
@@ -839,7 +848,8 @@ class CommandRouter:
         index = 0
         while index < len(args):
             arg = args[index]
-            if arg in {"--limit", "-n"}:
+            option = arg.casefold()
+            if option in {"--limit", "-n"}:
                 if index + 1 >= len(args):
                     return CommandResponse(action="native.events.invalid", text="Usage: /native events [filters...] [--limit N]")
                 try:
@@ -848,14 +858,14 @@ class CommandRouter:
                     return CommandResponse(action="native.events.invalid", text="Native event limit must be an integer.")
                 index += 2
                 continue
-            if arg.startswith("--limit="):
+            if option.startswith("--limit="):
                 try:
                     limit = int(arg.partition("=")[2])
                 except ValueError:
                     return CommandResponse(action="native.events.invalid", text="Native event limit must be an integer.")
                 index += 1
                 continue
-            if arg.startswith("--"):
+            if option.startswith("--"):
                 return CommandResponse(action="native.events.invalid", text="Usage: /native events [filters...] [--limit N]")
             filters.append(arg)
             index += 1
@@ -963,12 +973,13 @@ class CommandRouter:
         *,
         enabled: bool,
     ) -> CommandResponse:
-        if len(args) != 1 or args[0] not in {"commentary", "toolcalls", "system"}:
+        target = args[0].casefold() if len(args) == 1 else ""
+        if target not in {"commentary", "toolcalls", "system"}:
             return CommandResponse(action="settings.visibility.invalid", text="Usage: /show|/hide commentary|toolcalls|system")
-        if args[0] == "commentary":
+        if target == "commentary":
             self.store.set_commentary_visibility(channel_id, conversation_id, enabled=enabled)
             return CommandResponse(action="settings.visibility", text=f"Commentary messages {'shown' if enabled else 'hidden'}.")
-        if args[0] == "toolcalls":
+        if target == "toolcalls":
             self.store.set_toolcall_visibility(channel_id, conversation_id, enabled=enabled)
             return CommandResponse(action="settings.visibility", text=f"Tool-call messages {'shown' if enabled else 'hidden'}.")
         self.store.set_system_visibility(channel_id, conversation_id, enabled=enabled)

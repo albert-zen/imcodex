@@ -131,16 +131,9 @@ class CodexThreadBackendMixin:
         if not normalized_selector:
             raise ThreadSelectionError("Enter a thread name, preview, or ID.")
         threads = await self.list_threads(channel_id, conversation_id)
-        ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
-        for index, snapshot in enumerate(threads):
-            score = self._thread_match_score(snapshot, selector)
-            if score is not None:
-                ranked.append((score, index, snapshot))
-        if not ranked:
+        best_matches = self.match_thread_selector_candidates(threads, selector)
+        if not best_matches:
             raise ThreadSelectionError(f"No thread matches '{selector}'. Try /threads {selector}.")
-        ranked.sort(key=lambda item: (item[0], item[1]))
-        best_score = ranked[0][0]
-        best_matches = [snapshot for score, _, snapshot in ranked if score == best_score]
         if len(best_matches) > 1:
             labels = ", ".join(self._thread_short_label(snapshot) for snapshot in best_matches[:3])
             if len(best_matches) > 3:
@@ -149,6 +142,22 @@ class CodexThreadBackendMixin:
                 f"'{selector}' matches multiple threads: {labels}. Try /threads {selector}."
             )
         return best_matches[0]
+
+    def match_thread_selector_candidates(
+        self,
+        threads: list[NativeThreadSnapshot],
+        selector: str,
+    ) -> list[NativeThreadSnapshot]:
+        ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
+        for index, snapshot in enumerate(threads):
+            score = self._thread_match_score(snapshot, selector)
+            if score is not None:
+                ranked.append((score, index, snapshot))
+        if not ranked:
+            return []
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        best_score = ranked[0][0]
+        return [snapshot for score, _, snapshot in ranked if score == best_score]
 
     async def list_threads(
         self,
@@ -1014,7 +1023,7 @@ class CodexThreadBackendMixin:
         return label.strip() or snapshot.thread_id
 
     def _normalize_selector(self, value: str) -> str:
-        lowered = value.strip().lower()
+        lowered = value.strip().casefold()
         lowered = lowered.replace("_", " ").replace("-", " ")
         lowered = re.sub(r"\s+", " ", lowered)
         return lowered

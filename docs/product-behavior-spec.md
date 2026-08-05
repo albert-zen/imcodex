@@ -196,6 +196,11 @@ second message or thread model.
 
 ## Command Surface
 
+Command names, command-owned subcommands and option names are case-insensitive.
+Human-readable project and Thread selectors are also case-insensitive; IMCodex
+preserves the original native names and user-supplied values for display and
+execution instead of lowercasing those values.
+
 ### `/help`
 
 `/help` should be a compact grouped command map, not a command dictionary.
@@ -498,7 +503,7 @@ Behavior:
 - it requires an active thread
 - it remains readable while native Codex reports an active turn, so another surface's in-progress or interrupted work is visible
 - it reads full native turns from Codex using `thread/turns/list` or a native thread read that includes turns; completed, failed, interrupted, active, and compacted turns are not filtered out
-- it renders each selected turn as ordinary Markdown text with a distinct turn heading, quoted user input, and structurally preserved final Codex output; when no final output exists, it preserves the latest partial agent message; it does not introduce a second message type or replay reasoning, tool calls, or raw protocol payloads
+- it renders each selected turn as ordinary Markdown text with a distinct turn heading, quoted user input, and the complete, untruncated final Codex output; when no final output exists, it preserves the complete latest partial agent message; it does not introduce a second message type or replay reasoning, tool calls, or raw protocol payloads
 - display limits and page sizes never become Codex context limits and no bridge-local transcript is created
 - if native history cannot be read, the user gets a friendly status instead of protocol noise
 - if a new turn starts after an idle history read begins, live projection waits until the history response has been delivered so old and new output cannot interleave

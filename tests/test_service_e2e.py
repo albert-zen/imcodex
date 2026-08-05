@@ -6660,8 +6660,67 @@ async def test_direct_pick_unique_query_switches_and_returns_native_catchup() ->
     )
     list_payloads = [payload for payload in process.inputs if payload.get("method") == "thread/list"]
     assert len(list_payloads) == 1
-    assert list_payloads[0]["params"]["searchTerm"] == "开发主"
+    assert "searchTerm" not in list_payloads[0]["params"]
     assert store.get_binding("qq", "conv-1").thread_id == "thr_dev"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_direct_pick_falls_back_to_case_insensitive_local_selector_matching() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "thr_other",
+                                "cwd": "/work/other",
+                                "name": "Other work",
+                                "preview": "REPO operations",
+                                "status": "idle",
+                            },
+                            {
+                                "id": "thr_polish",
+                                "cwd": "/work/imcodex",
+                                "name": "Repo",
+                                "status": "idle",
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                },
+            ],
+            "thread/resume": [
+                {
+                    "id": 3,
+                    "result": {
+                        "thread": {
+                            "id": "thr_polish",
+                            "cwd": "/work/imcodex",
+                            "name": "Repo",
+                            "status": "idle",
+                            "turns": [],
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage("qq", "conv-1", "u1", "m1", "/pick REPO")
+    )
+
+    assert messages[0].text.startswith("[System] Switched to Repo.")
+    list_payloads = [payload for payload in process.inputs if payload.get("method") == "thread/list"]
+    assert len(list_payloads) == 1
+    assert "searchTerm" not in list_payloads[0]["params"]
+    assert store.get_binding("qq", "conv-1").thread_id == "thr_polish"
     await client.close()
 
 
@@ -6705,13 +6764,12 @@ async def test_direct_pick_ambiguous_query_opens_filtered_threads_panel() -> Non
 
 @pytest.mark.asyncio
 async def test_direct_pick_empty_query_opens_unfiltered_threads_panel() -> None:
-    process = SequentialScriptedProcess(
+    process = ScriptedProcess(
         {
             "initialize": [{"id": 1, "result": {"ok": True}}],
             "thread/list": [
-                {"id": 2, "result": {"data": [], "nextCursor": None}},
                 {
-                    "id": 3,
+                    "id": 2,
                     "result": {
                         "data": [
                             {"id": "thr_other", "cwd": "/work/other", "name": "Other work", "status": "idle"}
@@ -6736,9 +6794,8 @@ async def test_direct_pick_empty_query_opens_unfiltered_threads_panel() -> None:
     assert context is not None
     assert context.query is None
     list_payloads = [payload for payload in process.inputs if payload.get("method") == "thread/list"]
-    assert len(list_payloads) == 2
-    assert list_payloads[0]["params"]["searchTerm"] == "missing"
-    assert "searchTerm" not in list_payloads[1]["params"]
+    assert len(list_payloads) == 1
+    assert "searchTerm" not in list_payloads[0]["params"]
     await client.close()
 
 

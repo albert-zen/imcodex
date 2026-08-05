@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-_HISTORY_TEXT_LIMIT = 1200
 _CATCHUP_TEXT_LIMIT = 800
 
 
@@ -31,7 +30,7 @@ def render_thread_history(payload: dict, *, limit: int = 1) -> str:
                 [
                     "",
                     "**You**",
-                    _blockquote(_compact_history_text(user_text, _HISTORY_TEXT_LIMIT)),
+                    _blockquote(user_text.strip()),
                 ]
             )
         if agent_text:
@@ -40,7 +39,7 @@ def render_thread_history(payload: dict, *, limit: int = 1) -> str:
                     "",
                     "**Codex**",
                     "",
-                    _compact_history_text(agent_text, _HISTORY_TEXT_LIMIT),
+                    agent_text.strip(),
                 ]
             )
         if not user_text and not agent_text:
@@ -49,7 +48,7 @@ def render_thread_history(payload: dict, *, limit: int = 1) -> str:
             lines.extend(["", "_Native context compaction occurred in this turn._"])
         error_text = _turn_error_text(turn)
         if error_text:
-            lines.extend(["", "**Error**", "", _compact_history_text(error_text, _HISTORY_TEXT_LIMIT)])
+            lines.extend(["", "**Error**", "", error_text.strip()])
     if has_older:
         lines.extend(["", "---", "", f"Older turns: `/history {limit} --page {page + 1}`"])
     return "\n".join(lines)
@@ -75,7 +74,7 @@ def render_thread_catchup(payload: dict, *, limit: int = 5) -> str:
                 "",
                 f"### {index}",
                 "",
-                _compact_history_text(value, _CATCHUP_TEXT_LIMIT),
+                _compact_catchup_text(value, _CATCHUP_TEXT_LIMIT),
             ]
         )
     if status == "Working":
@@ -177,7 +176,7 @@ def _item_text(item: dict) -> str:
     return ""
 
 
-def _compact_history_text(value: str, limit: int) -> str:
+def _compact_catchup_text(value: str, limit: int) -> str:
     text = value.strip()
     if len(text) <= limit:
         return text

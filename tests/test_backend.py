@@ -745,7 +745,7 @@ async def test_resolve_thread_selector_matches_name_prefix() -> None:
     )
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
 
-    snapshot = await backend.resolve_thread_selector("qq", "conv-1", "repo pol")
+    snapshot = await backend.resolve_thread_selector("qq", "conv-1", "REPO POL")
 
     assert snapshot.thread_id == "thr_named"
 

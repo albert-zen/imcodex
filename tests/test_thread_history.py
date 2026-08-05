@@ -79,7 +79,8 @@ def test_history_renders_interrupted_active_and_compacted_native_turns() -> None
     assert "`/history 2 --page 3`" in text
 
 
-def test_history_closes_a_truncated_code_fence_before_the_next_turn() -> None:
+def test_history_preserves_a_long_model_reply_without_truncation() -> None:
+    reply = "```python\n" + ("print('long output')\n" * 100) + "```"
     text = render_thread_history(
         {
             "turns": [
@@ -90,7 +91,7 @@ def test_history_closes_a_truncated_code_fence_before_the_next_turn() -> None:
                         {
                             "type": "agentMessage",
                             "phase": "final_answer",
-                            "text": "```python\n" + ("print('long output')\n" * 100) + "```",
+                            "text": reply,
                         }
                     ],
                 },
@@ -100,9 +101,9 @@ def test_history_closes_a_truncated_code_fence_before_the_next_turn() -> None:
         limit=2,
     )
 
-    separator = text.index("\n---\n")
-    assert text[:separator].rstrip().endswith("```\n…")
-    assert "### 2. Completed · `turn_2`" in text[separator:]
+    assert reply in text
+    assert "\n…" not in text
+    assert "### 2. Completed · `turn_2`" in text
 
 
 def test_catchup_renders_only_recent_native_commentary() -> None:
