@@ -1124,6 +1124,117 @@ async def _run_approval_comparison(
     }
 
 
+async def _run_writer_lock_recovery_probe(
+    args: argparse.Namespace,
+    *,
+    codex_bin: Path,
+    primary_socket_path: Path,
+    secondary_socket_path: Path,
+    workspace: Path,
+    env: dict[str, str],
+    version: str,
+) -> JSON:
+    """Verify that a competing App Server can resume only after native lock release."""
+
+    primary: JsonlClient | None = None
+    secondary: JsonlClient | None = None
+    primary_server = contextlib.AsyncExitStack()
+    secondary_server = contextlib.AsyncExitStack()
+    secondary_env = dict(env)
+    secondary_sqlite_home = secondary_socket_path.parent / "secondary-sqlite"
+    secondary_sqlite_home.mkdir(mode=0o700)
+    secondary_env["CODEX_SQLITE_HOME"] = str(secondary_sqlite_home)
+    thread_id = ""
+    try:
+        _stage("writer-lock-primary")
+        await primary_server.enter_async_context(
+            _isolated_app_server(
+                codex_bin,
+                socket_path=primary_socket_path,
+                workspace=workspace,
+                env=env,
+            )
+        )
+        primary = await JsonlClient.connect(
+            "writer-primary",
+            shim_path=Path(__file__).resolve(),
+            shim_bin=args.shim_bin,
+            socket_path=primary_socket_path,
+            env=env,
+        )
+        await _initialize(primary)
+        thread = await _start_thread(primary, workspace)
+        thread_id = str(thread["id"])
+        await _bootstrap_persisted_thread(primary, thread_id)
+
+        _stage("writer-lock-conflict")
+        await secondary_server.enter_async_context(
+            _isolated_app_server(
+                codex_bin,
+                socket_path=secondary_socket_path,
+                workspace=workspace,
+                env=secondary_env,
+            )
+        )
+        secondary = await JsonlClient.connect(
+            "writer-secondary",
+            shim_path=Path(__file__).resolve(),
+            shim_bin=args.shim_bin,
+            socket_path=secondary_socket_path,
+            env=secondary_env,
+        )
+        await _initialize(secondary)
+        read_result = await secondary.request(
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": True},
+        )
+        if str(_thread_from(read_result)["id"]) != thread_id:
+            raise ProbeFailure("competing App Server read returned a different thread")
+        conflict = await secondary.request_result(
+            "thread/resume",
+            {"threadId": thread_id},
+        )
+        error = conflict.get("error")
+        if not isinstance(error, dict) or error.get("code") != -32600:
+            raise ProbeFailure("competing App Server resume did not return native conflict")
+        expected_conflict = f"thread {thread_id} already has an active writer".lower()
+        if str(error.get("message") or "").strip().lower() != expected_conflict:
+            raise ProbeFailure("competing App Server resume returned an unexpected conflict")
+
+        await primary.close()
+        primary = None
+        # Leave the secondary process and connection alive while the primary
+        # App Server exits and releases the native writer lock.
+        await primary_server.aclose()
+
+        if secondary is None:
+            raise ProbeFailure("secondary App Server client was not created")
+        _stage("writer-lock-released-retry")
+        resumed = await _resume(secondary, thread_id)
+        if str(resumed["id"]) != thread_id:
+            raise ProbeFailure("post-release retry resumed a different thread")
+        loaded = await secondary.request("thread/loaded/list", {})
+        loaded_ids = loaded.get("data")
+        if not isinstance(loaded_ids, list) or thread_id not in {str(item) for item in loaded_ids}:
+            raise ProbeFailure("post-release retry did not load the native thread")
+        return {
+            "status": "PASS",
+            "version": version,
+            "writerConflict": {
+                "threadId": thread_id,
+                "readWithoutWriter": True,
+                "resumeConflictCode": -32600,
+                "resumedAfterRelease": True,
+            },
+            "productionLocalEndpointsUsed": False,
+        }
+    finally:
+        clients = [client for client in (primary, secondary) if client is not None]
+        await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
+        await secondary_server.aclose()
+        await primary_server.aclose()
+
+
 def _scrubbed_environment(root: Path, codex_home: Path) -> dict[str, str]:
     env = {
         key: value
@@ -1169,6 +1280,7 @@ async def run(args: argparse.Namespace) -> JSON:
         workspace = root / "workspace"
         workspace.mkdir(mode=0o700)
         native_socket_path = root / "app-server.sock"
+        secondary_socket_path = root / "app-server-secondary.sock"
         guard_socket_path = root / "reload-guard.sock"
         env = _scrubbed_environment(root, codex_home)
 
@@ -1183,6 +1295,17 @@ async def run(args: argparse.Namespace) -> JSON:
         version = version_out.decode(errors="replace").strip()
         if version_process.returncode != 0 or version != args.expected_version:
             raise ProbeFailure(f"version mismatch: expected={args.expected_version!r} actual={version!r}")
+
+        if args.writer_lock_recovery:
+            return await _run_writer_lock_recovery_probe(
+                args,
+                codex_bin=codex_bin,
+                primary_socket_path=native_socket_path,
+                secondary_socket_path=secondary_socket_path,
+                workspace=workspace,
+                env=env,
+                version=version,
+            )
 
         async with _isolated_app_server(
             codex_bin,
@@ -1244,6 +1367,14 @@ def parse_args() -> argparse.Namespace:
     )
     contract = parser.add_mutually_exclusive_group()
     contract.add_argument("--only-conflict", action="store_true")
+    contract.add_argument(
+        "--writer-lock-recovery",
+        action="store_true",
+        help=(
+            "Verify native cross-process writer conflict and successful resume "
+            "after the owning App Server exits."
+        ),
+    )
     contract.add_argument(
         "--sequential-contract",
         action="store_true",

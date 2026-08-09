@@ -230,6 +230,23 @@ unavailable. Recovery does not wait for another IM message. Reconnect delays
 must be positive, the maximum must be at least the initial delay, and jitter
 must be between `0` and `1`.
 
+Codex 0.147 also enforces one rollout writer per native thread across App
+Server processes sharing a `CODEX_HOME`. If ready-time `thread/resume` returns
+the exact native active-writer conflict, the bridge keeps health degraded and
+retries only the affected bindings on a finite `1/2/4/8/16/30` second
+schedule. Each retry is another native resume/reconciliation; the bridge does
+not remove the lock, interrupt the owner, or treat `thread/read` as a
+subscription. A successful resume updates the same connection epoch's health
+to reflect the recovered binding. A successful ordinary resume of the same
+binding removes its pending retry before starting or steering a Turn and
+converges the same health summary. A successful handoff, new thread, or fork
+removes retry work for the superseded binding. Rehydration validates the exact
+binding again after the native response, so an in-flight retry cannot restore
+a thread replaced by `/pick` or `/new`. Retry exhaustion remains degraded
+until an ordinary exact resume reconciles the binding or a new connection
+epoch reruns ready-time reconciliation; ordinary IM input may still make that native resume attempt
+after the finite background budget is exhausted.
+
 JSON-RPC responses are handled on the socket read fast path. Native server
 requests such as approvals use a separate bounded dispatcher so a slow ordinary
 notification cannot starve them, while `serverRequest/resolved` stays on that

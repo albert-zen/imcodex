@@ -43,7 +43,9 @@ class CodexThreadBackendMixin:
         if previous.thread_id:
             self._unpersisted_thread_ids.discard(previous.thread_id)
         self.store.clear_thread_binding(channel_id, conversation_id)
-        return await self.ensure_thread(channel_id, conversation_id)
+        thread_id = await self.ensure_thread(channel_id, conversation_id)
+        self._notify_binding_reconciled(channel_id, conversation_id, thread_id)
+        return thread_id
 
     async def ensure_thread(self, channel_id: str, conversation_id: str) -> str:
         binding = self.store.get_binding(channel_id, conversation_id)
@@ -73,6 +75,11 @@ class CodexThreadBackendMixin:
                     "Codex reports this thread as active but did not expose its active turn; "
                     "refusing to start a competing turn"
                 )
+            self._notify_binding_reconciled(
+                channel_id,
+                conversation_id,
+                snapshot.thread_id,
+            )
             return snapshot.thread_id
         if binding.bootstrap_cwd is None:
             raise KeyError("No working directory selected for thread session")
@@ -120,6 +127,11 @@ class CodexThreadBackendMixin:
         await self._ensure_thread_observer_ready(snapshot.thread_id, snapshot.cwd)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         self._reconcile_native_active_turn(payload, snapshot)
+        self._notify_binding_reconciled(
+            channel_id,
+            conversation_id,
+            snapshot.thread_id,
+        )
         return snapshot.thread_id
 
     async def resolve_thread_selector(
@@ -338,6 +350,11 @@ class CodexThreadBackendMixin:
             payload = {"id": forked_id}
         snapshot = self._remember_snapshot(payload)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
+        self._notify_binding_reconciled(
+            channel_id,
+            conversation_id,
+            snapshot.thread_id,
+        )
         return snapshot
 
     async def rename_thread(self, channel_id: str, conversation_id: str, name: str) -> dict:
@@ -663,14 +680,29 @@ class CodexThreadBackendMixin:
         self.store.remove_pending_requests_for_turn(thread_id, turn_id)
         return True
 
-    async def rehydrate_bound_threads(self) -> dict:
+    async def rehydrate_bound_threads(
+        self,
+        *,
+        binding_keys: set[tuple[str, str, str]] | None = None,
+    ) -> dict:
         summary = {"total": 0, "succeeded": 0, "failed": 0, "unverified": 0}
+        active_writer_conflicts = 0
+        retryable_bindings: list[dict[str, str]] = []
         recovered_turns: list[dict] = []
         discarded_turns: list[dict[str, str]] = []
         for binding in self.store.iter_bindings():
             if not binding.thread_id:
                 continue
+            binding_key = (
+                binding.channel_id,
+                binding.conversation_id,
+                binding.thread_id,
+            )
+            if binding_keys is not None and binding_key not in binding_keys:
+                continue
             summary["total"] += 1
+            reconciliation_token = object()
+            self._active_rehydration_tokens[binding_key] = reconciliation_token
             cached_active = self.store.get_active_turn(binding.thread_id)
             if cached_active is not None:
                 # Cached turn state is not authoritative across a transport
@@ -698,7 +730,29 @@ class CodexThreadBackendMixin:
                     service_name=self.service_name,
                 )
             except AppServerError as exc:
+                target_is_current = self._rehydration_target_is_current(
+                    binding_key,
+                    reconciliation_token,
+                )
+                self._release_rehydration_target(binding_key, reconciliation_token)
+                if not target_is_current:
+                    summary["total"] -= 1
+                    self._emit_superseded_rehydration(binding_key)
+                    continue
                 summary["failed"] += 1
+                active_writer_conflict = self._is_native_active_writer_conflict(
+                    exc,
+                    expected_thread_id=binding.thread_id,
+                )
+                if active_writer_conflict:
+                    active_writer_conflicts += 1
+                    retryable_bindings.append(
+                        {
+                            "channelId": binding.channel_id,
+                            "conversationId": binding.conversation_id,
+                            "threadId": binding.thread_id,
+                        }
+                    )
                 failed_thread_id = binding.thread_id
                 stale_thread = self._is_stale_thread_error(exc)
                 had_active_turn = cached_active is not None
@@ -719,8 +773,24 @@ class CodexThreadBackendMixin:
                         "thread_id": failed_thread_id,
                         "error_type": type(exc).__name__,
                         "cleared_active_turn": had_active_turn,
+                        "retryable_after_writer_release": active_writer_conflict,
                     },
                 )
+                continue
+            except BaseException:
+                self._release_rehydration_target(
+                    binding_key,
+                    reconciliation_token,
+                )
+                raise
+            target_is_current = self._rehydration_target_is_current(
+                binding_key,
+                reconciliation_token,
+            )
+            self._release_rehydration_target(binding_key, reconciliation_token)
+            if not target_is_current:
+                summary["total"] -= 1
+                self._emit_superseded_rehydration(binding_key)
                 continue
             payload = result.get("thread")
             if not isinstance(payload, dict):
@@ -853,11 +923,52 @@ class CodexThreadBackendMixin:
                 },
             )
             summary["succeeded"] += 1
-        return {
+        if active_writer_conflicts:
+            summary["activeWriterConflicts"] = active_writer_conflicts
+        result = {
             "summary": summary,
             "recoveredTurns": recovered_turns,
             "discardedTurns": discarded_turns,
         }
+        if active_writer_conflicts:
+            result["retryableWriterConflicts"] = active_writer_conflicts
+            result["retryableBindings"] = retryable_bindings
+        return result
+
+    def _rehydration_target_is_current(
+        self,
+        binding_key: tuple[str, str, str],
+        reconciliation_token: object,
+    ) -> bool:
+        channel_id, conversation_id, thread_id = binding_key
+        current = self.store.get_binding(channel_id, conversation_id)
+        return (
+            current.thread_id == thread_id
+            and self._active_rehydration_tokens.get(binding_key)
+            is reconciliation_token
+        )
+
+    def _release_rehydration_target(
+        self,
+        binding_key: tuple[str, str, str],
+        reconciliation_token: object,
+    ) -> None:
+        if self._active_rehydration_tokens.get(binding_key) is reconciliation_token:
+            self._active_rehydration_tokens.pop(binding_key, None)
+
+    @staticmethod
+    def _emit_superseded_rehydration(binding_key: tuple[str, str, str]) -> None:
+        channel_id, conversation_id, thread_id = binding_key
+        emit_event(
+            component="appserver.backend",
+            event="bridge.thread_rehydrate.superseded",
+            message="Skipped rehydration superseded by a newer binding",
+            data={
+                "channel_id": channel_id,
+                "conversation_id": conversation_id,
+                "thread_id": thread_id,
+            },
+        )
 
     def _remember_snapshot(self, payload: dict) -> NativeThreadSnapshot:
         status = self._native_status(payload.get("status"))

@@ -504,6 +504,9 @@ The bridge and App Server adapter MUST therefore follow these rules:
 - responses, native request routes, and late transport messages from an old connection epoch MUST NOT be accepted by or sent through a newer epoch
 - a reconnected transport MUST NOT be reported as restored until native initialize and all ready-time reconciliation handlers complete
 - health MUST report `degraded` with reconciliation counts when ready-time rehydration fails or cannot verify one or more native bindings
+- the exact native cross-process active-writer conflict MAY trigger a finite retry schedule for only the affected bindings; retries MUST use `thread/resume`, MUST preserve degraded health until native reconciliation succeeds, and MUST stop on exhaustion, connection-epoch reset, or bridge shutdown
+- recovery MUST NOT delete or bypass native writer locks, interrupt the owning client, treat `thread/read` as an event subscription, or repeatedly resume bindings that were already verified in the current connection epoch
+- a successful ordinary exact resume or route replacement MUST invalidate pending retry work for that conversation, and an in-flight recovery response MUST revalidate both the binding and its current reconciliation token before mutating route, cached Turn state, projection, or health
 - cached active-turn authority MUST be cleared before native resume; an active native thread without a verifiable active turn MUST remain degraded
 - cached `active_turn` is a routing hint only and MUST NOT suppress a native item, server request, or Turn lifecycle event with another Turn ID; only an explicitly suppressed Turn MAY have its presentation hidden
 - every ordinary input to an existing binding MUST resume and reconcile the exact native thread before steer/start; a different returned thread ID or an unverifiable active turn MUST fail explicitly rather than create a competing continuation

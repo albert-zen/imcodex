@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from imcodex.appserver import AppServerError, CodexBackend, ThreadSelectionError
@@ -941,6 +943,10 @@ async def test_thread_operations_use_active_native_thread() -> None:
     store.bind_thread_with_cwd("qq", "conv-1", "thr_1", r"D:\desktop\attached")
     client = ThreadOpsClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    reconciled: list[tuple[str, str, str]] = []
+    backend.add_binding_reconciled_handler(
+        lambda *key: reconciled.append(key)
+    )
 
     history = await backend.read_thread_history("qq", "conv-1", limit=3)
     forked = await backend.fork_thread("qq", "conv-1")
@@ -961,6 +967,7 @@ async def test_thread_operations_use_active_native_thread() -> None:
     assert client.fork_calls == ["thr_1"]
     assert client.rename_calls == [{"thread_id": "thr_forked", "name": "Renamed thread"}]
     assert client.compact_calls == ["thr_forked"]
+    assert reconciled == [("qq", "conv-1", "thr_forked")]
 
 
 @pytest.mark.asyncio
@@ -1021,6 +1028,10 @@ async def test_submit_text_starts_first_turn_without_resuming_fresh_thread() -> 
     store.set_bootstrap_cwd("qq", "conv-1", r"D:\desktop\imcodex")
     client = NewThreadClient()
     backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+    reconciled: list[tuple[str, str, str]] = []
+    backend.add_binding_reconciled_handler(
+        lambda *key: reconciled.append(key)
+    )
 
     thread_id = await backend.create_new_thread("qq", "conv-1")
     submission = await backend.submit_text("qq", "conv-1", "hi")
@@ -1039,6 +1050,7 @@ async def test_submit_text_starts_first_turn_without_resuming_fresh_thread() -> 
             "summary": "concise",
         }
     ]
+    assert reconciled == [("qq", "conv-1", "thr_new")]
 
     store.clear_active_turn("thr_new")
     await backend.submit_text("qq", "conv-1", "again")
@@ -1599,6 +1611,262 @@ async def test_rehydrate_failure_discards_unverified_active_turn_but_keeps_bindi
         "summary": {"total": 1, "succeeded": 0, "failed": 1, "unverified": 0},
         "recoveredTurns": [],
         "discardedTurns": [{"threadId": "thr_1", "turnId": "turn_1"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_identifies_native_active_writer_conflict_for_later_retry() -> None:
+    thread_id = "019fe5f6-0000-7000-8000-000000000001"
+
+    class ActiveWriterClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError(
+                f"thread {thread_id} already has an active writer",
+                code=-32600,
+            )
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", thread_id)
+    backend = CodexBackend(
+        client=ActiveWriterClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert result == {
+        "summary": {
+            "total": 1,
+            "succeeded": 0,
+            "failed": 1,
+            "unverified": 0,
+            "activeWriterConflicts": 1,
+        },
+        "recoveredTurns": [],
+        "discardedTurns": [],
+        "retryableWriterConflicts": 1,
+        "retryableBindings": [
+            {
+                "channelId": "qq",
+                "conversationId": "conv-1",
+                "threadId": thread_id,
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_does_not_retry_unrelated_invalid_request() -> None:
+    class InvalidRequestClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError(
+                "thread configuration is invalid",
+                code=-32600,
+            )
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    backend = CodexBackend(
+        client=InvalidRequestClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert result["summary"] == {
+        "total": 1,
+        "succeeded": 0,
+        "failed": 1,
+        "unverified": 0,
+    }
+    assert "retryableWriterConflicts" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            -32603,
+            "thread 019fe5f6-0000-7000-8000-000000000001 already has an active writer",
+        ),
+        (
+            -32600,
+            "failed: thread 019fe5f6-0000-7000-8000-000000000001 already has an active writer",
+        ),
+    ],
+)
+async def test_rehydrate_active_writer_classification_fails_closed(
+    code: int,
+    message: str,
+) -> None:
+    class DriftedErrorClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError(message, code=code)
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    backend = CodexBackend(
+        client=DriftedErrorClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert result["summary"]["failed"] == 1
+    assert "retryableWriterConflicts" not in result
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_active_writer_classification_rejects_mismatched_thread_id() -> None:
+    requested_thread_id = "019fe5f6-0000-7000-8000-000000000001"
+    other_thread_id = "019fe5f6-0000-7000-8000-000000000002"
+
+    class MismatchedErrorClient:
+        async def resume_thread(self, **_params):
+            raise AppServerError(
+                f"thread {other_thread_id} already has an active writer",
+                code=-32600,
+            )
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", requested_thread_id)
+    backend = CodexBackend(
+        client=MismatchedErrorClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    result = await backend.rehydrate_bound_threads()
+
+    assert result["summary"]["failed"] == 1
+    assert "retryableWriterConflicts" not in result
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_does_not_restore_binding_replaced_while_resume_is_in_flight() -> None:
+    resume_started = asyncio.Event()
+    release_resume = asyncio.Event()
+
+    class BlockedResumeClient:
+        async def resume_thread(self, **params):
+            resume_started.set()
+            await release_resume.wait()
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": "/work/old",
+                    "status": "idle",
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_old", "/work/old")
+    backend = CodexBackend(
+        client=BlockedResumeClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    task = asyncio.create_task(
+        backend.rehydrate_bound_threads(
+            binding_keys={("qq", "conv-1", "thr_old")}
+        )
+    )
+    await resume_started.wait()
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_new", "/work/new")
+    release_resume.set()
+    result = await task
+
+    binding = store.get_binding("qq", "conv-1")
+    assert binding.thread_id == "thr_new"
+    assert binding.bootstrap_cwd == "/work/new"
+    assert result == {
+        "summary": {"total": 0, "succeeded": 0, "failed": 0, "unverified": 0},
+        "recoveredTurns": [],
+        "discardedTurns": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_in_flight_yields_to_ordinary_resume_of_same_binding() -> None:
+    recovery_started = asyncio.Event()
+    release_recovery = asyncio.Event()
+    calls = 0
+
+    class RacingResumeClient:
+        async def resume_thread(self, **params):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                recovery_started.set()
+                await release_recovery.wait()
+                status = "idle"
+                turns = []
+            else:
+                status = "active"
+                turns = [{"id": "turn_fresh", "status": "inProgress"}]
+            return {
+                "thread": {
+                    "id": params["thread_id"],
+                    "cwd": "/work/current",
+                    "status": status,
+                    "turns": turns,
+                }
+            }
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread_with_cwd("qq", "conv-1", "thr_same", "/work/current")
+    store.note_active_turn("thr_same", "turn_stale", "inProgress")
+    backend = CodexBackend(
+        client=RacingResumeClient(),
+        store=store,
+        service_name="imcodex-test",
+    )
+
+    recovery = asyncio.create_task(
+        backend.rehydrate_bound_threads(
+            binding_keys={("qq", "conv-1", "thr_same")}
+        )
+    )
+    await recovery_started.wait()
+    assert await backend.ensure_thread("qq", "conv-1") == "thr_same"
+    assert store.get_active_turn("thr_same") == ("turn_fresh", "inProgress")
+    release_recovery.set()
+    result = await recovery
+
+    assert store.get_active_turn("thr_same") == ("turn_fresh", "inProgress")
+    assert result["summary"] == {
+        "total": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "unverified": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_retry_targets_only_selected_binding() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "healthy", "thr_healthy")
+    store.bind_thread("qq", "conflict", "thr_conflict")
+    client = RehydrateClient()
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    result = await backend.rehydrate_bound_threads(
+        binding_keys={("qq", "conflict", "thr_conflict")}
+    )
+
+    assert client.resume_calls == [
+        {"thread_id": "thr_conflict", "service_name": "imcodex-test"}
+    ]
+    assert result["summary"] == {
+        "total": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "unverified": 0,
     }
 
 
