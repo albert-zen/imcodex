@@ -240,6 +240,74 @@ def test_health_writer_coalesces_slow_disk_writes_off_caller_thread(tmp_path: Pa
     writer.close()
 
 
+def test_health_writer_tracks_live_readiness_without_changing_liveness_probe(
+    tmp_path: Path,
+) -> None:
+    paths = ObservabilityPaths.build(tmp_path, "instance-1")
+    paths.instance_dir.mkdir(parents=True)
+    paths.current_dir.mkdir(parents=True)
+    writer = HealthWriter(paths=paths, context=_context(), clock=_clock)
+
+    writer.merge_http(listening=True)
+    writer.merge_appserver(connected=True, ready=True, status="connected")
+    writer.merge_channel(
+        "qq",
+        enabled=True,
+        connected=True,
+        inbound_access_ready=True,
+        status="connected",
+    )
+    writer.update(status="healthy")
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "healthy"
+
+    writer.merge_channel(
+        "qq",
+        connected=False,
+        status="reconnecting",
+        error_type="ImportError",
+    )
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "degraded"
+
+    writer.merge_channel(
+        "qq",
+        connected=True,
+        status="connected",
+        error_type=None,
+    )
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "healthy"
+
+    writer.merge_channel("qq", connected=True, status="degraded")
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "degraded"
+
+    writer.merge_channel("qq", connected=True, status="connected")
+    writer.merge_appserver(
+        connected=True,
+        ready=True,
+        status="degraded",
+        rehydration={"failed": 1},
+    )
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "degraded"
+
+    writer.merge_appserver(
+        connected=True,
+        ready=True,
+        status="connected",
+        rehydration={"failed": 0},
+    )
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "healthy"
+
+    writer.merge_appserver(connected=False, ready=False, status="reconnecting")
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "degraded"
+    writer.close()
+
+
 def test_async_log_handler_keeps_slow_targets_off_caller_thread() -> None:
     target_started = Event()
     release_target = Event()

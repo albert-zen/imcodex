@@ -19,6 +19,7 @@ BRIDGE_SHUTDOWN_PATH = "/_imcodex/ops/shutdown"
 
 class HealthWriter:
     CLOSE_TIMEOUT_S = 0.25
+    _OPERATIONAL_STATUSES = frozenset({"healthy", "degraded"})
 
     def __init__(self, *, paths: ObservabilityPaths, context: InstanceContext, clock) -> None:
         self.paths = paths
@@ -43,6 +44,7 @@ class HealthWriter:
         with self._lock:
             for key, value in changes.items():
                 self._state[key] = value
+            self._derive_operational_status_locked()
             self._state["updated_at"] = self.clock().astimezone().isoformat()
             self._enqueue_locked()
 
@@ -53,6 +55,7 @@ class HealthWriter:
             current.update(changes)
             channel_state[channel_id] = current
             self._state["channels"] = channel_state
+            self._derive_operational_status_locked()
             self._state["updated_at"] = self.clock().astimezone().isoformat()
             self._enqueue_locked()
 
@@ -61,6 +64,7 @@ class HealthWriter:
             current = dict(self._state.get("http") or {})
             current.update(changes)
             self._state["http"] = current
+            self._derive_operational_status_locked()
             self._state["updated_at"] = self.clock().astimezone().isoformat()
             self._enqueue_locked()
 
@@ -69,8 +73,58 @@ class HealthWriter:
             current = dict(self._state.get("appserver") or {})
             current.update(changes)
             self._state["appserver"] = current
+            self._derive_operational_status_locked()
             self._state["updated_at"] = self.clock().astimezone().isoformat()
             self._enqueue_locked()
+
+    def _derive_operational_status_locked(self) -> None:
+        """Keep the top-level readiness truthful after startup.
+
+        The HTTP ``/healthz`` endpoint is the process-liveness probe. This
+        persisted status is the operator-facing readiness summary and must
+        degrade when a required live dependency or enabled channel is down.
+        """
+
+        if self._state.get("status") not in self._OPERATIONAL_STATUSES:
+            return
+        http = self._state.get("http")
+        appserver = self._state.get("appserver")
+        ready = isinstance(http, dict) and http.get("listening") is True
+        if ready and isinstance(appserver, dict) and "ready" in appserver:
+            ready = (
+                appserver.get("connected") is True
+                and appserver.get("ready") is True
+            )
+            if ready and str(appserver.get("status") or "").lower() == "degraded":
+                ready = False
+            rehydration = appserver.get("rehydration")
+            if ready and isinstance(rehydration, dict):
+                recovery_failures = (
+                    "failed",
+                    "unverified",
+                    "deliveryFailed",
+                    "deliveryPending",
+                )
+                ready = not any(
+                    isinstance(rehydration.get(key), (int, float))
+                    and rehydration[key] > 0
+                    for key in recovery_failures
+                )
+        channels = self._state.get("channels")
+        if ready and isinstance(channels, dict):
+            for channel in channels.values():
+                if not isinstance(channel, dict) or channel.get("enabled") is False:
+                    continue
+                if str(channel.get("status") or "").lower() == "degraded":
+                    ready = False
+                    break
+                if channel.get("inbound_access_ready") is False:
+                    ready = False
+                    break
+                if "connected" in channel and channel.get("connected") is not True:
+                    ready = False
+                    break
+        self._state["status"] = "healthy" if ready else "degraded"
 
     def write(self) -> None:
         with self._lock:

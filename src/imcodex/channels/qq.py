@@ -676,6 +676,9 @@ class QQChannelAdapter(BaseChannelAdapter):
                                 connected=True,
                                 session_id=self._session_id,
                                 status="connected",
+                                error_type=None,
+                                retry_attempt=None,
+                                retry_delay_s=None,
                             )
                             self._ready_event.set()
                             continue
@@ -692,6 +695,9 @@ class QQChannelAdapter(BaseChannelAdapter):
                                 connected=True,
                                 session_id=self._session_id,
                                 status="connected",
+                                error_type=None,
+                                retry_attempt=None,
+                                retry_delay_s=None,
                             )
                             self._ready_event.set()
                             continue

@@ -2028,6 +2028,68 @@ async def test_recovery_health_is_degraded_while_terminal_delivery_is_pending() 
 
 
 @pytest.mark.asyncio
+async def test_recovery_health_returns_to_connected_after_pending_delivery_succeeds() -> None:
+    class FailingOnceSink:
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.messages: list[OutboundMessage] = []
+
+        async def send_message(self, message: OutboundMessage) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise OSError("QQ unavailable")
+            self.messages.append(message)
+
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_1")
+    store.stage_terminal_delivery(
+        delivery_id="imcodex:native:terminal-1",
+        thread_id="thr_1",
+        turn_id="turn_1",
+        message={
+            "channel_id": "qq",
+            "conversation_id": "conv-1",
+            "message_type": "agentMessage",
+            "text": "Still owed",
+            "request_id": None,
+            "metadata": {
+                "delivery_id": "imcodex:native:terminal-1",
+                "phase": "final_answer",
+            },
+        },
+    )
+    process = ScriptedProcess({"initialize": [{"id": 1, "result": {"ok": True}}]})
+    sink = FailingOnceSink()
+    client, service = _build_service(store, process, sink)  # type: ignore[arg-type]
+    service._terminal_delivery_closed = True
+    service.backend.prefers_native_recovery = lambda: True  # type: ignore[method-assign]
+
+    async def no_native_changes() -> dict:
+        return {
+            "summary": {"failed": 0, "unverified": 0},
+            "recoveredTurns": [],
+            "discardedTurns": [],
+        }
+
+    service.backend.rehydrate_bound_threads = no_native_changes  # type: ignore[method-assign]
+
+    await client.initialize()
+
+    assert client.connection_facts()["status"] == "degraded"
+    assert client.connection_facts()["rehydration"]["deliveryPending"] == 1
+
+    assert await service._deliver_pending_terminal_once() is True
+
+    facts = client.connection_facts()
+    assert facts["status"] == "connected"
+    assert "deliveryPending" not in facts["rehydration"]
+    assert store.list_pending_terminal_deliveries() == []
+    assert [message.text for message in sink.messages] == ["Still owed"]
+    await service.close()
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_recovery_keeps_turn_watch_until_recovered_message_is_durable() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.bind_thread("qq", "conv-1", "thr_1")
@@ -5299,6 +5361,40 @@ async def test_credits_command_shows_usage_when_rate_limits_fail() -> None:
     assert "Tokens: 1.2K lifetime" in messages[0].text
     assert "Latest day: 2026-06-26 5.7K tokens" in messages[0].text
     assert "Warning: credits and rate limits could not be queried from Codex right now." in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_credits_command_distinguishes_native_account_outage_from_bridge_outage() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "account/rateLimits/read": [
+                {"id": 2, "error": {"code": -32603, "message": "rate limits timed out"}},
+            ],
+            "account/usage/read": [
+                {"id": 3, "error": {"code": -32603, "message": "usage timed out"}},
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    messages = await service.handle_inbound(
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m1",
+            text="/credits",
+        )
+    )
+
+    assert messages[0].message_type == "command_result"
+    assert "Credits and rate limits: Unavailable" in messages[0].text
+    assert "Usage: Unavailable" in messages[0].text
+    assert "Messaging and thread commands are unaffected." in messages[0].text
     await client.close()
 
 

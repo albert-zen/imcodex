@@ -12,6 +12,12 @@ from ..observability.runtime import emit_event
 
 
 _TERMINAL_DELIVERY_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 5.0, 10.0)
+_RECOVERY_DEGRADED_KEYS = (
+    "failed",
+    "unverified",
+    "deliveryFailed",
+    "deliveryPending",
+)
 
 
 class TerminalDeliveryMixin:
@@ -29,6 +35,35 @@ class TerminalDeliveryMixin:
         if retry_task is not None:
             retry_task.cancel()
             await asyncio.gather(retry_task, return_exceptions=True)
+
+    def _refresh_terminal_delivery_health(self) -> None:
+        """Keep ready-time recovery health aligned with the durable outbox."""
+
+        client = getattr(self.backend, "client", None)
+        connection_facts = getattr(client, "connection_facts", None)
+        update_ready_health = getattr(client, "update_ready_health", None)
+        if not callable(connection_facts) or not callable(update_ready_health):
+            return
+        facts = connection_facts()
+        if not isinstance(facts, dict) or facts.get("ready") is not True:
+            return
+        rehydration = dict(facts.get("rehydration") or {})
+        pending = len(self.store.list_pending_terminal_deliveries())
+        if self._terminal_delivery_ack_persistence_pending and pending == 0:
+            pending = 1
+        if pending:
+            rehydration["deliveryPending"] = pending
+        else:
+            rehydration.pop("deliveryPending", None)
+        degraded = any(
+            isinstance(rehydration.get(key), (int, float))
+            and rehydration[key] > 0
+            for key in _RECOVERY_DEGRADED_KEYS
+        )
+        update_ready_health(
+            status="degraded" if degraded else "connected",
+            rehydration=rehydration,
+        )
 
     def can_deliver_outbound(self, channel_id: str) -> bool:
         can_deliver = getattr(self.outbound_sink, "can_deliver", None)
@@ -328,6 +363,7 @@ class TerminalDeliveryMixin:
         )
         if ack_persisted:
             await self._cleanup_outbound_artifact_spool()
+        self._refresh_terminal_delivery_health()
         emit_event(
             component="bridge",
             event="bridge.terminal_delivery.succeeded",
@@ -345,6 +381,7 @@ class TerminalDeliveryMixin:
         return outbound, True, True
 
     def _schedule_terminal_delivery_retry(self) -> None:
+        self._refresh_terminal_delivery_health()
         if self._terminal_delivery_closed:
             return
         task = self._terminal_delivery_retry_task
@@ -376,6 +413,7 @@ class TerminalDeliveryMixin:
                 attempt += 1
                 await asyncio.sleep(delay_s)
         finally:
+            self._refresh_terminal_delivery_health()
             if self._terminal_delivery_retry_task is current_task:
                 self._terminal_delivery_retry_task = None
 
@@ -496,6 +534,7 @@ class TerminalDeliveryMixin:
                     self._schedule_terminal_delivery_retry()
                 else:
                     await self._cleanup_outbound_artifact_spool()
+        self._refresh_terminal_delivery_health()
         return delivered_any
 
     def _is_terminal_route_head(

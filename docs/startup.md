@@ -300,6 +300,13 @@ After startup, check `.imcodex-run/current/health.json`:
 - `appserver.transport` should describe the selected Unix, TCP, or stdio transport
 - `appserver.connection_epoch` should be at least `1`
 
+The top-level `status` is an operator-facing readiness summary. After startup
+it changes to `degraded` whenever HTTP serving, the native App Server, or an
+enabled managed Channel is unavailable, and returns to `healthy` after every
+required component reconnects. The `/healthz` endpoint remains a process
+liveness probe so a temporary Channel or upstream outage does not cause a
+restart loop.
+
 Protocol troubleshooting data is written under `.imcodex-run/current/`:
 
 - `bridge.log`

@@ -212,6 +212,22 @@ def test_render_credits_shows_partial_warning() -> None:
     assert "Warning: credits and rate limits could not be queried from Codex right now." in text
 
 
+def test_render_credits_distinguishes_account_outage_from_bridge_outage() -> None:
+    text = render_credits(
+        {
+            "warnings": {
+                "rateLimits": "request timed out",
+                "usage": "token usage profile fetch timed out",
+            }
+        }
+    )
+
+    assert "Credits and rate limits: Unavailable" in text
+    assert "Usage: Unavailable" in text
+    assert "Messaging and thread commands are unaffected." in text
+    assert "Plan: Unknown" not in text
+
+
 def test_render_permission_modes_uses_native_profiles_and_requirements() -> None:
     text = render_permission_modes(
         {

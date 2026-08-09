@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import urllib.request
 
 import pytest
 import httpx
@@ -2210,7 +2211,64 @@ async def test_qq_adapter_emits_ready_event_and_health_update(monkeypatch) -> No
     await adapter._run_session("ws://gateway", "token")
 
     assert [event["event"] for event in observed_events] == ["qq.gateway.ready"]
-    assert observed_health == [("qq", {"connected": True, "session_id": "session-1", "status": "connected"})]
+    assert observed_health == [
+        (
+            "qq",
+            {
+                "connected": True,
+                "session_id": "session-1",
+                "status": "connected",
+                "error_type": None,
+                "retry_attempt": None,
+                "retry_delay_s": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_qq_default_websocket_connector_uses_discovered_socks_proxy(
+    monkeypatch,
+) -> None:
+    socks_greetings: list[bytes] = []
+
+    async def accept_socks_client(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            socks_greetings.append(await asyncio.wait_for(reader.readexactly(3), timeout=1))
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    proxy = await asyncio.start_server(accept_socks_client, "127.0.0.1", 0)
+    proxy_port = proxy.sockets[0].getsockname()[1]
+    monkeypatch.setattr(
+        urllib.request,
+        "getproxies",
+        lambda: {"socks": f"http://127.0.0.1:{proxy_port}"},
+    )
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+    )
+
+    try:
+        with pytest.raises(Exception, match="SOCKS proxy"):
+            await asyncio.wait_for(
+                adapter._run_session("wss://gateway.example.test", "token"),
+                timeout=2,
+            )
+    finally:
+        proxy.close()
+        await proxy.wait_closed()
+        await adapter.http_client.aclose()
+
+    assert socks_greetings == [b"\x05\x01\x00"]
 
 
 @pytest.mark.asyncio

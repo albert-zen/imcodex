@@ -123,7 +123,16 @@ def render_credits(payload: dict) -> str:
     rate_limits = _rate_limit_snapshot(rate_limits_payload)
     reset_credits = _rate_limit_reset_credits(rate_limits_payload)
     if rate_limits is None and usage_payload is None and reset_credits is None:
-        return "Usage\n\nPlan: Unknown\nCredits: Unknown"
+        lines = [
+            "Usage",
+            "",
+            "Credits and rate limits: Unavailable",
+            "Usage: Unavailable",
+        ]
+        warning_lines = _credit_warning_lines(warnings)
+        if warning_lines:
+            lines.extend(("", *warning_lines))
+        return "\n".join(lines)
 
     lines = ["Usage", ""]
     if rate_limits is None:
@@ -415,6 +424,11 @@ def _account_usage_lines(payload: dict | None) -> list[str]:
 
 
 def _credit_warning_lines(warnings: dict) -> list[str]:
+    if "rateLimits" in warnings and "usage" in warnings:
+        return [
+            "Warning: Codex account data could not be queried right now. "
+            "Messaging and thread commands are unaffected."
+        ]
     lines: list[str] = []
     if "rateLimits" in warnings:
         lines.append("Warning: credits and rate limits could not be queried from Codex right now.")

@@ -111,8 +111,6 @@ class CodexSettingsBackendMixin:
             warnings["usage"] = str(exc)
         if warnings:
             result["warnings"] = warnings
-        if "rateLimitsResult" not in result and "usageResult" not in result:
-            raise AppServerError("account rate limits and usage are unavailable")
         return result
 
     async def read_global_settings(self) -> dict:

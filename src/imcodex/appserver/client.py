@@ -289,6 +289,22 @@ class AppServerClient:
             facts["rehydration"] = dict(self._ready_health["rehydration"])
         return facts
 
+    def update_ready_health(
+        self,
+        *,
+        status: str,
+        rehydration: JsonDict,
+    ) -> None:
+        """Refresh ready-time recovery health without changing connection state."""
+
+        if not self.initialized or self._transport is None or self._transport.is_closed():
+            return
+        self._ready_health = {
+            "status": str(status or "connected"),
+            "rehydration": dict(rehydration),
+        }
+        self._mark_appserver_health(**self._ready_health)
+
     async def _refresh_verified_shared_filesystem(
         self,
         *,
