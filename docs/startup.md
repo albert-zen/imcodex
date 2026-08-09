@@ -408,6 +408,49 @@ launcher, WSL, or explicit `stdio://` bridge-child compatibility there.
 The upstream transport contract is documented in the
 [Codex App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
 
+### T3 Code transport adapter for the same native server
+
+`scripts/imcodex-shared-app-server` implements T3's fixed
+`<binary> app-server` stdio JSONL launch shape while connecting to the same
+native Unix WebSocket endpoint used by IMCodex. It is stateless and does not
+own Thread, Turn, request, approval, model, or permission state.
+
+T3 creates a different browser-preview MCP bearer credential for every
+provider session and exposes it only to the child process. A previously started
+shared daemon cannot receive that child environment, and its MCP configuration
+is process-wide. T3 also sends `config/mcpServer/reload` before every Turn when
+those child arguments are present, which could refresh process-global state for
+other clients.
+
+For an explicit chat/thread synchronization evaluation, set T3's Codex
+`binaryPath` to the absolute repository launcher path and set `launchArgs` to:
+
+```text
+--connect unix:// --chat-sync-without-t3-mcp
+```
+
+That mode accepts exactly one known T3 MCP URL setting and one known bearer
+environment-variable setting, applies neither to the shared daemon, and locally
+answers only the exact `config/mcpServer/reload` request with its original
+request ID and an empty result. The reload is never forwarded. Unknown,
+incomplete, or duplicate child configuration fails before connecting. T3's
+current Thread/Turn protocol messages remain unchanged. Its `t3-code` preview
+MCP tools are unavailable, while native Thread, Turn, item, approval, reconnect, and terminal
+events continue through the shared server. As a forward-compatibility guard,
+other `config/*` requests and account login/logout mutations terminate the
+adapter before forwarding; read-only account responses remain transparent. See
+[the shared-runtime probe](probes/t3-single-runtime-sequential.md).
+
+An explicit absolute socket may replace `unix://`. Operators can also set
+`IMCODEX_SHARED_APP_SERVER_URL`; the command-line `--connect` value takes
+precedence. `IMCODEX_SHARED_APP_SERVER_PYTHON` selects the launcher's Python
+interpreter. T3 also uses its configured Codex `binaryPath` for auxiliary
+`codex exec` tasks such as generated titles and source-control text. For every
+invocation other than `app-server`, the repository launcher transparently
+delegates to `IMCODEX_SHARED_APP_SERVER_CODEX_BIN` or `codex` on `PATH`.
+Endpoint, arguments, and protocol payload values are not included in adapter
+failure diagnostics.
+
 ### Explicit bridge-child stdio compatibility
 
 The platform helper scripts start the recommended independent App Server shape:

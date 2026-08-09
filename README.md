@@ -157,6 +157,15 @@ verified with `codex-cli 0.144.1`. Native daemon lifecycle management is
 currently Unix-only. On Windows, use the existing independent TCP websocket
 `core`, explicit `spawned-stdio`, or WSL path; there is no automatic fallback.
 
+An experimental transport-only launcher for connecting T3 Code's standard
+Codex provider to this same Unix server is documented in
+[Startup and shutdown](docs/startup.md#t3-code-transport-adapter-for-the-same-native-server).
+Current T3 per-session MCP credentials cannot be applied safely to a
+process-global shared daemon, and T3's per-Turn MCP reload also has global
+effect there. An explicit chat-sync mode discards only those two known child
+settings and answers that one reload locally; T3 preview MCP is unavailable in
+this mode. It remains an integration preview rather than a production default.
+
 ## Native-First State
 
 `imcodex` now treats native Codex source code and native protocol behavior as
