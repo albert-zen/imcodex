@@ -131,9 +131,13 @@ def parse_shim_args(
             "T3 per-session MCP configuration and reload behavior are unsafe on a shared "
             f"App Server; use {CHAT_SYNC_WITHOUT_T3_MCP_ARG} only for chat sync without T3 MCP"
         )
-    if chat_sync_without_t3_mcp and (t3_url_count, t3_bearer_count) != (1, 1):
+    if chat_sync_without_t3_mcp and (t3_url_count, t3_bearer_count) not in {
+        (0, 0),
+        (1, 1),
+    }:
         raise ShimUsageError(
-            "chat sync without T3 MCP requires exactly the known T3 URL and bearer config"
+            "chat sync without T3 MCP accepts either the T3 provider probe without "
+            "per-session config or exactly one known T3 URL and bearer config"
         )
     if not endpoint.startswith("unix://"):
         raise ShimUsageError("the shared App Server shim requires a unix:// endpoint")
