@@ -77,6 +77,8 @@ class NativeThreadSnapshot:
     name: str | None = None
     path: str | None = None
     source: str | None = None
+    updated_at: float | None = None
+    pinned: bool | None = None
 
 
 @dataclass(slots=True)

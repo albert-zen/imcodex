@@ -5599,10 +5599,11 @@ async def test_threads_command_lets_native_codex_choose_sources_and_only_prefers
     assert messages[0].message_type == "command_result"
     lines = messages[0].text.splitlines()
     assert lines[0] == "Threads · [All projects] · Page 1/1"
-    assert lines[1] == "1. Bound thread [gamma] ✓"
-    assert lines[2] == "2. Other thread [beta]"
-    assert lines[3] == "3. Matching cwd thread [alpha]"
-    assert lines[4] == "Projects: [0] All · [1] gamma · [2] beta · [3] alpha"
+    assert lines[1] == "1. Bound thread [gamma · Idle] ✓"
+    assert lines[2] == "2. Other thread [beta · Idle]"
+    assert lines[3] == "3. Matching cwd thread [alpha · Idle]"
+    assert "Pinned status is unavailable" in lines[4]
+    assert lines[5] == "Projects: [0] All · [1] gamma · [2] beta · [3] alpha"
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs
@@ -5656,8 +5657,52 @@ async def test_threads_command_uses_native_path_for_workspace_when_cwd_is_empty(
     )
 
     assert messages[0].message_type == "command_result"
-    assert "Standalone thread [standalone-thread]" in messages[0].text
+    assert "Standalone thread [standalone-thread · Idle]" in messages[0].text
     assert "notLoaded" not in messages[0].text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_threads_command_marks_explicit_native_pin_without_capability_warning() -> None:
+    process = ScriptedProcess(
+        {
+            "initialize": [{"id": 1, "result": {"ok": True}}],
+            "thread/list": [
+                {
+                    "id": 2,
+                    "result": {
+                        "threads": [
+                            {
+                                "id": "thr_other",
+                                "cwd": "/work/other",
+                                "preview": "Other thread",
+                                "status": "idle",
+                                "pinned": False,
+                            },
+                            {
+                                "id": "thr_pinned",
+                                "cwd": "/work/pinned",
+                                "preview": "Pinned thread",
+                                "status": "idle",
+                                "pinned": True,
+                            },
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            ],
+        }
+    )
+    store = ConversationStore(clock=lambda: 1.0)
+    client, service = _build_service(store, process, CapturingSink())
+
+    messages = await service.handle_inbound(
+        InboundMessage("qq", "conv-1", "u1", "m1", "/threads")
+    )
+
+    lines = messages[0].text.splitlines()
+    assert lines[1].startswith("1. 📌 Pinned thread")
+    assert "Pinned status is unavailable" not in messages[0].text
     await client.close()
 
 
@@ -5759,8 +5804,8 @@ async def test_threads_command_filters_complete_native_result_by_project_number(
 
     lines = messages[0].text.splitlines()
     assert lines[0] == "Threads · [beta] · Page 1/1"
-    assert lines[1] == "1. Beta one [beta]"
-    assert lines[2] == "2. Beta two [beta]"
+    assert lines[1] == "1. Beta one [beta · Idle]"
+    assert lines[2] == "2. Beta two [beta · Idle]"
     assert "Alpha one" not in messages[0].text
     assert "Projects: [0] All · [1] beta · [2] alpha" in messages[0].text
     context = store.get_thread_browser_context("qq", "conv-1")
@@ -5839,10 +5884,10 @@ async def test_plain_threads_restores_native_order_after_project_filter() -> Non
     restored_lines = restored[0].text.splitlines()
     assert restored_lines[0] == "Threads · [All projects] · Page 1/1"
     assert restored_lines[1:5] == [
-        "1. Alpha one [alpha]",
-        "2. Beta one [beta]",
-        "3. Alpha two [alpha]",
-        "4. Beta two [beta]",
+        "1. Alpha one [alpha · Idle]",
+        "2. Beta one [beta · Idle]",
+        "3. Alpha two [alpha · Idle]",
+        "4. Beta two [beta · Idle]",
     ]
     context = store.get_thread_browser_context("qq", "conv-1")
     assert context is not None
@@ -7776,7 +7821,14 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
                 {
                     "result": {
                         "threads": [
-                            {"id": "thr_6", "cwd": r"D:\work\f", "preview": "Alpha release", "status": "idle", "source": "cli"},
+                            {
+                                "id": f"thr_{index}",
+                                "cwd": rf"D:\work\{index}",
+                                "preview": f"Alpha thread {index}",
+                                "status": "idle",
+                                "source": "cli",
+                            }
+                            for index in range(6, 12)
                         ],
                         "nextCursor": None,
                     },
@@ -7822,7 +7874,7 @@ async def test_threads_command_supports_query_filter_and_native_cursor_next_page
     assert first_messages[0].text.splitlines()[0] == "Threads · [All projects] · Page 1/2"
     lines = next_messages[0].text.splitlines()
     assert lines[0] == "Threads · [All projects] · Page 2/2"
-    assert lines[1].startswith("1. Alpha release")
+    assert lines[1].startswith("1. Alpha thread 11")
     assert "/prev" in lines[-1]
     thread_list_payloads = [
         payload["params"]
@@ -7931,25 +7983,12 @@ async def test_threads_command_keeps_paging_beyond_second_native_cursor_page() -
             text="/next",
         )
     )
-    third_messages = await service.handle_inbound(
-        InboundMessage(
-            channel_id="qq",
-            conversation_id="conv-1",
-            user_id="u1",
-            message_id="m3",
-            text="/next",
-        )
-    )
-
-    assert first_messages[0].text.splitlines()[0] == "Threads · [All projects] · Page 1/3"
+    assert first_messages[0].text.splitlines()[0] == "Threads · [All projects] · Page 1/2"
     second_lines = second_messages[0].text.splitlines()
-    assert second_lines[0] == "Threads · [All projects] · Page 2/3"
-    assert second_lines[1].startswith("1. Alpha thread 6")
-    third_lines = third_messages[0].text.splitlines()
-    assert third_lines[0] == "Threads · [All projects] · Page 3/3"
-    assert third_lines[1].startswith("1. Alpha thread 11")
-    assert "/prev" in third_lines[-1]
-    assert "/next" not in third_lines[-1]
+    assert second_lines[0] == "Threads · [All projects] · Page 2/2"
+    assert second_lines[1].startswith("1. Alpha thread 11")
+    assert "/prev" in second_lines[-1]
+    assert "/next" not in second_lines[-1]
     thread_list_payloads = [
         payload["params"]
         for payload in process.inputs

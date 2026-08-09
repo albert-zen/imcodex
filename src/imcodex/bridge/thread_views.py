@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import ntpath
 import posixpath
+import time
+from pathlib import Path
 
 from ..appserver import AppServerError
 from ..models import InboundMessage, NativeThreadSnapshot
@@ -15,8 +17,9 @@ from .settings import (
 )
 
 
-_THREADS_PAGE_SIZE = 5
+_THREADS_PAGE_SIZE = 10
 _INLINE_PROJECT_LIMIT = 8
+_THREAD_BROWSER_TITLE_LIMIT = 72
 _STATUS_QUERY_TIMEOUT_S = 2.5
 
 
@@ -36,7 +39,8 @@ class ThreadViewMixin:
             if catalog is not None
             else await self._load_thread_catalog(message, query=query, refresh=refresh)
         )
-        project_options = self._thread_project_options(threads)
+        project_paths = await asyncio.to_thread(self._thread_project_paths, threads)
+        project_options = self._thread_project_options(threads, project_paths=project_paths)
         project_path, project_error = self._resolve_thread_project(project, project_options)
         if project_error is not None:
             self.store.set_thread_browser_context(
@@ -58,7 +62,11 @@ class ThreadViewMixin:
                 ]
             )
 
-        filtered = self._filter_threads_by_project(threads, project_path)
+        filtered = self._filter_threads_by_project(
+            threads,
+            project_path,
+            project_paths=project_paths,
+        )
         page_count = max(1, (len(filtered) + _THREADS_PAGE_SIZE - 1) // _THREADS_PAGE_SIZE)
         safe_page = min(max(page, 1), page_count)
         page_start = (safe_page - 1) * _THREADS_PAGE_SIZE
@@ -84,10 +92,18 @@ class ThreadViewMixin:
                 == self.store.get_binding(message.channel_id, message.conversation_id).thread_id
             )
             current_marker = " ✓" if is_current else ""
-            lines.append(
-                f"{index}. {self._thread_label(snapshot)} "
-                f"[{self._thread_workspace_label(snapshot)}]{current_marker}"
+            pin_marker = "📌 " if snapshot.pinned is True else ""
+            identity = self._thread_identity_label(
+                snapshot,
+                project_options=project_options,
+                project_path=project_paths.get(snapshot.thread_id),
             )
+            lines.append(
+                f"{index}. {pin_marker}{self._thread_browser_title(snapshot)} "
+                f"[{identity}]{current_marker}"
+            )
+        if threads and not any(snapshot.pinned is not None for snapshot in threads):
+            lines.append("Pinned status is unavailable from this Codex App Server.")
         if project_options:
             lines.append(self._thread_project_choices(project_options, selected_path=project_path))
         actions = ["Use /pick <n> to switch", "/new to start fresh", "/exit to close"]
@@ -126,11 +142,17 @@ class ThreadViewMixin:
     def _thread_project_options(
         self,
         threads: list[NativeThreadSnapshot],
+        *,
+        project_paths: dict[str, str | None] | None = None,
     ) -> list[tuple[str, str]]:
         paths: list[str] = []
         seen: set[str] = set()
         for snapshot in threads:
-            path = self._thread_project_path(snapshot)
+            path = (
+                project_paths.get(snapshot.thread_id)
+                if project_paths is not None
+                else self._thread_project_path(snapshot)
+            )
             if path is None:
                 continue
             key = self._normalized_project_path(path)
@@ -138,18 +160,7 @@ class ThreadViewMixin:
                 continue
             seen.add(key)
             paths.append(path)
-        base_labels = [self._path_leaf(path) for path in paths]
-        duplicate_labels = {
-            label.casefold() for label in base_labels if sum(item.casefold() == label.casefold() for item in base_labels) > 1
-        }
-        options: list[tuple[str, str]] = []
-        for path, base_label in zip(paths, base_labels, strict=True):
-            label = base_label
-            if base_label.casefold() in duplicate_labels:
-                parent = self._path_leaf(path.rstrip("/\\").rsplit("\\", 1)[0].rsplit("/", 1)[0])
-                label = f"{parent}/{base_label}" if parent else path
-            options.append((path, label))
-        return options
+        return list(zip(paths, self._unique_project_labels(paths), strict=True))
 
     def _resolve_thread_project(
         self,
@@ -178,6 +189,8 @@ class ThreadViewMixin:
         self,
         threads: list[NativeThreadSnapshot],
         project_path: str | None,
+        *,
+        project_paths: dict[str, str | None] | None = None,
     ) -> list[NativeThreadSnapshot]:
         if project_path is None:
             return threads
@@ -185,16 +198,129 @@ class ThreadViewMixin:
         return [
             snapshot
             for snapshot in threads
-            if (path := self._thread_project_path(snapshot)) is not None
+            if (
+                path := (
+                    project_paths.get(snapshot.thread_id)
+                    if project_paths is not None
+                    else self._thread_project_path(snapshot)
+                )
+            ) is not None
             and self._normalized_project_path(path) == selected
         ]
 
+    def _thread_project_paths(
+        self,
+        threads: list[NativeThreadSnapshot],
+    ) -> dict[str, str | None]:
+        """Resolve display-only project roots once per browser render.
+
+        Native cwd/path remains unchanged for execution and handoff. Filesystem
+        probing runs off the event loop; pointer reads are size-bounded and
+        repeated native paths are resolved only once per render.
+        """
+
+        canonical_by_raw: dict[str, str] = {}
+        result: dict[str, str | None] = {}
+        for snapshot in threads:
+            raw = self._thread_native_project_path(snapshot)
+            if raw is None:
+                result[snapshot.thread_id] = None
+                continue
+            raw_key = self._normalized_project_path(raw)
+            canonical = canonical_by_raw.get(raw_key)
+            if canonical is None:
+                canonical = self._git_project_root(raw) or raw
+                canonical_by_raw[raw_key] = canonical
+            result[snapshot.thread_id] = canonical
+        return result
+
     def _thread_project_path(self, snapshot: NativeThreadSnapshot) -> str | None:
+        raw = self._thread_native_project_path(snapshot)
+        if raw is None:
+            return None
+        return self._git_project_root(raw) or raw
+
+    def _thread_native_project_path(self, snapshot: NativeThreadSnapshot) -> str | None:
         for candidate in (snapshot.cwd, snapshot.path):
             text = str(candidate or "").strip()
             if text:
                 return text
         return None
+
+    def _git_project_root(self, path: str) -> str | None:
+        # Foreign path syntaxes and deleted worktrees safely retain their native
+        # display path. No git subprocess or Desktop-private database is used.
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute() or not candidate.exists():
+            return None
+        if candidate.is_file():
+            candidate = candidate.parent
+        for directory in (candidate, *candidate.parents):
+            marker = directory / ".git"
+            if marker.is_dir():
+                return str(directory)
+            if not marker.is_file():
+                continue
+            git_dir = self._read_git_pointer(marker, prefix="gitdir:")
+            if git_dir is None:
+                return str(directory)
+            common_pointer = git_dir / "commondir"
+            common_dir = self._read_git_pointer(common_pointer)
+            if common_dir is not None and common_dir.name == ".git":
+                return str(common_dir.parent)
+            return str(directory)
+        return None
+
+    def _read_git_pointer(self, path: Path, *, prefix: str | None = None) -> Path | None:
+        try:
+            if not path.is_file() or path.stat().st_size > 4096:
+                return None
+            value = path.read_text(encoding="utf-8").splitlines()[0].strip()
+        except (OSError, UnicodeError, IndexError):
+            return None
+        if prefix is not None:
+            if not value.casefold().startswith(prefix.casefold()):
+                return None
+            value = value[len(prefix) :].strip()
+        if not value:
+            return None
+        pointer = Path(value)
+        if not pointer.is_absolute():
+            pointer = path.parent / pointer
+        try:
+            return pointer.resolve(strict=True)
+        except OSError:
+            return None
+
+    def _unique_project_labels(self, paths: list[str]) -> list[str]:
+        parts = [self._path_parts(path) for path in paths]
+        labels = [items[-1] if items else path for path, items in zip(paths, parts, strict=True)]
+        duplicate_groups: dict[str, list[int]] = {}
+        for index, label in enumerate(labels):
+            duplicate_groups.setdefault(label.casefold(), []).append(index)
+        for indices in duplicate_groups.values():
+            if len(indices) < 2:
+                continue
+            max_depth = max(len(parts[index]) for index in indices)
+            for depth in range(2, max_depth + 1):
+                candidates = {
+                    index: "/".join(parts[index][-depth:])
+                    for index in indices
+                }
+                if len({value.casefold() for value in candidates.values()}) == len(indices):
+                    for index, value in candidates.items():
+                        labels[index] = value
+                    break
+            else:
+                for index in indices:
+                    labels[index] = paths[index]
+        return labels
+
+    def _path_parts(self, path: str) -> list[str]:
+        if ntpath.splitdrive(path)[0] or "\\" in path:
+            drive, tail = ntpath.splitdrive(path.replace("/", "\\"))
+            return [item for item in ([drive.rstrip("\\")] + tail.split("\\")) if item]
+        return [item for item in posixpath.normpath(path).split("/") if item]
 
     def _normalized_project_path(self, path: str) -> str:
         normalized = path.strip()
@@ -357,6 +483,62 @@ class ThreadViewMixin:
                 text = text.rstrip("/\\").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
             return text or "(unknown)"
         return "(unknown)"
+
+    def _thread_browser_title(self, snapshot: NativeThreadSnapshot) -> str:
+        title = " ".join(self._thread_label(snapshot).split())
+        if len(title) <= _THREAD_BROWSER_TITLE_LIMIT:
+            return title
+        return title[: _THREAD_BROWSER_TITLE_LIMIT - 1].rstrip() + "…"
+
+    def _thread_identity_label(
+        self,
+        snapshot: NativeThreadSnapshot,
+        *,
+        project_options: list[tuple[str, str]],
+        project_path: str | None,
+    ) -> str:
+        project_label = "Unknown project"
+        if project_path is not None:
+            normalized = self._normalized_project_path(project_path)
+            project_label = next(
+                (
+                    label
+                    for option_path, label in project_options
+                    if self._normalized_project_path(option_path) == normalized
+                ),
+                self._path_leaf(project_path),
+            )
+        details = [project_label]
+        status = self._thread_status_label(snapshot.status)
+        if status is not None:
+            details.append(status)
+        age = self._thread_age_label(snapshot.updated_at)
+        if age is not None:
+            details.append(age)
+        return " · ".join(details)
+
+    def _thread_status_label(self, status: str | None) -> str | None:
+        normalized = str(status or "").strip().replace("-", "").replace("_", "").casefold()
+        if normalized in {"active", "inprogress", "running", "working"}:
+            return "Working"
+        if normalized in {"systemerror", "failed"}:
+            return "Error"
+        if normalized in {"idle", "completed", "interrupted"}:
+            return "Idle"
+        return None
+
+    def _thread_age_label(self, updated_at: float | None, *, now: float | None = None) -> str | None:
+        if updated_at is None:
+            return None
+        current = time.time() if now is None else now
+        age = max(0, int(current - updated_at))
+        if age < 60:
+            return "now"
+        if age < 3600:
+            return f"{age // 60}m ago"
+        if age < 86400:
+            return f"{age // 3600}h ago"
+        return f"{age // 86400}d ago"
 
     def _bridge_visibility_label(self, binding) -> str:
         return binding.visibility_profile.replace("-", " ").title()

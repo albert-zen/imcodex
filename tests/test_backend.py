@@ -327,6 +327,70 @@ async def test_list_threads_prioritizes_windows_extended_length_cwd_match() -> N
 
 
 @pytest.mark.asyncio
+async def test_list_threads_keeps_current_first_then_explicit_native_pins() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    store.bind_thread("qq", "conv-1", "thr_current")
+    client = NamedClient(
+        [
+            {
+                "id": "thr_other",
+                "cwd": "/work/other",
+                "preview": "Other",
+                "status": "idle",
+                "pinned": False,
+            },
+            {
+                "id": "thr_pinned",
+                "cwd": "/work/pinned",
+                "preview": "Pinned",
+                "status": "idle",
+                "pinned": True,
+                "updatedAt": 1234,
+            },
+            {
+                "id": "thr_current",
+                "cwd": "/work/current",
+                "preview": "Current",
+                "status": "idle",
+                "pinned": False,
+            },
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    threads = await backend.list_threads("qq", "conv-1")
+
+    assert [thread.thread_id for thread in threads] == [
+        "thr_current",
+        "thr_pinned",
+        "thr_other",
+    ]
+    assert threads[1].pinned is True
+    assert threads[1].updated_at == 1234
+
+
+@pytest.mark.asyncio
+async def test_list_threads_does_not_infer_missing_pin_metadata() -> None:
+    store = ConversationStore(clock=lambda: 1.0)
+    client = NamedClient(
+        [
+            {
+                "id": "thr_unknown",
+                "cwd": "/work/unknown",
+                "preview": "Unknown pin state",
+                "status": "idle",
+                "extra": {"pinned": True},
+            }
+        ]
+    )
+    backend = CodexBackend(client=client, store=store, service_name="imcodex-test")
+
+    threads = await backend.list_threads("qq", "conv-1")
+
+    assert threads[0].pinned is None
+
+
+@pytest.mark.asyncio
 async def test_query_threads_sends_native_search_and_limit() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     client = NamedClient(

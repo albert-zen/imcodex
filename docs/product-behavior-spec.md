@@ -292,17 +292,24 @@ Behavior:
 
 - it queries Codex for available threads
 - it follows native `thread/list` cursors to completion in batches and renders an
-  exact local page count from that native result
+  exact local page count from that native result, with ten rows per compact IM
+  page
 - it may filter by a search term
-- it may filter the current native result by an exact native `cwd` or `path`
-  selected through `--project <name-or-number>`
+- it may filter the current native result by the presentation-only project group
+  derived from native `cwd` or `path`, selected through
+  `--project <name-or-number>`
 - it may support `--page N`
 
 The complete result is only short-lived thread-browser state. It must be
 refreshed from native Codex when `/threads` is opened again and must not become a
 durable thread or project index. Project choices are presentation labels derived
-from exact native `cwd` or `path` values; they do not create a separate project
-model. Numbered project choices remain bound to the active browser result, and
+from exact native `cwd` or `path` values. When a local path is a Git linked
+worktree, its display/grouping label resolves to that worktree's Git common
+repository root; the original native `cwd` remains unchanged and authoritative
+for execution, selection, and handoff. Missing, deleted, foreign-platform, and
+non-Git paths safely retain their native path label. This bounded, short-lived
+projection does not create a separate project model. Numbered project choices
+remain bound to the active browser result, and
 the inline project legend stays bounded so it cannot grow with the entire native
 catalog.
 
@@ -318,8 +325,17 @@ The list should clearly indicate:
 
 - which thread is current, using one compact visual marker on that row
 - each visible thread's label
-- each visible thread's working-directory label, when known, rendered as a
-  visually distinct bracketed badge rather than concatenated with the thread label
+- each visible thread's stable project label, when known, rendered in a
+  visually distinct bracketed identity band with useful native status and
+  relative update age when those fields are available
+- the current thread first, then native pinned threads with a compact pin marker
+  when `thread/list` exposes explicit pin metadata
+
+Codex App Server 0.147 does not expose Codex Desktop's private pin state. When
+the native catalog has no explicit pin field, the browser says pin status is
+unavailable and still makes older threads reachable through its larger pages.
+The bridge must not inspect Desktop-private storage, infer pin state from list
+position, or persist its own pin truth.
 
 The compact browser should not repeat a field name on every row or expose native
 load-state labels such as `notLoaded`; those details add noise without helping the
@@ -334,10 +350,12 @@ The rendered list should tell the user what to do next:
 
 If thread listing fails, the user gets a friendly status message rather than raw upstream protocol output.
 
-The working-directory label is derived only from native `cwd` or `path` metadata
+The project label starts only from native `cwd` or `path` metadata
 that Codex returned for the thread, including last-known native metadata retained
-across partial native updates. The bridge must not infer a separate project model
-from unconfirmed or app-private fields.
+across partial native updates. Local Git common-directory resolution may collapse
+linked worktree display groups, but must never replace that native path in the
+thread snapshot. The bridge must not infer a separate project model from
+unconfirmed or app-private fields.
 
 ### `/next`, `/prev`, `/pick <number-or-query> [--history [N] | --catchup [N]]`, `/exit`
 

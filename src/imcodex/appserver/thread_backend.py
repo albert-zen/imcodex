@@ -866,9 +866,33 @@ class CodexThreadBackendMixin:
                 if payload.get("source") is not None
                 else (previous.source if previous is not None else None)
             ),
+            updated_at=self._thread_timestamp(
+                payload,
+                previous.updated_at if previous is not None else None,
+            ),
+            pinned=self._thread_pinned(payload),
         )
         self.store.note_thread_snapshot(snapshot)
         return snapshot
+
+    def _thread_timestamp(self, payload: dict, previous: float | None) -> float | None:
+        for key in ("updatedAt", "updated_at"):
+            value = payload.get(key)
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                timestamp = float(value)
+            except (TypeError, ValueError):
+                continue
+            if timestamp >= 0:
+                return timestamp
+        return previous
+
+    def _thread_pinned(self, payload: dict) -> bool | None:
+        # Pin ownership remains native. Only consume a future explicit protocol
+        # field; never infer it from Thread.extra or Desktop-private state.
+        value = payload.get("pinned")
+        return value if isinstance(value, bool) else None
 
     def _native_active_turn(self, payload: dict) -> tuple[str, str] | None:
         turns = payload.get("turns")
@@ -927,11 +951,13 @@ class CodexThreadBackendMixin:
     ) -> list[NativeThreadSnapshot]:
         ranked: list[tuple[int, int, NativeThreadSnapshot]] = []
         for index, snapshot in enumerate(threads):
-            priority = 2
+            priority = 3
             if bound_thread_id and snapshot.thread_id == bound_thread_id:
                 priority = 0
-            elif preferred_cwd and self._same_path(snapshot.cwd, preferred_cwd):
+            elif snapshot.pinned is True:
                 priority = 1
+            elif preferred_cwd and self._same_path(snapshot.cwd, preferred_cwd):
+                priority = 2
             ranked.append((priority, index, snapshot))
         ranked.sort(key=lambda item: (item[0], item[1]))
         return [snapshot for _, _, snapshot in ranked]
