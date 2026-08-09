@@ -83,6 +83,11 @@ IMCODEX_APP_SERVER_HEALTH_TIMEOUT=1.0
 IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY=0.5
 IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY=30.0
 IMCODEX_APP_SERVER_RECONNECT_JITTER=0.25
+IMCODEX_T3_SYNC_ENABLED=0
+IMCODEX_T3_API_URL=http://127.0.0.1:3773
+IMCODEX_T3_AUTH_TOKEN_FILE=.imcodex-t3-token
+IMCODEX_T3_CONNECT_TIMEOUT=2
+IMCODEX_T3_REQUEST_TIMEOUT=10
 ```
 
 Values from the shell take precedence over `.env`. If `IMCODEX_CONDA_ENV` is
@@ -306,6 +311,13 @@ enabled managed Channel is unavailable, and returns to `healthy` after every
 required component reconnects. The `/healthz` endpoint remains a process
 liveness probe so a temporary Channel or upstream outage does not cause a
 restart loop.
+
+When T3 sync is enabled, inspect `integrations.t3`. `status=ready` means the
+most recent exact-thread attach completed; `unknown` or `degraded` makes the
+persisted readiness summary degraded but does not change `/healthz` from its
+process-liveness 200 response. IMCodex rereads the configured token file on
+every T3 request; rotate it with an atomic file replacement and do not place
+the token value in `.env`.
 
 Protocol troubleshooting data is written under `.imcodex-run/current/`:
 

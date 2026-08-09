@@ -59,6 +59,35 @@ def test_settings_reads_native_thread_tool_host_flag_from_env(monkeypatch, tmp_p
     assert settings.native_thread_tool_host is True
 
 
+def test_settings_t3_sync_is_disabled_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = Settings.from_env()
+    assert settings.t3_sync_enabled is False
+    assert settings.t3_auth_token_file is None
+
+
+def test_settings_reads_t3_sync_configuration(monkeypatch, tmp_path) -> None:
+    token_file = tmp_path / "t3.token"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_T3_SYNC_ENABLED", "1")
+    monkeypatch.setenv("IMCODEX_T3_API_URL", "http://127.0.0.1:3773")
+    monkeypatch.setenv("IMCODEX_T3_AUTH_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("IMCODEX_T3_PROJECT_ID", "project-1")
+    monkeypatch.setenv("IMCODEX_T3_PROVIDER_INSTANCE_ID", "codex-1")
+    settings = Settings.from_env()
+    assert settings.t3_sync_enabled is True
+    assert settings.t3_auth_token_file == token_file
+    assert settings.t3_project_id == "project-1"
+    assert settings.t3_provider_instance_id == "codex-1"
+
+
+def test_settings_requires_token_file_path_when_t3_sync_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("IMCODEX_T3_SYNC_ENABLED", "1")
+    with pytest.raises(ValueError, match="IMCODEX_T3_AUTH_TOKEN_FILE"):
+        Settings.from_env()
+
+
 def test_settings_uses_internal_managed_target_only_without_explicit_target(
     monkeypatch,
     tmp_path,

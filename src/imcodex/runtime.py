@@ -16,11 +16,16 @@ class AppRuntime:
     service: object
     managed_channels: list[object] = field(default_factory=list)
     observability: object | None = None
+    initial_integrations: dict[str, dict[str, object]] = field(default_factory=dict)
 
     async def start(self) -> None:
         try:
             if self.observability is not None:
                 self.observability.start()
+                mark_integration = getattr(self.observability, "mark_integration_health", None)
+                if callable(mark_integration):
+                    for integration_id, state in self.initial_integrations.items():
+                        mark_integration(integration_id, **state)
                 self._observe(
                     self.observability.emit_event,
                     component="bridge",

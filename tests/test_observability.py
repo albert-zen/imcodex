@@ -302,6 +302,22 @@ def test_health_writer_tracks_live_readiness_without_changing_liveness_probe(
     writer.flush()
     assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "healthy"
 
+    writer.merge_integration(
+        "t3",
+        enabled=True,
+        requiredForImTurns=True,
+        status="degraded",
+        lastErrorCode="request_timeout",
+    )
+    writer.flush()
+    health = json.loads(paths.health_path.read_text(encoding="utf-8"))
+    assert health["status"] == "degraded"
+    assert health["integrations"]["t3"]["lastErrorCode"] == "request_timeout"
+
+    writer.merge_integration("t3", status="ready", reachable=True)
+    writer.flush()
+    assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "healthy"
+
     writer.merge_appserver(connected=False, ready=False, status="reconnecting")
     writer.flush()
     assert json.loads(paths.health_path.read_text(encoding="utf-8"))["status"] == "degraded"

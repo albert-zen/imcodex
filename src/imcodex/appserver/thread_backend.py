@@ -117,6 +117,7 @@ class CodexThreadBackendMixin:
                 "refusing an unverifiable handoff"
             )
         snapshot = self._remember_snapshot(payload)
+        await self._ensure_thread_observer_ready(snapshot.thread_id, snapshot.cwd)
         self.store.bind_thread_with_cwd(channel_id, conversation_id, snapshot.thread_id, snapshot.cwd)
         self._reconcile_native_active_turn(payload, snapshot)
         return snapshot.thread_id
@@ -481,6 +482,7 @@ class CodexThreadBackendMixin:
         active = self.store.get_active_turn(thread_id)
         if active is not None and active[1] == "inProgress":
             try:
+                await self._ensure_thread_observer_ready(thread_id)
                 steer_kwargs: dict[str, object] = {"input_items": input_items}
                 if expected_local_image_epoch is not None:
                     steer_kwargs["expected_local_image_epoch"] = expected_local_image_epoch
@@ -605,6 +607,7 @@ class CodexThreadBackendMixin:
         *,
         expected_local_image_epoch: int | None = None,
     ) -> TurnSubmission:
+        await self._ensure_thread_observer_ready(thread_id)
         start_kwargs: dict[str, object] = {
             "thread_id": thread_id,
             "input_items": input_items,
@@ -619,6 +622,20 @@ class CodexThreadBackendMixin:
         status = str(turn.get("status") or "inProgress")
         self.store.note_active_turn(thread_id, turn_id, status)
         return TurnSubmission(kind="start", thread_id=thread_id, turn_id=turn_id)
+
+    async def _ensure_thread_observer_ready(
+        self,
+        thread_id: str,
+        cwd: str | None = None,
+    ) -> None:
+        observer = getattr(self, "thread_observer", None)
+        if observer is None:
+            return
+        if cwd is None:
+            snapshot = self.store.get_thread_snapshot(thread_id)
+            if snapshot is not None:
+                cwd = snapshot.cwd
+        await observer.ensure_ready(native_thread_id=thread_id, cwd=cwd)
 
     async def interrupt_active_turn(self, channel_id: str, conversation_id: str) -> bool:
         binding = self.store.get_binding(channel_id, conversation_id)

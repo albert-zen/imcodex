@@ -38,6 +38,7 @@ from .core_manager import DedicatedCoreManager
 from .observability.runtime import ObservabilityRuntime
 from .runtime import AppRuntime
 from .store import ConversationStore
+from .t3 import T3NativeThreadObserver, T3ObserverConfig
 
 
 SettingsSource = Literal["environment", "explicit"]
@@ -103,6 +104,27 @@ def build_runtime(
     hosts_native_thread_tools = settings.native_thread_tool_host or not app_server_target.is_external
     artifact_stager = OutboundArtifactStager(settings.data_dir / "outbound-media")
     artifact_stager.cleanup_unreferenced(store.referenced_terminal_artifact_paths())
+    thread_observer = None
+    initial_integrations: dict[str, dict[str, object]] = {}
+    if settings.t3_sync_enabled:
+        assert settings.t3_auth_token_file is not None
+        thread_observer = T3NativeThreadObserver(
+            T3ObserverConfig(
+                api_url=settings.t3_api_url,
+                token_file=settings.t3_auth_token_file,
+                connect_timeout_s=settings.t3_connect_timeout_s,
+                request_timeout_s=settings.t3_request_timeout_s,
+                project_id=settings.t3_project_id,
+                provider_instance_id=settings.t3_provider_instance_id,
+            )
+        )
+        initial_integrations["t3"] = {
+            "enabled": True,
+            "requiredForImTurns": True,
+            "status": "unknown",
+            "reachable": None,
+            "authStatus": "unknown",
+        }
     service = BridgeService(
         store=store,
         backend=CodexBackend(
@@ -112,6 +134,7 @@ def build_runtime(
             thread_dynamic_tools=(
                 native_thread_dynamic_tool_specs() if hosts_native_thread_tools else None
             ),
+            thread_observer=thread_observer,
         ),
         command_router=CommandRouter(store),
         projector=MessageProjector(
@@ -189,6 +212,13 @@ def build_runtime(
         "IMCODEX_WEIXIN_ENABLED": "1" if settings.weixin_enabled else "0",
         "IMCODEX_WEIXIN_STATE_DIR": str(settings.weixin_state_dir or settings.data_dir / "channels" / "weixin"),
         "IMCODEX_WEIXIN_POLL_TIMEOUT_MS": str(settings.weixin_poll_timeout_ms),
+        "IMCODEX_T3_SYNC_ENABLED": "1" if settings.t3_sync_enabled else "0",
+        "IMCODEX_T3_API_URL": settings.t3_api_url,
+        "IMCODEX_T3_AUTH_TOKEN_FILE": str(settings.t3_auth_token_file or ""),
+        "IMCODEX_T3_CONNECT_TIMEOUT": str(settings.t3_connect_timeout_s),
+        "IMCODEX_T3_REQUEST_TIMEOUT": str(settings.t3_request_timeout_s),
+        "IMCODEX_T3_PROJECT_ID": settings.t3_project_id or "",
+        "IMCODEX_T3_PROVIDER_INSTANCE_ID": settings.t3_provider_instance_id or "",
     }
     dotenv_imported_keys = _environment_key_list(DOTENV_IMPORTED_KEYS_ENV)
     launcher_reloadable_keys = _environment_key_list(LAUNCHER_RELOADABLE_KEYS_ENV)
@@ -217,6 +247,7 @@ def build_runtime(
         service=service,
         managed_channels=managed_channels,
         observability=observability,
+        initial_integrations=initial_integrations,
     )
 
 

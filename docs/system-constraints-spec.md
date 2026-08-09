@@ -259,6 +259,44 @@ The bridge MUST NOT maintain separate long-term per-conversation defaults for:
 - reasoning effort
 - personality
 
+## T3 Native-Thread Observation
+
+T3 synchronization is an optional observer integration over the same native
+Codex thread. T3 owns its native-thread attachment mapping and provider-session
+state. IMCodex MUST NOT persist that mapping, a T3 thread ID, provider status,
+or a second turn/session lifecycle in `ConversationBinding`, channel state, or
+the bridge store.
+
+When the integration is disabled, native thread selection and input behavior
+MUST remain unchanged. When enabled, every IM-originated `turn/start` or
+`turn/steer` MUST first obtain a typed `ready` attachment for the exact native
+thread. A timeout, authorization failure, conflict, native-ID mismatch, or
+non-ready response MUST fail closed: no native turn mutation is sent and the
+IM reply states that Codex did not receive the input. The attach operation is
+repeated for every IM turn because T3 may reap and later restore its observer
+session; IMCodex MUST NOT cache readiness or supervise that session locally.
+
+The first input may create and bind an empty native thread before T3 attach can
+run. If attach fails, that thread remains empty and the retry reuses its exact
+native ID. A `/pick` handoff MUST validate native resume and T3 readiness before
+replacing the existing IM binding; failure preserves the previous binding.
+
+The T3 adapter MUST resolve project/provider from an existing T3 mapping,
+explicit configuration, or a unique path-aware longest-ancestor match in T3's
+shell response. Zero candidates and tied candidates fail explicitly. An
+existing native-ID mapping must also be unique; explicit project and provider
+hints may disambiguate multiple mappings but list order never can. HTTP is
+permitted only to a loopback T3 endpoint; non-loopback endpoints require
+HTTPS. URL userinfo, path, query, and fragment are rejected. The bearer token
+is read from its file for every request so an external rotator may atomically
+replace it; token values and raw HTTP bodies MUST NOT enter state, launch
+snapshots, events, logs, or user-facing errors.
+
+T3 health lives under `integrations.t3`, independently from native App Server
+rehydration. A required T3 integration that is unknown or degraded makes the
+persisted readiness summary degraded, while `/healthz` remains a 200 process
+liveness probe.
+
 If the product allows these settings to be changed from IM, the bridge is only a translation layer for native Codex operations.
 
 ### Configuration Console Rules

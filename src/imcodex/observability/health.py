@@ -33,6 +33,7 @@ class HealthWriter:
             "status": "starting",
             "http": {"listening": False, "host": context.http_host, "port": context.http_port},
             "channels": {},
+            "integrations": {},
             "appserver": {"connected": False, "mode": None, "status": "disconnected"},
             "updated_at": self.clock().astimezone().isoformat(),
         }
@@ -73,6 +74,17 @@ class HealthWriter:
             current = dict(self._state.get("appserver") or {})
             current.update(changes)
             self._state["appserver"] = current
+            self._derive_operational_status_locked()
+            self._state["updated_at"] = self.clock().astimezone().isoformat()
+            self._enqueue_locked()
+
+    def merge_integration(self, integration_id: str, **changes: Any) -> None:
+        with self._lock:
+            integrations = dict(self._state.get("integrations") or {})
+            current = dict(integrations.get(integration_id) or {})
+            current.update(changes)
+            integrations[integration_id] = current
+            self._state["integrations"] = integrations
             self._derive_operational_status_locked()
             self._state["updated_at"] = self.clock().astimezone().isoformat()
             self._enqueue_locked()
@@ -122,6 +134,16 @@ class HealthWriter:
                     ready = False
                     break
                 if "connected" in channel and channel.get("connected") is not True:
+                    ready = False
+                    break
+        integrations = self._state.get("integrations")
+        if ready and isinstance(integrations, dict):
+            for integration in integrations.values():
+                if not isinstance(integration, dict) or integration.get("enabled") is False:
+                    continue
+                if integration.get("requiredForImTurns") is not True:
+                    continue
+                if str(integration.get("status") or "").lower() != "ready":
                     ready = False
                     break
         self._state["status"] = "healthy" if ready else "degraded"

@@ -107,6 +107,13 @@ KNOWN_SETTING_ENV_KEYS = frozenset(
         "IMCODEX_TELEGRAM_ENABLED",
         "IMCODEX_TELEGRAM_POLL_TIMEOUT",
         "IMCODEX_TELEGRAM_REQUIRE_MENTION",
+        "IMCODEX_T3_API_URL",
+        "IMCODEX_T3_AUTH_TOKEN_FILE",
+        "IMCODEX_T3_CONNECT_TIMEOUT",
+        "IMCODEX_T3_PROJECT_ID",
+        "IMCODEX_T3_PROVIDER_INSTANCE_ID",
+        "IMCODEX_T3_REQUEST_TIMEOUT",
+        "IMCODEX_T3_SYNC_ENABLED",
         "IMCODEX_WEIXIN_ALLOWED_CONVERSATION_IDS",
         "IMCODEX_WEIXIN_ALLOWED_USER_IDS",
         "IMCODEX_WEIXIN_ACCESS_MATCH",
@@ -305,6 +312,13 @@ class Settings:
     weixin_poll_timeout_ms: int = 35_000
     outbound_webhook_token: str = ""
     inbound_webhook_token: str = ""
+    t3_sync_enabled: bool = False
+    t3_api_url: str = "http://127.0.0.1:3773"
+    t3_auth_token_file: Path | None = None
+    t3_connect_timeout_s: float = 2.0
+    t3_request_timeout_s: float = 10.0
+    t3_project_id: str | None = None
+    t3_provider_instance_id: str | None = None
 
     def __post_init__(self) -> None:
         resolve_app_server_target(
@@ -318,6 +332,8 @@ class Settings:
             raise ValueError("app-server reconnect max delay must be at least the initial delay")
         if not 0 <= self.app_server_reconnect_jitter_fraction <= 1:
             raise ValueError("app-server reconnect jitter must be between zero and one")
+        if self.t3_sync_enabled and self.t3_auth_token_file is None:
+            raise ValueError("IMCODEX_T3_AUTH_TOKEN_FILE is required when T3 sync is enabled")
 
     def channel_configs(self) -> dict[str, dict[str, object]]:
         weixin_state_dir = self.weixin_state_dir or self.data_dir / "channels" / "weixin"
@@ -472,4 +488,17 @@ class Settings:
             weixin_poll_timeout_ms=_env_int("IMCODEX_WEIXIN_POLL_TIMEOUT_MS", 35_000, dotenv),
             outbound_webhook_token=_env("IMCODEX_OUTBOUND_WEBHOOK_TOKEN", "", dotenv),
             inbound_webhook_token=_env("IMCODEX_INBOUND_WEBHOOK_TOKEN", "", dotenv),
+            t3_sync_enabled=_env_bool("IMCODEX_T3_SYNC_ENABLED", False, dotenv),
+            t3_api_url=_env("IMCODEX_T3_API_URL", "http://127.0.0.1:3773", dotenv),
+            t3_auth_token_file=(
+                Path(path)
+                if (path := _env("IMCODEX_T3_AUTH_TOKEN_FILE", "", dotenv).strip())
+                else None
+            ),
+            t3_connect_timeout_s=_env_float("IMCODEX_T3_CONNECT_TIMEOUT", 2.0, dotenv),
+            t3_request_timeout_s=_env_float("IMCODEX_T3_REQUEST_TIMEOUT", 10.0, dotenv),
+            t3_project_id=_env("IMCODEX_T3_PROJECT_ID", "", dotenv).strip() or None,
+            t3_provider_instance_id=(
+                _env("IMCODEX_T3_PROVIDER_INSTANCE_ID", "", dotenv).strip() or None
+            ),
         )
