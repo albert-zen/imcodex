@@ -209,6 +209,10 @@ The adapter consumes `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`.
 Normalized routes are `c2c:<openid>` and `group:<group_openid>`. QQ group
 events are already mention-scoped by the platform.
 
+QQ gateway websocket connections are direct by default and don't inherit
+process or operating-system proxy settings. This keeps the channel transport
+independent from proxies configured for browser or HTTP traffic.
+
 Inbound images use the shared contract without an additional switch. The same
 access policy applies to text and images. With no optional restrictions
 configured, any private sender or member of a QQ

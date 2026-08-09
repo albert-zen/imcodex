@@ -72,6 +72,12 @@ QQ_QUOTE_TRANSCRIPT_LIMIT = 4_000
 QQ_QUOTE_REFERENCE_LIMIT = 512
 
 
+def _connect_gateway_direct(gateway_url: str):
+    """Connect to QQ without inheriting process or operating-system proxies."""
+
+    return websockets.connect(gateway_url, proxy=None)
+
+
 class QQPermanentArtifactError(PermanentArtifactDeliveryError):
     pass
 
@@ -196,7 +202,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         media_materializer: QQMediaMaterializer | None = None,
         file_materializer: QQFileMaterializer | None = None,
         media_cleanup_sleep=asyncio.sleep,
-        websocket_factory=websockets.connect,
+        websocket_factory=_connect_gateway_direct,
         sleep=asyncio.sleep,
         clock=time.time,
         startup_timeout_s: float = 15.0,
@@ -240,6 +246,7 @@ class QQChannelAdapter(BaseChannelAdapter):
         self._session_id: str | None = None
         self._last_seq: int | None = None
         self._session_epoch = 0
+        self._connection_failures = 0
         self._inbound_queue: asyncio.Queue[
             tuple[
                 InboundMessage,
@@ -584,7 +591,6 @@ class QQChannelAdapter(BaseChannelAdapter):
         return None
 
     async def _run_forever(self) -> None:
-        failures = 0
         while not self._stop_event.is_set():
             reconnect_delay = RECONNECT_INITIAL_DELAY_S
             try:
@@ -598,8 +604,13 @@ class QQChannelAdapter(BaseChannelAdapter):
                 token = await self._get_access_token()
                 gateway = await self._get_gateway_url(token)
                 await self._run_session(gateway, token)
-                failures = 0
-                self._mark_disconnected(status="reconnecting")
+                self._connection_failures = 0
+                self._mark_disconnected(
+                    status="reconnecting",
+                    error_type=None,
+                    retry_attempt=0,
+                    retry_delay_s=reconnect_delay,
+                )
                 if not self._stop_event.is_set():
                     emit_event(
                         component="channels.qq",
@@ -610,20 +621,20 @@ class QQChannelAdapter(BaseChannelAdapter):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                failures += 1
-                reconnect_delay = self._reconnect_delay(failures)
+                self._connection_failures += 1
+                reconnect_delay = self._reconnect_delay(self._connection_failures)
                 self._ready_event.clear()
                 self._mark_disconnected(
                     status="reconnecting",
                     error_type=type(exc).__name__,
+                    retry_attempt=self._connection_failures,
                     retry_delay_s=reconnect_delay,
                 )
                 logger.warning(
                     "QQ adapter connection failed; retrying in %.1fs: %s",
                     reconnect_delay,
-                    exc,
+                    type(exc).__name__,
                 )
-                logger.debug("QQ adapter connection failure details", exc_info=True)
                 emit_event(
                     component="channels.qq",
                     event="qq.gateway.connect_failed",
@@ -632,7 +643,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                     data={
                         "api_base": self.api_base,
                         "error_type": type(exc).__name__,
-                        "retry_attempt": failures,
+                        "retry_attempt": self._connection_failures,
                         "retry_delay_s": reconnect_delay,
                     },
                 )
@@ -659,6 +670,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                         event_type = payload.get("t")
                         data = payload.get("d") or {}
                         if event_type == "READY":
+                            self._connection_failures = 0
                             session_id = str(data.get("session_id") or "") or None
                             if self._session_id is not None and self._session_id != session_id:
                                 self._session_epoch += 1
@@ -683,6 +695,7 @@ class QQChannelAdapter(BaseChannelAdapter):
                             self._ready_event.set()
                             continue
                         if event_type == "RESUMED":
+                            self._connection_failures = 0
                             self._advance_sequence_if_idle(sequence)
                             logger.info("QQ gateway resumed")
                             emit_event(

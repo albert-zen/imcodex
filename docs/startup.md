@@ -329,6 +329,13 @@ HTTP/app-server path available while channel health reports the retry. Check
 `.imcodex-run/current/health.json` under `channels.<channel-id>` for status,
 retry delay, and the latest connection error type.
 
+For QQ, `retry_attempt` is the consecutive connection-failure count since the
+latest successful `READY` or `RESUMED` gateway event. It resets immediately
+when either event arrives, so repeated disconnects separated by successful
+sessions appear as flapping in the event history rather than as one sustained
+outage with an ever-growing backoff. QQ gateway websocket connections are
+direct and don't inherit system proxy discovery.
+
 Enabled remote channels report `inbound_access_ready` and the derived
 `access_policy_mode` alongside transport connectivity. Empty restrictions are
 healthy and use the platform-delivered scope. An intentional `none` policy is

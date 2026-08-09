@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import urllib.request
 
 import pytest
 import httpx
@@ -2227,29 +2226,30 @@ async def test_qq_adapter_emits_ready_event_and_health_update(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_qq_default_websocket_connector_uses_discovered_socks_proxy(
+async def test_qq_default_websocket_connector_disables_system_proxy(
     monkeypatch,
 ) -> None:
-    socks_greetings: list[bytes] = []
+    connect_calls: list[tuple[str, dict]] = []
 
-    async def accept_socks_client(
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-    ) -> None:
-        try:
-            socks_greetings.append(await asyncio.wait_for(reader.readexactly(3), timeout=1))
-        finally:
-            writer.close()
-            await writer.wait_closed()
+    class FakeWebSocket:
+        def __aiter__(self):
+            return self
 
-    proxy = await asyncio.start_server(accept_socks_client, "127.0.0.1", 0)
-    proxy_port = proxy.sockets[0].getsockname()[1]
-    monkeypatch.setattr(
-        urllib.request,
-        "getproxies",
-        lambda: {"socks": f"http://127.0.0.1:{proxy_port}"},
-    )
-    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class FakeConnection:
+        async def __aenter__(self) -> FakeWebSocket:
+            return FakeWebSocket()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def capture_connect(url: str, **kwargs):
+        connect_calls.append((url, kwargs))
+        return FakeConnection()
+
+    monkeypatch.setattr("imcodex.channels.qq.websockets.connect", capture_connect)
     adapter = QQChannelAdapter(
         enabled=True,
         app_id="app",
@@ -2257,18 +2257,12 @@ async def test_qq_default_websocket_connector_uses_discovered_socks_proxy(
         middleware=object(),
     )
 
-    try:
-        with pytest.raises(Exception, match="SOCKS proxy"):
-            await asyncio.wait_for(
-                adapter._run_session("wss://gateway.example.test", "token"),
-                timeout=2,
-            )
-    finally:
-        proxy.close()
-        await proxy.wait_closed()
-        await adapter.http_client.aclose()
+    await adapter._run_session("wss://gateway.example.test", "token")
+    await adapter.http_client.aclose()
 
-    assert socks_greetings == [b"\x05\x01\x00"]
+    assert connect_calls == [
+        ("wss://gateway.example.test", {"proxy": None}),
+    ]
 
 
 @pytest.mark.asyncio
@@ -2501,11 +2495,90 @@ async def test_qq_adapter_start_survives_initial_network_failure(monkeypatch) ->
             "session_id": None,
             "status": "reconnecting",
             "error_type": "ConnectError",
+            "retry_attempt": 1,
             "retry_delay_s": 1.0,
         },
     )
 
     await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_qq_resumed_session_resets_failure_streak_and_redacts_later_error(
+    monkeypatch,
+    caplog,
+) -> None:
+    observed_events: list[dict] = []
+    observed_health: list[tuple[str, dict]] = []
+    delays: list[float] = []
+    secret = "gateway-ticket-super-secret"
+
+    monkeypatch.setattr(
+        "imcodex.channels.qq.emit_event",
+        lambda **payload: observed_events.append(payload),
+    )
+    monkeypatch.setattr(
+        "imcodex.channels.qq.mark_channel_health",
+        lambda channel_id, **payload: observed_health.append((channel_id, payload)),
+    )
+
+    class FlappingWebSocket:
+        def __init__(self) -> None:
+            self._resumed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._resumed:
+                self._resumed = True
+                return json.dumps({"op": OP_DISPATCH, "t": "RESUMED", "s": 10})
+            raise RuntimeError(f"wss://gateway.example.test/?ticket={secret}")
+
+    class FakeConnection:
+        async def __aenter__(self) -> FlappingWebSocket:
+            return FlappingWebSocket()
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    async def get_token() -> str:
+        return "token"
+
+    async def get_gateway(_token: str) -> str:
+        return "wss://gateway.example.test"
+
+    async def stop_after_retry(delay: float) -> None:
+        delays.append(delay)
+        adapter._stop_event.set()
+
+    adapter = QQChannelAdapter(
+        enabled=True,
+        app_id="app",
+        client_secret="secret",
+        middleware=object(),
+        http_client=object(),
+        websocket_factory=lambda _url: FakeConnection(),
+        sleep=stop_after_retry,
+    )
+    adapter._connection_failures = 7
+    adapter._session_id = "session-1"
+    adapter._last_seq = 9
+    adapter._get_access_token = get_token  # type: ignore[method-assign]
+    adapter._get_gateway_url = get_gateway  # type: ignore[method-assign]
+
+    caplog.set_level("DEBUG")
+    await adapter._run_forever()
+
+    failed = [event for event in observed_events if event["event"] == "qq.gateway.connect_failed"]
+    connected_health = [
+        payload for _channel_id, payload in observed_health if payload["status"] == "connected"
+    ]
+    assert delays == [1.0]
+    assert connected_health[0]["retry_attempt"] is None
+    assert failed[0]["data"]["retry_attempt"] == 1
+    assert observed_health[-1][1]["retry_attempt"] == 1
+    assert secret not in caplog.text
 
 
 @pytest.mark.asyncio
