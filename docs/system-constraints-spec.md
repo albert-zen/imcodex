@@ -527,28 +527,6 @@ WebSocket target URLs MUST NOT carry userinfo, query, or fragment credentials.
 Authentication belongs in the dedicated token or token-file settings so launch
 snapshots and diagnostics do not become secret stores.
 
-A stdio adapter that lets a fixed child-process client connect to a shared
-native App Server MUST remain transport-only: it MAY translate JSONL message
-boundaries to WebSocket text-frame boundaries, but MUST NOT parse, persist, or
-mediate native Thread, Turn, item, request, approval, model, or permission
-state. Child arguments that imply per-process configuration MUST fail when they
-cannot be applied to the already-running shared server. A narrowly named mode
-MAY suppress a client-specific process-global reload only when the exact method
-and response contract are known, the adapter returns the response under the
-original native request ID without storing it, and tests prove the request does
-not reach the shared server. It MUST reject unknown, incomplete, or duplicate
-child configuration before connecting. In that mode, every other `config/*`
-method and account login/logout mutation MUST fail before forwarding; account
-and configuration reads MAY remain transparent. Other process-global mutations
-remain fail-closed. Any deliberate loss of client-specific capability MUST be
-documented and MUST NOT be silently accepted as parity.
-
-In particular, per-session MCP bearer credentials MUST NOT be copied into
-process-global configuration, JSON-RPC payloads, command output, or logs to
-simulate shared-server support. A shared topology needs a native per-client or
-per-thread configuration mechanism, or a client provider mode designed for the
-shared server ownership boundary.
-
 Managed IM adapters MUST also reconnect without blocking the App Server socket
 reader. Their stop path MUST cancel long polls/background connections promptly,
 and one adapter's stop failure MUST NOT prevent the remaining adapters and
