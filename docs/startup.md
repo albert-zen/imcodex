@@ -441,18 +441,16 @@ For an explicit chat/thread synchronization evaluation, set T3's Codex
 --connect unix:// --chat-sync-without-t3-mcp
 ```
 
-That mode accepts T3's provider health probe with no per-session MCP settings,
-or a real provider session with exactly one known T3 MCP URL setting and one
-known bearer environment-variable setting. It applies neither setting to the
-shared daemon and locally answers only the exact `config/mcpServer/reload`
-request with its original request ID and an empty result. The reload is never
-forwarded. Unknown, incomplete, or duplicate child configuration fails before
-connecting. T3's current Thread/Turn protocol messages remain unchanged. Its
-`t3-code` preview MCP tools are unavailable, while native Thread, Turn, item,
-approval, reconnect, and terminal events continue through the shared server.
-As a forward-compatibility guard, other `config/*` requests and account
-login/logout mutations terminate the adapter before forwarding; read-only
-account responses remain transparent. See
+That mode accepts exactly one known T3 MCP URL setting and one known bearer
+environment-variable setting, applies neither to the shared daemon, and locally
+answers only the exact `config/mcpServer/reload` request with its original
+request ID and an empty result. The reload is never forwarded. Unknown,
+incomplete, or duplicate child configuration fails before connecting. T3's
+current Thread/Turn protocol messages remain unchanged. Its `t3-code` preview
+MCP tools are unavailable, while native Thread, Turn, item, approval, reconnect, and terminal
+events continue through the shared server. As a forward-compatibility guard,
+other `config/*` requests and account login/logout mutations terminate the
+adapter before forwarding; read-only account responses remain transparent. See
 [the shared-runtime probe](probes/t3-single-runtime-sequential.md).
 
 An explicit absolute socket may replace `unix://`. Operators can also set

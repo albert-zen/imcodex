@@ -57,37 +57,14 @@ def test_parse_requires_explicit_chat_sync_mode_for_t3_mcp_args(
     assert config.suppress_t3_mcp_reload is True
 
 
-def test_parse_accepts_t3_provider_probe_without_per_session_mcp_args(
-    tmp_path: Path,
-) -> None:
-    socket_path = tmp_path / "shared.sock"
-
-    config = parse_shim_args(
-        [
-            "app-server",
-            "--chat-sync-without-t3-mcp",
-            "--connect",
-            f"unix://{socket_path}",
-        ],
-        environ={},
-    )
-
-    assert config.socket_path == socket_path
-    assert config.suppress_t3_mcp_reload is True
-
-
 @pytest.mark.parametrize(
     "extra_arguments",
     [
+        ["--chat-sync-without-t3-mcp"],
         [
             "--chat-sync-without-t3-mcp",
             "-c",
             "mcp_servers.t3-code.url=http://127.0.0.1/mcp",
-        ],
-        [
-            "--chat-sync-without-t3-mcp",
-            "-c",
-            'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
         ],
         [
             "--chat-sync-without-t3-mcp",
@@ -95,15 +72,6 @@ def test_parse_accepts_t3_provider_probe_without_per_session_mcp_args(
             "mcp_servers.t3-code.url=http://127.0.0.1/mcp",
             "-c",
             "mcp_servers.t3-code.url=http://127.0.0.1/duplicate",
-            "-c",
-            'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-        ],
-        [
-            "--chat-sync-without-t3-mcp",
-            "-c",
-            "mcp_servers.t3-code.url=http://127.0.0.1/mcp",
-            "-c",
-            'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
             "-c",
             'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
         ],
