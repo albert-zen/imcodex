@@ -5,7 +5,6 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 
 from ..appserver import AppServerError, ThreadSelectionError, normalize_appserver_message
-from ..appserver.thread_observer import NativeThreadObserverError
 from ..models import InboundMessage, OutboundMessage
 from ..observability.runtime import emit_event
 from .thread_history import render_thread_catchup, render_thread_history
@@ -112,16 +111,6 @@ class ThreadHandoffMixin:
         except ThreadSelectionError as exc:
             await self._discard_thread_output_gate(gate, note="thread switch failed")
             return [self._message(message, "error", str(exc))]
-        except NativeThreadObserverError as exc:
-            await self._discard_thread_output_gate(gate, note="T3 thread observation failed")
-            return [
-                self._message(
-                    message,
-                    "status",
-                    "Thread switch was not applied because T3 sync is unavailable "
-                    f"({exc.code}). The previous thread remains selected.",
-                )
-            ]
         except AppServerError as exc:
             await self._discard_thread_output_gate(gate, note="thread switch failed")
             return [

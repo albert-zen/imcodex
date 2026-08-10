@@ -539,13 +539,6 @@ fails explicitly instead of starting a competing or approximate continuation.
 The resume response may be display-trimmed, but native Codex's canonical thread
 context is never rebuilt from `/history` output.
 
-If optional T3 synchronization is enabled, IMCodex first ensures that T3 is
-ready to observe the exact same native thread immediately before each
-IM-originated start or steer. If that check fails, the input is not sent to
-Codex and the reply says so explicitly. Retrying reuses the same native thread.
-Thread reads remain available during a T3 outage. A failed `/pick` does not
-replace the previously selected thread.
-
 ### `/catchup [N]`
 
 `/catchup` reads recent commentary from the latest native Turn without starting

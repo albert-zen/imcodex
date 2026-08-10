@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -481,43 +480,6 @@ def test_build_runtime_constructs_observability_runtime(tmp_path: Path) -> None:
     assert runtime.client._reconnect_retry_policy.jitter_fraction == 0.15
     assert runtime.observability._pending_launch_snapshot["settingsSource"] == "explicit"
     assert runtime.observability._pending_launch_snapshot["restartSupported"] is False
-
-
-def test_build_runtime_injects_t3_observer_only_when_enabled(tmp_path: Path) -> None:
-    base = Settings(
-        data_dir=tmp_path / ".imcodex",
-        run_dir=tmp_path / ".imcodex-run",
-        codex_bin="codex",
-        app_server_url=None,
-        app_server_experimental_api_enabled=False,
-        core_mode="dedicated-ws",
-        core_url="ws://127.0.0.1:8765",
-        restart_executor=None,
-        debug_api_enabled=False,
-        log_level="INFO",
-        http_host="127.0.0.1",
-        http_port=8000,
-        outbound_url=None,
-        service_name="imcodex",
-        qq_enabled=False,
-        qq_app_id="",
-        qq_client_secret="",
-        qq_api_base="https://api.sgroup.qq.com",
-        qq_markdown_enabled=False,
-    )
-    disabled = build_runtime(base)
-    assert disabled.service.backend.thread_observer is None
-    assert disabled.initial_integrations == {}
-
-    enabled = build_runtime(
-        replace(
-            base,
-            t3_sync_enabled=True,
-            t3_auth_token_file=tmp_path / "t3.token",
-        )
-    )
-    assert enabled.service.backend.thread_observer is not None
-    assert enabled.initial_integrations["t3"]["status"] == "unknown"
 
 @pytest.mark.asyncio
 async def test_app_runtime_persists_launch_snapshot_for_restart_executor(

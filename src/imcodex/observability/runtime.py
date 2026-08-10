@@ -146,11 +146,6 @@ class ObservabilityRuntime:
             return
         self.health_writer.merge_appserver(**changes)
 
-    def mark_integration_health(self, integration_id: str, **changes: Any) -> None:
-        if self.health_writer is None:
-            return
-        self.health_writer.merge_integration(integration_id, **changes)
-
     def _prepare_directories(self) -> None:
         assert self.paths is not None
         self.paths.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -293,15 +288,6 @@ def mark_appserver_health(**changes: Any) -> None:
     if runtime is not None:
         try:
             runtime.mark_appserver_health(**changes)
-        except Exception:
-            pass
-
-
-def mark_integration_health(integration_id: str, **changes: Any) -> None:
-    runtime = get_active_runtime()
-    if runtime is not None:
-        try:
-            runtime.mark_integration_health(integration_id, **changes)
         except Exception:
             pass
 

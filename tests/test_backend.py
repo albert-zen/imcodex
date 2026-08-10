@@ -3,10 +3,6 @@ from __future__ import annotations
 import pytest
 
 from imcodex.appserver import AppServerError, CodexBackend, ThreadSelectionError
-from imcodex.appserver.thread_observer import (
-    NativeThreadAttachment,
-    NativeThreadObserverError,
-)
 from imcodex.appserver.backend import (
     ACTIVE_THREAD_STATUSES,
     PERMISSION_MODE_PROFILE_IDS,
@@ -20,121 +16,6 @@ def test_backend_module_keeps_split_compatibility_exports() -> None:
     assert "running" in ACTIVE_THREAD_STATUSES
     assert PERMISSION_MODE_PROFILE_IDS["read-only"] == ":read-only"
     assert ThreadListResult(threads=[]).threads == []
-
-
-@pytest.mark.asyncio
-async def test_observer_is_a_hard_gate_before_idle_turn_start() -> None:
-    events: list[str] = []
-    store = ConversationStore(clock=lambda: 1.0)
-    store.bind_thread_with_cwd("qq", "conv", "thr-1", "/work/repo")
-    observer = RecordingObserver(events)
-    client = OrderedTurnClient(events)
-    backend = CodexBackend(
-        client=client,
-        store=store,
-        service_name="imcodex-test",
-        thread_observer=observer,
-    )
-
-    submission = await backend.submit_text("qq", "conv", "hello")
-
-    assert submission.kind == "start"
-    assert events == ["thread/resume", "observer", "turn/start"]
-
-
-@pytest.mark.asyncio
-async def test_observer_is_a_hard_gate_before_active_turn_steer_without_resume() -> None:
-    events: list[str] = []
-    store = ConversationStore(clock=lambda: 1.0)
-    store.bind_thread_with_cwd("qq", "conv", "thr-1", "/work/repo")
-    store.note_active_turn("thr-1", "turn-active", "inProgress")
-    observer = RecordingObserver(events)
-    client = OrderedTurnClient(events)
-    backend = CodexBackend(
-        client=client,
-        store=store,
-        service_name="imcodex-test",
-        thread_observer=observer,
-    )
-
-    submission = await backend.submit_text("qq", "conv", "hello")
-
-    assert submission.kind == "steer"
-    assert events == ["observer", "turn/steer"]
-
-
-@pytest.mark.asyncio
-async def test_observer_failure_blocks_existing_start_and_steer() -> None:
-    for active in (False, True):
-        events: list[str] = []
-        store = ConversationStore(clock=lambda: 1.0)
-        store.bind_thread_with_cwd("qq", "conv", "thr-1", "/work/repo")
-        if active:
-            store.note_active_turn("thr-1", "turn-active", "inProgress")
-        observer = RecordingObserver(events, fail=True)
-        client = OrderedTurnClient(events)
-        backend = CodexBackend(
-            client=client,
-            store=store,
-            service_name="imcodex-test",
-            thread_observer=observer,
-        )
-
-        with pytest.raises(NativeThreadObserverError):
-            await backend.submit_text("qq", "conv", "hello")
-
-        assert client.start_turn_calls == 0
-        assert client.steer_turn_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_observer_failure_leaves_first_native_thread_for_retry_without_turn() -> None:
-    events: list[str] = []
-    store = ConversationStore(clock=lambda: 1.0)
-    store.set_bootstrap_cwd("qq", "conv", "/work/repo")
-    observer = RecordingObserver(events, fail=True)
-    client = OrderedTurnClient(events)
-    backend = CodexBackend(
-        client=client,
-        store=store,
-        service_name="imcodex-test",
-        thread_observer=observer,
-    )
-
-    with pytest.raises(NativeThreadObserverError):
-        await backend.submit_text("qq", "conv", "first")
-
-    assert store.get_binding("qq", "conv").thread_id == "thr_new"
-    assert client.start_thread_calls == 1
-    assert client.start_turn_calls == 0
-
-    observer.fail = False
-    submission = await backend.submit_text("qq", "conv", "retry")
-
-    assert submission.thread_id == "thr_new"
-    assert client.start_thread_calls == 1
-    assert client.start_turn_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_pick_observer_failure_preserves_previous_binding() -> None:
-    events: list[str] = []
-    store = ConversationStore(clock=lambda: 1.0)
-    store.bind_thread_with_cwd("qq", "conv", "thr-old", "/work/old")
-    observer = RecordingObserver(events, fail=True)
-    backend = CodexBackend(
-        client=AttachClient(),
-        store=store,
-        service_name="imcodex-test",
-        thread_observer=observer,
-    )
-
-    with pytest.raises(NativeThreadObserverError):
-        await backend.attach_thread("qq", "conv", "thr-new")
-
-    binding = store.get_binding("qq", "conv")
-    assert binding.thread_id == "thr-old"
-    assert binding.bootstrap_cwd == "/work/old"
 
 
 @pytest.mark.parametrize("connection_mode", [None, ""])
@@ -334,59 +215,6 @@ class AttachClient:
                 "status": "idle",
             }
         }
-
-
-class RecordingObserver:
-    def __init__(self, events: list[str], *, fail: bool = False) -> None:
-        self.events = events
-        self.fail = fail
-        self.calls: list[tuple[str, str | None]] = []
-
-    async def ensure_ready(self, *, native_thread_id: str, cwd: str | None):
-        self.events.append("observer")
-        self.calls.append((native_thread_id, cwd))
-        if self.fail:
-            raise NativeThreadObserverError("observer_unavailable")
-        return NativeThreadAttachment(
-            native_thread_id=native_thread_id,
-            project_id="project-1",
-            provider_instance_id="codex-1",
-            observer_thread_id="t3-thread-1",
-            disposition="attached",
-            status="ready",
-        )
-
-    async def close(self) -> None:
-        return None
-
-
-class OrderedTurnClient:
-    def __init__(self, events: list[str], *, active: bool = False) -> None:
-        self.events = events
-        self.active = active
-        self.start_thread_calls = 0
-        self.start_turn_calls = 0
-        self.steer_turn_calls = 0
-
-    async def start_thread(self, **params):
-        self.start_thread_calls += 1
-        self.events.append("thread/start")
-        return {"thread": {"id": "thr_new", "cwd": "/work/repo", "status": "idle"}}
-
-    async def resume_thread(self, **params):
-        self.events.append("thread/resume")
-        thread = {"id": params["thread_id"], "cwd": "/work/repo", "status": "idle"}
-        return {"thread": thread}
-
-    async def start_turn(self, **params):
-        self.start_turn_calls += 1
-        self.events.append("turn/start")
-        return {"turn": {"id": "turn-1", "status": "inProgress"}}
-
-    async def steer_turn(self, thread_id, turn_id, **params):
-        self.steer_turn_calls += 1
-        self.events.append("turn/steer")
-        return {"turnId": turn_id}
 
 
 class ThreadOpsClient:

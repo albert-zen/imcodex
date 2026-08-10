@@ -360,13 +360,6 @@ Codex version requirement:
 - `IMCODEX_APP_SERVER_RECONNECT_INITIAL_DELAY`: first background reconnect delay after an immediate retry fails, default `0.5`
 - `IMCODEX_APP_SERVER_RECONNECT_MAX_DELAY`: maximum background reconnect delay, default `30.0`
 - `IMCODEX_APP_SERVER_RECONNECT_JITTER`: background reconnect jitter fraction, default `0.25`
-- `IMCODEX_T3_SYNC_ENABLED`: require T3 native-thread observation before IM-originated turns, default `false`
-- `IMCODEX_T3_API_URL`: T3 Environment API base URL, default `http://127.0.0.1:3773`; remote targets require HTTPS
-- `IMCODEX_T3_AUTH_TOKEN_FILE`: file containing a bearer token with `orchestration:read` and `orchestration:operate`; required when T3 sync is enabled and reread for every request
-- `IMCODEX_T3_CONNECT_TIMEOUT`: T3 connection timeout in seconds, default `2.0`
-- `IMCODEX_T3_REQUEST_TIMEOUT`: T3 request timeout in seconds, default `10.0`
-- `IMCODEX_T3_PROJECT_ID`: optional explicit project disambiguation
-- `IMCODEX_T3_PROVIDER_INSTANCE_ID`: optional explicit Codex provider-instance disambiguation
 
 Reconnect delays must be positive, the maximum must be at least the initial
 delay, and jitter must be between `0` and `1`.

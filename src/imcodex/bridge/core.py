@@ -11,7 +11,6 @@ from ..appserver import (
     ThreadSelectionError,
     normalize_appserver_message,
 )
-from ..appserver.thread_observer import NativeThreadObserverError
 from ..models import InboundMessage, OutboundMessage
 from ..observability.message_trace import ensure_trace_id, text_preview, text_sha256
 from ..observability.runtime import emit_event
@@ -131,9 +130,6 @@ class BridgeService(
         await self._close_terminal_delivery()
         await self._close_thread_handoff()
         await self.native_requests.close()
-        close_backend = getattr(self.backend, "close", None)
-        if callable(close_backend):
-            await close_backend()
 
     def preflight_inbound_attachments(
         self,
@@ -257,12 +253,6 @@ class BridgeService(
                 "Use /threads to pick another thread or /new to start fresh."
             )
             return [self._message(message, "status", text)]
-        except NativeThreadObserverError as exc:
-            text = (
-                "T3 sync is unavailable, so Codex did not receive this message. "
-                f"Retry after the integration recovers ({exc.code})."
-            )
-            return [self._message(message, "error", text)]
         except AppServerError as exc:
             text = f"Codex could not accept this message: {self._safe_appserver_error(exc)}."
             return [self._message(message, "error", text)]
