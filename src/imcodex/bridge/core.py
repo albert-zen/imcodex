@@ -23,10 +23,6 @@ from .native_events import (
     render_native_events,
     select_native_events,
 )
-from .rehydration_retry import (
-    NativeWriterRehydrationMixin,
-    NativeWriterRehydrationRetry,
-)
 from .rendering import BridgeRenderingMixin
 from .server_requests import NativeRequestPolicy
 from .settings import (
@@ -88,7 +84,6 @@ _REMOTE_APP_SERVER_ATTACHMENT_ERROR_TEXT = (
 
 
 class BridgeService(
-    NativeWriterRehydrationMixin,
     TerminalDeliveryMixin,
     ThreadHandoffMixin,
     ThreadViewMixin,
@@ -115,17 +110,6 @@ class BridgeService(
             float(server_request_delivery_timeout_s),
         )
         self._rehydration_lock = asyncio.Lock()
-        self._native_writer_rehydration_retry = NativeWriterRehydrationRetry(
-            self._retry_native_writer_rehydration
-        )
-        add_reconciled_handler = getattr(
-            self.backend,
-            "add_binding_reconciled_handler",
-            None,
-        )
-        if callable(add_reconciled_handler):
-            add_reconciled_handler(self._handle_binding_reconciled)
-        self._native_writer_rehydration_summary: dict | None = None
         self._terminal_projection_lock = asyncio.Lock()
         self._init_thread_handoff()
         # These are short-lived presentation facts, not native turn state. The
@@ -144,8 +128,6 @@ class BridgeService(
         )
 
     async def close(self) -> None:
-        await self._native_writer_rehydration_retry.close()
-        self._native_writer_rehydration_summary = None
         await self._close_terminal_delivery()
         await self._close_thread_handoff()
         await self.native_requests.close()
@@ -1015,8 +997,6 @@ class BridgeService(
         return epoch or None
 
     async def handle_connection_reset(self, connection_epoch: int) -> None:
-        await self._native_writer_rehydration_retry.cancel()
-        self._native_writer_rehydration_summary = None
         await self._reset_thread_output_admission()
         self.native_requests.cancel_connection_epoch(connection_epoch)
         routes = self.store.invalidate_pending_requests_for_connection(connection_epoch)
@@ -1036,8 +1016,6 @@ class BridgeService(
                 continue
 
     async def handle_connection_ready(self, connection_epoch: int) -> dict | None:
-        await self._native_writer_rehydration_retry.cancel()
-        self._native_writer_rehydration_summary = None
         emit_event(
             component="bridge",
             event="bridge.connection.ready",
@@ -1054,30 +1032,9 @@ class BridgeService(
                     "rehydration": {"deliveryPending": delivery_pending},
                 }
             return None
-        health, result = await self._rehydrate_current_connection()
-        retryable_bindings = self._retryable_writer_binding_keys(result)
-        if retryable_bindings:
-            self._native_writer_rehydration_summary = dict(health["rehydration"])
-            await self._native_writer_rehydration_retry.schedule(
-                connection_epoch,
-                retryable_bindings,
-            )
-        return health
-
-    async def _rehydrate_current_connection(
-        self,
-        *,
-        binding_keys: set[tuple[str, str, str]] | None = None,
-    ) -> tuple[dict, dict]:
         async with self._rehydration_lock:
-            if binding_keys is None:
-                result = await self.backend.rehydrate_bound_threads()
-            else:
-                result = await self.backend.rehydrate_bound_threads(
-                    binding_keys=binding_keys
-                )
+            result = await self.backend.rehydrate_bound_threads()
         summary = dict(result.get("summary") or {})
-        recovered_keys: set[tuple[str, str]] = set()
         for discarded in result.get("discardedTurns") or []:
             if not isinstance(discarded, dict):
                 continue
@@ -1093,14 +1050,9 @@ class BridgeService(
             turn_id = str(turn.get("id") or turn.get("turnId") or "")
             if not thread_id or not turn_id:
                 continue
-            terminal_key = (thread_id, turn_id)
-            self._pending_recovered_turns[terminal_key] = turn
-            recovered_keys.add(terminal_key)
+            self._pending_recovered_turns[(thread_id, turn_id)] = turn
         delivery_failed = 0
-        for terminal_key in recovered_keys:
-            turn = self._pending_recovered_turns.get(terminal_key)
-            if turn is None:
-                continue
+        for terminal_key, turn in list(self._pending_recovered_turns.items()):
             thread_id, turn_id = terminal_key
             if self.store.find_binding_by_thread_id(thread_id) is None:
                 self.projector.discard_recovered_turn(thread_id=thread_id, turn_id=turn_id)
@@ -1217,13 +1169,10 @@ class BridgeService(
             + summary.get("deliveryFailed", 0)
             + summary.get("deliveryPending", 0)
         )
-        return (
-            {
-                "status": "degraded" if degraded else "connected",
-                "rehydration": summary,
-            },
-            result,
-        )
+        return {
+            "status": "degraded" if degraded else "connected",
+            "rehydration": summary,
+        }
 
     async def _emit(self, message: OutboundMessage | None) -> list[OutboundMessage]:
         if message is None:

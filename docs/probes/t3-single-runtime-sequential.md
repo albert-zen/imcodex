@@ -83,23 +83,6 @@ Run the isolated approval A/B gate:
   --approval-comparison
 ```
 
-Reproduce the official cross-process writer boundary and verify recovery after
-the owner exits:
-
-```bash
-.venv/bin/python scripts/probe-shared-codex-app-server.py \
-  --codex-bin /Users/xbjt/.local/bin/codex \
-  --expected-version 'codex-cli 0.147.0' \
-  --shim-bin scripts/imcodex-shared-app-server \
-  --writer-lock-recovery
-```
-
-This gate starts two isolated App Server processes with one temporary
-`CODEX_HOME`. It verifies that the non-owner can read persisted state but
-`thread/resume` fails with the native active-writer conflict, then stops only
-the isolated owner and verifies that the same secondary connection can resume
-the exact thread. It never connects to a production endpoint.
-
 ## T3 MCP parity boundary
 
 Current T3 source performs these steps for every provider session:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 
 from ..store import ConversationStore
 from .backend_errors import CodexBackendErrorMixin
@@ -39,27 +38,6 @@ class CodexBackend(CodexThreadBackendMixin, CodexSettingsBackendMixin, CodexBack
         # Keep that transient fact process-local so the first input can use the
         # live connection instead of asking Codex to resume nonexistent history.
         self._unpersisted_thread_ids: set[str] = set()
-        self._binding_reconciled_handlers: list[Callable[[str, str, str], None]] = []
-        self._active_rehydration_tokens: dict[tuple[str, str, str], object] = {}
-
-    def add_binding_reconciled_handler(
-        self,
-        handler: Callable[[str, str, str], None],
-    ) -> None:
-        self._binding_reconciled_handlers.append(handler)
-
-    def _notify_binding_reconciled(
-        self,
-        channel_id: str,
-        conversation_id: str,
-        thread_id: str,
-    ) -> None:
-        key = (channel_id, conversation_id, thread_id)
-        # Ordinary exact resume/attach supersedes any background reconciliation
-        # already awaiting native state for this binding.
-        self._active_rehydration_tokens.pop(key, None)
-        for handler in tuple(self._binding_reconciled_handlers):
-            handler(channel_id, conversation_id, thread_id)
 
     async def close(self) -> None:
         close = getattr(self.thread_observer, "close", None)
