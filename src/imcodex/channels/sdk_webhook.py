@@ -9,7 +9,9 @@ from imagent.gateway.delivery import (
     DeliveryIntent,
     DeliveryPrincipal,
     DeliverySubmissionState,
+    ThreadRouteDeliveryTarget,
 )
+from imagent.applications import ProjectRef, ThreadRef
 from imagent.interaction.channels import (
     ChannelCapabilities,
     DeliveryReceipt,
@@ -243,6 +245,7 @@ class SdkRuntimeService:
         gateway,
         client,
         product_state,
+        project_ref: ProjectRef,
         channels=(),
         delivery_authorizer=None,
         artifact_stager: DeliveryArtifactStager | None = None,
@@ -251,6 +254,7 @@ class SdkRuntimeService:
         self.gateway = gateway
         self.client = client
         self.product_state = product_state
+        self._project_ref = project_ref
         self.outbound_sink = channel.outbound_sink
         self._channels = tuple(channels)
         self._channel_ids = frozenset(
@@ -272,22 +276,16 @@ class SdkRuntimeService:
         return channel_id in self._channel_ids or self.outbound_sink is not None
 
     def validate_outbound_message(self, message: OutboundMessage) -> None:
-        if not message.channel_id and not message.metadata.get("source_thread_id"):
+        source_thread_id = str(message.metadata.get("source_thread_id") or "").strip()
+        explicit_route = bool(message.channel_id or message.conversation_id)
+        if source_thread_id and explicit_route:
+            raise ValueError("a source thread cannot be combined with a channel route")
+        if not source_thread_id and not explicit_route:
             raise ValueError("a channel route or source thread is required")
-        if message.metadata.get("source_thread_id"):
-            raise ValueError(
-                "current-thread delivery is unavailable through public SDK v1; "
-                "provide an explicit channel and conversation"
-            )
-        if not self.can_deliver_outbound(message.channel_id):
+        if explicit_route and not (message.channel_id and message.conversation_id):
+            raise ValueError("channel and conversation must be provided together")
+        if explicit_route and not self.can_deliver_outbound(message.channel_id):
             raise ValueError(f"Configured channel {message.channel_id!r} is unavailable.")
-
-    def resolve_outbound_route(self, source_thread_id: str) -> tuple[str, str]:
-        del source_thread_id
-        raise ValueError(
-            "current-thread delivery is unavailable through public SDK v1; "
-            "the SDK exposes no public remembered-recipient lookup"
-        )
 
     async def stage_outbound_upload(
         self,
@@ -316,18 +314,28 @@ class SdkRuntimeService:
         message: OutboundMessage,
     ) -> tuple[list[OutboundMessage], bool, bool]:
         self.validate_outbound_message(message)
-        if message.channel_id not in self._channel_ids and self.outbound_sink is not None:
-            await self.outbound_sink.send_message(message)
-            return [message], True, True
-        conversation_ref = self._delivery_conversation_ref(
-            message.channel_id,
-            message.conversation_id,
-        )
-        if conversation_ref.channel_instance_id == WEBHOOK_CHANNEL_INSTANCE_ID and (
-            self.outbound_sink is not None
+        source_thread_id = str(message.metadata.get("source_thread_id") or "").strip()
+        if (
+            not source_thread_id
+            and message.channel_id not in self._channel_ids
+            and self.outbound_sink is not None
         ):
             await self.outbound_sink.send_message(message)
             return [message], True, True
+        conversation_ref = None
+        thread_ref = None
+        if source_thread_id:
+            thread_ref = ThreadRef(self._project_ref, source_thread_id)
+        else:
+            conversation_ref = self._delivery_conversation_ref(
+                message.channel_id,
+                message.conversation_id,
+            )
+            if conversation_ref.channel_instance_id == WEBHOOK_CHANNEL_INSTANCE_ID and (
+                self.outbound_sink is not None
+            ):
+                await self.outbound_sink.send_message(message)
+                return [message], True, True
         if self._delivery_authorizer is None:
             raise RuntimeError("SDK proactive delivery authorization is unavailable")
         content: list[TextContent | AttachmentContent] = []
@@ -346,7 +354,11 @@ class SdkRuntimeService:
             )
         intent = DeliveryIntent(
             delivery_id=str(message.metadata.get("delivery_id") or "imcodex:delivery"),
-            target=ConversationDeliveryTarget(conversation_ref),
+            target=(
+                ThreadRouteDeliveryTarget(thread_ref)
+                if thread_ref is not None
+                else ConversationDeliveryTarget(conversation_ref)
+            ),
             content=tuple(content),
             created_at=datetime.now(UTC),
             metadata={"imcodex_message_type": message.message_type},
@@ -354,7 +366,8 @@ class SdkRuntimeService:
         credential = await self._delivery_authorizer.issue(
             DeliveryPrincipal(
                 principal_id="imcodex:local-delivery",
-                allowed_conversations=(conversation_ref,),
+                allowed_threads=(thread_ref,) if thread_ref is not None else (),
+                allowed_conversations=(conversation_ref,) if conversation_ref is not None else (),
             )
         )
         try:

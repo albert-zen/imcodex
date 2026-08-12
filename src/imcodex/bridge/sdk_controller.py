@@ -214,12 +214,30 @@ class ImcodexController:
 
     async def _view(self, invocation: CommandInvocation, _actions) -> CommandResult:
         value = invocation.arguments[0].casefold()
-        if value not in {"minimal", "standard", "verbose"}:
+        profiles = {
+            "minimal": {
+                "show_commentary": False,
+                "show_toolcalls": False,
+                "show_system": False,
+            },
+            "standard": {
+                "show_commentary": True,
+                "show_toolcalls": False,
+                "show_system": False,
+            },
+            "verbose": {
+                "show_commentary": True,
+                "show_toolcalls": True,
+                "show_system": True,
+            },
+        }
+        if value not in profiles:
             return CommandResult.failure("Usage: /view minimal|standard|verbose")
         self.product_state.update(
             invocation.conversation_ref.channel_instance_id,
             invocation.conversation_ref.native_conversation_id,
             visibility=value,
+            **profiles[value],
         )
         return CommandResult.text(f"Visibility profile set to `{value}`.")
 
@@ -337,12 +355,41 @@ class ImcodexController:
     async def _permission(self, invocation: CommandInvocation, _actions) -> CommandResult:
         if not invocation.arguments:
             config = await self.client.read_config()
-            return CommandResult.text(self._render_config_value(config, "approval_policy"))
+            approval = self._config_value(config, "approval_policy", "approvalPolicy")
+            sandbox = self._config_value(config, "sandbox_mode", "sandboxMode")
+            mode = {
+                ("on-request", "workspace-write"): "default",
+                ("on-request", "read-only"): "read-only",
+                ("never", "danger-full-access"): "full-access",
+            }.get((approval, sandbox), "custom")
+            return CommandResult.text(
+                f"Permission mode: `{mode}` "
+                f"(approval: `{approval or '(unset)'}`, sandbox: `{sandbox or '(unset)'}`)."
+            )
         mode = invocation.arguments[0].casefold()
-        values = {"default": "on-request", "read-only": "on-request", "full-access": "never"}
+        values = {
+            "default": ("on-request", "workspace-write"),
+            "read-only": ("on-request", "read-only"),
+            "full-access": ("never", "danger-full-access"),
+        }
         if mode not in values:
             return CommandResult.failure("Permission must be default, read-only, or full-access.")
-        await self.client.write_config_value(key_path="approval_policy", value=values[mode])
+        approval, sandbox = values[mode]
+        await self.client.batch_write_config(
+            edits=[
+                {
+                    "keyPath": "approval_policy",
+                    "value": approval,
+                    "mergeStrategy": "replace",
+                },
+                {
+                    "keyPath": "sandbox_mode",
+                    "value": sandbox,
+                    "mergeStrategy": "replace",
+                },
+            ],
+            reload_user_config=True,
+        )
         return CommandResult.text(f"Permission mode set to `{mode}`.")
 
     async def _credits(self, invocation: CommandInvocation, _actions) -> CommandResult:
@@ -582,6 +629,20 @@ class ImcodexController:
             if key in config:
                 return f"`{key}`: `{config[key]}`"
         return "No value is configured."
+
+    @staticmethod
+    def _config_value(payload: object, *keys: str) -> str:
+        config = payload.get("config") if isinstance(payload, dict) else None
+        config = config if isinstance(config, dict) else payload if isinstance(payload, dict) else {}
+        for key in keys:
+            if key not in config:
+                continue
+            value = config[key]
+            if isinstance(value, dict):
+                value = value.get("mode") or value.get("type")
+            if value is not None:
+                return str(value).strip()
+        return ""
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
