@@ -55,8 +55,10 @@ components:
     code:
       - src/imcodex/bridge/**
       - src/imcodex/models.py
+      - src/imcodex/delivery_outbox.py
       - src/imcodex/product_state.py
       - tests/test_sdk_controller.py
+      - tests/test_delivery_outbox.py
       - tests/test_sdk_presentation.py
     docs:
       - docs/design.md
@@ -153,6 +155,7 @@ layers:
     may_import: []
   state:
     paths:
+      - src/imcodex/delivery_outbox.py
       - src/imcodex/product_state.py
       - src/imcodex/observability/runtime.py
     may_import:

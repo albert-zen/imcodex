@@ -18,6 +18,7 @@ from .bridge.sdk_controller import ImcodexController
 from .bridge.sdk_presentation import ImcodexOutboundPresentation
 from .bridge.sdk_requests import ImcodexRequestPresenter
 from .delivery_artifacts import DeliveryArtifactStager
+from .delivery_outbox import DeliveryOutbox
 from .channels.outbound import WebhookOutboundSink
 from .channels.sdk_webhook import SdkRuntimeService, SdkWebhookChannel
 from .product_state import ProductState
@@ -41,6 +42,7 @@ class SdkComposition:
     request_presenter: ImcodexRequestPresenter
     delivery_authorizer: ScopedDeliveryAuthorizer
     artifact_stager: DeliveryArtifactStager
+    delivery_outbox: DeliveryOutbox
     service: SdkRuntimeService
 
 
@@ -86,6 +88,7 @@ def build_sdk_composition(settings) -> SdkComposition:
     state = SQLiteGatewayStore(settings.data_dir / "gateway.sqlite3")
     delivery_authorizer = ScopedDeliveryAuthorizer()
     artifact_stager = DeliveryArtifactStager(settings.data_dir / "outbound-media")
+    delivery_outbox = DeliveryOutbox(settings.data_dir / "delivery-outbox.sqlite3")
     request_presenter = ImcodexRequestPresenter()
     presentation = ImcodexOutboundPresentation(product_state=product_state)
     controller = ImcodexController(
@@ -114,6 +117,7 @@ def build_sdk_composition(settings) -> SdkComposition:
         client=client,
         product_state=product_state,
         project_ref=controller.workspace_project_ref,
+        delivery_outbox=delivery_outbox,
         channels=channels,
         delivery_authorizer=delivery_authorizer,
         artifact_stager=artifact_stager,
@@ -130,6 +134,7 @@ def build_sdk_composition(settings) -> SdkComposition:
         request_presenter=request_presenter,
         delivery_authorizer=delivery_authorizer,
         artifact_stager=artifact_stager,
+        delivery_outbox=delivery_outbox,
         service=service,
     )
 

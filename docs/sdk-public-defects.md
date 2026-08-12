@@ -46,9 +46,12 @@ IMCodex behavior.  The SDK experiment must consume those primitives directly:
 
 These were IMCodex consumer omissions, not public SDK defects.  The focused
 consumer coverage and full regression suite pass against canonical commit
-`a72b24a` (`300 passed, 26 skipped`).  Durable payload/artifact retry remains a
-separate IMCodex outbox responsibility because the SDK persists submission
-identity and routing state, not consumer payload bytes.
+`a72b24a`. Durable payload/artifact retry remains an IMCodex outbox
+responsibility because the SDK persists submission identity and routing state,
+not consumer payload bytes. The SDK experiment now supplies that bounded
+SQLite payload checkpoint: pending standalone deliveries drain after restart,
+retain managed artifacts until terminal acknowledgement, replay terminal
+outcomes by delivery ID, and reject conflicting payload reuse explicitly.
 
 Other deliberate unsupported behavior remains explicit: the fixed Codex
 workspace does not support per-conversation `/cwd` changes, native thread tool
