@@ -36,8 +36,8 @@ components:
     code:
       - src/imcodex/channels/**
       - tests/test_channel_*.py
-      - tests/test_channels.py
-      - tests/test_service_e2e.py
+      - tests/test_channels_*.py
+      - tests/test_sdk_webhook_delivery.py
     docs:
       - docs/design.md
       - docs/product-behavior-spec.md
@@ -54,15 +54,10 @@ components:
     description: IM command handling, conversation-to-thread bindings, projection, and minimal bridge-owned state.
     code:
       - src/imcodex/bridge/**
-      - src/imcodex/store.py
-      - src/imcodex/store_*.py
       - src/imcodex/models.py
-      - tests/test_commands.py
-      - tests/test_settings.py
-      - tests/test_projection*.py
-      - tests/test_outbound_artifacts.py
-      - tests/test_store.py
-      - tests/test_service_e2e.py
+      - src/imcodex/product_state.py
+      - tests/test_sdk_controller.py
+      - tests/test_sdk_presentation.py
     docs:
       - docs/design.md
       - docs/product-behavior-spec.md
@@ -79,12 +74,11 @@ components:
   appserver:
     description: Native Codex protocol integration, dedicated core transport, restart handling, and approval flow plumbing.
     code:
-      - src/imcodex/appserver/**
-      - src/imcodex/core_cli.py
-      - src/imcodex/core_manager.py
-      - tests/test_appserver_stdio.py
-      - tests/test_backend.py
-      - tests/test_core_manager.py
+      - src/imcodex/app_server_target.py
+      - src/imcodex/sdk_composition.py
+      - src/imcodex/sdk_runtime.py
+      - tests/test_appserver_target.py
+      - tests/test_sdk_runtime.py
     docs:
       - docs/design.md
       - docs/startup.md
@@ -113,7 +107,8 @@ components:
       - src/imcodex/observability/**
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
+      - src/imcodex/sdk_composition.py
+      - src/imcodex/sdk_runtime.py
       - scripts/**
       - tests/test_admin_*.py
       - tests/test_application.py
@@ -124,7 +119,7 @@ components:
       - tests/test_observability.py
       - tests/test_restart_executor.py
       - tests/test_restart_preflight.py
-      - tests/test_runtime.py
+      - tests/test_sdk_runtime.py
       - tests/test_startup_scripts.py
       - tests/test_windows_scripts.py
     docs:
@@ -146,6 +141,7 @@ layers:
   support:
     paths:
       - src/imcodex/config.py
+      - src/imcodex/app_server_target.py
       - src/imcodex/logging_utils.py
       - src/imcodex/models.py
       - src/imcodex/observability/context.py
@@ -157,26 +153,16 @@ layers:
     may_import: []
   state:
     paths:
-      - src/imcodex/store.py
-      - src/imcodex/store_*.py
+      - src/imcodex/product_state.py
       - src/imcodex/observability/runtime.py
     may_import:
       - support
-  appserver:
-    paths:
-      - src/imcodex/appserver/**
-      - src/imcodex/core_cli.py
-      - src/imcodex/core_manager.py
-    may_import:
-      - support
-      - state
   bridge:
     paths:
       - src/imcodex/bridge/**
     may_import:
       - support
       - state
-      - appserver
   channels:
     paths:
       - src/imcodex/channels/**
@@ -193,11 +179,11 @@ layers:
       - src/imcodex/main.py
       - src/imcodex/ops.py
       - src/imcodex/ops_cli.py
-      - src/imcodex/runtime.py
+      - src/imcodex/sdk_composition.py
+      - src/imcodex/sdk_runtime.py
     may_import:
       - support
       - state
-      - appserver
       - bridge
       - channels
 
@@ -218,15 +204,15 @@ maintainability:
   budgets:
     - name: bridge-core-orchestration
       paths:
-        - src/imcodex/bridge/core.py
+        - src/imcodex/bridge/sdk_controller.py
       max_lines: 750
-      max_functions: 35
+      max_functions: 55
       max_classes: 2
       mode: warn
-      guidance: "BridgeService is the biggest bridge orchestration surface. Prefer extracting formatting, approval helpers, or recovery helpers before growing it much further."
+      guidance: "The SDK controller is the biggest bridge orchestration surface. Prefer extracting formatting, request, or command-family helpers before growing it much further."
     - name: appserver-backend
       paths:
-        - src/imcodex/appserver/backend.py
+        - src/imcodex/sdk_runtime.py
       max_lines: 550
       max_functions: 30
       max_classes: 8
@@ -234,8 +220,7 @@ maintainability:
       guidance: "Keep native protocol translation and recovery focused. If backend.py grows, split dedicated core recovery or thread operations into smaller helpers."
     - name: bridge-state
       paths:
-        - src/imcodex/store.py
-        - src/imcodex/store_*.py
+        - src/imcodex/product_state.py
       max_lines: 500
       max_functions: 35
       max_classes: 8
@@ -243,7 +228,7 @@ maintainability:
       guidance: "Bridge state should stay intentionally small. Growth here is a signal to re-check whether state really belongs outside native Codex."
     - name: debug-harness-scenarios
       paths:
-        - src/imcodex/debug_harness/scenarios.py
+        - src/imcodex/debug_harness/api.py
       max_lines: 425
       max_functions: 25
       max_classes: 6

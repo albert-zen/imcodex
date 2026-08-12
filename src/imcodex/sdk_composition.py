@@ -25,6 +25,7 @@ from .product_state import ProductState
 
 SDK_APPLICATION_INSTANCE_ID = "codex-main"
 SDK_WORKSPACE_ID = "imcodex-workspace"
+SDK_PROJECTION_POLICY = ProjectionPolicy.REMEMBERED_LAST_RECIPIENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +101,7 @@ def build_sdk_composition(settings) -> SdkComposition:
         applications=[application],
         store=state,
         controller=controller,
-        projection_policy=ProjectionPolicy.FOREGROUND_ONLY,
+        projection_policy=SDK_PROJECTION_POLICY,
         extensions=GatewayExtensions(
             request_presenter=request_presenter,
             outbound_presentation=presentation,
@@ -112,6 +113,7 @@ def build_sdk_composition(settings) -> SdkComposition:
         gateway=gateway,
         client=client,
         product_state=product_state,
+        project_ref=controller.workspace_project_ref,
         channels=channels,
         delivery_authorizer=delivery_authorizer,
         artifact_stager=artifact_stager,

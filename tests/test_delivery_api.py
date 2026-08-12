@@ -99,3 +99,28 @@ def test_delivery_endpoint_rejects_missing_local_credential(tmp_path: Path) -> N
             data={"payload": json.dumps(payload)},
         )
     assert response.status_code == 403
+
+
+def test_delivery_endpoint_passes_current_thread_to_runtime(tmp_path: Path) -> None:
+    app, service, credential = _app(tmp_path)
+    payload = {
+        "source_thread_id": "thread-current",
+        "delivery_id": "delivery-current",
+        "text": "hello from the current task",
+    }
+    with _client(app) as client:
+        response = client.post(
+            DELIVERY_PATH,
+            headers={
+                "x-imcodex-instance": "instance-1",
+                DELIVERY_TOKEN_HEADER: credential.token,
+            },
+            data={"payload": json.dumps(payload)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "delivered"
+    message = service.received[0]
+    assert message.channel_id == ""
+    assert message.conversation_id == ""
+    assert message.metadata["source_thread_id"] == "thread-current"

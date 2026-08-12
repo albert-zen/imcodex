@@ -30,6 +30,26 @@ produced exactly one `IMCODEX_ACCEPTANCE_OK` output.
 
 No executable public SDK defect remains open for this acceptance path.
 
+## Downstream consumer parity corrections
+
+The public SDK already exposes the primitives required for the following
+IMCodex behavior.  The SDK experiment must consume those primitives directly:
+
+- `/view minimal|standard|verbose` updates the effective commentary, tool-call,
+  and system visibility switches, not only the persisted profile label.
+- `/permission default|read-only|full-access` writes `approval_policy` and
+  `sandbox_mode` together and reloads the effective native configuration.
+- standalone current-thread delivery uses `ThreadRouteDeliveryTarget` with a
+  thread-scoped `DeliveryPrincipal`; composition uses
+  `REMEMBERED_LAST_RECIPIENT` so the route survives selecting another thread
+  and moves when the same thread is selected from another conversation.
+
+These were IMCodex consumer omissions, not public SDK defects.  The focused
+consumer coverage and full regression suite pass against canonical commit
+`a72b24a` (`300 passed, 26 skipped`).  Durable payload/artifact retry remains a
+separate IMCodex outbox responsibility because the SDK persists submission
+identity and routing state, not consumer payload bytes.
+
 Other deliberate unsupported behavior remains explicit: the fixed Codex
 workspace does not support per-conversation `/cwd` changes, native thread tool
 hosting is rejected before composition, and the Codex adapter does not

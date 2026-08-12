@@ -202,7 +202,6 @@ def install_delivery_route(
             await _raise_form_error(form, 422, "artifacts must be uploaded files.")
         service = runtime.service
         can_deliver = getattr(service, "can_deliver_outbound", None)
-        resolve_route = getattr(service, "resolve_outbound_route", None)
         validate_message = getattr(service, "validate_outbound_message", None)
         stage_upload = getattr(service, "stage_outbound_upload", None)
         discard_uploads = getattr(service, "discard_outbound_uploads", None)
@@ -215,30 +214,7 @@ def install_delivery_route(
             or not callable(deliver_message)
         ):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
-        if source_thread_id:
-            if not callable(resolve_route):
-                await _raise_form_error(
-                    form,
-                    503,
-                    "Current-thread route resolution is unavailable.",
-                )
-            try:
-                channel_id, conversation_id = resolve_route(source_thread_id)
-            except ValueError as exc:
-                await _close_form_uploads(form)
-                return JSONResponse(
-                    {
-                        "delivery_id": delivery_id,
-                        "channel_id": "",
-                        "conversation_id": "",
-                        "status": "rejected",
-                        "text_status": "rejected",
-                        "artifacts": [],
-                        "error": str(exc),
-                    },
-                    status_code=409,
-                )
-        if not can_deliver(channel_id):
+        if explicit_route and not can_deliver(channel_id):
             await _raise_form_error(form, 404, "Configured channel is unavailable.")
 
         artifacts: list[OutboundArtifact] = []
@@ -278,6 +254,7 @@ def install_delivery_route(
                 text=text,
                 metadata={
                     "delivery_id": delivery_id,
+                    "source_thread_id": source_thread_id,
                     "source": (
                         "channels.send.current"
                         if source_thread_id
@@ -339,9 +316,8 @@ def install_delivery_route(
                 status_code = 207
             return JSONResponse(receipt, status_code=status_code)
         finally:
-            # Pending deliveries are already referenced by the durable outbox,
-            # so the shared cleanup preserves them. Always surrender the
-            # request-scoped active lease, including validation/conflict paths.
+            # Always surrender the request-scoped active lease, including
+            # validation, conflict, and delivery-failure paths.
             await discard_uploads(artifacts)
 
     return credential
