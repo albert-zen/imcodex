@@ -57,6 +57,7 @@ components:
       - src/imcodex/models.py
       - src/imcodex/product_state.py
       - tests/test_sdk_controller.py
+      - tests/test_sdk_requests.py
       - tests/test_sdk_presentation.py
     docs:
       - docs/design.md
@@ -79,6 +80,7 @@ components:
       - src/imcodex/sdk_runtime.py
       - tests/test_appserver_target.py
       - tests/test_sdk_runtime.py
+      - tests/test_sdk_composition_contracts.py
     docs:
       - docs/design.md
       - docs/startup.md
