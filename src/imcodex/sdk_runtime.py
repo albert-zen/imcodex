@@ -38,6 +38,12 @@ class SdkRuntime:
                 self.observability.start()
                 self._observe(self.observability.emit_event, component="bridge", event="bridge.starting")
             await self.gateway.start()
+            if self.service is not None:
+                start_service = getattr(self.service, "start", None)
+                if callable(start_service):
+                    result = start_service()
+                    if asyncio.iscoroutine(result):
+                        await result
             if self.observability is not None:
                 self._observe(mark_http_health, listening=True)
                 self._publish_sdk_health()
@@ -71,6 +77,17 @@ class SdkRuntime:
         if self.observability is not None:
             self._observe(self.observability.emit_event, component="bridge", event="bridge.stopping")
         await self._cancel_health_task()
+        if self.service is not None:
+            stop_service = getattr(self.service, "stop", None)
+            if callable(stop_service):
+                try:
+                    result = stop_service()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except asyncio.CancelledError:
+                    errors.append(RuntimeError("durable delivery shutdown was cancelled"))
+                except Exception as exc:
+                    errors.append(exc)
         try:
             await self.gateway.stop()
         except asyncio.CancelledError:
@@ -109,12 +126,30 @@ class SdkRuntime:
                 sdk={"error": type(exc).__name__},
             )
             return
+        delivery = self._delivery_health()
+        status = _sdk_health_status(snapshot)
+        if delivery.get("status") == "degraded":
+            status = "degraded"
         self._observe(
             self.observability.update_health,
-            status=_sdk_health_status(snapshot),
+            status=status,
             sdk=payload,
             appserver=_appserver_health(snapshot, client=self.client),
+            delivery=delivery,
         )
+
+    def _delivery_health(self) -> dict[str, object]:
+        provider = getattr(self.service, "delivery_health", None)
+        if not callable(provider):
+            return {"status": "healthy", "pending_count": 0}
+        try:
+            return dict(provider())
+        except Exception as exc:
+            return {
+                "status": "degraded",
+                "pending_count": None,
+                "error": type(exc).__name__,
+            }
 
     async def _cancel_health_task(self) -> None:
         task = self._health_task

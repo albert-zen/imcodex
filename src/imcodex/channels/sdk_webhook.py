@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +30,7 @@ from imagent.interaction.messages import (
 )
 
 from ..delivery_artifacts import DeliveryArtifactStager
+from ..delivery_outbox import DeliveryOutcome, DeliveryOutbox
 from ..models import InboundMessage, OutboundArtifact, OutboundMessage
 from ..webhook_namespace import (
     WEBHOOK_CHANNEL_INSTANCE_ID,
@@ -246,6 +248,7 @@ class SdkRuntimeService:
         client,
         product_state,
         project_ref: ProjectRef,
+        delivery_outbox: DeliveryOutbox,
         channels=(),
         delivery_authorizer=None,
         artifact_stager: DeliveryArtifactStager | None = None,
@@ -255,6 +258,7 @@ class SdkRuntimeService:
         self.client = client
         self.product_state = product_state
         self._project_ref = project_ref
+        self._delivery_outbox = delivery_outbox
         self.outbound_sink = channel.outbound_sink
         self._channels = tuple(channels)
         self._channel_ids = frozenset(
@@ -264,13 +268,36 @@ class SdkRuntimeService:
         )
         self._delivery_authorizer = delivery_authorizer
         self._artifact_stager = artifact_stager
+        self._delivery_task: asyncio.Task[None] | None = None
+        self._delivery_wake = asyncio.Event()
+        self._delivery_attempt_lock = asyncio.Lock()
+        self._delivery_worker_error = ""
+
+    async def start(self) -> None:
+        if self._delivery_task is not None:
+            raise RuntimeError("durable delivery service is already started")
+        await self._cleanup_outbound_artifacts()
+        self._delivery_task = asyncio.create_task(
+            self._delivery_loop(),
+            name="imcodex-durable-delivery",
+        )
+        self._delivery_wake.set()
 
     async def handle_inbound(self, message: InboundMessage, **_options) -> list[OutboundMessage]:
         return await self.channel.receive(message)
 
     async def close(self) -> None:
-        if self._artifact_stager is not None:
-            await asyncio.to_thread(self._artifact_stager.cleanup_unreferenced, set())
+        await self.stop()
+        await self._cleanup_outbound_artifacts()
+        await asyncio.to_thread(self._delivery_outbox.close)
+
+    async def stop(self) -> None:
+        task = self._delivery_task
+        self._delivery_task = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     def can_deliver_outbound(self, channel_id: str) -> bool:
         return channel_id in self._channel_ids or self.outbound_sink is not None
@@ -308,12 +335,32 @@ class SdkRuntimeService:
     async def discard_outbound_uploads(self, artifacts) -> None:
         if self._artifact_stager is not None:
             await asyncio.to_thread(self._artifact_stager.release, artifacts)
+            await self._cleanup_outbound_artifacts()
 
     async def deliver_outbound_message(
         self,
         message: OutboundMessage,
     ) -> tuple[list[OutboundMessage], bool, bool]:
         self.validate_outbound_message(message)
+        stage = await asyncio.to_thread(self._delivery_outbox.stage, message)
+        if stage.outcome is not None:
+            return self._replay_delivery_outcome(stage.outcome)
+        async with self._delivery_attempt_lock:
+            outcome = await asyncio.to_thread(
+                self._delivery_outbox.get_outcome,
+                str(message.metadata.get("delivery_id") or ""),
+            )
+            if outcome is not None:
+                return self._replay_delivery_outcome(outcome)
+            result = await self._attempt_durable_delivery(stage.pending.message)
+        if not result[1] and result[2]:
+            self._delivery_wake.set()
+        return result
+
+    async def _deliver_outbound_once(
+        self,
+        message: OutboundMessage,
+    ) -> tuple[list[OutboundMessage], bool, bool]:
         source_thread_id = str(message.metadata.get("source_thread_id") or "").strip()
         if (
             not source_thread_id
@@ -377,17 +424,220 @@ class SdkRuntimeService:
         message.metadata["sdk_submission_state"] = result.state.value
         if result.error:
             message.metadata["sdk_delivery_error"] = result.error
+        self._record_sdk_artifact_outcomes(message, result)
         if result.state is DeliverySubmissionState.ACCEPTED:
+            return [message], True, True
+        if result.state is DeliverySubmissionState.PARTIAL:
+            if any(
+                destination.state
+                in {
+                    DeliverySubmissionState.IN_FLIGHT,
+                    DeliverySubmissionState.RETRYABLE,
+                }
+                for destination in result.destinations
+            ):
+                return [message], False, True
             return [message], True, True
         if result.state in {
             DeliverySubmissionState.IN_FLIGHT,
             DeliverySubmissionState.RETRYABLE,
-            DeliverySubmissionState.PARTIAL,
         }:
             return [message], False, True
         if result.state is DeliverySubmissionState.UNKNOWN:
+            message.metadata["artifact_outcome_unknown"] = True
             return [message], False, False
         raise ValueError(result.error or "SDK proactive delivery was rejected")
+
+    async def _attempt_durable_delivery(
+        self,
+        message: OutboundMessage,
+    ) -> tuple[list[OutboundMessage], bool, bool]:
+        delivery_id = str(message.metadata.get("delivery_id") or "")
+        try:
+            outbound, delivered, durable = await self._deliver_outbound_once(message)
+        except PermissionError as exc:
+            await self._complete_delivery_error(
+                delivery_id,
+                message,
+                kind="permission",
+                error=str(exc),
+            )
+            raise
+        except ValueError as exc:
+            await self._complete_delivery_error(
+                delivery_id,
+                message,
+                kind="rejected",
+                error=str(exc),
+            )
+            raise
+        except Exception as exc:
+            await asyncio.to_thread(
+                self._delivery_outbox.record_retry,
+                delivery_id,
+                message,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return [message], False, True
+        final_message = outbound[-1] if outbound else message
+        if delivered or not durable:
+            await asyncio.to_thread(
+                self._delivery_outbox.complete,
+                delivery_id,
+                final_message,
+                delivered=delivered,
+                durable=durable,
+            )
+            await self._cleanup_outbound_artifacts()
+        else:
+            await asyncio.to_thread(
+                self._delivery_outbox.record_retry,
+                delivery_id,
+                final_message,
+                error=str(final_message.metadata.get("sdk_delivery_error") or ""),
+            )
+        return outbound, delivered, durable
+
+    async def _complete_delivery_error(
+        self,
+        delivery_id: str,
+        message: OutboundMessage,
+        *,
+        kind: str,
+        error: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._delivery_outbox.complete,
+            delivery_id,
+            message,
+            delivered=False,
+            durable=False,
+            error_kind=kind,
+            error=error,
+        )
+        await self._cleanup_outbound_artifacts()
+
+    async def _delivery_loop(self) -> None:
+        while True:
+            await self._delivery_wake.wait()
+            self._delivery_wake.clear()
+            while await asyncio.to_thread(self._delivery_outbox.list_pending):
+                try:
+                    await self._drain_pending_deliveries()
+                    self._delivery_worker_error = ""
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._delivery_worker_error = type(exc).__name__
+                if await asyncio.to_thread(self._delivery_outbox.list_pending):
+                    await asyncio.sleep(1.0)
+
+    async def _drain_pending_deliveries(self) -> None:
+        blocked_routes: set[tuple[str, str]] = set()
+        async with self._delivery_attempt_lock:
+            pending_entries = await asyncio.to_thread(self._delivery_outbox.list_pending)
+            for pending in pending_entries:
+                route = self._delivery_route_key(pending.message)
+                if route in blocked_routes:
+                    continue
+                try:
+                    _outbound, delivered, durable = await self._attempt_durable_delivery(
+                        pending.message
+                    )
+                except (PermissionError, ValueError):
+                    continue
+                if not delivered and durable:
+                    blocked_routes.add(route)
+
+    async def _cleanup_outbound_artifacts(self) -> None:
+        if self._artifact_stager is None:
+            return
+        referenced = await asyncio.to_thread(
+            self._delivery_outbox.referenced_artifact_paths
+        )
+        await asyncio.to_thread(
+            self._artifact_stager.cleanup_unreferenced,
+            referenced,
+        )
+
+    def delivery_health(self) -> dict[str, object]:
+        health = self._delivery_outbox.health()
+        if self._delivery_worker_error:
+            health.update(
+                status="degraded",
+                worker_error=self._delivery_worker_error,
+            )
+        return health
+
+    @staticmethod
+    def _record_sdk_artifact_outcomes(message: OutboundMessage, result) -> None:
+        if not message.artifacts:
+            return
+        offset = 1 if message.text else 0
+        recorded = []
+        for artifact_index, artifact in enumerate(message.artifacts):
+            content_index = offset + artifact_index
+            items = [
+                item
+                for destination in result.destinations
+                if destination.receipt is not None
+                for item in destination.receipt.items
+                if item.content_index == content_index
+            ]
+            if not items:
+                continue
+            statuses = {item.status.value for item in items}
+            if statuses == {"accepted"}:
+                status = "delivered"
+                error = ""
+            elif "rejected" in statuses:
+                status = "failed"
+                error = next(
+                    (str(item.detail) for item in items if item.detail),
+                    "delivery was rejected by the platform",
+                )
+            else:
+                message.metadata["artifact_outcome_unknown"] = True
+                continue
+            recorded.append(
+                {
+                    "filename": artifact.filename,
+                    "sha256": artifact.sha256,
+                    "local_path": artifact.local_path,
+                    "status": status,
+                    "error": error,
+                    "platform_message_id": str(
+                        next(
+                            (
+                                item.native_message_id
+                                for item in items
+                                if item.native_message_id
+                            ),
+                            "",
+                        )
+                    ),
+                    "delivery_identity": "",
+                }
+            )
+        if recorded:
+            message.metadata["artifact_receipts"] = recorded
+
+    @staticmethod
+    def _delivery_route_key(message: OutboundMessage) -> tuple[str, str]:
+        source_thread_id = str(message.metadata.get("source_thread_id") or "").strip()
+        if source_thread_id:
+            return ("thread", source_thread_id)
+        return (message.channel_id, message.conversation_id)
+
+    @staticmethod
+    def _replay_delivery_outcome(
+        outcome: DeliveryOutcome,
+    ) -> tuple[list[OutboundMessage], bool, bool]:
+        if outcome.error_kind == "permission":
+            raise PermissionError(outcome.error)
+        if outcome.error_kind:
+            raise ValueError(outcome.error)
+        return [outcome.message], outcome.delivered, outcome.durable
 
     def state_for(self, channel_id: str, conversation_id: str) -> dict[str, Any]:
         return self.product_state.get(channel_id, conversation_id)
