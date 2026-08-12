@@ -13,9 +13,11 @@ import uuid
 
 import httpx
 
-from .channels.access import ChannelAccessPolicy
-from .channels.feishu import FeishuChannelAdapter
-from .channels.telegram import read_telegram_bot_token_file
+from .channel_config import (
+    ChannelAccessPolicy,
+    normalize_feishu_domain,
+    read_private_token_file,
+)
 from .channels.weixin_ilink import ILinkError, WeixinILinkTransport
 from .channels.weixin_login import WeixinLoginError, WeixinLoginFlow
 from .channels.weixin_state import WeixinStateStore
@@ -222,7 +224,9 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
         token_file_invalid = False
         if not settings.telegram_bot_token.strip() and settings.telegram_bot_token_file:
             try:
-                token_file_ok = bool(read_telegram_bot_token_file(settings.telegram_bot_token_file))
+                token_file_ok = bool(
+                    read_private_token_file(settings.telegram_bot_token_file, label="Telegram bot")
+                )
             except RuntimeError as exc:
                 token_file_invalid = True
                 failures.append(f"telegram: {exc}")
@@ -232,7 +236,7 @@ def _doctor(settings: Settings, *, output: Callable[[str], object]) -> int:
         if not settings.feishu_app_id or not settings.feishu_app_secret:
             failures.append("feishu: missing App ID or App Secret")
         try:
-            FeishuChannelAdapter._normalize_domain(settings.feishu_domain)
+            normalize_feishu_domain(settings.feishu_domain)
         except ValueError as exc:
             failures.append(f"feishu: invalid domain ({exc})")
         if importlib.util.find_spec("lark_channel") is None:

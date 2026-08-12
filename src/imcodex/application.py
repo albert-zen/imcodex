@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, HTTPException, Request
 
 from .admin.api import install_admin_routes
-from .channels import create_app
+from .channels.api import create_app
 from .composition import SettingsSource, build_runtime
 from .config import Settings
 from .debug_harness.api import install_debug_routes
@@ -19,13 +19,13 @@ from .observability.health import (
     BRIDGE_INSTANCE_HEADER,
     BRIDGE_SHUTDOWN_PATH,
 )
-from .runtime import AppRuntime
+from .sdk_runtime import SdkRuntime
 
 
 def create_application(
     *,
     settings=None,
-    runtime: AppRuntime | None = None,
+    runtime: SdkRuntime | None = None,
     admin_config_store=None,
     settings_source: SettingsSource | None = None,
 ):

@@ -28,7 +28,6 @@ from .media import (
     ImageMediaMaterializer,
     materialize_inbound_media,
 )
-from .middleware import UnifiedChannelMiddleware
 from .registry import BUILTIN_CHANNEL_IDS
 
 
@@ -307,7 +306,6 @@ def create_app(
     file_materializer: FileMediaMaterializer[_WebhookFileReference] | None = None,
 ) -> FastAPI:
     app = FastAPI()
-    middleware = UnifiedChannelMiddleware(service=service)
     materializer = media_materializer or ImageMediaMaterializer(
         root=media_dir or Path(".imcodex") / "channels" / "webhook" / "inbound-media",
         download=_download_webhook_upload,
@@ -474,7 +472,6 @@ def create_app(
                             request=request,
                             image_references=image_references,
                             file_references=file_references,
-                            middleware=middleware,
                             materializer=materializer,
                             file_materializer=generic_file_materializer,
                             service=service,
@@ -498,7 +495,6 @@ def create_app(
             request=request,
             image_references=image_references,
             file_references=file_references,
-            middleware=middleware,
             materializer=materializer,
             file_materializer=generic_file_materializer,
             service=service,
@@ -513,7 +509,6 @@ async def _handle_webhook_inbound(
     request: InboundWebhookRequest,
     image_references: tuple[_WebhookImageReference, ...],
     file_references: tuple[_WebhookFileReference, ...],
-    middleware: UnifiedChannelMiddleware,
     materializer: ImageMediaMaterializer[_WebhookImageReference],
     file_materializer: FileMediaMaterializer[_WebhookFileReference],
     service,
@@ -545,34 +540,18 @@ async def _handle_webhook_inbound(
     if len(request.text) > MAX_INBOUND_TEXT_CHARS:
         raise HTTPException(status_code=413, detail="Inbound message text is too large.")
     message = request.to_inbound_message()
-    outbound_sink = getattr(service, "outbound_sink", None)
-    can_deliver = getattr(outbound_sink, "can_deliver", None)
-    if callable(can_deliver) and not can_deliver(message.channel_id):
-        outbound_sink = None
-    adapter = _WebhookResponseAdapter(
-        message.channel_id,
-        outbound_sink=outbound_sink,
-    )
-    prepare_inbound = None
     if image_references or file_references:
-
-        async def prepare_inbound(inbound: InboundMessage) -> InboundMessage:
-            return await materialize_inbound_media(
-                inbound,
-                image_references=image_references,
-                image_materializer=materializer,
-                file_references=file_references,
-                file_materializer=file_materializer,
-            )
-    await middleware.handle_inbound(
-        adapter,
-        message,
-        reply_to_message_id=message.reply_to_message_id or message.message_id,
-        prepare_inbound=prepare_inbound,
-        finalize_inbound=finalize_inbound,
-        pending_attachment_count=len(image_references) + len(file_references),
-    )
-    return {"messages": [asdict(item) for item in adapter.messages]}
+        message = await materialize_inbound_media(
+            message,
+            image_references=image_references,
+            image_materializer=materializer,
+            file_references=file_references,
+            file_materializer=file_materializer,
+        )
+    if finalize_inbound is not None:
+        await finalize_inbound()
+    outputs = await service.handle_inbound(message)
+    return {"messages": [asdict(item) for item in outputs]}
 
 
 async def _parse_webhook_request(

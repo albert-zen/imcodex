@@ -6,7 +6,6 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from ..appserver import AppServerError
 from .config_store import (
     ConfigConflictError,
     ConfigStore,
@@ -129,10 +128,20 @@ def install_admin_routes(
 
     @app.get("/admin/api/native", include_in_schema=False)
     async def read_admin_native() -> dict:
-        backend = runtime.service.backend
+        client = runtime.client
         try:
-            payload = await backend.read_global_settings()
-        except (AppServerError, RuntimeError) as exc:
+            config = await client.read_config(include_layers=True)
+            models = await client.list_models()
+            try:
+                profiles = await client.list_permission_profiles()
+            except Exception:
+                profiles = {"data": []}
+            payload = {
+                **config,
+                "models": models.get("data", []) if isinstance(models, dict) else [],
+                "profiles": profiles.get("data", []) if isinstance(profiles, dict) else [],
+            }
+        except Exception as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Native Codex settings are temporarily unavailable.",
@@ -148,13 +157,13 @@ def install_admin_routes(
             raise HTTPException(status_code=422, detail="setting must be a string.")
         try:
             result = await apply_global_setting(
-                runtime.service.backend,
+                runtime.client,
                 setting=setting,
                 value=payload.get("value"),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except AppServerError as exc:
+        except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)[:500]) from exc
         return {
             "ok": True,

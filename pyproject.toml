@@ -6,6 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.116.1",
     "httpx>=0.28.0",
+    "im-agent-sdk[appserver,channels]==0.1.0a1",
     "Pillow>=12.3.0,<13.0.0",
     "pydantic>=2.11.0",
     "pycryptodome>=3.23.0,<4.0.0",
@@ -46,3 +47,11 @@ where = ["src"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.imcodex.sdk]
+# The v1 acceptance artifact is deliberately recorded separately from the
+# package version: the wheel is the installed public surface and the commit
+# is the source provenance for that artifact.
+canonical_commit = "a03f3eab218d0088192f177265b5eebfc87c2e60"
+wheel = "/Users/xbjt/Code/im-agent-sdk/dist/im_agent_sdk-0.1.0a1-py3-none-any.whl"
+wheel_sha256 = "1616b1079248da279068c47c4ea047dab0b4d5aefb129aa3e22017140c2831f4"

@@ -40,21 +40,21 @@ def test_preflight_validates_bind_host_and_every_enabled_channel(monkeypatch) ->
         calls.append(("resolve", host, port, type))
         return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("127.0.0.1", port))]
 
-    def build_runtime(resolved_settings, *, settings_source):
-        calls.append(("runtime", resolved_settings, settings_source))
-        return SimpleNamespace(managed_channels=[_Channel("qq"), _Channel("weixin")])
+    def build_channels(resolved_settings):
+        calls.append(("channels", resolved_settings))
+        return [_Channel("qq"), _Channel("weixin")]
 
     monkeypatch.setattr(
         "imcodex.composition.Settings.from_env",
         classmethod(lambda _cls: settings),
     )
     monkeypatch.setattr("imcodex.composition.socket.getaddrinfo", getaddrinfo)
-    monkeypatch.setattr("imcodex.composition.build_runtime", build_runtime)
+    monkeypatch.setattr("imcodex.sdk_composition.build_sdk_managed_channels", build_channels)
 
     preflight_runtime_configuration()
 
     assert calls[0][0:3] == ("resolve", "192.0.2.20", 8123)
-    assert calls[1] == ("runtime", settings, "environment")
+    assert calls[1] == ("channels", settings)
     assert calls[2:] == [("channel", "qq"), ("channel", "weixin")]
 
 

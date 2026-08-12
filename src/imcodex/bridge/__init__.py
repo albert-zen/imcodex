@@ -1,14 +1,5 @@
-from .commands import CommandResponse, CommandRouter, ParsedCommand, parse_command
-from .core import BridgeService
-from .message_pump import MessagePump
-from .projection import MessageProjector
+"""IMCodex product controller and presentation seams over the public SDK."""
 
-__all__ = [
-    "BridgeService",
-    "CommandResponse",
-    "CommandRouter",
-    "MessageProjector",
-    "MessagePump",
-    "ParsedCommand",
-    "parse_command",
-]
+from .sdk_controller import ImcodexController
+
+__all__ = ["ImcodexController"]

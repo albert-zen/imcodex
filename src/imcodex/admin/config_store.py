@@ -400,7 +400,7 @@ class ConfigStore:
         def configured(key: str) -> bool:
             return bool(str(raw(key) or "").strip())
 
-        from ..channels.access import ChannelAccessPolicy
+        from ..channel_config import ChannelAccessPolicy
 
         for prefix in ("QQ", "TELEGRAM", "FEISHU", "WEIXIN"):
             enabled_key = f"IMCODEX_{prefix}_ENABLED"
@@ -443,9 +443,9 @@ class ConfigStore:
             if not configured("IMCODEX_TELEGRAM_BOT_TOKEN"):
                 token_path = self._resolved_path(raw("IMCODEX_TELEGRAM_BOT_TOKEN_FILE"))
                 try:
-                    from ..channels.telegram import read_telegram_bot_token_file
+                    from ..channel_config import read_private_token_file
 
-                    read_telegram_bot_token_file(token_path)
+                    read_private_token_file(token_path, label="Telegram bot")
                 except (OSError, RuntimeError, ValueError) as exc:
                     raise ConfigValidationError(f"Telegram bot token file is not usable: {token_path}") from exc
 

@@ -14,7 +14,8 @@ class _NativeBackend:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
 
-    async def read_global_settings(self) -> dict:
+    async def read_config(self, *, include_layers: bool = False) -> dict:
+        del include_layers
         return {
             "config": {
                 "model": "gpt-test",
@@ -40,35 +41,25 @@ class _NativeBackend:
             "requirements": {"allowedPermissionProfiles": {":danger-full-access": True}},
         }
 
-    async def set_global_model(self, value) -> dict:
-        self.calls.append(("model", value))
-        return {"status": "updated", "filePath": "/private/config.toml"}
+    async def list_models(self) -> dict:
+        return {"data": [{"id": "gpt-test", "displayName": "GPT Test", "isDefault": True, "serviceTiers": [{"id": "priority", "name": "Fast", "description": "Faster"}]}]}
 
-    async def set_global_preferences(self, value) -> dict:
-        self.calls.append(("preferences", value))
+    async def list_permission_profiles(self) -> dict:
+        return {"data": [{"id": ":danger-full-access"}]}
+
+    async def write_config_value(self, *, key_path: str, value: object) -> dict:
+        self.calls.append((key_path, value))
         return {"status": "updated"}
 
-    async def set_global_reasoning_effort(self, value) -> dict:
-        self.calls.append(("reasoning", value))
+    async def batch_write_config(self, *, edits, reload_user_config: bool) -> dict:
+        self.calls.append(("batch", edits, reload_user_config))
         return {"status": "updated"}
-
-    async def set_global_personality(self, value) -> dict:
-        self.calls.append(("personality", value))
-        return {"status": "updated"}
-
-    async def set_global_fast_mode(self, value) -> dict:
-        self.calls.append(("fast", value))
-        return {"status": "updated"}
-
-    async def set_global_permission_mode(self, value) -> dict:
-        self.calls.append(("permission", value))
-        return {"status": "updated", "mode": value}
 
 
 def _app(tmp_path: Path, *, backend: _NativeBackend | None = None) -> tuple[FastAPI, _NativeBackend]:
     resolved_backend = backend or _NativeBackend()
     app = FastAPI()
-    runtime = SimpleNamespace(service=SimpleNamespace(backend=resolved_backend))
+    runtime = SimpleNamespace(client=resolved_backend)
     install_admin_routes(
         app,
         runtime,
@@ -274,8 +265,13 @@ def test_admin_native_api_is_whitelisted_and_calls_typed_global_setters(
     )
     assert transition.status_code == 200
     assert backend.calls[-1] == (
-        "preferences",
-        {"model": "gpt-test", "reasoningEffort": None, "fast": False},
+        "batch",
+        [
+            {"keyPath": "model", "value": "gpt-test", "mergeStrategy": "replace"},
+            {"keyPath": "model_reasoning_effort", "value": None, "mergeStrategy": "replace"},
+            {"keyPath": "service_tier", "value": "default", "mergeStrategy": "replace"},
+        ],
+        True,
     )
 
     rejected = client.put(

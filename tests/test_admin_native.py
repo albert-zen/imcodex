@@ -268,35 +268,19 @@ def test_permission_profile_without_matching_approval_is_custom() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_global_setting_uses_only_whitelisted_backend_methods() -> None:
-    class Backend:
+    class Client:
         def __init__(self) -> None:
             self.calls: list[tuple[str, object]] = []
 
-        async def set_global_model(self, value):
-            self.calls.append(("model", value))
+        async def write_config_value(self, *, key_path, value):
+            self.calls.append(("write", key_path, value))
             return {"status": "ok"}
 
-        async def set_global_preferences(self, value):
-            self.calls.append(("preferences", value))
+        async def batch_write_config(self, *, edits, reload_user_config):
+            self.calls.append(("batch", edits, reload_user_config))
             return {"status": "ok"}
 
-        async def set_global_reasoning_effort(self, value):
-            self.calls.append(("reasoning", value))
-            return {"status": "ok"}
-
-        async def set_global_personality(self, value):
-            self.calls.append(("personality", value))
-            return {"status": "ok"}
-
-        async def set_global_fast_mode(self, value):
-            self.calls.append(("fast", value))
-            return {"status": "ok"}
-
-        async def set_global_permission_mode(self, value):
-            self.calls.append(("permission", value))
-            return {"status": "ok"}
-
-    backend = Backend()
+    backend = Client()
 
     await apply_global_setting(backend, setting="model", value="default")
     await apply_global_setting(
@@ -315,20 +299,28 @@ async def test_apply_global_setting_uses_only_whitelisted_backend_methods() -> N
     await apply_global_setting(backend, setting="permissionMode", value="full-access")
 
     assert backend.calls == [
-        ("model", None),
+        ("write", "model", None),
         (
-            "preferences",
-            {
-                "model": "gpt-next",
-                "reasoningEffort": None,
-                "personality": "friendly",
-                "fast": False,
-            },
+            "batch",
+            [
+                {"keyPath": "model", "value": "gpt-next", "mergeStrategy": "replace"},
+                {"keyPath": "model_reasoning_effort", "value": None, "mergeStrategy": "replace"},
+                {"keyPath": "personality", "value": "friendly", "mergeStrategy": "replace"},
+                {"keyPath": "service_tier", "value": "default", "mergeStrategy": "replace"},
+            ],
+            True,
         ),
-        ("reasoning", "high"),
-        ("personality", None),
-        ("fast", True),
-        ("permission", "full-access"),
+        ("write", "model_reasoning_effort", "high"),
+        ("write", "personality", None),
+        ("write", "service_tier", "priority"),
+        (
+            "batch",
+            [
+                {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": "danger-full-access", "mergeStrategy": "replace"},
+            ],
+            False,
+        ),
     ]
 
 

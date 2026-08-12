@@ -1,28 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import os
 import shutil
 import socket
 import sys
-import time
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from .appserver import AppServerClient, AppServerSupervisor, CodexBackend
-from .appserver.retry import RetryBackoff
-from .appserver.supervisor import resolve_unix_socket_path
-from .appserver.thread_dynamic_tools import native_thread_dynamic_tool_specs
-from .bridge import BridgeService, CommandRouter, MessageProjector
-from .bridge.outbound_artifacts import OutboundArtifactStager
-from .channels import (
-    MultiplexOutboundSink,
-    UnifiedChannelMiddleware,
-    WebhookOutboundSink,
-)
-from .channels.registry import build_enabled_channel_adapters
 from .config import (
     DOTENV_IMPORTED_KEYS_ENV,
     KNOWN_SETTING_ENV_KEYS,
@@ -34,10 +20,9 @@ from .config import (
     Settings,
     is_restart_context_env_key,
 )
-from .core_manager import DedicatedCoreManager
 from .observability.runtime import ObservabilityRuntime
-from .runtime import AppRuntime
-from .store import ConversationStore
+from .sdk_composition import build_sdk_composition
+from .sdk_runtime import SdkRuntime
 
 
 SettingsSource = Literal["environment", "explicit"]
@@ -47,7 +32,7 @@ def build_runtime(
     settings: Settings | None = None,
     *,
     settings_source: SettingsSource | None = None,
-) -> AppRuntime:
+) -> SdkRuntime:
     if settings is None:
         if settings_source not in (None, "environment"):
             raise ValueError("Settings loaded by build_runtime must use the environment source")
@@ -58,84 +43,7 @@ def build_runtime(
     if resolved_settings_source not in {"environment", "explicit"}:
         raise ValueError(f"Unsupported settings source: {resolved_settings_source}")
     app_server_target = settings.app_server_target
-    store = ConversationStore(state_path=settings.data_dir / "state.json", clock=time.time)
-    retry_backoff = RetryBackoff(
-        initial_delay_s=settings.app_server_retry_initial_delay_s,
-        max_delay_s=settings.app_server_retry_max_delay_s,
-        jitter_fraction=settings.app_server_retry_jitter_fraction,
-    )
-    supervisor = AppServerSupervisor(
-        codex_bin=settings.codex_bin,
-        app_server_url=app_server_target.endpoint,
-        app_server_auth_token=settings.app_server_auth_token,
-        app_server_auth_token_file=settings.app_server_auth_token_file,
-        websocket_retry_policy=retry_backoff.with_max_attempts(settings.app_server_connect_max_attempts),
-        websocket_open_timeout_s=settings.app_server_connect_timeout_s,
-        health_probe_timeout_s=settings.app_server_health_timeout_s,
-    )
-    shared_filesystem_verifier = _managed_core_shared_filesystem_verifier(
-        settings=settings,
-        endpoint=app_server_target.endpoint,
-    )
-    client = AppServerClient(
-        supervisor=supervisor,
-        client_info={
-            "name": settings.service_name,
-            "title": "IM Codex Bridge",
-            "version": "0.1.0",
-        },
-        # Native thread-tool hosting relies on the experimental dynamic-tool
-        # and paged thread-history protocol surfaces. This capability opt-in
-        # does not enable bridge product features such as MCP or review.
-        experimental_api_enabled=(
-            settings.app_server_experimental_api_enabled
-            or settings.native_thread_tool_host
-            or not app_server_target.is_external
-        ),
-        shared_filesystem_verifier=shared_filesystem_verifier,
-        request_retry_policy=retry_backoff.with_max_attempts(settings.app_server_request_max_attempts),
-        reconnect_retry_policy=RetryBackoff(
-            initial_delay_s=settings.app_server_reconnect_initial_delay_s,
-            max_delay_s=settings.app_server_reconnect_max_delay_s,
-            jitter_fraction=settings.app_server_reconnect_jitter_fraction,
-        ),
-    )
-    hosts_native_thread_tools = settings.native_thread_tool_host or not app_server_target.is_external
-    artifact_stager = OutboundArtifactStager(settings.data_dir / "outbound-media")
-    artifact_stager.cleanup_unreferenced(store.referenced_terminal_artifact_paths())
-    service = BridgeService(
-        store=store,
-        backend=CodexBackend(
-            client=client,
-            store=store,
-            service_name=settings.service_name,
-            thread_dynamic_tools=(
-                native_thread_dynamic_tool_specs() if hosts_native_thread_tools else None
-            ),
-        ),
-        command_router=CommandRouter(store),
-        projector=MessageProjector(
-            artifact_stager=artifact_stager
-        ),
-        outbound_sink=None,
-        native_thread_tool_host=settings.native_thread_tool_host,
-    )
-    channel_middleware = UnifiedChannelMiddleware(service=service)
-    default_outbound_sink = (
-        WebhookOutboundSink(
-            settings.outbound_url,
-            bearer_token=settings.outbound_webhook_token,
-            outbound_media_dir=settings.data_dir / "outbound-media",
-        )
-        if settings.outbound_url
-        else None
-    )
-    managed_channels = build_enabled_channel_adapters(settings=settings, middleware=channel_middleware)
-    channel_sinks = {channel.channel_id: channel for channel in managed_channels}
-    service.outbound_sink = MultiplexOutboundSink(
-        channel_sinks=channel_sinks,
-        default_sink=default_outbound_sink,
-    )
+    composition = build_sdk_composition(settings)
     observability = ObservabilityRuntime(
         run_root=settings.run_dir,
         service_name=settings.service_name,
@@ -212,11 +120,14 @@ def build_runtime(
         launcher_reloadable_keys=launcher_reloadable_keys,
         required_external_env_keys=sorted(external_setting_keys),
     )
-    return AppRuntime(
-        client=client,
-        service=service,
-        managed_channels=managed_channels,
+    return SdkRuntime(
+        gateway=composition.gateway,
+        state=composition.state,
+        client=composition.client,
+        service=composition.service,
+        managed_channels=list(composition.channels),
         observability=observability,
+        resources=(composition.service, composition.controller, composition.product_state),
     )
 
 
@@ -232,8 +143,9 @@ def preflight_runtime_configuration(settings: Settings | None = None) -> None:
             ) from exc
     _validate_http_bind(settings)
     _validate_local_app_server_prerequisites(settings)
-    runtime = build_runtime(settings, settings_source="environment")
-    for channel in runtime.managed_channels:
+    from .sdk_composition import build_sdk_managed_channels
+
+    for channel in build_sdk_managed_channels(settings):
         validator = getattr(channel, "validate_startup_configuration", None)
         if callable(validator):
             validator()
@@ -291,34 +203,10 @@ def _managed_core_shared_filesystem_verifier(
     endpoint: str,
     os_name: str = os.name,
 ):
-    if os_name != "nt":
-        return None
-    try:
-        parsed = urlsplit(endpoint)
-        port = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme.lower() != "ws"
-        or parsed.hostname != "127.0.0.1"
-        or port is None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        return None
-    manager = DedicatedCoreManager(
-        root=Path.cwd() / ".imcodex-core",
-        repo_root=Path.cwd(),
-        codex_bin=settings.codex_bin,
-    )
-    verified_endpoint = f"ws://127.0.0.1:{port}"
-
-    async def verify() -> bool:
-        manifest = await asyncio.to_thread(manager.verify, port=port)
-        return manifest.url == verified_endpoint
-
-    return verify
+    # The SDK App Server adapter owns transport and shared-filesystem
+    # verification.  IMCodex no longer starts or supervises a parallel core.
+    del settings, endpoint, os_name
+    return None
 
 
 def _preflight_current_port() -> int | None:
@@ -393,7 +281,9 @@ def _validate_local_app_server_prerequisites(settings: Settings) -> None:
             raise RuntimeError(
                 "unix app-server endpoints are not supported on native Windows; use ws:// or wss://"
             )
-        resolve_unix_socket_path(target.endpoint)
+        parsed = urlsplit(target.endpoint)
+        if parsed.path and not Path(parsed.path).is_absolute():
+            raise RuntimeError("unix App Server endpoint must contain an absolute socket path")
     if settings.app_server_auth_token or settings.app_server_auth_token_file is None:
         return
     path = settings.app_server_auth_token_file

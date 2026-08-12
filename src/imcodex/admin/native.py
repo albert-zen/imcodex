@@ -89,51 +89,102 @@ def public_native_settings(payload: dict, *, csrf_token: str) -> dict[str, Any]:
     }
 
 
-async def apply_global_setting(backend, *, setting: str, value: object) -> dict:
+async def apply_global_setting(client, *, setting: str, value: object) -> dict:
+    """Apply one product-approved setting through the SDK client's public port."""
+
+    return await _apply_public_sdk_setting(client, setting=setting, value=value)
+
+
+async def _apply_public_sdk_setting(client, *, setting: str, value: object) -> dict:
+    """Apply the admin's product policy through the SDK client's public control port."""
+
     if setting == "preferences":
         if not isinstance(value, dict) or not value or not set(value).issubset(
             {"model", "reasoningEffort", "personality", "fast"}
         ):
             raise ValueError("preferences must contain only model, reasoningEffort, personality, and fast")
-        normalized: dict[str, object] = {}
+        edits: list[dict[str, object]] = []
         if "model" in value:
-            normalized["model"] = _optional_text(value["model"], label="model", max_chars=200)
+            edits.append(
+                {
+                    "keyPath": "model",
+                    "value": _optional_text(value["model"], label="model", max_chars=200),
+                    "mergeStrategy": "replace",
+                }
+            )
         if "reasoningEffort" in value:
-            normalized["reasoningEffort"] = _optional_text(
-                value["reasoningEffort"],
-                label="reasoning effort",
-                max_chars=32,
+            edits.append(
+                {
+                    "keyPath": "model_reasoning_effort",
+                    "value": _optional_text(
+                        value["reasoningEffort"], label="reasoning effort", max_chars=32
+                    ),
+                    "mergeStrategy": "replace",
+                }
             )
         if "personality" in value:
-            personality = _optional_text(value["personality"], label="personality", max_chars=32) or "default"
-            if personality not in _PERSONALITIES:
+            personality = _optional_text(value["personality"], label="personality", max_chars=32)
+            if personality is not None and personality not in _PERSONALITIES:
                 raise ValueError("personality must be default, none, friendly, or pragmatic")
-            normalized["personality"] = None if personality == "default" else personality
+            edits.append(
+                {
+                    "keyPath": "personality",
+                    "value": personality,
+                    "mergeStrategy": "replace",
+                }
+            )
         if "fast" in value:
             if not isinstance(value["fast"], bool):
                 raise ValueError("fast must be a boolean")
-            normalized["fast"] = value["fast"]
-        return await backend.set_global_preferences(normalized)
+            edits.append(
+                {
+                    "keyPath": "service_tier",
+                    "value": "priority" if value["fast"] else "default",
+                    "mergeStrategy": "replace",
+                }
+            )
+        return await client.batch_write_config(edits=edits, reload_user_config=True)
     if setting == "model":
         normalized = _optional_text(value, label="model", max_chars=200)
-        return await backend.set_global_model(normalized)
+        return await client.write_config_value(key_path="model", value=normalized)
     if setting == "reasoningEffort":
         normalized = _optional_text(value, label="reasoning effort", max_chars=32)
-        return await backend.set_global_reasoning_effort(normalized)
+        return await client.write_config_value(
+            key_path="model_reasoning_effort",
+            value=normalized,
+        )
     if setting == "personality":
         normalized = _optional_text(value, label="personality", max_chars=32) or "default"
         if normalized not in _PERSONALITIES:
             raise ValueError("personality must be default, none, friendly, or pragmatic")
-        return await backend.set_global_personality(None if normalized == "default" else normalized)
+        return await client.write_config_value(
+            key_path="personality",
+            value=None if normalized == "default" else normalized,
+        )
     if setting == "fast":
         if not isinstance(value, bool):
             raise ValueError("fast must be a boolean")
-        return await backend.set_global_fast_mode(value)
+        return await client.write_config_value(
+            key_path="service_tier",
+            value="priority" if value else "default",
+        )
     if setting == "permissionMode":
         normalized = _optional_text(value, label="permission mode", max_chars=32)
         if normalized not in _PERMISSION_PROFILES:
             raise ValueError("permissionMode must be default, read-only, or full-access")
-        return await backend.set_global_permission_mode(normalized)
+        approval = "never" if normalized == "full-access" else "on-request"
+        sandbox = {
+            "default": "workspace-write",
+            "read-only": "read-only",
+            "full-access": "danger-full-access",
+        }[normalized]
+        return await client.batch_write_config(
+            edits=[
+                {"keyPath": "approval_policy", "value": approval, "mergeStrategy": "replace"},
+                {"keyPath": "sandbox_mode", "value": sandbox, "mergeStrategy": "replace"},
+            ],
+            reload_user_config=False,
+        )
     raise ValueError(f"unsupported native setting: {setting}")
 
 

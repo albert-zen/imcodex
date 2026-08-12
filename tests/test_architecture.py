@@ -8,7 +8,6 @@ def test_layer_packages_exist() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "imcodex"
     assert (root / "bridge").is_dir()
     assert (root / "channels").is_dir()
-    assert (root / "appserver").is_dir()
     assert (root / "admin").is_dir()
 
 

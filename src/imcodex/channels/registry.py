@@ -1,31 +1,29 @@
 from __future__ import annotations
 
-from .base import BaseChannelAdapter
-from .feishu import FeishuChannelAdapter
-from .qq import QQChannelAdapter
-from .telegram import TelegramChannelAdapter
-from .weixin import WeixinChannelAdapter
+from imagent.channels import channel_from_config
 
 BUILTIN_CHANNEL_IDS = frozenset({"qq", "telegram", "feishu", "weixin"})
 
 
-def get_channel_adapter_registry() -> dict[str, type[BaseChannelAdapter]]:
-    return {
-        "qq": QQChannelAdapter,
-        "telegram": TelegramChannelAdapter,
-        "feishu": FeishuChannelAdapter,
-        "weixin": WeixinChannelAdapter,
-    }
+def get_channel_adapter_registry() -> dict[str, object]:
+    """Return the public SDK factory for each product-configured Channel."""
+
+    return {channel_id: channel_from_config for channel_id in BUILTIN_CHANNEL_IDS}
 
 
-def build_enabled_channel_adapters(*, settings, middleware) -> list[object]:
+def build_enabled_channel_adapters(*, settings, middleware=None) -> list[object]:
+    del middleware
     adapters: list[object] = []
-    registry = get_channel_adapter_registry()
     for channel_id, config in settings.channel_configs().items():
         if not bool(config.get("enabled")):
             continue
-        adapter_cls = registry.get(channel_id)
-        if adapter_cls is None:
+        if channel_id not in BUILTIN_CHANNEL_IDS:
             raise RuntimeError(f"Unsupported enabled channel: {channel_id}")
-        adapters.append(adapter_cls.from_config(config=config, middleware=middleware))
+        adapters.append(
+            channel_from_config(
+                channel_id,
+                config=dict(config),
+                channel_instance_id=channel_id,
+            )
+        )
     return adapters

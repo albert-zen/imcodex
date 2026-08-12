@@ -1,9 +1,3 @@
-from .client import DebugHarnessClient
-from .manager import DebugInstanceManager
-from .models import DebugRunManifest
+"""Optional product diagnostics mounted on the SDK-owned runtime."""
 
-__all__ = [
-    "DebugHarnessClient",
-    "DebugInstanceManager",
-    "DebugRunManifest",
-]
+__all__ = []
