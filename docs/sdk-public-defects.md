@@ -11,22 +11,24 @@ With `stdio://` and the public `CodexApplicationAdapter` plus `Gateway` APIs:
 1. `codex_app_server_client(...).start_thread(cwd=...)` returns a native thread.
 2. `CodexApplicationAdapter.execute(GetThread(...))` reads that thread successfully.
 3. `Gateway.actions(...).create_thread(...)` succeeds.
-4. `Gateway.actions(...).bind_thread(...)` or `create_and_bind_thread(...)` returns
-   `Partial(ActionErrorCode.NATIVE_REJECTED,
-   OperationErrorCode.ADAPTER_FAILURE)` when foreground projection is enabled.
+4. `Gateway.actions(...).create_and_bind_thread(...)` succeeds with foreground
+   projection enabled without requesting a native turn list for the empty thread.
+5. A first ordinary input is accepted and produces one projected result.
 
-The Codex App Server rejects `thread/turns/list` for the newly-created,
-unmaterialized thread until its first user message.  SDK foreground route
-reconciliation requests that history before dispatching the first user input.
-The same behavior is observable through the public SDK workflow and leaves the
-binding persisted, so IMCodex reports the typed partial outcome rather than
-creating a local projection or bypassing Gateway.
+The canonical `a72b24a` artifact fixes the prior empty-thread defect by
+preserving delayed native thread-start evidence through foreground route
+reconciliation.  The public SDK native suite passes (`1184 passed, 2772
+subtests passed`), including restart/replay coverage that recovers foreign
+output once and replays the completed create/bind action without duplication.
 
-This is an executable SDK defect: the SDK must defer empty-thread history
-reconciliation (or otherwise admit the first input) without requiring a native
-turn list before the first message.  Until fixed upstream, the real vertical
-path is healthy through ingress and product commands such as `/help`, but an
-ordinary first text turn is explicitly blocked by this public SDK outcome.
+The installed wheel was verified from its `direct_url.json` and has SHA-256
+`e160c31dd5661c9b419193c9ad3ddb1deb676949fc4a730ed36c65710885572d`.  The
+IMCodex regression suite passes (`299 passed, 14 skipped`).  Ten independent
+fresh real `stdio://` IMCodex processes were also run with the Luna model at
+reasoning effort `high` and the native service tier left unchanged; each
+produced exactly one `IMCODEX_ACCEPTANCE_OK` output.
+
+No executable public SDK defect remains open for this acceptance path.
 
 Other deliberate unsupported behavior remains explicit: the fixed Codex
 workspace does not support per-conversation `/cwd` changes, native thread tool
