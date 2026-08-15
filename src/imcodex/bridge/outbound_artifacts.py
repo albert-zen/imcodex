@@ -4,6 +4,7 @@ import base64
 import binascii
 from functools import wraps
 import hashlib
+from io import BytesIO
 import mimetypes
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import secrets
 from threading import RLock
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
+import zipfile
 
 from PIL import Image
 
@@ -24,6 +26,30 @@ _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_FILE_BYTES = 25 * 1024 * 1024
 _MAX_SPOOL_BYTES = 256 * 1024 * 1024
+
+
+def _detect_outbound_file(filename: str, content: bytes) -> str:
+    """Validate explicit local output without widening inbound file support."""
+
+    if Path(filename).suffix.casefold() == ".zip":
+        try:
+            source = BytesIO(content)
+            if not zipfile.is_zipfile(source):
+                raise zipfile.BadZipFile
+            source.seek(0)
+            with zipfile.ZipFile(source) as archive:
+                if archive.testzip() is not None:
+                    raise zipfile.BadZipFile
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, RuntimeError):
+            raise ValueError("artifact is not a valid ZIP archive") from None
+        return "application/zip"
+
+    # Non-ZIP explicit delivery keeps the same safely inspectable generic file
+    # set as inbound IM attachments.
+    from ..file_types import detect_generic_file
+
+    detected_type, _suffix = detect_generic_file(filename, content)
+    return detected_type
 
 
 def _serialized(method):
@@ -110,12 +136,7 @@ class OutboundArtifactStager:
         if len(content) > limit:
             raise ValueError(f"{kind} output exceeds the delivery size limit")
         if kind == "file":
-            # Explicit delivery accepts the same safely inspectable generic
-            # file set as inbound IM attachments.
-            from ..file_types import detect_generic_file
-
-            detected_type, _suffix = detect_generic_file(safe_name, content)
-            content_type = detected_type
+            content_type = _detect_outbound_file(safe_name, content)
         return self._stage_bytes(
             content,
             kind=kind,

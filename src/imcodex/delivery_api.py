@@ -259,7 +259,8 @@ def install_delivery_route(
                 )
         except ValueError as exc:
             await discard_uploads(artifacts)
-            raise HTTPException(status_code=422, detail=str(exc)) from None
+            detail = str(exc).strip() or "Artifact validation failed."
+            raise HTTPException(status_code=422, detail=detail) from None
         except BaseException:
             await asyncio.shield(discard_uploads(artifacts))
             raise

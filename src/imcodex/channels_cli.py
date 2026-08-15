@@ -353,6 +353,13 @@ def _send(
             )
         )
         return 1
+    if not response.is_success and "status" not in result:
+        detail = str(result.get("detail") or "").strip()
+        result = {
+            "status": "failed",
+            "http_status": response.status_code,
+            "error": detail or "Local bridge rejected the delivery request.",
+        }
     output(json.dumps(result, ensure_ascii=False, sort_keys=True))
     if response.is_success and result.get("status") in {"delivered", "queued"}:
         return 0

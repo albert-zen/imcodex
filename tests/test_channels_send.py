@@ -119,6 +119,52 @@ def test_channels_send_accepts_explicit_artifact_outside_current_workspace(
     assert captured["files"][0][1][1] == b"secret"
 
 
+def test_channels_send_reports_bridge_http_error_with_nonempty_detail(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run_dir = tmp_path / "run"
+    current = run_dir / "current"
+    current.mkdir(parents=True)
+    (current / "health.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "instance-1",
+                "http": {"listening": True, "host": "127.0.0.1", "port": 8123},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (current / "delivery-token").write_text("delivery-secret\n", encoding="utf-8")
+
+    def fake_post(url, **_kwargs):
+        return httpx.Response(
+            422,
+            request=httpx.Request("POST", url),
+            json={"detail": "unsupported generic file type"},
+        )
+
+    monkeypatch.setattr("imcodex.channels_cli.httpx.post", fake_post)
+    output: list[str] = []
+
+    status = _send(
+        SimpleNamespace(run_dir=run_dir),
+        channel_id="telegram",
+        conversation_id="chat:1",
+        text_value="done",
+        artifact_values=[],
+        delivery_id="unsupported-1",
+        output=output.append,
+    )
+
+    assert status == 1
+    assert json.loads(output[0]) == {
+        "status": "failed",
+        "http_status": 422,
+        "error": "unsupported generic file type",
+    }
+
+
 def test_channels_send_current_posts_source_thread_without_explicit_route(
     tmp_path: Path,
     monkeypatch,

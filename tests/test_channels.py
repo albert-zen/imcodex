@@ -1740,6 +1740,69 @@ async def test_qq_adapter_rejects_same_size_artifact_mutation(tmp_path: Path) ->
     assert "artifact changed after it was staged" in final_text
 
 
+@pytest.mark.asyncio
+async def test_qq_adapter_sends_generic_file_through_native_media_message(
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+    outbound_root = tmp_path / "outbound-media"
+    outbound_root.mkdir()
+    content = b"PK valid container bytes are staged earlier"
+    file_path = outbound_root / "project.zip"
+    file_path.write_bytes(content)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/app/getAppAccessToken":
+            return httpx.Response(200, json={"access_token": "token", "expires_in": 7200})
+        if request.url.path.endswith("/files"):
+            return httpx.Response(200, json={"file_info": "uploaded-file-token"})
+        return httpx.Response(200, json={"id": "out-1"})
+
+    message = OutboundMessage(
+        channel_id="qq",
+        conversation_id="c2c:user-1",
+        message_type="tool_delivery",
+        text="The archive is attached.",
+        metadata={"delivery_id": "tool-zip-1"},
+        artifacts=[
+            OutboundArtifact(
+                kind="file",
+                local_path=str(file_path),
+                content_type="application/zip",
+                filename="project.zip",
+                size_bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        ],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = QQChannelAdapter(
+            enabled=True,
+            app_id="app",
+            client_secret="secret",
+            middleware=object(),
+            api_base="https://api.sgroup.qq.com",
+            http_client=client,
+            outbound_media_dir=outbound_root,
+            access_policy=ChannelAccessPolicy.allow_all(),
+        )
+        await adapter.send_message(message)
+
+    assert [request.url.path for request in requests[1:]] == [
+        "/v2/users/user-1/files",
+        "/v2/users/user-1/messages",
+        "/v2/users/user-1/messages",
+    ]
+    upload = json.loads(requests[1].content)
+    media = json.loads(requests[2].content)
+    assert upload["file_type"] == 4
+    assert upload["file_name"] == "project.zip"
+    assert media["msg_type"] == 7
+    assert media["media"] == {"file_info": "uploaded-file-token"}
+    assert message.metadata["artifact_receipts"][0]["status"] == "delivered"
+
+
 def test_qq_durable_preparation_reports_unsupported_group_file(tmp_path: Path) -> None:
     outbound_root = tmp_path / "outbound-media"
     outbound_root.mkdir()

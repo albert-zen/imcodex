@@ -52,11 +52,13 @@ TEXT_FILE_CONTENT_TYPES = {
 
 
 class UnsupportedGenericFileError(ValueError):
-    pass
+    def __init__(self, message: str = "unsupported generic file type") -> None:
+        super().__init__(message)
 
 
 class InvalidGenericFileError(ValueError):
-    pass
+    def __init__(self, message: str = "file content is invalid for its extension") -> None:
+        super().__init__(message)
 
 
 def detect_generic_file(filename: str, content: bytes) -> tuple[str, str]:

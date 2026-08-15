@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 import os
 import threading
+import zipfile
 
 import pytest
 from PIL import Image
@@ -18,6 +19,43 @@ def _png() -> bytes:
     stream = BytesIO()
     Image.new("RGB", (2, 2), (4, 5, 6)).save(stream, format="PNG")
     return stream.getvalue()
+
+
+def _zip() -> bytes:
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project/README.md", "# Project\n")
+    return stream.getvalue()
+
+
+def test_stage_upload_accepts_valid_zip_without_widening_generic_detection(
+    tmp_path: Path,
+) -> None:
+    content = _zip()
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    artifact = stager.stage_upload(
+        content,
+        kind="file",
+        content_type="application/octet-stream",
+        filename="project.zip",
+    )
+
+    assert artifact.content_type == "application/zip"
+    assert artifact.filename == "project.zip"
+    assert Path(artifact.local_path).read_bytes() == content
+
+
+def test_stage_upload_rejects_invalid_zip_with_diagnostic_error(tmp_path: Path) -> None:
+    stager = OutboundArtifactStager(tmp_path / "spool")
+
+    with pytest.raises(ValueError, match="not a valid ZIP archive"):
+        stager.stage_upload(
+            b"not a zip",
+            kind="file",
+            content_type="application/zip",
+            filename="project.zip",
+        )
 
 
 def test_stager_materializes_dynamic_tool_image_data_url(tmp_path: Path) -> None:

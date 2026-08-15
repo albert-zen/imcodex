@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import copy
+from io import BytesIO
 import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
+import zipfile
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -223,6 +225,40 @@ def test_delivery_endpoint_stages_file_and_returns_machine_receipt(tmp_path: Pat
     assert Path(artifact.local_path).parent == tmp_path / "outbound-media"
     assert not Path(artifact.local_path).exists()
     assert sink.artifact_contents == [b"# Requirements\n"]
+
+
+def test_delivery_endpoint_accepts_valid_zip_and_rejects_invalid_zip_diagnostically(
+    tmp_path: Path,
+) -> None:
+    sink = Sink()
+    app = _app(tmp_path, sink)
+    client = TestClient(app, client=("127.0.0.1", 50000))
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project/README.md", "# Project\n")
+    payload = (
+        '{"channel_id":"telegram","conversation_id":"chat:1",'
+        '"text":"done","delivery_id":"zip-valid",'
+        '"artifacts":[{"kind":"file"}]}'
+    )
+
+    accepted = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={"payload": payload},
+        files={"artifacts": ("project.zip", stream.getvalue(), "application/zip")},
+    )
+    rejected = client.post(
+        DELIVERY_PATH,
+        headers=_headers(app),
+        data={"payload": payload.replace("zip-valid", "zip-invalid")},
+        files={"artifacts": ("project.zip", b"not a zip", "application/zip")},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["artifacts"][0]["status"] == "delivered"
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "artifact is not a valid ZIP archive"
 
 
 def test_delivery_endpoint_reports_partial_artifact_failure(tmp_path: Path) -> None:
