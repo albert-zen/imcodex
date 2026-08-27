@@ -63,7 +63,13 @@ class CommandRouter:
         self.playground_path = Path(playground_path) if playground_path is not None else self._default_playground_path()
 
     def handle(self, channel_id: str, conversation_id: str, text: str) -> CommandResponse:
-        command = parse_command(text)
+        try:
+            command = parse_command(text)
+        except ValueError:
+            return CommandResponse(
+                action="command.invalid",
+                text="Invalid command. Use /help to see available commands.",
+            )
         handler = getattr(self, f"_handle_{command.name.replace('-', '_')}", None)
         if handler is None:
             return CommandResponse(action="unknown", text=f"Unknown command: /{command.name}")

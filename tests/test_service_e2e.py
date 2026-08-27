@@ -238,6 +238,31 @@ def _build_service(
 
 
 @pytest.mark.asyncio
+async def test_lone_slash_returns_invalid_command_without_calling_native_backend() -> None:
+    process = ScriptedProcess({})
+    store = ConversationStore(clock=lambda: 1.0)
+    sink = CapturingSink()
+    client, service = _build_service(store, process, sink)
+
+    await UnifiedChannelMiddleware(service=service).handle_inbound(
+        sink,
+        InboundMessage(
+            channel_id="qq",
+            conversation_id="conv-1",
+            user_id="u1",
+            message_id="m-lone-slash",
+            text="/",
+        ),
+    )
+
+    assert process.inputs == []
+    assert len(sink.messages) == 1
+    assert sink.messages[0].message_type == "error"
+    assert sink.messages[0].text == "[System] Invalid command. Use /help to see available commands."
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_imcodex_created_thread_receives_native_thread_tools() -> None:
     process = ScriptedProcess(
         {

@@ -6,6 +6,24 @@ from imcodex.bridge import CommandRouter
 from imcodex.store import ConversationStore
 
 
+def test_empty_slash_command_returns_invalid_response() -> None:
+    router = CommandRouter(ConversationStore(clock=lambda: 1.0))
+
+    response = router.handle("qq", "conv-1", "/")
+
+    assert response.action == "command.invalid"
+    assert response.text == "Invalid command. Use /help to see available commands."
+
+
+def test_malformed_slash_command_returns_invalid_response() -> None:
+    router = CommandRouter(ConversationStore(clock=lambda: 1.0))
+
+    response = router.handle("qq", "conv-1", '/cwd "unterminated')
+
+    assert response.action == "command.invalid"
+    assert response.text == "Invalid command. Use /help to see available commands."
+
+
 def test_requests_command_is_no_longer_supported() -> None:
     store = ConversationStore(clock=lambda: 1.0)
     store.upsert_pending_request(
